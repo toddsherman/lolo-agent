@@ -44,12 +44,37 @@ over multiple press lengths.
 
 During real verification, the agent prioritizes least-tested distinct buttons
 within the current coarse visual scene before spending branch budget on extra
-durations. Equal-duration `NOOP` and non-`NOOP` probes estimate temporary
+durations. Duration coverage is tracked per controller action, so neutral waits
+do not make an untried long movement press appear overused. When a verified
+action and `NOOP` begin from the same save state and run for the same duration,
+their visual endpoint contrast becomes a temporary, behavioral-state-specific
+action-effect estimate. Discovered control receives a planning bonus while
+visually inert buttons remain available for later probes and for new states;
+no button semantics are predefined. A learned negative temporal-option value
+suppresses that bonus: an action can demonstrably control the screen and still
+be a bad intervention. Causally verified long-horizon option value has full
+score weight, preventing ordinary coverage pressure from making a known hazard
+look attractive merely because its duration is under-sampled. A negative
+causal option is still verified when useful for evidence, but is excluded from
+commit and archive restoration while any non-hazardous alternative exists.
+Exact evidence for the local state/action/duration choice overrides a broader
+action hazard prior. Global action hazards require a multi-decision delayed
+transition spanning more than one observed behavioral signature or scene;
+short local returns remain exact-choice evidence and cannot disable that button
+elsewhere. Once a behavioral state has any learned control, an
+equivalent `NOOP`/inert-button pair alone is not sufficient evidence that the
+whole state is autonomous. A pending or active delayed counterfactual retains
+priority so this control heuristic cannot interrupt causal credit assignment.
+Equal-duration
+`NOOP` and non-`NOOP` probes estimate temporary
 controllability. If different buttons produce the same evolving pixels, the
 agent selects the longest neutral wait and avoids archiving timestamps as if
 they were meaningful alternatives. A short visual-dynamics grace window keeps
 neutral waiting through temporary static pauses, then expires automatically if
-motion does not resume.
+motion does not resume. It ends immediately when real same-duration branches
+show that controller actions have distinguishable outcomes on a spatially
+informative frame. Solid fades cannot terminate a delayed causal trace merely
+because control becomes available during the transition.
 
 Exact-frame novelty is moderated by coarse-scene novelty. Archive pruning is
 also scene-diverse: branches from a highly populated scene are removed before
@@ -210,9 +235,10 @@ before initiation. Novel endpoints and broader, longer transitions receive
 positive value; returns to the source or another previously known endpoint
 receive a penalty. Later candidate scoring and archive selection can reuse the
 running value for that exact initiating choice. Until a state/action/duration
-choice has its own sample, it also receives a discounted prior from causally
-supported option samples for the same controller action elsewhere in the
-attempt. Exact local evidence overrides this action-level prior.
+choice has its own sample, it also receives a configurable prior from causally
+cloned negative option samples for the same controller action elsewhere in the
+attempt. Exact local evidence overrides this action-level hazard prior. Ordinary
+movement returns and positive options remain state-specific.
 
 Boot-time passive motion has no initiating choice and is logged but does not
 produce a learned sample. Timer-driven sequences whose matched counterfactual

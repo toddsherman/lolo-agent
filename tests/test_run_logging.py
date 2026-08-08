@@ -82,6 +82,13 @@ class RunLoggingTests(unittest.TestCase):
             self.assertEqual(summary["temporal_options_started"], 0)
             self.assertEqual(summary["temporal_option_samples"], 0)
             self.assertEqual(summary["delayed_temporal_option_samples"], 0)
+            self.assertIn("action_effect_observations", summary)
+            self.assertIn("action_effect_observations_by_action", summary)
+            self.assertIn("action_effect_known_branches", summary)
+            self.assertIn("learned_hazard_filter_events", summary)
+            self.assertIn("learned_hazard_filtered_choices", summary)
+            self.assertIn("archive_hazard_rejections", summary)
+            self.assertIn("global_action_hazard_samples", summary)
             self.assertIn("temporal_option_counterfactuals_armed", summary)
             self.assertIn("temporal_option_eligible_initiations", summary)
             self.assertEqual(
@@ -100,6 +107,12 @@ class RunLoggingTests(unittest.TestCase):
             self.assertNotEqual(rows[0]["temporal_option_value"], "")
             self.assertNotEqual(rows[0]["temporal_option_is_known"], "")
             self.assertNotEqual(rows[0]["temporal_option_value_source"], "")
+            self.assertNotEqual(rows[0]["action_effect_value"], "")
+            self.assertNotEqual(rows[0]["action_effect_is_known"], "")
+            self.assertNotEqual(rows[0]["action_effect_samples"], "")
+            self.assertNotEqual(rows[0]["action_effect_bonus"], "")
+            self.assertNotEqual(rows[0]["duration_counts"], "")
+            self.assertNotEqual(rows[0]["action_duration_counts"], "")
             self.assertNotEqual(rows[0]["active_temporal_option"], "")
             self.assertNotEqual(
                 rows[0]["temporal_option_initiation_eligible"], ""

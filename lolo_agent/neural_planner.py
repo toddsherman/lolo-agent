@@ -42,6 +42,7 @@ class NeuralPlanningConfig:
     within_scene_novelty_floor: float = 0.25
     prediction_error_weight: float = 0.5
     actual_change_weight: float = 0.25
+    action_effect_weight: float = 0.75
     action_coverage_weight: float = 0.35
     duration_coverage_weight: float = 0.2
     consecutive_repeat_weight: float = 0.5
@@ -64,13 +65,13 @@ class NeuralPlanningConfig:
     behavioral_abstraction_rmse_threshold: float = 0.02
     behavioral_abstraction_min_shared_probes: int = 2
     behavioral_probe_count: int = 2
-    temporal_option_score_weight: float = 0.5
+    temporal_option_score_weight: float = 1.0
     temporal_option_novelty_weight: float = 1.0
     temporal_option_scene_span_weight: float = 0.5
     temporal_option_duration_weight: float = 0.25
     temporal_option_duration_scale: int = 16
     temporal_option_return_penalty: float = 2.0
-    temporal_option_action_prior_weight: float = 0.5
+    temporal_option_action_prior_weight: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -346,6 +347,9 @@ class VerifiedNeuralAgent:
         self.frame: Optional[Frame] = None
         self.action_counts: CounterType[Action] = Counter()
         self.duration_counts: CounterType[int] = Counter()
+        self.action_duration_counts: CounterType[Tuple[Action, int]] = Counter()
+        self.action_effect_values: Dict[Tuple[str, Action], float] = {}
+        self.action_effect_samples: CounterType[Tuple[str, Action]] = Counter()
         self.last_action: Optional[Action] = None
         self.last_duration: Optional[int] = None
         self.action_streak = 0
@@ -416,6 +420,9 @@ class VerifiedNeuralAgent:
         self.novelty.observe(self._signature(self.frame))
         self.action_counts = Counter()
         self.duration_counts = Counter()
+        self.action_duration_counts = Counter()
+        self.action_effect_values = {}
+        self.action_effect_samples = Counter()
         self.last_action = None
         self.last_duration = None
         self.action_streak = 0
@@ -490,7 +497,7 @@ class VerifiedNeuralAgent:
         duration = self.config.action_frames if duration is None else duration
         coverage = self.config.action_coverage_weight * math.sqrt(self.action_counts[action])
         duration_coverage = self.config.duration_coverage_weight * math.sqrt(
-            self.duration_counts[duration]
+            self.action_duration_counts[(action, duration)]
         )
         consecutive = (
             self.config.consecutive_repeat_weight * self.action_streak
@@ -503,6 +510,66 @@ class VerifiedNeuralAgent:
                 self.delayed_return_costs[(self.current_scene, action, duration)]
             )
         return coverage + duration_coverage + consecutive + return_penalty
+
+    def _action_duration_count_rows(self) -> List[Dict[str, Any]]:
+        return [
+            {"action": action, "action_frames": duration, "count": count}
+            for (action, duration), count in sorted(
+                self.action_duration_counts.items(),
+                key=lambda item: (item[0][0].value, item[0][1]),
+            )
+        ]
+
+    def _record_action_effect(
+        self, source_signature: str, action: Action, contrast: float
+    ) -> Tuple[float, int]:
+        key = (source_signature, action)
+        sample = min(
+            1.0,
+            contrast / max(self.config.action_equivalence_threshold, 1e-12),
+        )
+        count = self.action_effect_samples[key] + 1
+        previous = self.action_effect_values.get(key, 0.0)
+        value = previous + (sample - previous) / count
+        self.action_effect_samples[key] = count
+        self.action_effect_values[key] = value
+        return value, count
+
+    def _action_effect_estimate(
+        self, source_signature: str, action: Action
+    ) -> Tuple[float, bool, int]:
+        key = (source_signature, action)
+        count = self.action_effect_samples[key]
+        return self.action_effect_values.get(key, 0.0), count > 0, count
+
+    def _verified_without_learned_hazards(
+        self, source_signature: str, verified: List[Tuple[Any, ...]]
+    ) -> Tuple[List[Tuple[Any, ...]], List[Dict[str, Any]]]:
+        safe = []
+        filtered = []
+        for item in verified:
+            plan = item[1]
+            value, known = self._temporal_option_estimate(
+                source_signature, plan.path[0], plan.durations[0]
+            )
+            if known and value < 0.0:
+                filtered.append(
+                    {
+                        "action": plan.path[0],
+                        "action_frames": plan.durations[0],
+                        "temporal_option_value": value,
+                        "temporal_option_value_source": (
+                            self._temporal_option_estimate_source(
+                                source_signature,
+                                plan.path[0],
+                                plan.durations[0],
+                            )
+                        ),
+                    }
+                )
+            else:
+                safe.append(item)
+        return (safe or verified), filtered if safe else []
 
     def _informative_signature(self, frame: Frame) -> bool:
         signature = frame.coarse_signature()
@@ -995,20 +1062,24 @@ class VerifiedNeuralAgent:
         return "unseen"
 
     def _record_temporal_option_sample(
-        self, choice: Tuple[str, Action, int], sample: float
+        self,
+        choice: Tuple[str, Action, int],
+        sample: float,
+        generalize_action_hazard: bool = False,
     ) -> float:
         count = self.temporal_option_samples[choice] + 1
         previous = self.temporal_option_values.get(choice, 0.0)
         value = previous + (sample - previous) / count
         self.temporal_option_samples[choice] = count
         self.temporal_option_values[choice] = value
-        action = choice[1]
-        action_count = self.temporal_option_action_samples[action] + 1
-        action_previous = self.temporal_option_action_values.get(action, 0.0)
-        self.temporal_option_action_samples[action] = action_count
-        self.temporal_option_action_values[action] = action_previous + (
-            sample - action_previous
-        ) / action_count
+        if generalize_action_hazard and sample < 0.0:
+            action = choice[1]
+            action_count = self.temporal_option_action_samples[action] + 1
+            action_previous = self.temporal_option_action_values.get(action, 0.0)
+            self.temporal_option_action_samples[action] = action_count
+            self.temporal_option_action_values[action] = action_previous + (
+                sample - action_previous
+            ) / action_count
         return value
 
     def _release_option_counterfactual(
@@ -1241,8 +1312,18 @@ class VerifiedNeuralAgent:
         learned_value = None
         sample_count = 0
         credited = trace.choice is not None and trace.causal_evidence
+        action_hazard_generalized = bool(
+            trace.counterfactual is not None
+            and sample < 0.0
+            and trace.passive_decisions >= self.config.delayed_return_min_length
+            and (len(trace.signatures) > 1 or len(trace.scenes) > 1)
+        )
         if credited:
-            learned_value = self._record_temporal_option_sample(trace.choice, sample)
+            learned_value = self._record_temporal_option_sample(
+                trace.choice,
+                sample,
+                generalize_action_hazard=action_hazard_generalized,
+            )
             sample_count = self.temporal_option_samples[trace.choice]
         self._emit(
             "temporal_option_completed",
@@ -1274,6 +1355,9 @@ class VerifiedNeuralAgent:
                 else self.temporal_option_action_samples[trace.choice[1]]
             ),
             credited=credited,
+            action_hazard_generalized=(
+                action_hazard_generalized and credited
+            ),
             causal_evidence=trace.causal_evidence,
             counterfactual_steps=(
                 0
@@ -1602,6 +1686,25 @@ class VerifiedNeuralAgent:
         _duration, preferred, spread, change = max(qualified, key=lambda item: item[0])
         return preferred, spread, change
 
+    def _verified_outcome_spread(
+        self, verified: List[Tuple[Any, ...]]
+    ) -> Tuple[float, Optional[int]]:
+        maximum = 0.0
+        maximum_duration = None
+        for duration in self.planner.duration_choices:
+            group = [item for item in verified if item[1].durations[0] == duration]
+            if len({item[1].path[0] for item in group}) < 2:
+                continue
+            spread = max(
+                left[3].mean_absolute_difference(right[3])
+                for index, left in enumerate(group)
+                for right in group[index + 1 :]
+            )
+            if spread > maximum:
+                maximum = spread
+                maximum_duration = duration
+        return maximum, maximum_duration
+
     def _option_initiation_evidence(
         self,
         candidate: Tuple[Any, ...],
@@ -1668,6 +1771,7 @@ class VerifiedNeuralAgent:
             decision=self.decision_index + 1,
             action_counts=self.action_counts,
             duration_counts=self.duration_counts,
+            action_duration_counts=self._action_duration_count_rows(),
             last_action=self.last_action,
             last_duration=self.last_duration,
             action_streak=self.action_streak,
@@ -1753,6 +1857,7 @@ class VerifiedNeuralAgent:
 
         root = self.env.save_state()
         states = [root]
+        pruned_state_ids: set[int] = set()
         raw_verified = []
         release_state = getattr(self.env, "release_state", None)
         try:
@@ -1813,6 +1918,30 @@ class VerifiedNeuralAgent:
                 probe_selection,
             )
             self.current_frontier_signature = source_signature
+            neutral_outcomes = {
+                item[0].durations[0]: item[2]
+                for item in raw_verified
+                if item[0].path[0] == Action.NOOP
+            }
+            observed_action_effects: Dict[
+                Tuple[Action, int], Tuple[float, float, int]
+            ] = {}
+            for item in raw_verified:
+                plan = item[0]
+                action = plan.path[0]
+                duration = plan.durations[0]
+                neutral_target = neutral_outcomes.get(duration)
+                if action == Action.NOOP or neutral_target is None:
+                    continue
+                contrast = item[2].mean_absolute_difference(neutral_target)
+                effect_value, effect_samples = self._record_action_effect(
+                    source_signature, action, contrast
+                )
+                observed_action_effects[(action, duration)] = (
+                    contrast,
+                    effect_value,
+                    effect_samples,
+                )
             verified = []
             for (
                 plan,
@@ -1847,6 +1976,30 @@ class VerifiedNeuralAgent:
                         source_signature, plan.path[0], duration
                     )
                 )
+                observed_effect = observed_action_effects.get(
+                    (plan.path[0], duration)
+                )
+                if observed_effect is None:
+                    (
+                        action_effect_value,
+                        action_effect_is_known,
+                        action_effect_samples,
+                    ) = self._action_effect_estimate(
+                        source_signature, plan.path[0]
+                    )
+                    action_effect_contrast = None
+                else:
+                    (
+                        action_effect_contrast,
+                        action_effect_value,
+                        action_effect_samples,
+                    ) = observed_effect
+                    action_effect_is_known = True
+                action_effect_bonus = (
+                    self.config.action_effect_weight * action_effect_value
+                    if temporal_option_value >= 0.0
+                    else 0.0
+                )
                 if choice_frontier_is_known:
                     persistent_frontier_value = choice_frontier_value
                 score = (
@@ -1855,6 +2008,7 @@ class VerifiedNeuralAgent:
                     + self.config.scene_novelty_weight * scene_novelty
                     + self.config.prediction_error_weight * error
                     + self.config.actual_change_weight * visual_change
+                    + action_effect_bonus
                     + self.config.frontier_score_weight * persistent_frontier_value
                     + self.config.temporal_option_score_weight
                     * temporal_option_value
@@ -1894,6 +2048,11 @@ class VerifiedNeuralAgent:
                     target_scene=target_scene,
                     prediction_error=error,
                     visual_change=visual_change,
+                    action_effect_contrast=action_effect_contrast,
+                    action_effect_value=action_effect_value,
+                    action_effect_is_known=action_effect_is_known,
+                    action_effect_samples=action_effect_samples,
+                    action_effect_bonus=action_effect_bonus,
                     persistent_frontier_value=persistent_frontier_value,
                     choice_frontier_value=choice_frontier_value,
                     choice_frontier_is_known=choice_frontier_is_known,
@@ -1916,7 +2075,51 @@ class VerifiedNeuralAgent:
                     state_id=self._state_id(state),
                     **self._frame_fields(target),
                 )
-            autonomous = self._autonomous_choice(self.frame, verified)
+            selection_verified, filtered_hazards = (
+                self._verified_without_learned_hazards(
+                    source_signature, verified
+                )
+            )
+            if filtered_hazards:
+                self._emit(
+                    "learned_hazards_filtered",
+                    decision=self.decision_index + 1,
+                    phase="commit_selection",
+                    filtered=filtered_hazards,
+                    alternatives_remaining=len(selection_verified),
+                )
+            autonomous = self._autonomous_choice(
+                self.frame, selection_verified
+            )
+            learned_control_actions = sorted(
+                (
+                    action
+                    for (signature, action), value in self.action_effect_values.items()
+                    if signature == source_signature and value > 0.5
+                ),
+                key=lambda action: action.value,
+            )
+            causal_counterfactual_active = (
+                self.pending_option_counterfactual is not None
+                or (
+                    self.active_temporal_option is not None
+                    and self.active_temporal_option.counterfactual is not None
+                )
+            )
+            if (
+                autonomous is not None
+                and learned_control_actions
+                and not causal_counterfactual_active
+            ):
+                self._emit(
+                    "autonomous_dynamics_rejected",
+                    decision=self.decision_index + 1,
+                    reason="state_has_learned_control",
+                    learned_control_actions=learned_control_actions,
+                    proposed_outcome_spread=autonomous[1],
+                    proposed_autonomous_change=autonomous[2],
+                )
+                autonomous = None
             passive_transition = False
             grace_continuation = False
             if autonomous is not None:
@@ -1932,29 +2135,17 @@ class VerifiedNeuralAgent:
                     autonomous_change=autonomous_change,
                 )
             elif self.autonomous_grace_remaining > 0:
-                neutral = [
-                    item
-                    for item in verified
-                    if item[1].path[0] == Action.NOOP
-                ]
-                if neutral:
-                    chosen = max(
-                        neutral,
-                        key=lambda item: (item[1].durations[0], item[0]),
-                    )
-                    passive_transition = True
-                    grace_continuation = True
-                    self.autonomous_grace_remaining -= 1
-                    self._emit(
-                        "autonomous_grace_wait",
-                        decision=self.decision_index + 1,
-                        selected_duration=chosen[1].durations[0],
-                        grace_remaining=self.autonomous_grace_remaining,
-                    )
-                else:
+                outcome_spread, spread_duration = self._verified_outcome_spread(
+                    selection_verified
+                )
+                control_returned = (
+                    outcome_spread > self.config.action_equivalence_threshold
+                    and self._informative_signature(self.frame)
+                )
+                if control_returned:
                     self.autonomous_grace_remaining = 0
                     chosen = max(
-                        verified,
+                        selection_verified,
                         key=lambda item: (
                             item[0],
                             tuple(
@@ -1965,9 +2156,54 @@ class VerifiedNeuralAgent:
                             ),
                         ),
                     )
+                    self._emit(
+                        "autonomous_grace_ended",
+                        decision=self.decision_index + 1,
+                        reason="action_dependent_outcomes",
+                        outcome_spread=outcome_spread,
+                        action_frames=spread_duration,
+                    )
+                else:
+                    neutral = [
+                        item
+                        for item in selection_verified
+                        if item[1].path[0] == Action.NOOP
+                    ]
+                    if neutral:
+                        chosen = max(
+                            neutral,
+                            key=lambda item: (item[1].durations[0], item[0]),
+                        )
+                        passive_transition = True
+                        grace_continuation = True
+                        self.autonomous_grace_remaining -= 1
+                        self._emit(
+                            "autonomous_grace_wait",
+                            decision=self.decision_index + 1,
+                            selected_duration=chosen[1].durations[0],
+                            grace_remaining=self.autonomous_grace_remaining,
+                            maximum_outcome_spread=outcome_spread,
+                            endpoint_informative=self._informative_signature(
+                                self.frame
+                            ),
+                        )
+                    else:
+                        self.autonomous_grace_remaining = 0
+                        chosen = max(
+                            selection_verified,
+                            key=lambda item: (
+                                item[0],
+                                tuple(
+                                    (action.value, duration)
+                                    for action, duration in zip(
+                                        item[1].path, item[1].durations
+                                    )
+                                ),
+                            ),
+                        )
             else:
                 chosen = max(
-                    verified,
+                    selection_verified,
                     key=lambda item: (
                         item[0],
                         tuple(
@@ -2027,6 +2263,7 @@ class VerifiedNeuralAgent:
             duration = plan.durations[0]
             self.action_counts[action] += 1
             self.duration_counts[duration] += 1
+            self.action_duration_counts[(action, duration)] += 1
             self.action_streak = (
                 self.action_streak + 1
                 if action == self.last_action and duration == self.last_duration
@@ -2135,6 +2372,33 @@ class VerifiedNeuralAgent:
                 ):
                     continue
                 (
+                    alternative_option_value,
+                    alternative_option_is_known,
+                ) = self._temporal_option_estimate(
+                    source_signature,
+                    alternative_plan.path[0],
+                    alternative_plan.durations[0],
+                )
+                if alternative_option_is_known and alternative_option_value < 0.0:
+                    self._emit(
+                        "archive_branch_rejected",
+                        decision=self.decision_index,
+                        reason="learned_hazard",
+                        action=alternative_plan.path[0],
+                        action_frames=alternative_plan.durations[0],
+                        temporal_option_value=alternative_option_value,
+                        temporal_option_value_source=(
+                            self._temporal_option_estimate_source(
+                                source_signature,
+                                alternative_plan.path[0],
+                                alternative_plan.durations[0],
+                            )
+                        ),
+                        state_id=self._state_id(alternative_state),
+                        **self._frame_fields(alternative_frame),
+                    )
+                    continue
+                (
                     alternative_option_eligible,
                     alternative_option_contrast,
                     alternative_option_counterfactuals,
@@ -2188,7 +2452,37 @@ class VerifiedNeuralAgent:
                     ),
                     **self._frame_fields(alternative_frame),
                 )
+            archive_state_ids_before_prune = {
+                id(branch.state) for branch in self.archive
+            }
             self._prune_archive()
+            pruned_state_ids.update(
+                archive_state_ids_before_prune
+                - {id(branch.state) for branch in self.archive}
+            )
+            committed_effect = observed_action_effects.get((action, duration))
+            if committed_effect is None:
+                (
+                    committed_action_effect_value,
+                    committed_action_effect_is_known,
+                    committed_action_effect_samples,
+                ) = self._action_effect_estimate(source_signature, action)
+                committed_action_effect_contrast = None
+            else:
+                (
+                    committed_action_effect_contrast,
+                    committed_action_effect_value,
+                    committed_action_effect_samples,
+                ) = committed_effect
+                committed_action_effect_is_known = True
+            committed_temporal_option_value = self._temporal_option_estimate(
+                source_signature, action, duration
+            )[0]
+            committed_action_effect_bonus = (
+                self.config.action_effect_weight * committed_action_effect_value
+                if committed_temporal_option_value >= 0.0
+                else 0.0
+            )
             self._emit(
                 "decision_committed",
                 decision=self.decision_index,
@@ -2219,9 +2513,12 @@ class VerifiedNeuralAgent:
                 committed_choice_frontier_value=self._choice_frontier_estimate(
                     source_signature, action, duration
                 )[0],
-                temporal_option_value=self._temporal_option_estimate(
-                    source_signature, action, duration
-                )[0],
+                action_effect_contrast=committed_action_effect_contrast,
+                action_effect_value=committed_action_effect_value,
+                action_effect_is_known=committed_action_effect_is_known,
+                action_effect_samples=committed_action_effect_samples,
+                action_effect_bonus=committed_action_effect_bonus,
+                temporal_option_value=committed_temporal_option_value,
                 temporal_option_is_known=self._temporal_option_estimate(
                     source_signature, action, duration
                 )[1],
@@ -2245,6 +2542,7 @@ class VerifiedNeuralAgent:
                 ),
                 action_counts=self.action_counts,
                 duration_counts=self.duration_counts,
+                action_duration_counts=self._action_duration_count_rows(),
                 scene_streak=self.scene_streak,
                 visual_stagnation_streak=self.visual_stagnation_streak,
                 **self._frame_fields(target),
@@ -2275,6 +2573,7 @@ class VerifiedNeuralAgent:
                     if (
                         id(candidate) not in archived_states
                         and id(candidate) not in option_states
+                        and id(candidate) not in pruned_state_ids
                     ):
                         release_state(candidate)
 
@@ -2325,6 +2624,41 @@ class VerifiedNeuralAgent:
                 self.delayed_return_recovery = False
                 self.delayed_return_loop_start = None
             return None
+        safe_eligible = []
+        hazardous_eligible = []
+        for candidate in eligible:
+            value, known = self._temporal_option_estimate(
+                candidate.origin_signature,
+                candidate.plan.path[0],
+                candidate.plan.durations[0],
+            )
+            if known and value < 0.0:
+                hazardous_eligible.append(
+                    {
+                        "state_id": self._state_id(candidate.state),
+                        "action": candidate.plan.path[0],
+                        "action_frames": candidate.plan.durations[0],
+                        "temporal_option_value": value,
+                        "temporal_option_value_source": (
+                            self._temporal_option_estimate_source(
+                                candidate.origin_signature,
+                                candidate.plan.path[0],
+                                candidate.plan.durations[0],
+                            )
+                        ),
+                    }
+                )
+            else:
+                safe_eligible.append(candidate)
+        if safe_eligible and hazardous_eligible:
+            eligible = safe_eligible
+            self._emit(
+                "learned_hazards_filtered",
+                decision=self.decision_index + 1,
+                phase="archive_restore",
+                filtered=hazardous_eligible,
+                alternatives_remaining=len(eligible),
+            )
         branch = max(
             eligible,
             key=lambda item: (
@@ -2385,6 +2719,18 @@ class VerifiedNeuralAgent:
         restored_option_value, restored_option_known = self._temporal_option_estimate(
             *restored_choice
         )
+        (
+            restored_action_effect_value,
+            restored_action_effect_known,
+            restored_action_effect_samples,
+        ) = self._action_effect_estimate(
+            branch.origin_signature, branch.plan.path[0]
+        )
+        restored_action_effect_bonus = (
+            self.config.action_effect_weight * restored_action_effect_value
+            if restored_option_value >= 0.0
+            else 0.0
+        )
         self._emit(
             "archive_branch_restored",
             decision=self.decision_index,
@@ -2398,6 +2744,11 @@ class VerifiedNeuralAgent:
             durations=branch.plan.durations,
             score=branch.score,
             persistent_frontier_value=selected_frontier_value,
+            action_effect_contrast=None,
+            action_effect_value=restored_action_effect_value,
+            action_effect_is_known=restored_action_effect_known,
+            action_effect_samples=restored_action_effect_samples,
+            action_effect_bonus=restored_action_effect_bonus,
             temporal_option_value=restored_option_value,
             temporal_option_is_known=restored_option_known,
             temporal_option_value_source=(
@@ -2430,6 +2781,11 @@ class VerifiedNeuralAgent:
             archive_branches_added=0,
             archive_size=len(self.archive),
             persistent_frontier_value=selected_frontier_value,
+            action_effect_contrast=None,
+            action_effect_value=restored_action_effect_value,
+            action_effect_is_known=restored_action_effect_known,
+            action_effect_samples=restored_action_effect_samples,
+            action_effect_bonus=restored_action_effect_bonus,
             temporal_option_value=restored_option_value,
             temporal_option_is_known=restored_option_known,
             temporal_option_value_source=(
@@ -2444,9 +2800,11 @@ class VerifiedNeuralAgent:
             ),
             temporal_option_counterfactuals=branch.option_counterfactuals,
             abstract_signature=restored_visual_cluster,
+            source_behavioral_signature=branch.origin_signature,
             target_frontier_signature=restored_frontier_signature,
             action_counts=self.action_counts,
             duration_counts=self.duration_counts,
+            action_duration_counts=self._action_duration_count_rows(),
             scene_streak=self.scene_streak,
             visual_stagnation_streak=self.visual_stagnation_streak,
             **self._frame_fields(branch.frame),

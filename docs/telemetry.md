@@ -31,16 +31,22 @@ Telemetry includes:
 - all final latent planner candidates and their model scores and uncertainty;
 - each real verified branch with a stable branch ID, candidate rank, action,
   plan, novelty, prediction error, visual change, penalty, total score, and the
-  exact `env_step` event that produced it;
+  exact `env_step` event that produced it, plus matched-neutral action-effect
+  contrast, learned estimate, sample count, and planning bonus;
 - archive insertions, restorations, pruning, and restoration reasons;
 - delayed visual-return detections, loop length, prior visit, every credited
   decision and scene/action/duration choice, plus unavailable recoveries;
 - autonomous-motion detections and neutral grace waits across short pauses;
+- rejected autonomous-motion hypotheses when the behavioral state already has
+  a learned controlling action;
+- learned-hazard filtering at commit and archive restoration, plus rejected
+  archive insertions and the exact temporal-option evidence responsible;
 - temporal-option starts, every passive continuation, controllable endpoints,
   credited initiating state/action/duration choices, same-duration
   counterfactual counts and pixel contrast, novelty/scene-span/duration/return
   score components, returns to the source or another previously known
-  behavioral endpoint, exact-choice and action-level learned values, and traces
+  behavioral endpoint, exact-choice and action-level learned values, whether a
+  negative sample met the global action-hazard criteria, and traces
   discarded at save-state jumps or run boundaries;
 - delayed temporal-counterfactual reservation, every matched neutral step with
   source and target state aliases, factual-versus-counterfactual pixel
@@ -54,8 +60,16 @@ Telemetry includes:
   probes, per-probe successor-latent distances, provisional-state deferrals,
   frontier-signature migrations, active-probe selection reasons, and prior
   probe-observation counts;
-- committed decisions, temporary action counts, scene streaks, archive size,
-  exact-visual stagnation streaks, and restored-branch status.
+- committed decisions, temporary action, duration, and action-duration pair
+  counts, scene streaks, archive size, exact-visual stagnation streaks, and
+restored-branch status.
+
+`summary.json` aggregates matched action-effect observations by controller
+action, branches with a known effect estimate, hazard-filter events and choices,
+archive hazard rejections, and negative samples that met the global hazard
+criteria. The same fields remain available at branch/decision granularity in
+`events.jsonl`; the most useful action-effect and coverage fields are also
+materialized in `decisions.csv`.
 
 Frame pixels are stored once under their digest, even if thousands of events
 refer to the same screen. Save-state bytes and native state tokens are never

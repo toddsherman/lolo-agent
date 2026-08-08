@@ -106,10 +106,28 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
     bootstrap_actions = Counter()
     bootstrap_durations = Counter()
     bootstrap_frames = 0
+    action_effect_observations = 0
+    action_effect_observations_by_action = Counter()
+    action_effect_known_branches = 0
+    learned_hazard_filtered_choices = 0
+    global_action_hazard_samples = 0
 
     edge_counts: Counter[Tuple[str, str, str, int]] = Counter()
     node_details: Dict[str, Dict[str, Any]] = {}
     for event in events:
+        if event["event"] == "branch_verified":
+            if event.get("action_effect_contrast") is not None:
+                action_effect_observations += 1
+                action_effect_observations_by_action[str(event["action"])] += 1
+            if event.get("action_effect_is_known"):
+                action_effect_known_branches += 1
+        elif event["event"] == "learned_hazards_filtered":
+            learned_hazard_filtered_choices += len(event.get("filtered", ()))
+        if (
+            event["event"] == "temporal_option_completed"
+            and event.get("action_hazard_generalized")
+        ):
+            global_action_hazard_samples += 1
         if (
             event["event"] == "archive_branch_restored"
             and event.get("reason") == "delayed_visual_return"
@@ -224,6 +242,13 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                     "committed_choice_frontier_value": event.get(
                         "committed_choice_frontier_value"
                     ),
+                    "action_effect_contrast": event.get("action_effect_contrast"),
+                    "action_effect_value": event.get("action_effect_value"),
+                    "action_effect_is_known": event.get(
+                        "action_effect_is_known", False
+                    ),
+                    "action_effect_samples": event.get("action_effect_samples", 0),
+                    "action_effect_bonus": event.get("action_effect_bonus"),
                     "temporal_option_value": event.get("temporal_option_value"),
                     "temporal_option_is_known": event.get(
                         "temporal_option_is_known", False
@@ -262,6 +287,12 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                     "archive_size": event.get("archive_size"),
                     "committed_state_id": event.get("committed_state_id"),
                     "action_counts": json.dumps(event.get("action_counts", {}), sort_keys=True),
+                    "duration_counts": json.dumps(
+                        event.get("duration_counts", {}), sort_keys=True
+                    ),
+                    "action_duration_counts": json.dumps(
+                        event.get("action_duration_counts", []), sort_keys=True
+                    ),
                 }
             )
 
@@ -283,6 +314,11 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "persistent_frontier_reward",
         "persistent_frontier_value",
         "committed_choice_frontier_value",
+        "action_effect_contrast",
+        "action_effect_value",
+        "action_effect_is_known",
+        "action_effect_samples",
+        "action_effect_bonus",
         "temporal_option_value",
         "temporal_option_is_known",
         "temporal_option_value_source",
@@ -301,6 +337,8 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "archive_size",
         "committed_state_id",
         "action_counts",
+        "duration_counts",
+        "action_duration_counts",
     ]
     with (run_dir / "decisions.csv").open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=decision_columns)
@@ -371,6 +409,19 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             "autonomous_dynamics_detected", 0
         ),
         "autonomous_grace_waits": event_counts.get("autonomous_grace_wait", 0),
+        "action_effect_observations": action_effect_observations,
+        "action_effect_observations_by_action": dict(
+            sorted(action_effect_observations_by_action.items())
+        ),
+        "action_effect_known_branches": action_effect_known_branches,
+        "learned_hazard_filter_events": event_counts.get(
+            "learned_hazards_filtered", 0
+        ),
+        "learned_hazard_filtered_choices": learned_hazard_filtered_choices,
+        "archive_hazard_rejections": event_counts.get(
+            "archive_branch_rejected", 0
+        ),
+        "global_action_hazard_samples": global_action_hazard_samples,
         "temporal_options_started": event_counts.get(
             "temporal_option_started", 0
         ),

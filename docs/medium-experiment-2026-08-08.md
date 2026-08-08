@@ -394,10 +394,69 @@ horizon-three pixel L1 worsened from `0.1307` to `0.1377`. Its 80-decision
 frozen audit still chose 49 neutral waits and did not solve the room. More
 cycles alone are therefore not yet evidence of useful progress.
 
+## Resuming spatial control and learning hazards
+
+The first-room trace showed two additional planner errors. First, neutral waits
+at 16 frames incremented a global duration counter, making every untried
+directional `@16` press appear overused. Duration coverage is now scoped to the
+action/duration pair. Second, the grace period for autonomous animation waited
+its full budget after control had already returned. It now ends when matched
+same-duration branches diverge on a spatially informative frame; uniform fades
+cannot end it early.
+
+An 80-decision pair-scoped audit tried 16-frame presses in every direction,
+reduced neutral choices from the earlier 46 to 17, and moved Lolo from roughly
+`(36, 85)` to `(93, 123)` during the committed trajectory. It still collected
+neither heart. This exposed a new waste mode: `A`, `B`, and `START` consumed
+nearly as many committed decisions as movement even when their same-state
+endpoints were pixel-identical to `NOOP`.
+
+The evaluator now derives a temporary action-effect estimate from matched
+action/`NOOP` branches. The estimate is behavioral-state-specific and contains
+no predefined button meaning. A discovered effect adds planning value, but a
+negative causally matched temporal option suppresses that bonus. Learned
+negative options are verified for evidence but excluded from commitment and
+archive restoration while a non-hazardous alternative exists.
+
+Global hazard generalization is deliberately stricter than local failure. The
+Select reset spanned 12 passive decisions, five behavioral signatures, and four
+scenes, so its `-1.3125` sample became an action-wide attempt-memory hazard. A
+rightward move returned locally after two passive decisions in one state; its
+`-1.96875` sample remains exact-choice evidence and no longer disables `RIGHT`
+elsewhere.
+
+The final 80-decision scoped-hazard audit recorded one Select discovery, 438
+verified branches, 146 exact frames, seven coarse scenes, and 44 hazard-filter
+events. Directional movement accounted for 45 decisions, including nine
+rightward choices. All 546 save states were released and the frozen parameter
+digest was unchanged. Both hearts remained, so the room was not solved.
+
+A subsequent 300-decision endurance run exposed a save-state lifecycle defect
+at decision 175: a branch added and immediately evicted by a full archive was
+released during pruning and again during decision cleanup. Cleanup now tracks
+same-decision pruned handles. A unique-handle regression test covers the exact
+failure. The replacement 200-decision native validation completed normally
+with 1,038 verified branches, 27 restorations, 309 exact frames, nine scenes,
+and 1,268 states both saved and released. Select remained at one use; the four
+directions accounted for 111 committed decisions. The checkpoint remained
+bit-for-bit frozen. Neither heart was collected.
+
+Replay verification passed for all 3,865 recorded observations in that
+200-decision run. The committed player contains 2,666 timeline frames; the full
+planning player contains 13,241 frames and 1,328 state-load markers. Artifacts
+are under
+`experiments/lolo1-medium/extended_evaluations/cycle-000010-scoped-hazard-lifecycle-200/`.
+
+Action-effect contrast, learned value, sample count, bonus, action-duration
+coverage, hazard filtering, archive rejection, and global-hazard qualification
+are now available in the raw event stream. Decision-level values are also in
+`decisions.csv`, and `summary.json` aggregates them for visualization.
+
 ## Next research target
 
-Replace the long neutral waits with planning over controllable tile-scale
-effects and multi-action reachability. The delayed counterfactual now identifies
-and suppresses give-up behavior without naming `SELECT`, death, lives, or room
-reset; the remaining bottleneck is purposeful spatial interaction rather than
-startup or causal reset attribution.
+Learn stable spatial entities and tile-scale displacement from pixels, then
+plan multi-action reachability toward persistent visual changes. The agent now
+discovers control, distinguishes inert actions, and suppresses give-up behavior
+without naming `SELECT`, death, lives, or room reset. The remaining bottleneck
+is purposeful spatial interaction and credit for collectibles rather than
+startup, causal reset attribution, or controller duration coverage.

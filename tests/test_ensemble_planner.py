@@ -72,7 +72,12 @@ class AnimationPauseEnv:
         return self._frame()
 
     def _frame(self) -> Frame:
-        return Frame(8, 8, 1, bytes([self.tick]) * 64)
+        return Frame(
+            8,
+            8,
+            1,
+            bytes((index + self.tick) % 256 for index in range(64)),
+        )
 
 
 class DelayedCausalityEnv:
@@ -106,6 +111,62 @@ class DelayedCausalityEnv:
     def _frame(self) -> Frame:
         value = 255 if self.triggered and self.tick > 0 else 0
         return Frame(8, 8, 1, bytes([value]) * 64)
+
+
+class ActionEffectEnv:
+    def __init__(self) -> None:
+        self.position = 0
+
+    def reset(self) -> Frame:
+        self.position = 0
+        return self._frame()
+
+    def step(self, action: Action, frames: int = 1) -> Frame:
+        if action == Action.RIGHT:
+            self.position = min(63, self.position + frames)
+        elif action == Action.SELECT:
+            self.position = 63
+        return self._frame()
+
+    def save_state(self) -> int:
+        return self.position
+
+    def load_state(self, state: int) -> Frame:
+        self.position = state
+        return self._frame()
+
+    def _frame(self) -> Frame:
+        pixels = bytearray(64)
+        pixels[self.position] = 255
+        return Frame(8, 8, 1, bytes(pixels))
+
+
+class UniqueStateEnv(ActionEffectEnv):
+    def __init__(self) -> None:
+        super().__init__()
+        self.serial = 0
+        self.active_states = set()
+
+    def reset(self) -> Frame:
+        self.active_states = set()
+        return super().reset()
+
+    def save_state(self) -> tuple[int, int]:
+        self.serial += 1
+        state = (self.serial, self.position)
+        self.active_states.add(state)
+        return state
+
+    def load_state(self, state: tuple[int, int]) -> Frame:
+        if state not in self.active_states:
+            raise RuntimeError("unknown save-state handle")
+        self.position = state[1]
+        return self._frame()
+
+    def release_state(self, state: tuple[int, int]) -> None:
+        if state not in self.active_states:
+            raise RuntimeError("unknown save-state handle")
+        self.active_states.remove(state)
 
 
 class EnsemblePlannerTests(unittest.TestCase):
@@ -181,6 +242,130 @@ class EnsemblePlannerTests(unittest.TestCase):
         agent.reset()
         actions = [decision.action for decision in agent.run(2)]
         self.assertEqual(set(actions), {Action.LEFT, Action.RIGHT})
+
+    def test_duration_coverage_is_scoped_to_the_controller_action(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        agent = VerifiedNeuralAgent(
+            MockPuzzleEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.NOOP, Action.UP),
+                planning_depth=1,
+                duration_coverage_weight=1.0,
+            ),
+        )
+        agent.reset()
+        agent.action_duration_counts[(Action.NOOP, 16)] = 100
+
+        self.assertEqual(agent._action_penalty(Action.UP, 16), 0.0)
+        self.assertEqual(agent._action_penalty(Action.NOOP, 16), 10.0)
+
+    def test_matched_noop_branch_prioritizes_discovered_control(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        agent = VerifiedNeuralAgent(
+            ActionEffectEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.NOOP, Action.A, Action.RIGHT),
+                planning_depth=1,
+                beam_width=3,
+                verify_actions=3,
+                action_frames=4,
+                actual_novelty_weight=0.0,
+                scene_novelty_weight=0.0,
+                prediction_error_weight=0.0,
+                actual_change_weight=0.0,
+                action_effect_weight=1.0,
+                action_coverage_weight=0.0,
+                duration_coverage_weight=0.0,
+                consecutive_repeat_weight=0.0,
+            ),
+        )
+        agent.reset()
+        plans = [
+            NeuralPlan((action,), (4,), 0.0, 0.0)
+            for action in (Action.NOOP, Action.A, Action.RIGHT)
+        ]
+        agent.planner.plan = lambda _frame: plans
+
+        decision = agent.decide()
+
+        self.assertEqual(decision.action, Action.RIGHT)
+        sources = {source for source, _action in agent.action_effect_samples}
+        self.assertEqual(len(sources), 1)
+        source = sources.pop()
+        self.assertEqual(agent._action_effect_estimate(source, Action.A)[0], 0.0)
+        self.assertEqual(agent._action_effect_estimate(source, Action.RIGHT)[0], 1.0)
+
+    def test_learned_hazard_is_verified_but_not_committed_when_safe(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=9, ensemble_size=2)
+        agent = VerifiedNeuralAgent(
+            ActionEffectEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.NOOP, Action.SELECT),
+                planning_depth=1,
+                beam_width=2,
+                verify_actions=2,
+                action_frames=4,
+                actual_novelty_weight=0.0,
+                scene_novelty_weight=0.0,
+                prediction_error_weight=0.0,
+                actual_change_weight=0.0,
+                action_effect_weight=10.0,
+                action_coverage_weight=0.0,
+                duration_coverage_weight=0.0,
+                consecutive_repeat_weight=0.0,
+            ),
+        )
+        agent.reset()
+        agent._record_temporal_option_sample(
+            ("prior-state", Action.SELECT, 1),
+            -2.0,
+            generalize_action_hazard=True,
+        )
+        plans = [
+            NeuralPlan((action,), (4,), 0.0, 0.0)
+            for action in (Action.NOOP, Action.SELECT)
+        ]
+        agent.planner.plan = lambda _frame: plans
+
+        decision = agent.decide()
+
+        self.assertEqual(decision.branches_examined, 2)
+        self.assertEqual(decision.action, Action.NOOP)
+        self.assertFalse(any(branch.plan.path[0] == Action.SELECT for branch in agent.archive))
+
+    def test_same_decision_archive_pruning_releases_each_state_once(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=9, ensemble_size=2)
+        env = UniqueStateEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.NOOP, Action.RIGHT, Action.SELECT),
+                planning_depth=1,
+                beam_width=3,
+                verify_actions=3,
+                action_frames=4,
+                archive_capacity=1,
+            ),
+        )
+        agent.reset()
+        plans = [
+            NeuralPlan((action,), (4,), 0.0, 0.0)
+            for action in (Action.NOOP, Action.RIGHT, Action.SELECT)
+        ]
+        agent.planner.plan = lambda _frame: plans
+
+        decision = agent.decide()
+
+        self.assertEqual(decision.branches_examined, 3)
+        self.assertLessEqual(len(agent.archive), 1)
 
     def test_stagnation_restores_an_alternative_branch(self) -> None:
         model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
@@ -298,7 +483,7 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(decision.action_frames, 4)
         self.assertEqual(agent.archive, [])
 
-    def test_autonomous_grace_waits_through_a_temporary_static_pause(self) -> None:
+    def test_autonomous_grace_ends_when_action_dependent_control_returns(self) -> None:
         model = EnsembleVisualDynamicsModel(
             latent_size=32,
             action_size=8,
@@ -322,11 +507,11 @@ class EnsemblePlannerTests(unittest.TestCase):
         )
         agent.reset()
         moving = agent.decide()
-        paused = agent.decide()
+        controlled = agent.decide()
         self.assertEqual(moving.action, Action.NOOP)
-        self.assertEqual(paused.action, Action.NOOP)
-        self.assertEqual(paused.action_frames, 4)
-        self.assertEqual(agent.frame.pixels[0], 4)
+        self.assertEqual(controlled.action, Action.A)
+        self.assertEqual(agent.frame.pixels[0], 255)
+        self.assertEqual(agent.autonomous_grace_remaining, 0)
 
     def test_archive_pruning_preserves_a_minority_scene(self) -> None:
         model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
@@ -749,7 +934,10 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(agent._archive_frontier_score(branch), -2.0)
         agent.temporal_option_values[choice] = 2.0
         agent.temporal_option_samples[choice] = 1
-        self.assertEqual(agent._archive_frontier_score(branch), -1.0)
+        self.assertEqual(
+            agent._archive_frontier_score(branch),
+            -2.0 + 2.0 * agent.config.temporal_option_score_weight,
+        )
 
     def test_temporal_option_credits_an_initiating_action_through_passive_dynamics(
         self,
@@ -846,7 +1034,9 @@ class EnsemblePlannerTests(unittest.TestCase):
         )
         agent.reset()
         exact_choice = ("moved-state", Action.SELECT, 1)
-        agent._record_temporal_option_sample(exact_choice, -2.0)
+        agent._record_temporal_option_sample(
+            exact_choice, -2.0, generalize_action_hazard=True
+        )
 
         exact, exact_known = agent._temporal_option_estimate(*exact_choice)
         inherited, inherited_known = agent._temporal_option_estimate(
@@ -859,6 +1049,13 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(
             inherited,
             -2.0 * agent.config.temporal_option_action_prior_weight,
+        )
+
+        ordinary_choice = ("another-state", Action.UP, 16)
+        agent._record_temporal_option_sample(ordinary_choice, -3.0)
+        self.assertEqual(
+            agent._temporal_option_estimate("unseen-state", Action.UP, 4),
+            (0.0, False),
         )
 
     def test_temporal_option_requires_action_dependent_counterfactual_evidence(
