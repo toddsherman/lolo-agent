@@ -72,6 +72,11 @@ class RunLoggingTests(unittest.TestCase):
             self.assertGreaterEqual(summary["visual_abstraction_clusters"], 1)
             self.assertGreaterEqual(summary["behavioral_abstraction_clusters"], 1)
             self.assertEqual(summary["behavioral_abstraction_deferrals"], 0)
+            self.assertEqual(summary["behavior_probe_selections"], 1)
+            self.assertEqual(
+                summary["behavior_probe_selection_reasons"],
+                {"coverage_rotation": 1},
+            )
             self.assertEqual(summary["annotations"][0]["source"], "evaluator")
             self.assertTrue((logger.run_dir / "transitions.json").is_file())
             with (logger.run_dir / "decisions.csv").open(encoding="utf-8") as handle:

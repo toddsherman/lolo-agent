@@ -19,6 +19,7 @@ from lolo_agent.neural_planner import (
     NeuralPlanningConfig,
     VerifiedNeuralAgent,
     _ArchivedBranch,
+    _BehaviorProbeSelection,
 )
 from lolo_agent.pixels import Frame
 
@@ -385,12 +386,93 @@ class EnsemblePlannerTests(unittest.TestCase):
         best[(Action.UP, 16)] = up
         best[(Action.START, 16)] = start
 
+        agent.reset()
         result = agent._add_control_probes(ranked, best)
 
         self.assertEqual(len(result), 6)
         self.assertIn(noop, result)
         self.assertIn(up, result)
         self.assertNotIn(start, result)
+
+    def test_active_behavior_probe_rotates_then_separates_hypotheses(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        agent = VerifiedNeuralAgent(
+            MockPuzzleEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.NOOP, Action.UP, Action.DOWN),
+                planning_depth=1,
+                abstraction_latent_rmse_threshold=100.0,
+                behavioral_abstraction_rmse_threshold=1e-9,
+            ),
+        )
+        source = agent.reset()
+        outcomes = {
+            (Action.NOOP, 4): self.frame(10),
+            (Action.UP, 4): self.frame(11),
+            (Action.DOWN, 4): self.frame(12),
+        }
+
+        first = agent._behavior_probe_selection(source)
+        self.assertEqual(first.reason, "coverage_rotation")
+        self.assertEqual(first.selected_control, Action.UP)
+        first_cluster = agent._behavioral_signature(
+            source, outcomes, agent.current_frontier_signature, first
+        )
+
+        second = agent._behavior_probe_selection(source)
+        self.assertEqual(second.selected_control, Action.DOWN)
+        self.assertEqual(
+            agent._behavioral_signature(
+                source,
+                outcomes,
+                agent._new_provisional_signature(),
+                second,
+            ),
+            first_cluster,
+        )
+        self.assertIn(
+            (Action.DOWN, 4),
+            agent.behavior_clusters[0].probe_centroids,
+        )
+
+        third = agent._behavior_probe_selection(source)
+        self.assertEqual(third.selected_control, Action.UP)
+        split_cluster = agent._behavioral_signature(
+            source,
+            {
+                (Action.NOOP, 4): outcomes[(Action.NOOP, 4)],
+                (Action.UP, 4): self.frame(200),
+            },
+            agent._new_provisional_signature(),
+            third,
+        )
+        self.assertNotEqual(split_cluster, first_cluster)
+
+        discriminating = agent._behavior_probe_selection(source)
+        self.assertEqual(discriminating.reason, "hypothesis_separation")
+        self.assertEqual(discriminating.selected_control, Action.UP)
+        self.assertGreater(discriminating.hypothesis_separation, 0.0)
+
+        ambiguous = _BehaviorProbeSelection(
+            ((Action.NOOP, 4), (Action.RIGHT, 4)),
+            discriminating.visual_cluster,
+            "coverage_rotation",
+            Action.RIGHT,
+        )
+        provisional = agent._new_provisional_signature()
+        unresolved = agent._behavioral_signature(
+            source,
+            {
+                (Action.NOOP, 4): outcomes[(Action.NOOP, 4)],
+                (Action.RIGHT, 4): self.frame(13),
+            },
+            provisional,
+            ambiguous,
+        )
+        self.assertEqual(unresolved, provisional)
+        self.assertEqual(len(agent.behavior_clusters), 2)
 
     def test_delayed_visual_return_credits_the_loop_and_requests_recovery(self) -> None:
         model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)

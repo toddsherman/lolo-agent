@@ -219,13 +219,46 @@ The deterministic players are under
 Replay verification passed for all 6,056 recorded observations. The committed
 view contains 3,861 timeline frames and the full planning view contains 15,967.
 
+## Active-probing follow-up
+
+The equal-duration probe budget is now active rather than fixed. One neutral
+anchor remains stable while the second probe rotates through the least-observed
+controls in each visual cluster. Once multiple behavioral hypotheses exist,
+the agent instead selects the control with the largest observed
+successor-centroid separation. A sole hypothesis can accumulate a new probe
+through a unique neutral-anchor match; ambiguous partial profiles remain
+provisional.
+
+The matched 320-decision audit recorded:
+
+- 287 probe selections: 219 coverage rotations and 68 hypothesis-separation
+  choices;
+- 92 conservative anchor expansions, 126 full-profile matches, 69 new
+  behavioral clusters, and zero ambiguous deferrals;
+- 179 exact frames, 56 coarse scenes, and 64 visual clusters;
+- 146 learned choice samples, up from 117 with fixed probes;
+- 22 delayed returns and recoveries, 33 total archive restores, 133
+  autonomous-motion decisions, and 86 grace waits;
+- 1,722 verified branches and an unchanged frozen-model digest.
+
+The committed trajectory reached the final story tableau at decision 123,
+eight decisions earlier than the fixed-probe run. It explored slightly fewer
+exact frames and scenes and again did not match the evaluator-only Floor 1
+signature. Active probing therefore improved behavioral identification and
+time-to-frontier, but not the deepest game progress.
+
+The deterministic players are under
+`experiments/lolo1-medium/extended_evaluations/cycle-000010-active-probes-320/replays/`.
+Replay verification passed for all 6,094 recorded observations. The committed
+view contains 3,752 timeline frames and the full planning view contains 16,188.
+
 ## Next research target
 
-Make behavioral probing active and cumulative. Repeated visits to a visual
-cluster should rotate through controller actions, retain partial successor
-profiles, and select future probes by how strongly they distinguish competing
-behavioral hypotheses. This should improve controllability detection without
-permanently consuming more of every decision's verification budget. The next
-planner should then use those learned distinctions to preserve temporal
-progress through long non-interactive sequences, still without supplied game
-semantics.
+Learn temporary temporal options and progress potential from the interaction
+graph. An action that enters an action-independent sequence should be linked to
+the later controllable state reached by neutral continuation, rather than
+valued only through individual animation frames. Directed bottlenecks,
+low-return reachability, and durable successor novelty can then provide an
+unsupervised signal for preserving forward progress. This remains grounded in
+pixels, actions, outcomes, and saved-state experiments without menu, room, or
+completion labels.

@@ -96,6 +96,8 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
     committed_frontier_values: List[float] = []
     abstraction_clusters: set[str] = set()
     behavior_clusters: set[str] = set()
+    behavior_probe_reasons: Counter[str] = Counter()
+    behavior_probe_controls: Counter[str] = Counter()
 
     edge_counts: Counter[Tuple[str, str, str, int]] = Counter()
     node_details: Dict[str, Dict[str, Any]] = {}
@@ -120,6 +122,11 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             abstraction_clusters.add(str(event["cluster"]))
         elif event["event"] == "behavioral_abstraction_assigned":
             behavior_clusters.add(str(event["cluster"]))
+        elif event["event"] == "behavior_probe_selected":
+            behavior_probe_reasons[str(event["reason"])] += 1
+            selected_control = event.get("selected_control")
+            if selected_control is not None:
+                behavior_probe_controls[str(selected_control)] += 1
         frame = event.get("frame") or event.get("target_frame")
         if frame:
             frames.add(frame)
@@ -318,6 +325,15 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         ),
         "frontier_signature_migrations": event_counts.get(
             "frontier_signature_migrated", 0
+        ),
+        "behavior_probe_selections": event_counts.get(
+            "behavior_probe_selected", 0
+        ),
+        "behavior_probe_selection_reasons": dict(
+            sorted(behavior_probe_reasons.items())
+        ),
+        "behavior_probe_selected_controls": dict(
+            sorted(behavior_probe_controls.items())
         ),
         "verified_branches": event_counts.get("branch_verified", 0),
         "unique_frames": len(frames),

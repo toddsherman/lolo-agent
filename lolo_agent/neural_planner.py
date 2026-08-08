@@ -131,6 +131,15 @@ class _BehaviorCluster:
     count: int = 1
 
 
+@dataclass(frozen=True)
+class _BehaviorProbeSelection:
+    keys: Tuple[Tuple[Action, int], ...]
+    visual_cluster: str
+    reason: str
+    selected_control: Optional[Action]
+    hypothesis_separation: Optional[float] = None
+
+
 class NeuralRolloutPlanner:
     def __init__(
         self,
@@ -315,6 +324,7 @@ class VerifiedNeuralAgent:
         self.frame_latents: Dict[str, Tensor] = {}
         self.cluster_serial = 0
         self.behavior_clusters: List[_BehaviorCluster] = []
+        self.visual_probe_counts: CounterType[Tuple[str, Action, int]] = Counter()
         self.behavior_cluster_serial = 0
         self.provisional_state_serial = 0
         self.current_frontier_signature = ""
@@ -369,6 +379,7 @@ class VerifiedNeuralAgent:
         self.frame_latents = {}
         self.cluster_serial = 0
         self.behavior_clusters = []
+        self.visual_probe_counts = Counter()
         self.behavior_cluster_serial = 0
         self.provisional_state_serial = 0
         self._abstract_signature(self.frame)
@@ -507,15 +518,82 @@ class VerifiedNeuralAgent:
     def _fallback_frontier_signature(frame: Frame) -> str:
         return f"unprofiled-frame-{frame.digest}"
 
-    def _behavior_probe_keys(self) -> Tuple[Tuple[Action, int], ...]:
-        actions = []
-        if Action.NOOP in self.config.actions:
-            actions.append(Action.NOOP)
-        actions.extend(action for action in self.config.actions if action != Action.NOOP)
+    def _behavior_probe_selection(self, frame: Frame) -> _BehaviorProbeSelection:
         duration = max(self.planner.duration_choices)
-        return tuple(
-            (action, duration)
-            for action in actions[: self.config.behavioral_probe_count]
+        ordered_actions = list(dict.fromkeys(self.config.actions))
+        anchor = (
+            Action.NOOP
+            if Action.NOOP in ordered_actions
+            else ordered_actions[0]
+        )
+        controls = [action for action in ordered_actions if action != anchor]
+        visual_cluster = self._abstract_signature(frame)
+        slots = max(0, self.config.behavioral_probe_count - 1)
+        if not controls or not slots:
+            return _BehaviorProbeSelection(
+                ((anchor, duration),),
+                visual_cluster,
+                "anchor_only",
+                None,
+            )
+
+        hypotheses = [
+            cluster
+            for cluster in self.behavior_clusters
+            if cluster.visual_cluster == visual_cluster
+        ]
+        separations: Dict[Action, float] = {}
+        if len(hypotheses) >= 2:
+            for action in controls:
+                probe = (action, duration)
+                if any(probe not in cluster.probe_centroids for cluster in hypotheses):
+                    continue
+                separations[action] = max(
+                    float(
+                        (
+                            left.probe_centroids[probe]
+                            - right.probe_centroids[probe]
+                        )
+                        .pow(2)
+                        .mean()
+                        .sqrt()
+                    )
+                    for index, left in enumerate(hypotheses)
+                    for right in hypotheses[index + 1 :]
+                )
+
+        selected = []
+        reason = "coverage_rotation"
+        separation = None
+        if separations:
+            first = max(
+                controls,
+                key=lambda action: (
+                    separations.get(action, -math.inf),
+                    -self.visual_probe_counts[(visual_cluster, action, duration)],
+                    -ordered_actions.index(action),
+                ),
+            )
+            selected.append(first)
+            reason = "hypothesis_separation"
+            separation = separations[first]
+        remaining = [action for action in controls if action not in selected]
+        remaining.sort(
+            key=lambda action: (
+                self.visual_probe_counts[(visual_cluster, action, duration)],
+                ordered_actions.index(action),
+            )
+        )
+        selected.extend(remaining[: slots - len(selected)])
+        keys = ((anchor, duration),) + tuple(
+            (action, duration) for action in selected[:slots]
+        )
+        return _BehaviorProbeSelection(
+            keys,
+            visual_cluster,
+            reason,
+            selected[0] if selected else None,
+            separation,
         )
 
     def _merge_frontier_state_value(self, source: str, target: str) -> None:
@@ -580,15 +658,19 @@ class VerifiedNeuralAgent:
         frame: Frame,
         outcomes: Dict[Tuple[Action, int], Frame],
         provisional_signature: str,
+        selection: Optional[_BehaviorProbeSelection] = None,
     ) -> str:
         source_latent = self._frame_latent(frame)
-        requested = self._behavior_probe_keys()
+        selection = selection or self._behavior_probe_selection(frame)
+        requested = selection.keys
         profile = {
             probe: self._frame_latent(outcomes[probe]) - source_latent
             for probe in requested
             if probe in outcomes
         }
         visual_cluster = self._abstract_signature(frame)
+        for action, duration in profile:
+            self.visual_probe_counts[(visual_cluster, action, duration)] += 1
         if len(profile) < self.config.behavioral_abstraction_min_shared_probes:
             self._emit(
                 "behavioral_abstraction_deferred",
@@ -609,11 +691,48 @@ class VerifiedNeuralAgent:
         nearest = None
         nearest_distance = math.inf
         nearest_probe_distances: Dict[Tuple[Action, int], float] = {}
-        for cluster in self.behavior_clusters:
-            if cluster.visual_cluster != visual_cluster:
-                continue
+        nearest_expands_profile = False
+        hypotheses = [
+            cluster
+            for cluster in self.behavior_clusters
+            if cluster.visual_cluster == visual_cluster
+        ]
+        anchor_probe = requested[0]
+        anchor_distances = {
+            cluster.key: float(
+                (profile[anchor_probe] - cluster.probe_centroids[anchor_probe])
+                .pow(2)
+                .mean()
+                .sqrt()
+            )
+            for cluster in hypotheses
+            if anchor_probe in cluster.probe_centroids
+        }
+        anchor_matches = {
+            key
+            for key, distance in anchor_distances.items()
+            if distance <= self.config.behavioral_abstraction_rmse_threshold
+        }
+        unique_anchor_match = (
+            next(iter(anchor_matches)) if len(anchor_matches) == 1 else None
+        )
+        novel_anchor = bool(hypotheses) and not anchor_matches
+        for cluster in hypotheses:
             shared = sorted(set(profile) & set(cluster.probe_centroids))
-            if len(shared) < self.config.behavioral_abstraction_min_shared_probes:
+            has_unseen_probe = any(
+                probe not in cluster.probe_centroids for probe in profile
+            )
+            expands_profile = has_unseen_probe and (
+                len(hypotheses) == 1
+                or cluster.key == unique_anchor_match
+                or novel_anchor
+            )
+            required_shared = (
+                1
+                if expands_profile
+                else self.config.behavioral_abstraction_min_shared_probes
+            )
+            if anchor_probe not in shared or len(shared) < required_shared:
                 continue
             probe_distances = {
                 probe: float(
@@ -629,6 +748,26 @@ class VerifiedNeuralAgent:
                 nearest = cluster
                 nearest_distance = distance
                 nearest_probe_distances = probe_distances
+                nearest_expands_profile = expands_profile
+        if hypotheses and nearest is None:
+            self._emit(
+                "behavioral_abstraction_deferred",
+                decision=self.decision_index + 1,
+                reason="ambiguous_partial_profile",
+                provisional_signature=provisional_signature,
+                visual_cluster=visual_cluster,
+                observed_probes=[
+                    {"action": action, "action_frames": duration}
+                    for action, duration in profile
+                ],
+                candidate_hypotheses=len(hypotheses),
+                anchor_matches=len(anchor_matches),
+                required_shared_probes=(
+                    self.config.behavioral_abstraction_min_shared_probes
+                ),
+                **self._frame_fields(frame),
+            )
+            return provisional_signature
         created = (
             nearest is None
             or nearest_distance
@@ -666,6 +805,14 @@ class VerifiedNeuralAgent:
             visual_cluster=visual_cluster,
             provisional_signature=provisional_signature,
             successor_delta_rmse=None if created else nearest_distance,
+            classification_mode=(
+                "new_cluster"
+                if created
+                else "anchor_profile_expansion"
+                if nearest_expands_profile
+                else "full_profile_match"
+            ),
+            shared_probe_count=0 if created else len(nearest_probe_distances),
             maximum_probe_rmse=(
                 None
                 if created
@@ -934,8 +1081,31 @@ class VerifiedNeuralAgent:
         self,
         ranked: List[NeuralPlan],
         best_by_action: Dict[Tuple[Action, int], NeuralPlan],
+        selection: Optional[_BehaviorProbeSelection] = None,
     ) -> List[NeuralPlan]:
-        probe_keys = self._behavior_probe_keys()
+        if selection is None:
+            if self.frame is None:
+                raise RuntimeError("behavior probes require a current frame")
+            selection = self._behavior_probe_selection(self.frame)
+        probe_keys = selection.keys
+        self._emit(
+            "behavior_probe_selected",
+            decision=self.decision_index + 1,
+            visual_cluster=selection.visual_cluster,
+            reason=selection.reason,
+            selected_control=selection.selected_control,
+            hypothesis_separation=selection.hypothesis_separation,
+            probes=[
+                {
+                    "action": action,
+                    "action_frames": duration,
+                    "prior_observations": self.visual_probe_counts[
+                        (selection.visual_cluster, action, duration)
+                    ],
+                }
+                for action, duration in probe_keys
+            ],
+        )
         if self.config.verify_actions < len(probe_keys):
             return ranked
         probes = [best_by_action[key] for key in probe_keys if key in best_by_action]
@@ -1081,7 +1251,10 @@ class VerifiedNeuralAgent:
                 ),
             )
             ranked.extend(remaining[: self.config.verify_actions - len(ranked)])
-        ranked = self._add_control_probes(ranked, best_by_action)
+        probe_selection = self._behavior_probe_selection(self.frame)
+        ranked = self._add_control_probes(
+            ranked, best_by_action, probe_selection
+        )
         if not ranked:
             raise RuntimeError("neural planner produced no action candidates")
 
@@ -1144,6 +1317,7 @@ class VerifiedNeuralAgent:
                 self.frame,
                 probe_outcomes,
                 source_signature,
+                probe_selection,
             )
             self.current_frontier_signature = source_signature
             verified = []

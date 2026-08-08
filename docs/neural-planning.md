@@ -152,12 +152,20 @@ evaluation attempt.
 ### Interaction-derived behavioral refinement
 
 Visual clusters are candidates for sharing, not sufficient evidence. Whenever
-a state becomes the current planning root, the verifier reserves a small,
-fixed set of controller probes at a common duration. For each probe it records
-the frozen-encoder displacement from the source pixels to the observed
-successor pixels. A state joins an existing behavioral cluster only when its
-visual cluster matches and the mean successor-displacement RMSE over shared
-probes is below the configured threshold.
+a state becomes the current planning root, the verifier reserves a neutral
+anchor and an actively selected controller probe at a common duration. Before
+multiple behavioral hypotheses exist, the active probe rotates toward the
+least-observed control in that visual cluster. When hypotheses compete, the
+agent selects the previously observed control whose successor centroids have
+the largest latent separation. This reuses the existing verification budget.
+
+For each probe the agent records the frozen-encoder displacement from source
+pixels to observed successor pixels. A state joins an existing behavioral
+cluster only when its visual cluster matches and the mean
+successor-displacement RMSE over shared probes is below the configured
+threshold. A sole hypothesis may conservatively acquire a previously unseen
+probe using the neutral anchor match; once multiple hypotheses exist, full
+shared-probe evidence is required. Probe centroids accumulate across visits.
 
 Unprobed successor states receive unique provisional frontier signatures. They
 do not inherit another state's value merely because their pixels look alike.
