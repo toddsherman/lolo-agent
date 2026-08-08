@@ -1,0 +1,25 @@
+# Private game content and emulator persistence
+*.nes
+*.unf
+*.unif
+*.srm
+*.sav
+*.state
+*.state[0-9]*
+
+# Local experiments
+artifacts/
+runs/
+checkpoints/
+build/
+
+# Python
+.venv/
+*.egg-info/
+__pycache__/
+*.py[cod]
+.DS_Store
+.env
+.env.*
+.coverage
+.pytest_cache/
