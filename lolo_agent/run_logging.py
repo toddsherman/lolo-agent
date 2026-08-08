@@ -216,15 +216,39 @@ class LoggedEnvironment:
         self._active_states: Dict[int, str] = {}
         self.last_step_seq: Optional[int] = None
         self.last_state_event_seq: Optional[int] = None
+        self.phase = "agent"
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.env, name)
 
-    def reset(self) -> Frame:
-        self.logger.start_attempt()
+    def reset(
+        self,
+        *,
+        start_attempt: bool = True,
+        phase: str = "agent",
+    ) -> Frame:
+        self.phase = phase
+        if start_attempt:
+            self.logger.start_attempt()
         self._frame = self.env.reset()
-        self.logger.log("env_reset", **self.logger.frame_fields(self._frame))
+        self.logger.log(
+            "env_reset", phase=self.phase, **self.logger.frame_fields(self._frame)
+        )
         return self._frame
+
+    def start_attempt_from_current(
+        self, frame: Frame, reason: str = "evaluator_initialization"
+    ) -> Frame:
+        self._frame = frame
+        self.phase = "agent"
+        self.logger.start_attempt(reason)
+        self.logger.log(
+            "env_attached",
+            phase=self.phase,
+            reason=reason,
+            **self.logger.frame_fields(frame),
+        )
+        return frame
 
     def observe(self) -> Frame:
         frame = getattr(self.env, "observe")()
@@ -243,6 +267,7 @@ class LoggedEnvironment:
                 "source_frame": None if source is None else self.logger.store_frame(source),
                 "target_frame": target.digest,
                 "visual_change": None if source is None else source.mean_absolute_difference(target),
+                "phase": self.phase,
             }
         )
         event = self.logger.log("env_step", **fields)

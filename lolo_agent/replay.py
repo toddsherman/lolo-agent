@@ -86,7 +86,31 @@ def capture_replay(
                     _check_frame(current, event)
                     checked += 1
                     frames[current.digest] = current
-                    full.append(_entry(current, event, "reset"))
+                    full.append(
+                        _entry(
+                            current,
+                            event,
+                            "reset",
+                            phase=event.get("phase", "agent"),
+                        )
+                    )
+                elif kind == "env_attached":
+                    if current is None:
+                        raise RuntimeError(
+                            f"environment attachment without frame at event {event['seq']}"
+                        )
+                    _check_frame(current, event)
+                    checked += 1
+                    frames[current.digest] = current
+                    full.append(
+                        _entry(
+                            current,
+                            event,
+                            "episode_start",
+                            phase=event.get("phase", "agent"),
+                            reason=event.get("reason"),
+                        )
+                    )
                 elif kind == "state_saved":
                     state_id = event.get("state_id")
                     if not state_id or state_id in handles:
@@ -124,6 +148,7 @@ def capture_replay(
                             action_frame=subframe,
                             action_frames=action_frames,
                             visual_change=event.get("visual_change"),
+                            phase=event.get("phase", "agent"),
                         )
                         captured.append(item)
                         full.append(item)
@@ -166,7 +191,17 @@ def committed_timeline(events: Sequence[Dict[str, Any]], capture: ReplayCapture)
         for event in events
         if event["event"] == "branch_verified" and event.get("state_id")
     }
-    timeline: List[Dict[str, Any]] = []
+    has_bootstrap = any(item.get("phase") == "bootstrap" for item in capture.full)
+    timeline: List[Dict[str, Any]] = (
+        [
+            item
+            for item in capture.full
+            if item.get("phase") == "bootstrap"
+            or item.get("kind") == "episode_start"
+        ]
+        if has_bootstrap
+        else []
+    )
     resets_by_attempt = {
         int(item.get("attempt", 0)): item for item in capture.full if item["kind"] == "reset"
     }

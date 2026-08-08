@@ -61,6 +61,27 @@ refer to the same screen. Save-state bytes and native state tokens are never
 serialized. State lifecycle records use run-local aliases such as
 `state-00000042`.
 
+## Evaluator bootstrap boundary
+
+`lolo-neural-run --bootstrap lolo1-first-room` runs a minimal deterministic
+controller macro before attempt 1. The fixture is accepted only for its known
+ROM SHA-256 and only when its endpoint exactly matches the expected first-room
+frame and coarse visual signature. `--bootstrap none` is the default, preserving
+strict power-on evaluation.
+
+The event stream records `bootstrap_started`, every `env_step` with
+`phase=bootstrap`, `bootstrap_action_committed`, and `bootstrap_completed` under
+attempt 0. `attempt_started` and `env_attached` then mark the pixel-exact handoff
+to the agent as attempt 1. Summary fields report the fixture, action counts,
+durations, and total emulator frames separately; bootstrap actions are excluded
+from `investigated_actions`, `investigated_durations`, and per-attempt agent
+statistics. The transition graph retains them with their phase-bearing source
+events so a visualization can show or filter the complete session.
+
+Both replay modes include the power-on-to-room bootstrap. The committed player
+then follows only choices made by the agent, while the full player additionally
+shows its rejected save-state branches.
+
 `decisions.csv` is the convenient per-decision view. `transitions.json` contains
 nodes for visual states and counted directed edges for all investigated
 controller transitions. `summary.json` contains total and per-attempt counts,

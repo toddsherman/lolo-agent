@@ -4,11 +4,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from lolo_agent.bootstrap import (
+    BootstrapFixture,
+    BootstrapStep,
+    apply_bootstrap_fixture,
+)
 from lolo_agent.ensemble_world_model import EnsembleVisualDynamicsModel
 from lolo_agent.environment import Action
 from lolo_agent.log_summary import append_level_annotation, build_run_summary
 from lolo_agent.mock_puzzle import MockPuzzleEnv
 from lolo_agent.neural_planner import NeuralPlanningConfig, VerifiedNeuralAgent
+from lolo_agent.pixels import signature_key
 from lolo_agent.run_logging import LoggedEnvironment, RunLogger, read_events
 
 
@@ -118,6 +124,62 @@ class RunLoggingTests(unittest.TestCase):
             self.assertEqual(len(list((logger.run_dir / "frames").glob("*.png"))), 1)
             manifest = json.loads((logger.run_dir / "manifest.json").read_text())
             self.assertEqual(manifest["unique_frame_count"], 1)
+
+    def test_evaluator_bootstrap_is_logged_but_excluded_from_agent_statistics(
+        self,
+    ) -> None:
+        probe = MockPuzzleEnv()
+        probe.reset()
+        expected = probe.step(Action.RIGHT)
+        fixture = BootstrapFixture(
+            name="test-room",
+            steps=(BootstrapStep(Action.RIGHT, 1),),
+            expected_frame_sha256=expected.digest,
+            expected_scene_signature=signature_key(
+                expected.coarse_signature(columns=3, rows=3)
+            ),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            logger = RunLogger(
+                Path(directory),
+                run_id="bootstrap-test",
+                metadata={"bootstrap": {"fixture": fixture.name}},
+            )
+            env = LoggedEnvironment(MockPuzzleEnv(), logger)
+            frame = apply_bootstrap_fixture(env, fixture)
+            model = EnsembleVisualDynamicsModel(
+                latent_size=16, action_size=8, ensemble_size=2
+            )
+            agent = VerifiedNeuralAgent(
+                env,
+                model,
+                "cpu",
+                NeuralPlanningConfig(actions=(Action.NOOP,), planning_depth=1),
+                event_logger=logger,
+            )
+            agent.reset(initial_frame=frame)
+            logger.close()
+
+            events = list(read_events(logger.run_dir))
+            bootstrap_steps = [
+                event
+                for event in events
+                if event["event"] == "env_step"
+                and event.get("phase") == "bootstrap"
+            ]
+            self.assertEqual(len(bootstrap_steps), 1)
+            self.assertEqual(bootstrap_steps[0]["attempt"], 0)
+            self.assertEqual(
+                sum(event["event"] == "attempt_started" for event in events), 1
+            )
+            self.assertEqual(frame, expected)
+
+            summary = build_run_summary(logger.run_dir)
+            self.assertTrue(summary["bootstrap_completed"])
+            self.assertEqual(summary["bootstrap_fixture"], "test-room")
+            self.assertEqual(summary["bootstrap_actions"], {"right": 1})
+            self.assertEqual(summary["bootstrap_frames"], 1)
+            self.assertEqual(summary["investigated_actions"], {})
 
 
 class CounterLike(dict):

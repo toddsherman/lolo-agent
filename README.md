@@ -93,6 +93,27 @@ lolo-neural-run \
   --log-root runs
 ```
 
+Strict evaluation starts from NES power-on and makes the agent discover every
+input. For puzzle-learning experiments, the evaluator can instead perform the
+known title/story transition and hand control to the frozen agent at the exact
+first-room pixels:
+
+```bash
+lolo-neural-run \
+  --host build/lolo-libretro-host \
+  --rom "Adventures of Lolo.nes" \
+  --core "$HOME/Library/Application Support/RetroArch/cores/nestopia_libretro.dylib" \
+  --checkpoint checkpoints/ensemble-smoke.pt \
+  --bootstrap lolo1-first-room \
+  --decisions 20 \
+  --log-root runs
+```
+
+This is evaluator initialization, not an agent skill or training example. The
+fixture is ROM-hash and final-pixel checked, remains disabled by default, and
+its inputs are tagged `phase=bootstrap` and excluded from agent action and
+attempt statistics.
+
 Every neural run now creates a self-contained telemetry directory. It contains
 an append-only JSONL event stream, deduplicated PNG observations, a manifest
 with input hashes and frozen-model audit data, a decision CSV, and an aggregated

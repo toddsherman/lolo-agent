@@ -404,9 +404,9 @@ class VerifiedNeuralAgent:
     def _scene_signature(frame: Frame) -> str:
         return signature_key(frame.coarse_signature(columns=3, rows=3))
 
-    def reset(self) -> Frame:
+    def reset(self, initial_frame: Optional[Frame] = None) -> Frame:
         self.clear_archive()
-        self.frame = self.env.reset()
+        self.frame = self.env.reset() if initial_frame is None else initial_frame
         self.novelty = VisualNovelty()
         self.novelty.observe(self._signature(self.frame))
         self.action_counts = Counter()

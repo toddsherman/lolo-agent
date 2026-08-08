@@ -24,6 +24,13 @@ The neural model is frozen during this process. Novelty counts, controller
 coverage, action streaks, delayed-return costs, and archived state handles are
 temporary attempt memory and are discarded after the run.
 
+The evaluator may optionally attach the agent to a verified first-room frame
+after a fixed title/story bootstrap. The macro lives outside
+`VerifiedNeuralAgent`; the agent receives only the resulting pixels and begins
+with fresh novelty, coverage, archive, and temporal memory. No bootstrap action
+is placed in the model's training data or temporary agent history. Strict
+power-on evaluation remains available and is the command-line default.
+
 All proposals, real verification branches, committed decisions, archive
 operations, opaque state lifecycles, and pixel observations are recorded by the
 event-sourced telemetry layer described in [telemetry.md](telemetry.md). Logging

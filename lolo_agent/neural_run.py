@@ -4,6 +4,11 @@ import argparse
 from dataclasses import asdict
 from pathlib import Path
 
+from .bootstrap import (
+    BOOTSTRAP_FIXTURES,
+    apply_bootstrap_fixture,
+    get_bootstrap_fixture,
+)
 from .ensemble_world_model import load_ensemble_checkpoint
 from .log_summary import build_run_summary
 from .native_env import NativeLibretroEnv
@@ -28,6 +33,12 @@ def main() -> None:
     parser.add_argument("--log-root", type=Path, default=Path("runs"))
     parser.add_argument("--run-id")
     parser.add_argument("--no-frame-images", action="store_true")
+    parser.add_argument(
+        "--bootstrap",
+        choices=("none", *sorted(BOOTSTRAP_FIXTURES)),
+        default="none",
+        help="evaluator-owned initialization fixture; strict power-on remains the default",
+    )
     args = parser.parse_args()
 
     device = choose_torch_device()
@@ -45,13 +56,17 @@ def main() -> None:
         action_durations=action_durations,
         verify_actions=args.verify_actions,
     )
+    bootstrap_fixture = (
+        None if args.bootstrap == "none" else get_bootstrap_fixture(args.bootstrap)
+    )
+    rom_sha256 = sha256_file(args.rom)
     metadata = {
         "mode": "frozen_neural_evaluation",
         "requested_decisions": args.decisions,
         "device": str(device),
         "planning_config": asdict(config),
         "inputs": {
-            "rom": {"name": args.rom.name, "sha256": sha256_file(args.rom)},
+            "rom": {"name": args.rom.name, "sha256": rom_sha256},
             "core": {"name": args.core.name, "sha256": sha256_file(args.core)},
             "host": {"name": args.host.name, "sha256": sha256_file(args.host)},
             "checkpoint": {
@@ -60,6 +75,21 @@ def main() -> None:
                 "parameter_sha256": before,
             },
         },
+        "bootstrap": (
+            None
+            if bootstrap_fixture is None
+            else {
+                "fixture": bootstrap_fixture.name,
+                "steps": len(bootstrap_fixture.steps),
+                "total_frames": bootstrap_fixture.total_frames,
+                "expected_frame_sha256": (
+                    bootstrap_fixture.expected_frame_sha256
+                ),
+                "expected_scene_signature": (
+                    bootstrap_fixture.expected_scene_signature
+                ),
+            }
+        ),
     }
     logger = RunLogger(
         args.log_root,
@@ -80,7 +110,13 @@ def main() -> None:
             )
             env = LoggedEnvironment(native_env, logger)
             agent = VerifiedNeuralAgent(env, model, device, config, event_logger=logger)
-            agent.reset()
+            if bootstrap_fixture is None:
+                agent.reset()
+            else:
+                initial_frame = apply_bootstrap_fixture(
+                    env, bootstrap_fixture, rom_sha256
+                )
+                agent.reset(initial_frame=initial_frame)
             decisions = agent.run(args.decisions)
             agent.clear_archive()
         after = model.checkpoint_digest

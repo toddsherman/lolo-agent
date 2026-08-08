@@ -103,6 +103,9 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
     learned_temporal_option_choices: set[Tuple[str, str, int]] = set()
     delayed_temporal_option_samples = 0
     temporal_option_endpoint_contrasts: List[float] = []
+    bootstrap_actions = Counter()
+    bootstrap_durations = Counter()
+    bootstrap_frames = 0
 
     edge_counts: Counter[Tuple[str, str, str, int]] = Counter()
     node_details: Dict[str, Dict[str, Any]] = {}
@@ -169,13 +172,19 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         attempt = int(event.get("attempt", 0))
         if event["event"] == "env_step":
             action = str(event["action"])
-            investigated_actions[action] += 1
-            investigated_durations[int(event["action_frames"])] += 1
-            attempts[attempt]["env_steps"] += 1
+            action_frames = int(event["action_frames"])
+            if event.get("phase") == "bootstrap":
+                bootstrap_actions[action] += 1
+                bootstrap_durations[action_frames] += 1
+                bootstrap_frames += action_frames
+            else:
+                investigated_actions[action] += 1
+                investigated_durations[action_frames] += 1
+                attempts[attempt]["env_steps"] += 1
             source = event.get("source_frame")
             target = event.get("target_frame")
             if source and target:
-                edge_counts[(source, target, action, int(event["action_frames"]))] += 1
+                edge_counts[(source, target, action, action_frames)] += 1
         elif event["event"] == "decision_committed":
             action = str(event["action"])
             actions[action] += 1
@@ -340,6 +349,15 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "investigated_durations": {
             str(key): value for key, value in sorted(investigated_durations.items())
         },
+        "bootstrap_fixture": (
+            manifest.get("metadata", {}).get("bootstrap") or {}
+        ).get("fixture"),
+        "bootstrap_completed": event_counts.get("bootstrap_completed", 0) > 0,
+        "bootstrap_actions": dict(sorted(bootstrap_actions.items())),
+        "bootstrap_durations": {
+            str(key): value for key, value in sorted(bootstrap_durations.items())
+        },
+        "bootstrap_frames": bootstrap_frames,
         "archive_restores": event_counts.get("archive_branch_restored", 0),
         "delayed_visual_returns": event_counts.get(
             "delayed_visual_return_detected", 0

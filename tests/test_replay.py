@@ -63,6 +63,57 @@ class ReplayTests(unittest.TestCase):
                 b"\x89PNG\r\n\x1a\n",
             )
 
+    def test_committed_timeline_includes_evaluator_bootstrap(self) -> None:
+        bootstrap = [
+            {
+                "frame": "power-on",
+                "kind": "reset",
+                "event_seq": 1,
+                "attempt": 0,
+                "phase": "bootstrap",
+            },
+            {
+                "frame": "room",
+                "kind": "action_frame",
+                "event_seq": 2,
+                "attempt": 0,
+                "phase": "bootstrap",
+            },
+            {
+                "frame": "room",
+                "kind": "episode_start",
+                "event_seq": 3,
+                "attempt": 1,
+                "phase": "agent",
+            },
+        ]
+        capture = ReplayCapture(
+            full=bootstrap,
+            step_frames={},
+            decision_frames={
+                4: {"frame": "room", "kind": "decision", "event_seq": 4}
+            },
+            verified_events=0,
+            checked_observations=3,
+        )
+        events = [
+            {
+                "event": "decision_committed",
+                "seq": 4,
+                "attempt": 1,
+                "decision": 1,
+                "committed_state_id": None,
+                "restored_archive": False,
+                "path": ["noop"],
+                "score": 0.0,
+            }
+        ]
+        timeline = committed_timeline(events, capture)
+        self.assertEqual(
+            [item["kind"] for item in timeline],
+            ["reset", "action_frame", "episode_start"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

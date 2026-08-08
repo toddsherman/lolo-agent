@@ -327,12 +327,41 @@ Replay verification passed for all 6,427 recorded observations. The committed
 view contains 3,409 timeline frames and the full causal-planning view contains
 17,307.
 
+## Evaluator-owned first-room bootstrap
+
+The title and story sequence does not exercise the puzzle mechanics under
+study, and earlier frozen runs repeatedly exhausted their decision budget in
+that sequence. A trace-derived input sequence was therefore minimized by
+replacing all non-`START` inputs with neutral frames and greedily removing
+unnecessary `START` pulses. The retained fixture is:
+
+```text
+NOOP@254, START@4, NOOP@21, START@1, NOOP@944
+```
+
+It is guarded by the exact Lolo 1 ROM digest, endpoint frame digest
+`cff8e18b...e4a78`, and Floor 1 coarse signature `040604030303040302`.
+The evaluator applies it as attempt 0; attempt 1 starts with clean agent memory
+on the resulting pixels. It is opt-in, fully logged, included in deterministic
+playback, and excluded from agent action statistics.
+
+A 20-decision native audit from this handoff recorded 120 verified branches,
+26 exact telemetry frames, seven coarse scenes, and 140 save states created and
+released. The first committed choice changed the first-room pixels, confirming
+controller ownership after attachment. The checkpoint digest remained
+`35909b37...1d22dfe`. Replay verification passed for all 427 recorded
+observations; the committed view contains 1,497 timeline frames and the full
+planning view contains 2,372.
+
+Artifacts are under
+`experiments/lolo1-medium/extended_evaluations/cycle-000010-first-room-bootstrap-smoke-20/`.
+
 ## Next research target
 
-Learn progress potential from directed reachability rather than passive
-duration alone. The temporary interaction graph can identify visual regions
-that are easy to leave but not recover through tested controller transitions,
-and states whose descendants repeatedly expand the reachable frontier. Ranking
-archive branches by this asymmetric reachability and bottleneck evidence may
-preserve forward navigation without assuming that any screen is a menu, room,
-or success state.
+Run longer first-room evaluations and learn progress potential from directed
+reachability rather than passive duration alone. The temporary interaction
+graph can identify visual regions that are easy to leave but not recover
+through tested controller transitions, and states whose descendants repeatedly
+expand the reachable frontier. Ranking archive branches by this asymmetric
+reachability and bottleneck evidence may preserve forward puzzle exploration
+without assuming object identity, room completion, or success.
