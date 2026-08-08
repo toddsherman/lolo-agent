@@ -20,6 +20,8 @@ from lolo_agent.neural_planner import (
     VerifiedNeuralAgent,
     _ArchivedBranch,
     _BehaviorProbeSelection,
+    _OptionCounterfactual,
+    _TemporalOptionTrace,
 )
 from lolo_agent.pixels import Frame
 
@@ -71,6 +73,39 @@ class AnimationPauseEnv:
 
     def _frame(self) -> Frame:
         return Frame(8, 8, 1, bytes([self.tick]) * 64)
+
+
+class DelayedCausalityEnv:
+    def __init__(self) -> None:
+        self.triggered = False
+        self.tick = 0
+        self.released = 0
+
+    def reset(self) -> Frame:
+        self.triggered = False
+        self.tick = 0
+        return self._frame()
+
+    def step(self, action: Action, frames: int = 1) -> Frame:
+        if action == Action.START and self.tick == 0:
+            self.triggered = True
+        elif action == Action.NOOP:
+            self.tick += frames
+        return self._frame()
+
+    def save_state(self) -> tuple[bool, int]:
+        return self.triggered, self.tick
+
+    def load_state(self, state: tuple[bool, int]) -> Frame:
+        self.triggered, self.tick = state
+        return self._frame()
+
+    def release_state(self, state: tuple[bool, int]) -> None:
+        self.released += 1
+
+    def _frame(self) -> Frame:
+        value = 255 if self.triggered and self.tick > 0 else 0
+        return Frame(8, 8, 1, bytes([value]) * 64)
 
 
 class EnsemblePlannerTests(unittest.TestCase):
@@ -731,6 +766,7 @@ class EnsemblePlannerTests(unittest.TestCase):
         choice = ("source", Action.START, 4)
         agent.pending_option_choice = choice
         agent.pending_option_decision = 1
+        agent.pending_option_causal_evidence = True
 
         agent.decision_index = 1
         agent._advance_temporal_option("animation-a", "scene-a", passive=True)
@@ -763,6 +799,7 @@ class EnsemblePlannerTests(unittest.TestCase):
         agent.behavior_visits["source"] = 1
         agent.pending_option_choice = choice
         agent.pending_option_decision = 1
+        agent.pending_option_causal_evidence = True
         agent.decision_index = 1
         agent._advance_temporal_option("animation", "scene", passive=True)
         agent.decision_index = 2
@@ -796,6 +833,12 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertFalse(eligible)
         self.assertEqual(contrast, 0.0)
         self.assertEqual(count, 1)
+        self.assertIs(
+            agent._delayed_option_counterfactual(
+                candidate, [candidate, uncaused]
+            ),
+            uncaused,
+        )
 
         eligible, contrast, count = agent._option_initiation_evidence(
             candidate, [candidate, caused]
@@ -803,6 +846,96 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertTrue(eligible)
         self.assertGreater(contrast, agent.config.action_equivalence_threshold)
         self.assertEqual(count, 1)
+        self.assertIsNone(
+            agent._delayed_option_counterfactual(candidate, [candidate, caused])
+        )
+
+    def test_delayed_counterfactual_divergence_supplies_causal_option_evidence(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        env = DelayedCausalityEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.START, Action.A, Action.NOOP), planning_depth=1
+            ),
+        )
+        agent.reset()
+        root = env.save_state()
+        immediate = env.step(Action.START)
+        factual_state = env.save_state()
+        env.load_state(root)
+        counterfactual_frame = env.step(Action.A)
+        counterfactual_state = env.save_state()
+        self.assertEqual(immediate, counterfactual_frame)
+        env.load_state(factual_state)
+        factual_target = env.step(Action.NOOP)
+
+        choice = ("source", Action.START, 1)
+        agent.pending_option_choice = choice
+        agent.pending_option_decision = 1
+        agent.pending_option_counterfactual = _OptionCounterfactual(
+            counterfactual_state,
+            counterfactual_frame,
+            Action.A,
+            1,
+        )
+        agent.decision_index = 1
+        agent._advance_temporal_option(
+            "animation",
+            "scene-a",
+            passive=True,
+            passive_action=Action.NOOP,
+            passive_duration=1,
+            factual_target=factual_target,
+        )
+        self.assertFalse(agent.active_temporal_option.causal_evidence)
+        self.assertGreater(
+            agent.active_temporal_option.counterfactual.maximum_contrast,
+            agent.config.action_equivalence_threshold,
+        )
+
+        agent.frame = factual_target
+        agent.decision_index = 2
+        agent._advance_temporal_option("endpoint", "scene-b", passive=False)
+        learned, known = agent._temporal_option_estimate(*choice)
+        self.assertTrue(known)
+        self.assertGreater(learned, 0.0)
+        self.assertIsNone(agent.active_temporal_option)
+        self.assertGreaterEqual(env.released, 2)
+
+    def test_delayed_counterfactual_requires_endpoint_divergence(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        env = DelayedCausalityEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(actions=(Action.START,), planning_depth=1),
+        )
+        endpoint = agent.reset()
+        choice = ("source", Action.START, 1)
+        agent.active_temporal_option = _TemporalOptionTrace(
+            choice=choice,
+            initiation_decision=1,
+            start_decision=2,
+            entry_signature="animation",
+            entry_scene="scene",
+            counterfactual=_OptionCounterfactual(
+                env.save_state(), endpoint, Action.A, 1
+            ),
+            passive_decisions=3,
+        )
+        agent.frame = endpoint
+        agent.decision_index = 4
+        agent._advance_temporal_option("endpoint", "scene", passive=False)
+
+        learned, known = agent._temporal_option_estimate(*choice)
+        self.assertFalse(known)
+        self.assertEqual(learned, 0.0)
 
     def test_archive_recovery_prefers_learned_persistent_frontier_value(self) -> None:
         model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)

@@ -75,6 +75,8 @@ class RunLoggingTests(unittest.TestCase):
             self.assertEqual(summary["behavior_probe_selections"], 1)
             self.assertEqual(summary["temporal_options_started"], 0)
             self.assertEqual(summary["temporal_option_samples"], 0)
+            self.assertEqual(summary["delayed_temporal_option_samples"], 0)
+            self.assertIn("temporal_option_counterfactuals_armed", summary)
             self.assertIn("temporal_option_eligible_initiations", summary)
             self.assertEqual(
                 summary["behavior_probe_selection_reasons"],
@@ -100,6 +102,9 @@ class RunLoggingTests(unittest.TestCase):
             )
             self.assertNotEqual(
                 rows[0]["temporal_option_counterfactuals"], ""
+            )
+            self.assertNotEqual(
+                rows[0]["temporal_option_delayed_counterfactual_armed"], ""
             )
 
     def test_frames_are_content_addressed_and_deduplicated(self) -> None:

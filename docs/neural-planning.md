@@ -184,8 +184,17 @@ behavioral-signature/action/duration choice only when a real, same-duration
 save-state branch with another controller action produced distinguishable
 pixels. Otherwise the sequence is retained as uncredited passive motion; this
 prevents a coincidental button press from receiving value for an uncaused
-timer transition. A credited trace follows neutral waits through short static
-grace pauses and ends at the next controllable planning root.
+timer transition.
+
+When same-duration actions instead produce matching immediate pixels, one
+alternative state is retained as a delayed counterfactual. During a subsequent
+passive sequence, both the factual and counterfactual states receive the same
+neutral actions and durations. Every intermediate pixel contrast is recorded,
+but causal evidence is granted only if the trajectories still differ when
+control returns. A trace follows neutral waits through short static grace
+pauses and ends at that next controllable planning root. Counterfactual states
+have explicit ownership and are released on completion, replacement,
+save-state restoration, reset, or error cleanup.
 
 The endpoint sample uses only interaction-derived quantities: whether the
 endpoint behavioral signature is new, how many coarse visual scenes the trace
@@ -195,11 +204,12 @@ returns to the source receive a penalty. Later candidate scoring and archive
 selection can reuse the running value for that exact initiating choice.
 
 Boot-time passive motion has no initiating choice and is logged but does not
-produce a learned sample. An archive restore discards any active trace before
-arming the restored branch as a new initiating choice, preventing credit from
-crossing an uncaused save-state jump. Option traces and values migrate with
-provisional behavioral signatures, reset between attempts, and never update
-the frozen neural model.
+produce a learned sample. Timer-driven sequences whose matched counterfactual
+reaches the same endpoint are likewise uncredited. An archive restore discards
+any active trace before arming the restored branch as a new initiating choice,
+preventing credit from crossing an uncaused save-state jump. Option traces and
+values migrate with provisional behavioral signatures, reset between attempts,
+and never update the frozen neural model.
 
 The value is learned online from pixels and transition topology and is erased
 on reset. It is not part of the neural checkpoint, so frozen evaluation still

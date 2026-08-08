@@ -150,12 +150,25 @@ class _BehaviorProbeSelection:
 
 
 @dataclass
+class _OptionCounterfactual:
+    state: object
+    frame: Frame
+    action: Action
+    duration: int
+    state_id: Optional[str] = None
+    passive_steps: int = 0
+    maximum_contrast: float = 0.0
+
+
+@dataclass
 class _TemporalOptionTrace:
     choice: Optional[Tuple[str, Action, int]]
     initiation_decision: Optional[int]
     start_decision: int
     entry_signature: str
     entry_scene: str
+    causal_evidence: bool = False
+    counterfactual: Optional[_OptionCounterfactual] = None
     passive_decisions: int = 0
     signatures: set[str] = field(default_factory=set)
     scenes: set[str] = field(default_factory=set)
@@ -358,6 +371,8 @@ class VerifiedNeuralAgent:
         self.behavior_visits: CounterType[str] = Counter()
         self.pending_option_choice: Optional[Tuple[str, Action, int]] = None
         self.pending_option_decision: Optional[int] = None
+        self.pending_option_causal_evidence = False
+        self.pending_option_counterfactual: Optional[_OptionCounterfactual] = None
         self.active_temporal_option: Optional[_TemporalOptionTrace] = None
         self.temporal_option_values: Dict[Tuple[str, Action, int], float] = {}
         self.temporal_option_samples: CounterType[Tuple[str, Action, int]] = Counter()
@@ -421,6 +436,8 @@ class VerifiedNeuralAgent:
         self.behavior_visits = Counter()
         self.pending_option_choice = None
         self.pending_option_decision = None
+        self.pending_option_causal_evidence = False
+        self.pending_option_counterfactual = None
         self.active_temporal_option = None
         self.temporal_option_values = {}
         self.temporal_option_samples = Counter()
@@ -446,6 +463,7 @@ class VerifiedNeuralAgent:
     def clear_archive(self) -> None:
         if getattr(self, "active_temporal_option", None) is not None:
             self._discard_temporal_option("agent_reset_or_close")
+        self._discard_pending_temporal_option("agent_reset_or_close")
         release_state = getattr(self.env, "release_state", None)
         if release_state is not None:
             for branch in getattr(self, "archive", []):
@@ -964,6 +982,32 @@ class VerifiedNeuralAgent:
         self.temporal_option_values[choice] = value
         return value
 
+    def _release_option_counterfactual(
+        self, counterfactual: _OptionCounterfactual, reason: str
+    ) -> None:
+        self._emit(
+            "temporal_option_counterfactual_released",
+            decision=self.decision_index,
+            reason=reason,
+            state_id=counterfactual.state_id,
+            action=counterfactual.action,
+            action_frames=counterfactual.duration,
+            passive_steps=counterfactual.passive_steps,
+            maximum_contrast=counterfactual.maximum_contrast,
+        )
+        release_state = getattr(self.env, "release_state", None)
+        if release_state is not None:
+            release_state(counterfactual.state)
+
+    def _discard_pending_temporal_option(self, reason: str) -> None:
+        counterfactual = getattr(self, "pending_option_counterfactual", None)
+        if counterfactual is not None:
+            self._release_option_counterfactual(counterfactual, reason)
+        self.pending_option_choice = None
+        self.pending_option_decision = None
+        self.pending_option_causal_evidence = False
+        self.pending_option_counterfactual = None
+
     def _discard_temporal_option(self, reason: str) -> None:
         trace = self.active_temporal_option
         if trace is not None:
@@ -977,8 +1021,66 @@ class VerifiedNeuralAgent:
                 passive_decisions=trace.passive_decisions,
                 unique_signatures=len(trace.signatures),
                 unique_scenes=len(trace.scenes),
+                causal_evidence=trace.causal_evidence,
+                counterfactual_steps=(
+                    0
+                    if trace.counterfactual is None
+                    else trace.counterfactual.passive_steps
+                ),
             )
+            if trace.counterfactual is not None:
+                self._release_option_counterfactual(
+                    trace.counterfactual, reason
+                )
         self.active_temporal_option = None
+
+    def _advance_option_counterfactual(
+        self,
+        trace: _TemporalOptionTrace,
+        action: Action,
+        duration: int,
+        factual_target: Frame,
+    ) -> None:
+        counterfactual = trace.counterfactual
+        if counterfactual is None:
+            return
+        prior_state = counterfactual.state
+        prior_state_id = counterfactual.state_id
+        self.env.load_state(prior_state)
+        target = self.env.step(action, duration)
+        env_step_seq = getattr(self.env, "last_step_seq", None)
+        next_state = self.env.save_state()
+        state_save_seq = getattr(self.env, "last_state_event_seq", None)
+        next_state_id = self._state_id(next_state)
+        contrast = factual_target.mean_absolute_difference(target)
+        counterfactual.passive_steps += 1
+        counterfactual.maximum_contrast = max(
+            counterfactual.maximum_contrast, contrast
+        )
+        counterfactual.state = next_state
+        counterfactual.state_id = next_state_id
+        counterfactual.frame = target
+        self._emit(
+            "temporal_option_counterfactual_advanced",
+            decision=self.decision_index + 1,
+            choice=trace.choice,
+            action=action,
+            action_frames=duration,
+            passive_steps=counterfactual.passive_steps,
+            source_state_id=prior_state_id,
+            target_state_id=next_state_id,
+            env_step_seq=env_step_seq,
+            state_save_seq=state_save_seq,
+            pixel_contrast=contrast,
+            maximum_contrast=counterfactual.maximum_contrast,
+            delayed_divergence_observed=(
+                contrast > self.config.action_equivalence_threshold
+            ),
+            **self._frame_fields(target),
+        )
+        release_state = getattr(self.env, "release_state", None)
+        if release_state is not None:
+            release_state(prior_state)
 
     def _advance_temporal_option(
         self,
@@ -986,6 +1088,9 @@ class VerifiedNeuralAgent:
         scene: str,
         passive: bool,
         grace_continuation: bool = False,
+        passive_action: Optional[Action] = None,
+        passive_duration: Optional[int] = None,
+        factual_target: Optional[Frame] = None,
     ) -> None:
         endpoint_is_new = self.behavior_visits[signature] == 0
         self.behavior_visits[signature] += 1
@@ -998,22 +1103,43 @@ class VerifiedNeuralAgent:
                     start_decision=self.decision_index + 1,
                     entry_signature=signature,
                     entry_scene=scene,
+                    causal_evidence=self.pending_option_causal_evidence,
+                    counterfactual=self.pending_option_counterfactual,
                 )
                 self.active_temporal_option = trace
                 self.pending_option_choice = None
                 self.pending_option_decision = None
+                self.pending_option_causal_evidence = False
+                self.pending_option_counterfactual = None
                 self._emit(
                     "temporal_option_started",
                     decision=self.decision_index + 1,
                     choice=trace.choice,
                     initiation_decision=trace.initiation_decision,
-                    credited=trace.choice is not None,
+                    credited=trace.choice is not None and trace.causal_evidence,
+                    causal_evidence=trace.causal_evidence,
+                    counterfactual_state_id=(
+                        None
+                        if trace.counterfactual is None
+                        else trace.counterfactual.state_id
+                    ),
                     entry_signature=signature,
                     entry_scene=scene,
                 )
             trace.passive_decisions += 1
             trace.signatures.add(signature)
             trace.scenes.add(scene)
+            if (
+                passive_action is not None
+                and passive_duration is not None
+                and factual_target is not None
+            ):
+                self._advance_option_counterfactual(
+                    trace,
+                    passive_action,
+                    passive_duration,
+                    factual_target,
+                )
             self._emit(
                 "temporal_option_advanced",
                 decision=self.decision_index + 1,
@@ -1022,13 +1148,29 @@ class VerifiedNeuralAgent:
                 unique_signatures=len(trace.signatures),
                 unique_scenes=len(trace.scenes),
                 grace_continuation=grace_continuation,
+                causal_evidence=trace.causal_evidence,
+                counterfactual_steps=(
+                    0
+                    if trace.counterfactual is None
+                    else trace.counterfactual.passive_steps
+                ),
             )
             return
         if trace is None:
+            self._discard_pending_temporal_option("no_passive_sequence")
             return
 
         trace.signatures.add(signature)
         trace.scenes.add(scene)
+        endpoint_counterfactual_contrast = 0.0
+        if trace.counterfactual is not None:
+            endpoint_counterfactual_contrast = self.frame.mean_absolute_difference(
+                trace.counterfactual.frame
+            )
+            trace.causal_evidence = (
+                endpoint_counterfactual_contrast
+                > self.config.action_equivalence_threshold
+            )
         scene_span = min(max(0, len(trace.scenes) - 1) / 3.0, 1.0)
         duration_progress = min(
             trace.passive_decisions / self.config.temporal_option_duration_scale,
@@ -1046,7 +1188,8 @@ class VerifiedNeuralAgent:
         )
         learned_value = None
         sample_count = 0
-        if trace.choice is not None:
+        credited = trace.choice is not None and trace.causal_evidence
+        if credited:
             learned_value = self._record_temporal_option_sample(trace.choice, sample)
             sample_count = self.temporal_option_samples[trace.choice]
         self._emit(
@@ -1067,8 +1210,26 @@ class VerifiedNeuralAgent:
             sample=sample,
             learned_value=learned_value,
             sample_count=sample_count,
-            credited=trace.choice is not None,
+            credited=credited,
+            causal_evidence=trace.causal_evidence,
+            counterfactual_steps=(
+                0
+                if trace.counterfactual is None
+                else trace.counterfactual.passive_steps
+            ),
+            counterfactual_maximum_contrast=(
+                0.0
+                if trace.counterfactual is None
+                else trace.counterfactual.maximum_contrast
+            ),
+            counterfactual_endpoint_contrast=(
+                endpoint_counterfactual_contrast
+            ),
         )
+        if trace.counterfactual is not None:
+            self._release_option_counterfactual(
+                trace.counterfactual, "temporal_option_completed"
+            )
         self.active_temporal_option = None
 
     def _record_frontier_trace_sample(
@@ -1407,6 +1568,34 @@ class VerifiedNeuralAgent:
             len(counterfactuals),
         )
 
+    def _delayed_option_counterfactual(
+        self,
+        candidate: Tuple[Any, ...],
+        verified: List[Tuple[Any, ...]],
+    ) -> Optional[Tuple[Any, ...]]:
+        plan = candidate[1]
+        target = candidate[3]
+        action = plan.path[0]
+        duration = plan.durations[0]
+        matched = [
+            item
+            for item in verified
+            if item[1].durations[0] == duration
+            and item[1].path[0] != action
+            and target.mean_absolute_difference(item[3])
+            <= self.config.action_equivalence_threshold
+        ]
+        if not matched:
+            return None
+        return min(
+            matched,
+            key=lambda item: (
+                item[1].path[0] != Action.NOOP,
+                target.mean_absolute_difference(item[3]),
+                item[1].path[0].value,
+            ),
+        )
+
     def decide(self) -> Decision:
         if self.frame is None:
             self.reset()
@@ -1660,12 +1849,12 @@ class VerifiedNeuralAgent:
                     **self._frame_fields(target),
                 )
             autonomous = self._autonomous_choice(self.frame, verified)
+            passive_transition = False
+            grace_continuation = False
             if autonomous is not None:
                 chosen, outcome_spread, autonomous_change = autonomous
                 self.autonomous_grace_remaining = self.config.autonomous_grace_decisions
-                self._advance_temporal_option(
-                    source_signature, current_scene, passive=True
-                )
+                passive_transition = True
                 self._emit(
                     "autonomous_dynamics_detected",
                     decision=self.decision_index + 1,
@@ -1681,16 +1870,12 @@ class VerifiedNeuralAgent:
                     if item[1].path[0] == Action.NOOP
                 ]
                 if neutral:
-                    self._advance_temporal_option(
-                        source_signature,
-                        current_scene,
-                        passive=True,
-                        grace_continuation=True,
-                    )
                     chosen = max(
                         neutral,
                         key=lambda item: (item[1].durations[0], item[0]),
                     )
+                    passive_transition = True
+                    grace_continuation = True
                     self.autonomous_grace_remaining -= 1
                     self._emit(
                         "autonomous_grace_wait",
@@ -1700,9 +1885,6 @@ class VerifiedNeuralAgent:
                     )
                 else:
                     self.autonomous_grace_remaining = 0
-                    self._advance_temporal_option(
-                        source_signature, current_scene, passive=False
-                    )
                     chosen = max(
                         verified,
                         key=lambda item: (
@@ -1716,9 +1898,6 @@ class VerifiedNeuralAgent:
                         ),
                     )
             else:
-                self._advance_temporal_option(
-                    source_signature, current_scene, passive=False
-                )
                 chosen = max(
                     verified,
                     key=lambda item: (
@@ -1741,11 +1920,27 @@ class VerifiedNeuralAgent:
                 _visual_change,
                 target_frontier_signature,
             ) = chosen
+            self._advance_temporal_option(
+                source_signature,
+                current_scene,
+                passive=passive_transition,
+                grace_continuation=grace_continuation,
+                passive_action=(plan.path[0] if passive_transition else None),
+                passive_duration=(
+                    plan.durations[0] if passive_transition else None
+                ),
+                factual_target=(target if passive_transition else None),
+            )
             (
                 option_initiation_eligible,
                 option_counterfactual_contrast,
                 option_counterfactuals,
             ) = self._option_initiation_evidence(chosen, verified)
+            delayed_counterfactual_branch = (
+                None
+                if option_initiation_eligible
+                else self._delayed_option_counterfactual(chosen, verified)
+            )
             self.env.load_state(state)
             self.frame = target
             target_signature = self._signature(target)
@@ -1787,14 +1982,54 @@ class VerifiedNeuralAgent:
                 target_frontier_signature,
             )
             if self.active_temporal_option is None:
+                delayed_counterfactual = None
+                if delayed_counterfactual_branch is not None:
+                    delayed_plan = delayed_counterfactual_branch[1]
+                    delayed_state = delayed_counterfactual_branch[2]
+                    delayed_frame = self.env.load_state(delayed_state)
+                    cloned_state = self.env.save_state()
+                    cloned_state_id = self._state_id(cloned_state)
+                    try:
+                        self.env.load_state(state)
+                    except Exception:
+                        if release_state is not None:
+                            release_state(cloned_state)
+                        raise
+                    delayed_counterfactual = _OptionCounterfactual(
+                        state=cloned_state,
+                        frame=delayed_frame,
+                        action=delayed_plan.path[0],
+                        duration=delayed_plan.durations[0],
+                        state_id=cloned_state_id,
+                    )
                 self.pending_option_choice = (
                     (source_signature, action, duration)
                     if option_initiation_eligible
+                    or delayed_counterfactual is not None
                     else None
                 )
                 self.pending_option_decision = (
-                    self.decision_index if option_initiation_eligible else None
+                    self.decision_index
+                    if self.pending_option_choice is not None
+                    else None
                 )
+                self.pending_option_causal_evidence = option_initiation_eligible
+                self.pending_option_counterfactual = delayed_counterfactual
+                if delayed_counterfactual is not None:
+                    self._emit(
+                        "temporal_option_counterfactual_armed",
+                        decision=self.decision_index,
+                        choice=self.pending_option_choice,
+                        state_id=delayed_counterfactual.state_id,
+                        counterfactual_action=delayed_counterfactual.action,
+                        counterfactual_action_frames=(
+                            delayed_counterfactual.duration
+                        ),
+                        immediate_pixel_contrast=target.mean_absolute_difference(
+                            delayed_counterfactual.frame
+                        ),
+                        **self._frame_fields(delayed_counterfactual.frame),
+                    )
             self.scene_visits[target_scene] += 1
             self.visual_stagnation_streak = (
                 0
@@ -1927,6 +2162,9 @@ class VerifiedNeuralAgent:
                     option_counterfactual_contrast
                 ),
                 temporal_option_counterfactuals=option_counterfactuals,
+                temporal_option_delayed_counterfactual_armed=(
+                    self.pending_option_counterfactual is not None
+                ),
                 action_counts=self.action_counts,
                 duration_counts=self.duration_counts,
                 scene_streak=self.scene_streak,
@@ -1945,8 +2183,21 @@ class VerifiedNeuralAgent:
         finally:
             if release_state is not None:
                 archived_states = {id(branch.state) for branch in self.archive}
+                option_states = set()
+                if self.pending_option_counterfactual is not None:
+                    option_states.add(id(self.pending_option_counterfactual.state))
+                if (
+                    self.active_temporal_option is not None
+                    and self.active_temporal_option.counterfactual is not None
+                ):
+                    option_states.add(
+                        id(self.active_temporal_option.counterfactual.state)
+                    )
                 for candidate in states:
-                    if id(candidate) not in archived_states:
+                    if (
+                        id(candidate) not in archived_states
+                        and id(candidate) not in option_states
+                    ):
                         release_state(candidate)
 
     def _restore_if_stagnant(self) -> Optional[Decision]:
@@ -2007,8 +2258,7 @@ class VerifiedNeuralAgent:
         )
         self.archive.remove(branch)
         self._discard_temporal_option("archive_restore")
-        self.pending_option_choice = None
-        self.pending_option_decision = None
+        self._discard_pending_temporal_option("archive_restore")
         restored_state_id = self._state_id(branch.state)
         self.env.load_state(branch.state)
         release_state = getattr(self.env, "release_state", None)
@@ -2047,6 +2297,8 @@ class VerifiedNeuralAgent:
         self.pending_option_decision = (
             self.decision_index if branch.option_initiation_eligible else None
         )
+        self.pending_option_causal_evidence = branch.option_initiation_eligible
+        self.pending_option_counterfactual = None
         restored_choice = (
             branch.origin_signature,
             branch.plan.path[0],

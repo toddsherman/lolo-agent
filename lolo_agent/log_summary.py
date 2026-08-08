@@ -101,6 +101,8 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
     temporal_option_samples = 0
     learned_temporal_option_values: List[float] = []
     learned_temporal_option_choices: set[Tuple[str, str, int]] = set()
+    delayed_temporal_option_samples = 0
+    temporal_option_endpoint_contrasts: List[float] = []
 
     edge_counts: Counter[Tuple[str, str, str, int]] = Counter()
     node_details: Dict[str, Dict[str, Any]] = {}
@@ -141,6 +143,14 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             if choice is not None and len(choice) == 3:
                 learned_temporal_option_choices.add(
                     (str(choice[0]), str(choice[1]), int(choice[2]))
+                )
+            if int(event.get("counterfactual_steps", 0)) > 0:
+                delayed_temporal_option_samples += 1
+        if event["event"] == "temporal_option_completed":
+            endpoint_contrast = event.get("counterfactual_endpoint_contrast")
+            if endpoint_contrast is not None:
+                temporal_option_endpoint_contrasts.append(
+                    float(endpoint_contrast)
                 )
         frame = event.get("frame") or event.get("target_frame")
         if frame:
@@ -221,6 +231,9 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                     "temporal_option_counterfactuals": event.get(
                         "temporal_option_counterfactuals", 0
                     ),
+                    "temporal_option_delayed_counterfactual_armed": event.get(
+                        "temporal_option_delayed_counterfactual_armed", False
+                    ),
                     "abstract_signature": event.get("abstract_signature"),
                     "source_behavioral_signature": event.get(
                         "source_behavioral_signature"
@@ -264,6 +277,7 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "temporal_option_initiation_eligible",
         "temporal_option_counterfactual_contrast",
         "temporal_option_counterfactuals",
+        "temporal_option_delayed_counterfactual_armed",
         "abstract_signature",
         "source_behavioral_signature",
         "target_frontier_signature",
@@ -345,6 +359,7 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             "temporal_option_discarded", 0
         ),
         "temporal_option_samples": temporal_option_samples,
+        "delayed_temporal_option_samples": delayed_temporal_option_samples,
         "temporal_option_eligible_initiations": sum(
             bool(row["temporal_option_initiation_eligible"])
             for row in decision_rows
@@ -352,6 +367,18 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "learned_temporal_option_choices": len(learned_temporal_option_choices),
         "maximum_temporal_option_value": max(
             learned_temporal_option_values, default=0.0
+        ),
+        "maximum_temporal_option_endpoint_contrast": max(
+            temporal_option_endpoint_contrasts, default=0.0
+        ),
+        "temporal_option_counterfactuals_armed": event_counts.get(
+            "temporal_option_counterfactual_armed", 0
+        ),
+        "temporal_option_counterfactual_steps": event_counts.get(
+            "temporal_option_counterfactual_advanced", 0
+        ),
+        "temporal_option_counterfactuals_released": event_counts.get(
+            "temporal_option_counterfactual_released", 0
         ),
         "persistent_frontier_updates": event_counts.get(
             "persistent_frontier_updated", 0

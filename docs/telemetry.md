@@ -41,6 +41,9 @@ Telemetry includes:
   counterfactual counts and pixel contrast, novelty/scene-span/duration/return
   score components, learned values, and traces discarded at save-state jumps
   or run boundaries;
+- delayed temporal-counterfactual reservation, every matched neutral step with
+  source and target state aliases, factual-versus-counterfactual pixel
+  contrast, endpoint contrast, and explicit state-release reasons;
 - persistent-frontier successor-novelty updates, completed samples, loop
   penalties, provisional traces discarded at save-state jumps, and the value
   used to rank each archived branch, including state/action/duration samples;

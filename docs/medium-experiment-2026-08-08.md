@@ -294,13 +294,45 @@ The deterministic players are under
 Replay verification passed for all 5,980 recorded observations. The committed
 view contains 3,409 timeline frames and the full planning view contains 16,004.
 
+## Delayed-counterfactual follow-up
+
+The evaluator now clones one same-duration alternative whose immediate pixels
+match the committed action. If passive dynamics begin on the next decision,
+the factual and cloned states receive identical neutral inputs and durations.
+Every intermediate contrast is logged, but option value is recorded only when
+the states remain visually different at the next controllable endpoint.
+Cloning keeps the original alternative in the ordinary archive, so the causal
+experiment does not perturb later recovery choices.
+
+The matched 320-decision audit recorded:
+
+- 81 delayed counterfactuals armed and 68 paired neutral steps;
+- six completed passive sequences, including the 51-decision, 28-scene story
+  transition;
+- zero endpoint differences and therefore zero delayed option samples;
+- 192 exact frames, 56 coarse scenes, 39 archive restores, and 1,686 verified
+  branches, matching the immediate-causal baseline;
+- 2,116 native save states created and all 2,116 released;
+- an unchanged frozen parameter digest.
+
+The result confirms that the observed passive sequences were timer-driven in
+this trajectory. In particular, the branch paired with the apparent
+`START@4` story initiation stayed pixel-identical for all 51 matched steps, so
+the button correctly received no value. The final story tableau again appeared
+at decision 123, and the evaluator-only Floor 1 signature remained absent.
+
+The deterministic players are under
+`experiments/lolo1-medium/extended_evaluations/cycle-000010-delayed-counterfactual-options-320/replays/`.
+Replay verification passed for all 6,427 recorded observations. The committed
+view contains 3,409 timeline frames and the full causal-planning view contains
+17,307.
+
 ## Next research target
 
-Extend the counterfactual test through delayed neutral continuation. From the
-same saved root, compare an initiating action branch with a matched alternative
-while advancing both through the suspected passive interval. Credit an option
-only when their later controllable endpoints diverge. This can discover delayed
-button effects that have no immediate pixel difference while retaining the
-causal protection demonstrated above. Directed bottlenecks and durable
-successor novelty can then value the resulting interaction-derived transition,
-still without menu, room, object, or completion labels.
+Learn progress potential from directed reachability rather than passive
+duration alone. The temporary interaction graph can identify visual regions
+that are easy to leave but not recover through tested controller transitions,
+and states whose descendants repeatedly expand the reachable frontier. Ranking
+archive branches by this asymmetric reachability and bottleneck evidence may
+preserve forward navigation without assuming that any screen is a menu, room,
+or success state.
