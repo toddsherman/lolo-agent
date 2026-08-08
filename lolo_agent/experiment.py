@@ -11,6 +11,14 @@ from typing import Any, Dict, Optional, Tuple
 
 import torch
 
+from .bootstrap import (
+    BOOTSTRAP_FIXTURES,
+    BootstrapFixture,
+    apply_bootstrap_fixture,
+    bootstrap_metadata,
+    get_bootstrap_fixture,
+    validate_bootstrap_rom,
+)
 from .ensemble_world_model import (
     EnsembleVisualDynamicsModel,
     collect_branched_sequences,
@@ -99,6 +107,8 @@ class DurableExperiment:
         rom: Path,
         config: ExperimentConfig,
         store_collection_frames: bool = True,
+        bootstrap_fixture: Optional[BootstrapFixture] = None,
+        initial_checkpoint: Optional[Path] = None,
     ) -> None:
         config.validate()
         self.experiment_dir = Path(experiment_dir).expanduser().resolve()
@@ -107,19 +117,45 @@ class DurableExperiment:
         self.rom = Path(rom).expanduser().resolve()
         self.config = config
         self.store_collection_frames = store_collection_frames
+        self.bootstrap_fixture = bootstrap_fixture
+        self.initial_checkpoint = (
+            None
+            if initial_checkpoint is None
+            else Path(initial_checkpoint).expanduser().resolve()
+        )
         self.manifest_path = self.experiment_dir / "experiment.json"
         self.state_path = self.experiment_dir / "state.json"
         self.dataset = SequenceStore(self.experiment_dir / "dataset")
         self.inputs = _input_manifest(self.host, self.core, self.rom)
+        if self.bootstrap_fixture is not None:
+            validate_bootstrap_rom(
+                self.bootstrap_fixture, self.inputs["rom"]["sha256"]
+            )
+        initial_checkpoint_metadata = (
+            None
+            if self.initial_checkpoint is None
+            else {
+                "name": self.initial_checkpoint.name,
+                "sha256": sha256_file(self.initial_checkpoint),
+            }
+        )
         self.experiment_dir.mkdir(parents=True, exist_ok=True)
         requested = {
             "version": 1,
             "config": asdict(config),
             "inputs": self.inputs,
+            "bootstrap": bootstrap_metadata(self.bootstrap_fixture),
+            "initial_checkpoint": initial_checkpoint_metadata,
         }
         if self.manifest_path.exists():
             existing = json.loads(self.manifest_path.read_text(encoding="utf-8"))
-            comparable = {key: existing[key] for key in ("version", "config", "inputs")}
+            comparable = {
+                "version": existing["version"],
+                "config": existing["config"],
+                "inputs": existing["inputs"],
+                "bootstrap": existing.get("bootstrap"),
+                "initial_checkpoint": existing.get("initial_checkpoint"),
+            }
             if comparable != json.loads(json.dumps(requested)):
                 raise ValueError("resume configuration or input hashes do not match experiment")
         else:
@@ -158,18 +194,31 @@ class DurableExperiment:
             model, horizon = load_ensemble_checkpoint(
                 self.experiment_dir / checkpoint, device=device, frozen=False
             )
-            if horizon != self.config.horizon:
-                raise ValueError("checkpoint planning horizon does not match experiment")
-            if not model.duration_conditioned:
-                raise ValueError("durable experiment checkpoint lacks duration conditioning")
-            return model
-        return EnsembleVisualDynamicsModel(
-            latent_size=self.config.latent_size,
-            action_size=self.config.action_size,
-            ensemble_size=self.config.ensemble_size,
-            duration_conditioned=True,
-            max_action_frames=max(32, max(self.config.action_durations)),
-        ).to(device)
+        elif self.initial_checkpoint is not None:
+            model, horizon = load_ensemble_checkpoint(
+                self.initial_checkpoint, device=device, frozen=False
+            )
+        else:
+            return EnsembleVisualDynamicsModel(
+                latent_size=self.config.latent_size,
+                action_size=self.config.action_size,
+                ensemble_size=self.config.ensemble_size,
+                duration_conditioned=True,
+                max_action_frames=max(32, max(self.config.action_durations)),
+            ).to(device)
+        if horizon != self.config.horizon:
+            raise ValueError("checkpoint planning horizon does not match experiment")
+        if not model.duration_conditioned:
+            raise ValueError("durable experiment checkpoint lacks duration conditioning")
+        architecture = (model.latent_size, model.action_size, model.ensemble_size)
+        expected = (
+            self.config.latent_size,
+            self.config.action_size,
+            self.config.ensemble_size,
+        )
+        if architecture != expected:
+            raise ValueError("checkpoint architecture does not match experiment")
+        return model
 
     def _train_cycle(
         self, cycle: int, model: EnsembleVisualDynamicsModel, device: torch.device
@@ -247,6 +296,7 @@ class DurableExperiment:
                     "durations": self.config.action_durations,
                     "horizon": self.config.horizon,
                 },
+                "bootstrap": bootstrap_metadata(self.bootstrap_fixture),
             },
         )
         agent: Optional[VerifiedNeuralAgent] = None
@@ -266,7 +316,15 @@ class DurableExperiment:
                     ),
                     event_logger=logger,
                 )
-                agent.reset()
+                if self.bootstrap_fixture is None:
+                    agent.reset()
+                else:
+                    initial_frame = apply_bootstrap_fixture(
+                        env,
+                        self.bootstrap_fixture,
+                        self.inputs["rom"]["sha256"],
+                    )
+                    agent.reset(initial_frame=initial_frame)
                 decisions = agent.run(self.config.evaluation_decisions)
                 agent.clear_archive()
             after = model.checkpoint_digest
@@ -311,6 +369,7 @@ class DurableExperiment:
                 "experiment": self.experiment_dir.name,
                 "inputs": self.inputs,
                 "durations": self.config.action_durations,
+                "bootstrap": bootstrap_metadata(self.bootstrap_fixture),
             },
             store_frames=self.store_collection_frames,
         )
@@ -329,6 +388,13 @@ class DurableExperiment:
                         self._save_state(phase="collecting", current_cycle=cycle, error=None)
                         if not self.dataset.has_segment(segment_id):
                             collection_logger.log("collection_cycle_started", cycle=cycle)
+                            if self.bootstrap_fixture is not None:
+                                apply_bootstrap_fixture(
+                                    collection_env,
+                                    self.bootstrap_fixture,
+                                    self.inputs["rom"]["sha256"],
+                                )
+                                collector_initialized = True
                             sequences = collect_branched_sequences(
                                 collection_env,
                                 roots=self.config.roots_per_cycle,
@@ -427,6 +493,17 @@ def main() -> None:
     parser.add_argument("--ensemble-size", type=int, default=3)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--no-collection-frame-images", action="store_true")
+    parser.add_argument(
+        "--bootstrap",
+        choices=("none", *sorted(BOOTSTRAP_FIXTURES)),
+        default="none",
+        help="evaluator-owned initialization applied before collection and evaluation",
+    )
+    parser.add_argument(
+        "--initial-checkpoint",
+        type=Path,
+        help="optional compatible checkpoint used before the first training cycle",
+    )
     args = parser.parse_args()
     config = ExperimentConfig(
         roots_per_cycle=args.roots,
@@ -450,6 +527,10 @@ def main() -> None:
         args.rom,
         config,
         store_collection_frames=not args.no_collection_frame_images,
+        bootstrap_fixture=(
+            None if args.bootstrap == "none" else get_bootstrap_fixture(args.bootstrap)
+        ),
+        initial_checkpoint=args.initial_checkpoint,
     )
     print(json.dumps(experiment.run(args.cycles), indent=2, sort_keys=True))
 

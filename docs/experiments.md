@@ -19,10 +19,12 @@ game rule enters the loop.
 source .venv/bin/activate
 
 lolo-experiment \
-  --experiment-dir experiments/lolo1-main \
+  --experiment-dir experiments/lolo1-puzzle \
   --host build/lolo-libretro-host \
   --rom "Adventures of Lolo.nes" \
   --core "$HOME/Library/Application Support/RetroArch/cores/nestopia_libretro.dylib" \
+  --bootstrap lolo1-first-room \
+  --initial-checkpoint experiments/lolo1-medium/checkpoints/cycle-000010.pt \
   --cycles 10 \
   --roots 20 \
   --branches 3 \
@@ -35,7 +37,15 @@ lolo-experiment \
 
 `--cycles` means additional completed cycles. Repeating the command resumes the
 same experiment and completes ten more. Configuration and ROM/core/host hashes
-must match the immutable experiment manifest.
+must match the immutable experiment manifest. When an initial checkpoint is
+used, repeat that argument on resume; its file hash is also frozen in the
+manifest.
+
+The optional first-room bootstrap is applied before each collection cycle and
+each frozen evaluation. Its title/story inputs remain evaluator telemetry and
+are never added as training transitions. Collection sequences begin at the
+verified endpoint pixels, and temporary agent memory starts empty there.
+Omitting `--bootstrap` preserves strict power-on collection and evaluation.
 
 ## Crash recovery
 

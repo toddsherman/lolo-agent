@@ -356,12 +356,36 @@ planning view contains 2,372.
 Artifacts are under
 `experiments/lolo1-medium/extended_evaluations/cycle-000010-first-room-bootstrap-smoke-20/`.
 
+The subsequent 320-decision audit confirmed that initialization was no longer
+the limiting factor. It recorded 1,668 verified branches, 233 exact telemetry
+frames, nine coarse scenes, 42 archive restorations, and 1,997 save states both
+created and released. Replay verification passed for all 6,082 observations.
+The committed trajectory contains 4,367 frames; the full planning trace
+contains 17,353.
+
+It did not solve Floor 1. Visual inspection showed the initial upward move
+entering the left enemy's path, repeated fade/restart sequences, and the life
+display decreasing from five to three. The planner treated those changing
+pixels as novelty and selected 163 neutral waits, so the result exposes a need
+to learn temporary value for preserving controllability and avoiding
+action-caused visual collapse without supplying a death label.
+
+The durable experiment runner now applies the same opt-in bootstrap before
+collection and frozen evaluation. A new `lolo1-puzzle` experiment initialized
+from cycle 10 collected 60 sequences and 61 unique frames whose first source
+was the exact Floor 1 endpoint; bootstrap transitions were telemetry-only. One
+training epoch reduced batch loss from `0.1771` to `0.1453`, but held-out
+horizon-three pixel L1 worsened from `0.1307` to `0.1377`. Its 80-decision
+frozen audit still chose 49 neutral waits and did not solve the room. More
+cycles alone are therefore not yet evidence of useful progress.
+
 ## Next research target
 
-Run longer first-room evaluations and learn progress potential from directed
-reachability rather than passive duration alone. The temporary interaction
-graph can identify visual regions that are easy to leave but not recover
-through tested controller transitions, and states whose descendants repeatedly
-expand the reachable frontier. Ranking archive branches by this asymmetric
-reachability and bottleneck evidence may preserve forward puzzle exploration
-without assuming object identity, room completion, or success.
+Learn progress potential and controllability survival from directed
+reachability rather than passive duration or raw pixel novelty alone. The
+temporary interaction graph can identify visual regions that are easy to leave
+but not recover through tested controller transitions, action choices followed
+by loss of control and a visual restart, and states whose descendants repeatedly
+expand the reachable frontier. Ranking branches by this evidence may avoid
+repeated lethal exploration without assuming object identity, death, room
+completion, or success.

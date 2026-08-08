@@ -7,6 +7,7 @@ from pathlib import Path
 from .bootstrap import (
     BOOTSTRAP_FIXTURES,
     apply_bootstrap_fixture,
+    bootstrap_metadata,
     get_bootstrap_fixture,
 )
 from .ensemble_world_model import load_ensemble_checkpoint
@@ -75,21 +76,7 @@ def main() -> None:
                 "parameter_sha256": before,
             },
         },
-        "bootstrap": (
-            None
-            if bootstrap_fixture is None
-            else {
-                "fixture": bootstrap_fixture.name,
-                "steps": len(bootstrap_fixture.steps),
-                "total_frames": bootstrap_fixture.total_frames,
-                "expected_frame_sha256": (
-                    bootstrap_fixture.expected_frame_sha256
-                ),
-                "expected_scene_signature": (
-                    bootstrap_fixture.expected_scene_signature
-                ),
-            }
-        ),
+        "bootstrap": bootstrap_metadata(bootstrap_fixture),
     }
     logger = RunLogger(
         args.log_root,

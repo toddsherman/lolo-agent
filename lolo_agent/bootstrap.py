@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from .environment import Action
 from .pixels import Frame, signature_key
@@ -59,11 +59,22 @@ def get_bootstrap_fixture(name: str) -> BootstrapFixture:
         raise ValueError(f"unknown bootstrap fixture {name!r}; choose from {choices}") from exc
 
 
-def apply_bootstrap_fixture(
-    env: LoggedEnvironment,
-    fixture: BootstrapFixture,
-    rom_sha256: Optional[str] = None,
-) -> Frame:
+def bootstrap_metadata(fixture: Optional[BootstrapFixture]) -> Optional[Dict[str, Any]]:
+    if fixture is None:
+        return None
+    return {
+        "fixture": fixture.name,
+        "steps": len(fixture.steps),
+        "total_frames": fixture.total_frames,
+        "expected_rom_sha256": fixture.expected_rom_sha256,
+        "expected_frame_sha256": fixture.expected_frame_sha256,
+        "expected_scene_signature": fixture.expected_scene_signature,
+    }
+
+
+def validate_bootstrap_rom(
+    fixture: BootstrapFixture, rom_sha256: Optional[str]
+) -> None:
     if (
         fixture.expected_rom_sha256 is not None
         and rom_sha256 != fixture.expected_rom_sha256
@@ -71,6 +82,14 @@ def apply_bootstrap_fixture(
         raise ValueError(
             f"bootstrap fixture {fixture.name!r} does not match the supplied ROM"
         )
+
+
+def apply_bootstrap_fixture(
+    env: LoggedEnvironment,
+    fixture: BootstrapFixture,
+    rom_sha256: Optional[str] = None,
+) -> Frame:
+    validate_bootstrap_rom(fixture, rom_sha256)
     if any(step.frames <= 0 for step in fixture.steps):
         raise ValueError("bootstrap action durations must be positive")
 
