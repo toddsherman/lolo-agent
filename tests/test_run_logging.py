@@ -73,6 +73,9 @@ class RunLoggingTests(unittest.TestCase):
             self.assertGreaterEqual(summary["behavioral_abstraction_clusters"], 1)
             self.assertEqual(summary["behavioral_abstraction_deferrals"], 0)
             self.assertEqual(summary["behavior_probe_selections"], 1)
+            self.assertEqual(summary["temporal_options_started"], 0)
+            self.assertEqual(summary["temporal_option_samples"], 0)
+            self.assertIn("temporal_option_eligible_initiations", summary)
             self.assertEqual(
                 summary["behavior_probe_selection_reasons"],
                 {"coverage_rotation": 1},
@@ -86,6 +89,18 @@ class RunLoggingTests(unittest.TestCase):
             self.assertNotEqual(rows[0]["abstract_signature"], "")
             self.assertNotEqual(rows[0]["source_behavioral_signature"], "")
             self.assertNotEqual(rows[0]["target_frontier_signature"], "")
+            self.assertNotEqual(rows[0]["temporal_option_value"], "")
+            self.assertNotEqual(rows[0]["temporal_option_is_known"], "")
+            self.assertNotEqual(rows[0]["active_temporal_option"], "")
+            self.assertNotEqual(
+                rows[0]["temporal_option_initiation_eligible"], ""
+            )
+            self.assertNotEqual(
+                rows[0]["temporal_option_counterfactual_contrast"], ""
+            )
+            self.assertNotEqual(
+                rows[0]["temporal_option_counterfactuals"], ""
+            )
 
     def test_frames_are_content_addressed_and_deduplicated(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

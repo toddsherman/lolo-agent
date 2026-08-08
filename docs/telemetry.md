@@ -36,6 +36,11 @@ Telemetry includes:
 - delayed visual-return detections, loop length, prior visit, every credited
   decision and scene/action/duration choice, plus unavailable recoveries;
 - autonomous-motion detections and neutral grace waits across short pauses;
+- temporal-option starts, every passive continuation, controllable endpoints,
+  credited initiating state/action/duration choices, same-duration
+  counterfactual counts and pixel contrast, novelty/scene-span/duration/return
+  score components, learned values, and traces discarded at save-state jumps
+  or run boundaries;
 - persistent-frontier successor-novelty updates, completed samples, loop
   penalties, provisional traces discarded at save-state jumps, and the value
   used to rank each archived branch, including state/action/duration samples;
@@ -61,6 +66,10 @@ returns and recoveries, branches, states, unique frames, and unique coarse
 scenes. The decision CSV exposes both the restore reason and whether a delayed
 return recovery was pending after each committed emulator action. It also
 records the successor-novelty reward and learned persistent-frontier value.
+It also exposes the learned temporal-option value used for each committed
+choice, whether that estimate already had a sample, and whether a passive
+option trace remained active after the decision. Summary counts distinguish
+started, completed, discarded, and credited option samples.
 
 ## Attempts and level labels
 

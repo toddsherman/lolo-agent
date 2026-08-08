@@ -98,6 +98,9 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
     behavior_clusters: set[str] = set()
     behavior_probe_reasons: Counter[str] = Counter()
     behavior_probe_controls: Counter[str] = Counter()
+    temporal_option_samples = 0
+    learned_temporal_option_values: List[float] = []
+    learned_temporal_option_choices: set[Tuple[str, str, int]] = set()
 
     edge_counts: Counter[Tuple[str, str, str, int]] = Counter()
     node_details: Dict[str, Dict[str, Any]] = {}
@@ -127,6 +130,18 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             selected_control = event.get("selected_control")
             if selected_control is not None:
                 behavior_probe_controls[str(selected_control)] += 1
+        elif event["event"] == "temporal_option_completed" and event.get(
+            "credited"
+        ):
+            temporal_option_samples += 1
+            learned_value = event.get("learned_value")
+            if learned_value is not None:
+                learned_temporal_option_values.append(float(learned_value))
+            choice = event.get("choice")
+            if choice is not None and len(choice) == 3:
+                learned_temporal_option_choices.add(
+                    (str(choice[0]), str(choice[1]), int(choice[2]))
+                )
         frame = event.get("frame") or event.get("target_frame")
         if frame:
             frames.add(frame)
@@ -190,6 +205,22 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                     "committed_choice_frontier_value": event.get(
                         "committed_choice_frontier_value"
                     ),
+                    "temporal_option_value": event.get("temporal_option_value"),
+                    "temporal_option_is_known": event.get(
+                        "temporal_option_is_known", False
+                    ),
+                    "active_temporal_option": event.get(
+                        "active_temporal_option", False
+                    ),
+                    "temporal_option_initiation_eligible": event.get(
+                        "temporal_option_initiation_eligible", False
+                    ),
+                    "temporal_option_counterfactual_contrast": event.get(
+                        "temporal_option_counterfactual_contrast"
+                    ),
+                    "temporal_option_counterfactuals": event.get(
+                        "temporal_option_counterfactuals", 0
+                    ),
                     "abstract_signature": event.get("abstract_signature"),
                     "source_behavioral_signature": event.get(
                         "source_behavioral_signature"
@@ -227,6 +258,12 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "persistent_frontier_reward",
         "persistent_frontier_value",
         "committed_choice_frontier_value",
+        "temporal_option_value",
+        "temporal_option_is_known",
+        "active_temporal_option",
+        "temporal_option_initiation_eligible",
+        "temporal_option_counterfactual_contrast",
+        "temporal_option_counterfactuals",
         "abstract_signature",
         "source_behavioral_signature",
         "target_frontier_signature",
@@ -298,6 +335,24 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             "autonomous_dynamics_detected", 0
         ),
         "autonomous_grace_waits": event_counts.get("autonomous_grace_wait", 0),
+        "temporal_options_started": event_counts.get(
+            "temporal_option_started", 0
+        ),
+        "temporal_options_completed": event_counts.get(
+            "temporal_option_completed", 0
+        ),
+        "temporal_options_discarded": event_counts.get(
+            "temporal_option_discarded", 0
+        ),
+        "temporal_option_samples": temporal_option_samples,
+        "temporal_option_eligible_initiations": sum(
+            bool(row["temporal_option_initiation_eligible"])
+            for row in decision_rows
+        ),
+        "learned_temporal_option_choices": len(learned_temporal_option_choices),
+        "maximum_temporal_option_value": max(
+            learned_temporal_option_values, default=0.0
+        ),
         "persistent_frontier_updates": event_counts.get(
             "persistent_frontier_updated", 0
         ),

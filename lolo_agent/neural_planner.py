@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Counter as CounterType, Dict, List, Optional, Tuple, Union
 
 import torch
@@ -64,6 +64,12 @@ class NeuralPlanningConfig:
     behavioral_abstraction_rmse_threshold: float = 0.02
     behavioral_abstraction_min_shared_probes: int = 2
     behavioral_probe_count: int = 2
+    temporal_option_score_weight: float = 0.5
+    temporal_option_novelty_weight: float = 1.0
+    temporal_option_scene_span_weight: float = 0.5
+    temporal_option_duration_weight: float = 0.25
+    temporal_option_duration_scale: int = 16
+    temporal_option_return_penalty: float = 2.0
 
 
 @dataclass(frozen=True)
@@ -93,6 +99,9 @@ class _ArchivedBranch:
     created: int
     origin_signature: str = ""
     frontier_signature: str = ""
+    option_initiation_eligible: bool = False
+    option_counterfactual_contrast: float = 0.0
+    option_counterfactuals: int = 0
 
 
 @dataclass(frozen=True)
@@ -138,6 +147,22 @@ class _BehaviorProbeSelection:
     reason: str
     selected_control: Optional[Action]
     hypothesis_separation: Optional[float] = None
+
+
+@dataclass
+class _TemporalOptionTrace:
+    choice: Optional[Tuple[str, Action, int]]
+    initiation_decision: Optional[int]
+    start_decision: int
+    entry_signature: str
+    entry_scene: str
+    passive_decisions: int = 0
+    signatures: set[str] = field(default_factory=set)
+    scenes: set[str] = field(default_factory=set)
+
+    def __post_init__(self) -> None:
+        self.signatures = {self.entry_signature}
+        self.scenes = {self.entry_scene}
 
 
 class NeuralRolloutPlanner:
@@ -297,6 +322,8 @@ class VerifiedNeuralAgent:
             raise ValueError("behavioral abstraction requires a shared probe")
         if self.config.behavioral_probe_count <= 0:
             raise ValueError("behavioral probe count must be positive")
+        if self.config.temporal_option_duration_scale <= 0:
+            raise ValueError("temporal option duration scale must be positive")
         self.model.freeze()
         self.planner = NeuralRolloutPlanner(model, device, self.config)
         self.novelty = VisualNovelty()
@@ -328,6 +355,12 @@ class VerifiedNeuralAgent:
         self.behavior_cluster_serial = 0
         self.provisional_state_serial = 0
         self.current_frontier_signature = ""
+        self.behavior_visits: CounterType[str] = Counter()
+        self.pending_option_choice: Optional[Tuple[str, Action, int]] = None
+        self.pending_option_decision: Optional[int] = None
+        self.active_temporal_option: Optional[_TemporalOptionTrace] = None
+        self.temporal_option_values: Dict[Tuple[str, Action, int], float] = {}
+        self.temporal_option_samples: CounterType[Tuple[str, Action, int]] = Counter()
         self.current_scene: Optional[str] = None
         self.scene_streak = 0
         self.visual_stagnation_streak = 0
@@ -385,6 +418,12 @@ class VerifiedNeuralAgent:
         self._abstract_signature(self.frame)
         initial_signature = self._new_provisional_signature()
         self.current_frontier_signature = initial_signature
+        self.behavior_visits = Counter()
+        self.pending_option_choice = None
+        self.pending_option_decision = None
+        self.active_temporal_option = None
+        self.temporal_option_values = {}
+        self.temporal_option_samples = Counter()
         self.frontier_values = {}
         self.frontier_samples = Counter()
         self.frontier_traces = [_FrontierTrace(0, initial_signature)]
@@ -405,6 +444,8 @@ class VerifiedNeuralAgent:
         return self.frame
 
     def clear_archive(self) -> None:
+        if getattr(self, "active_temporal_option", None) is not None:
+            self._discard_temporal_option("agent_reset_or_close")
         release_state = getattr(self.env, "release_state", None)
         if release_state is not None:
             for branch in getattr(self, "archive", []):
@@ -642,6 +683,42 @@ class VerifiedNeuralAgent:
             if branch.origin_signature == source:
                 branch.origin_signature = target
                 migrated_origins += 1
+        migrated_temporal_choices = 0
+        for choice in list(self.temporal_option_samples):
+            signature, action, duration = choice
+            if signature != source:
+                continue
+            target_choice = (target, action, duration)
+            source_count = self.temporal_option_samples.pop(choice)
+            target_count = self.temporal_option_samples.get(target_choice, 0)
+            source_value = self.temporal_option_values.pop(choice, 0.0)
+            target_value = self.temporal_option_values.get(target_choice, 0.0)
+            combined_count = source_count + target_count
+            self.temporal_option_samples[target_choice] = combined_count
+            self.temporal_option_values[target_choice] = (
+                source_count * source_value + target_count * target_value
+            ) / combined_count
+            migrated_temporal_choices += 1
+        if self.pending_option_choice is not None:
+            signature, action, duration = self.pending_option_choice
+            if signature == source:
+                self.pending_option_choice = (target, action, duration)
+        active_trace = self.active_temporal_option
+        if active_trace is not None:
+            if active_trace.choice is not None and active_trace.choice[0] == source:
+                active_trace.choice = (
+                    target,
+                    active_trace.choice[1],
+                    active_trace.choice[2],
+                )
+            if active_trace.entry_signature == source:
+                active_trace.entry_signature = target
+            if source in active_trace.signatures:
+                active_trace.signatures.discard(source)
+                active_trace.signatures.add(target)
+        behavior_visits = self.behavior_visits.pop(source, 0)
+        if behavior_visits:
+            self.behavior_visits[target] += behavior_visits
         self._emit(
             "frontier_signature_migrated",
             decision=self.decision_index + 1,
@@ -650,6 +727,7 @@ class VerifiedNeuralAgent:
             migrated_choice_values=migrated_choices,
             migrated_traces=migrated_traces,
             migrated_archive_origins=migrated_origins,
+            migrated_temporal_choice_values=migrated_temporal_choices,
         )
 
     @torch.no_grad()
@@ -868,6 +946,131 @@ class VerifiedNeuralAgent:
             self.frontier_choice_samples[choice] or active
         )
 
+    def _temporal_option_estimate(
+        self, signature: str, action: Action, duration: int
+    ) -> Tuple[float, bool]:
+        choice = (signature, action, duration)
+        return self.temporal_option_values.get(choice, 0.0), bool(
+            self.temporal_option_samples[choice]
+        )
+
+    def _record_temporal_option_sample(
+        self, choice: Tuple[str, Action, int], sample: float
+    ) -> float:
+        count = self.temporal_option_samples[choice] + 1
+        previous = self.temporal_option_values.get(choice, 0.0)
+        value = previous + (sample - previous) / count
+        self.temporal_option_samples[choice] = count
+        self.temporal_option_values[choice] = value
+        return value
+
+    def _discard_temporal_option(self, reason: str) -> None:
+        trace = self.active_temporal_option
+        if trace is not None:
+            self._emit(
+                "temporal_option_discarded",
+                decision=self.decision_index,
+                reason=reason,
+                choice=trace.choice,
+                initiation_decision=trace.initiation_decision,
+                start_decision=trace.start_decision,
+                passive_decisions=trace.passive_decisions,
+                unique_signatures=len(trace.signatures),
+                unique_scenes=len(trace.scenes),
+            )
+        self.active_temporal_option = None
+
+    def _advance_temporal_option(
+        self,
+        signature: str,
+        scene: str,
+        passive: bool,
+        grace_continuation: bool = False,
+    ) -> None:
+        endpoint_is_new = self.behavior_visits[signature] == 0
+        self.behavior_visits[signature] += 1
+        trace = self.active_temporal_option
+        if passive:
+            if trace is None:
+                trace = _TemporalOptionTrace(
+                    choice=self.pending_option_choice,
+                    initiation_decision=self.pending_option_decision,
+                    start_decision=self.decision_index + 1,
+                    entry_signature=signature,
+                    entry_scene=scene,
+                )
+                self.active_temporal_option = trace
+                self.pending_option_choice = None
+                self.pending_option_decision = None
+                self._emit(
+                    "temporal_option_started",
+                    decision=self.decision_index + 1,
+                    choice=trace.choice,
+                    initiation_decision=trace.initiation_decision,
+                    credited=trace.choice is not None,
+                    entry_signature=signature,
+                    entry_scene=scene,
+                )
+            trace.passive_decisions += 1
+            trace.signatures.add(signature)
+            trace.scenes.add(scene)
+            self._emit(
+                "temporal_option_advanced",
+                decision=self.decision_index + 1,
+                choice=trace.choice,
+                passive_decisions=trace.passive_decisions,
+                unique_signatures=len(trace.signatures),
+                unique_scenes=len(trace.scenes),
+                grace_continuation=grace_continuation,
+            )
+            return
+        if trace is None:
+            return
+
+        trace.signatures.add(signature)
+        trace.scenes.add(scene)
+        scene_span = min(max(0, len(trace.scenes) - 1) / 3.0, 1.0)
+        duration_progress = min(
+            trace.passive_decisions / self.config.temporal_option_duration_scale,
+            1.0,
+        )
+        returned_to_source = bool(
+            trace.choice is not None and signature == trace.choice[0]
+        )
+        sample = (
+            self.config.temporal_option_novelty_weight * float(endpoint_is_new)
+            + self.config.temporal_option_scene_span_weight * scene_span
+            + self.config.temporal_option_duration_weight * duration_progress
+            - self.config.temporal_option_return_penalty
+            * float(returned_to_source)
+        )
+        learned_value = None
+        sample_count = 0
+        if trace.choice is not None:
+            learned_value = self._record_temporal_option_sample(trace.choice, sample)
+            sample_count = self.temporal_option_samples[trace.choice]
+        self._emit(
+            "temporal_option_completed",
+            decision=self.decision_index + 1,
+            choice=trace.choice,
+            initiation_decision=trace.initiation_decision,
+            start_decision=trace.start_decision,
+            endpoint_signature=signature,
+            endpoint_scene=scene,
+            endpoint_is_new=endpoint_is_new,
+            passive_decisions=trace.passive_decisions,
+            unique_signatures=len(trace.signatures),
+            unique_scenes=len(trace.scenes),
+            scene_span=scene_span,
+            duration_progress=duration_progress,
+            returned_to_source=returned_to_source,
+            sample=sample,
+            learned_value=learned_value,
+            sample_count=sample_count,
+            credited=trace.choice is not None,
+        )
+        self.active_temporal_option = None
+
     def _record_frontier_trace_sample(
         self, trace: _FrontierTrace, sample: float
     ) -> float:
@@ -1010,9 +1213,18 @@ class VerifiedNeuralAgent:
             branch.plan.path[0],
             branch.plan.durations[0],
         )
+        option_value, _option_is_known = self._temporal_option_estimate(
+            branch.origin_signature,
+            branch.plan.path[0],
+            branch.plan.durations[0],
+        )
+        option_bonus = self.config.temporal_option_score_weight * option_value
         if choice_is_known:
-            return choice_value
-        return max(own_value, self.config.frontier_origin_weight * origin_value)
+            return choice_value + option_bonus
+        return (
+            max(own_value, self.config.frontier_origin_weight * origin_value)
+            + option_bonus
+        )
 
     def _record_delayed_return(
         self,
@@ -1165,6 +1377,35 @@ class VerifiedNeuralAgent:
             return None
         _duration, preferred, spread, change = max(qualified, key=lambda item: item[0])
         return preferred, spread, change
+
+    def _option_initiation_evidence(
+        self,
+        candidate: Tuple[Any, ...],
+        verified: List[Tuple[Any, ...]],
+    ) -> Tuple[bool, float, int]:
+        plan = candidate[1]
+        target = candidate[3]
+        action = plan.path[0]
+        duration = plan.durations[0]
+        counterfactuals = [
+            item
+            for item in verified
+            if item[1].durations[0] == duration
+            and item[1].path[0] != action
+        ]
+        contrast = max(
+            (
+                target.mean_absolute_difference(item[3])
+                for item in counterfactuals
+            ),
+            default=0.0,
+        )
+        return (
+            bool(counterfactuals)
+            and contrast > self.config.action_equivalence_threshold,
+            contrast,
+            len(counterfactuals),
+        )
 
     def decide(self) -> Decision:
         if self.frame is None:
@@ -1349,6 +1590,11 @@ class VerifiedNeuralAgent:
                         source_signature, plan.path[0], duration
                     )
                 )
+                temporal_option_value, temporal_option_is_known = (
+                    self._temporal_option_estimate(
+                        source_signature, plan.path[0], duration
+                    )
+                )
                 if choice_frontier_is_known:
                     persistent_frontier_value = choice_frontier_value
                 score = (
@@ -1358,6 +1604,8 @@ class VerifiedNeuralAgent:
                     + self.config.prediction_error_weight * error
                     + self.config.actual_change_weight * visual_change
                     + self.config.frontier_score_weight * persistent_frontier_value
+                    + self.config.temporal_option_score_weight
+                    * temporal_option_value
                     - self._action_penalty(plan.path[0], duration)
                 )
                 verified.append(
@@ -1397,6 +1645,12 @@ class VerifiedNeuralAgent:
                     persistent_frontier_value=persistent_frontier_value,
                     choice_frontier_value=choice_frontier_value,
                     choice_frontier_is_known=choice_frontier_is_known,
+                    temporal_option_value=temporal_option_value,
+                    temporal_option_is_known=temporal_option_is_known,
+                    temporal_option_bonus=(
+                        self.config.temporal_option_score_weight
+                        * temporal_option_value
+                    ),
                     abstract_signature=target_visual_cluster,
                     source_behavioral_signature=source_signature,
                     target_frontier_signature=target_frontier_signature,
@@ -1409,6 +1663,9 @@ class VerifiedNeuralAgent:
             if autonomous is not None:
                 chosen, outcome_spread, autonomous_change = autonomous
                 self.autonomous_grace_remaining = self.config.autonomous_grace_decisions
+                self._advance_temporal_option(
+                    source_signature, current_scene, passive=True
+                )
                 self._emit(
                     "autonomous_dynamics_detected",
                     decision=self.decision_index + 1,
@@ -1424,6 +1681,12 @@ class VerifiedNeuralAgent:
                     if item[1].path[0] == Action.NOOP
                 ]
                 if neutral:
+                    self._advance_temporal_option(
+                        source_signature,
+                        current_scene,
+                        passive=True,
+                        grace_continuation=True,
+                    )
                     chosen = max(
                         neutral,
                         key=lambda item: (item[1].durations[0], item[0]),
@@ -1437,6 +1700,9 @@ class VerifiedNeuralAgent:
                     )
                 else:
                     self.autonomous_grace_remaining = 0
+                    self._advance_temporal_option(
+                        source_signature, current_scene, passive=False
+                    )
                     chosen = max(
                         verified,
                         key=lambda item: (
@@ -1450,6 +1716,9 @@ class VerifiedNeuralAgent:
                         ),
                     )
             else:
+                self._advance_temporal_option(
+                    source_signature, current_scene, passive=False
+                )
                 chosen = max(
                     verified,
                     key=lambda item: (
@@ -1472,6 +1741,11 @@ class VerifiedNeuralAgent:
                 _visual_change,
                 target_frontier_signature,
             ) = chosen
+            (
+                option_initiation_eligible,
+                option_counterfactual_contrast,
+                option_counterfactuals,
+            ) = self._option_initiation_evidence(chosen, verified)
             self.env.load_state(state)
             self.frame = target
             target_signature = self._signature(target)
@@ -1512,6 +1786,15 @@ class VerifiedNeuralAgent:
                 target_scene,
                 target_frontier_signature,
             )
+            if self.active_temporal_option is None:
+                self.pending_option_choice = (
+                    (source_signature, action, duration)
+                    if option_initiation_eligible
+                    else None
+                )
+                self.pending_option_decision = (
+                    self.decision_index if option_initiation_eligible else None
+                )
             self.scene_visits[target_scene] += 1
             self.visual_stagnation_streak = (
                 0
@@ -1543,6 +1826,19 @@ class VerifiedNeuralAgent:
                     for branch in self.archive
                 ):
                     continue
+                (
+                    alternative_option_eligible,
+                    alternative_option_contrast,
+                    alternative_option_counterfactuals,
+                ) = self._option_initiation_evidence(
+                    (
+                        alternative_score,
+                        alternative_plan,
+                        alternative_state,
+                        alternative_frame,
+                    ),
+                    verified,
+                )
                 self.archive.append(
                     _ArchivedBranch(
                         alternative_state,
@@ -1553,6 +1849,9 @@ class VerifiedNeuralAgent:
                         self.decision_index,
                         source_signature,
                         alternative_frontier_signature,
+                        alternative_option_eligible,
+                        alternative_option_contrast,
+                        alternative_option_counterfactuals,
                     )
                 )
                 added += 1
@@ -1570,6 +1869,15 @@ class VerifiedNeuralAgent:
                     origin_signature=source_signature,
                     frontier_signature=alternative_frontier_signature,
                     persistent_frontier_value=archive_frontier_value,
+                    temporal_option_initiation_eligible=(
+                        alternative_option_eligible
+                    ),
+                    temporal_option_counterfactual_contrast=(
+                        alternative_option_contrast
+                    ),
+                    temporal_option_counterfactuals=(
+                        alternative_option_counterfactuals
+                    ),
                     **self._frame_fields(alternative_frame),
                 )
             self._prune_archive()
@@ -1603,6 +1911,22 @@ class VerifiedNeuralAgent:
                 committed_choice_frontier_value=self._choice_frontier_estimate(
                     source_signature, action, duration
                 )[0],
+                temporal_option_value=self._temporal_option_estimate(
+                    source_signature, action, duration
+                )[0],
+                temporal_option_is_known=self._temporal_option_estimate(
+                    source_signature, action, duration
+                )[1],
+                active_temporal_option=(
+                    self.active_temporal_option is not None
+                ),
+                temporal_option_initiation_eligible=(
+                    option_initiation_eligible
+                ),
+                temporal_option_counterfactual_contrast=(
+                    option_counterfactual_contrast
+                ),
+                temporal_option_counterfactuals=option_counterfactuals,
                 action_counts=self.action_counts,
                 duration_counts=self.duration_counts,
                 scene_streak=self.scene_streak,
@@ -1682,6 +2006,9 @@ class VerifiedNeuralAgent:
             ),
         )
         self.archive.remove(branch)
+        self._discard_temporal_option("archive_restore")
+        self.pending_option_choice = None
+        self.pending_option_decision = None
         restored_state_id = self._state_id(branch.state)
         self.env.load_state(branch.state)
         release_state = getattr(self.env, "release_state", None)
@@ -1693,6 +2020,7 @@ class VerifiedNeuralAgent:
         self.current_scene = branch.scene
         self.scene_streak = 1
         self.visual_stagnation_streak = 0
+        self.autonomous_grace_remaining = 0
         self.decision_index += 1
         self.visual_last_visit[self._signature(branch.frame)] = self.decision_index
         selected_frontier_value = self._archive_frontier_score(branch)
@@ -1707,6 +2035,26 @@ class VerifiedNeuralAgent:
         )
         self.delayed_return_recovery = False
         self.delayed_return_loop_start = None
+        self.pending_option_choice = (
+            (
+                branch.origin_signature,
+                branch.plan.path[0],
+                branch.plan.durations[0],
+            )
+            if branch.option_initiation_eligible
+            else None
+        )
+        self.pending_option_decision = (
+            self.decision_index if branch.option_initiation_eligible else None
+        )
+        restored_choice = (
+            branch.origin_signature,
+            branch.plan.path[0],
+            branch.plan.durations[0],
+        )
+        restored_option_value, restored_option_known = self._temporal_option_estimate(
+            *restored_choice
+        )
         self._emit(
             "archive_branch_restored",
             decision=self.decision_index,
@@ -1720,6 +2068,15 @@ class VerifiedNeuralAgent:
             durations=branch.plan.durations,
             score=branch.score,
             persistent_frontier_value=selected_frontier_value,
+            temporal_option_value=restored_option_value,
+            temporal_option_is_known=restored_option_known,
+            temporal_option_initiation_eligible=(
+                branch.option_initiation_eligible
+            ),
+            temporal_option_counterfactual_contrast=(
+                branch.option_counterfactual_contrast
+            ),
+            temporal_option_counterfactuals=branch.option_counterfactuals,
             abstract_signature=restored_visual_cluster,
             target_frontier_signature=restored_frontier_signature,
             archive_size=len(self.archive),
@@ -1740,6 +2097,16 @@ class VerifiedNeuralAgent:
             archive_branches_added=0,
             archive_size=len(self.archive),
             persistent_frontier_value=selected_frontier_value,
+            temporal_option_value=restored_option_value,
+            temporal_option_is_known=restored_option_known,
+            active_temporal_option=False,
+            temporal_option_initiation_eligible=(
+                branch.option_initiation_eligible
+            ),
+            temporal_option_counterfactual_contrast=(
+                branch.option_counterfactual_contrast
+            ),
+            temporal_option_counterfactuals=branch.option_counterfactuals,
             abstract_signature=restored_visual_cluster,
             target_frontier_signature=restored_frontier_signature,
             action_counts=self.action_counts,

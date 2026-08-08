@@ -712,6 +712,97 @@ class EnsemblePlannerTests(unittest.TestCase):
         agent.frontier_choice_samples[choice] = 1
 
         self.assertEqual(agent._archive_frontier_score(branch), -2.0)
+        agent.temporal_option_values[choice] = 2.0
+        agent.temporal_option_samples[choice] = 1
+        self.assertEqual(agent._archive_frontier_score(branch), -1.0)
+
+    def test_temporal_option_credits_an_initiating_action_through_passive_dynamics(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        agent = VerifiedNeuralAgent(
+            MockPuzzleEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(actions=(Action.START,), planning_depth=1),
+        )
+        before = model.checkpoint_digest
+        agent.reset()
+        choice = ("source", Action.START, 4)
+        agent.pending_option_choice = choice
+        agent.pending_option_decision = 1
+
+        agent.decision_index = 1
+        agent._advance_temporal_option("animation-a", "scene-a", passive=True)
+        agent.decision_index = 2
+        agent._advance_temporal_option(
+            "animation-b", "scene-b", passive=True, grace_continuation=True
+        )
+        self.assertIsNotNone(agent.active_temporal_option)
+        self.assertEqual(agent.active_temporal_option.passive_decisions, 2)
+
+        agent.decision_index = 3
+        agent._advance_temporal_option("endpoint", "scene-c", passive=False)
+        learned, known = agent._temporal_option_estimate(*choice)
+        self.assertTrue(known)
+        self.assertGreater(learned, 1.0)
+        self.assertEqual(agent.temporal_option_samples[choice], 1)
+        self.assertIsNone(agent.active_temporal_option)
+        self.assertEqual(before, model.checkpoint_digest)
+
+    def test_temporal_option_penalizes_a_return_to_its_source(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        agent = VerifiedNeuralAgent(
+            MockPuzzleEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(actions=(Action.A,), planning_depth=1),
+        )
+        agent.reset()
+        choice = ("source", Action.A, 1)
+        agent.behavior_visits["source"] = 1
+        agent.pending_option_choice = choice
+        agent.pending_option_decision = 1
+        agent.decision_index = 1
+        agent._advance_temporal_option("animation", "scene", passive=True)
+        agent.decision_index = 2
+        agent._advance_temporal_option("source", "scene", passive=False)
+
+        learned, known = agent._temporal_option_estimate(*choice)
+        self.assertTrue(known)
+        self.assertLess(learned, 0.0)
+
+    def test_temporal_option_requires_action_dependent_counterfactual_evidence(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        agent = VerifiedNeuralAgent(
+            MockPuzzleEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(actions=(Action.START, Action.NOOP), planning_depth=1),
+        )
+        identical = self.frame(10)
+        changed = self.frame(200)
+        start = NeuralPlan((Action.START,), (4,), 0.0, 0.0)
+        noop = NeuralPlan((Action.NOOP,), (4,), 0.0, 0.0)
+        candidate = (0.0, start, b"start", identical)
+        uncaused = (0.0, noop, b"noop", identical)
+        caused = (0.0, noop, b"noop", changed)
+
+        eligible, contrast, count = agent._option_initiation_evidence(
+            candidate, [candidate, uncaused]
+        )
+        self.assertFalse(eligible)
+        self.assertEqual(contrast, 0.0)
+        self.assertEqual(count, 1)
+
+        eligible, contrast, count = agent._option_initiation_evidence(
+            candidate, [candidate, caused]
+        )
+        self.assertTrue(eligible)
+        self.assertGreater(contrast, agent.config.action_equivalence_threshold)
+        self.assertEqual(count, 1)
 
     def test_archive_recovery_prefers_learned_persistent_frontier_value(self) -> None:
         model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)

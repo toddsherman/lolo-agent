@@ -252,13 +252,55 @@ The deterministic players are under
 Replay verification passed for all 6,094 recorded observations. The committed
 view contains 3,752 timeline frames and the full planning view contains 16,188.
 
+## Temporal-option follow-up
+
+The planner now traces action-independent sequences from their possible
+initiating choice through neutral continuation to the next controllable state.
+Endpoint novelty, coarse-scene span, duration, and return-to-source evidence
+form a temporary option sample. Candidate and archive scores can reuse the
+learned state/action/duration value without changing persistent parameters.
+
+A preliminary 320-decision audit learned five samples. The largest assigned
+`0.75` to a `START@4` choice followed by 51 passive decisions across 28 coarse
+scenes. Causal inspection of the saved branches showed that every tested action
+at that root had produced identical pixels: the button press coincided with a
+timer transition but did not demonstrably cause it. Reusing the value later
+over-selected `START` on the same static pixels. This unsupported result was
+rejected.
+
+The retained controller now credits an initiating choice only if another real,
+same-duration action branch produced distinguishable pixels. The corrected
+matched audit recorded:
+
+- 38 passive-option starts, six controllable completions, and 32 traces
+  discarded at explicit archive jumps or run close;
+- 32 choices with immediate action-dependent counterfactual evidence;
+- zero credited option samples, because none of those evidenced choices
+  immediately preceded a completed passive sequence;
+- 192 exact telemetry frames and 56 coarse scenes, versus 179 and 56 in the
+  active-probe baseline;
+- 159 learned persistent-frontier choice samples, 30 delayed-return recoveries,
+  39 total archive restores, and 1,686 verified branches;
+- an unchanged frozen-model parameter digest.
+
+The trajectory again reached the final story tableau at decision 123. The
+evaluator-only Floor 1 coarse signature `040604030303040302` was absent, so the
+agent still did not enter the first puzzle. This is a negative temporal-option
+result, but it establishes the causal guard needed to avoid learning value from
+coincidental animation timing.
+
+The deterministic players are under
+`experiments/lolo1-medium/extended_evaluations/cycle-000010-causal-temporal-options-320/replays/`.
+Replay verification passed for all 5,980 recorded observations. The committed
+view contains 3,409 timeline frames and the full planning view contains 16,004.
+
 ## Next research target
 
-Learn temporary temporal options and progress potential from the interaction
-graph. An action that enters an action-independent sequence should be linked to
-the later controllable state reached by neutral continuation, rather than
-valued only through individual animation frames. Directed bottlenecks,
-low-return reachability, and durable successor novelty can then provide an
-unsupervised signal for preserving forward progress. This remains grounded in
-pixels, actions, outcomes, and saved-state experiments without menu, room, or
-completion labels.
+Extend the counterfactual test through delayed neutral continuation. From the
+same saved root, compare an initiating action branch with a matched alternative
+while advancing both through the suspected passive interval. Credit an option
+only when their later controllable endpoints diverge. This can discover delayed
+button effects that have no immediate pixel difference while retaining the
+causal protection demonstrated above. Directed bottlenecks and durable
+successor novelty can then value the resulting interaction-derived transition,
+still without menu, room, object, or completion labels.

@@ -174,6 +174,33 @@ and archived origin references migrate into the matching behavioral cluster.
 The cluster centroids and migrations are temporary evaluation memory; model
 weights remain frozen.
 
+### Interaction-derived temporal options
+
+The verifier also links a controller choice to delayed consequences across an
+action-independent visual sequence. When matched real-action probes show that
+the current pixels evolve independently of the selected controller input, the
+agent starts a temporary option trace. It credits the immediately preceding
+behavioral-signature/action/duration choice only when a real, same-duration
+save-state branch with another controller action produced distinguishable
+pixels. Otherwise the sequence is retained as uncredited passive motion; this
+prevents a coincidental button press from receiving value for an uncaused
+timer transition. A credited trace follows neutral waits through short static
+grace pauses and ends at the next controllable planning root.
+
+The endpoint sample uses only interaction-derived quantities: whether the
+endpoint behavioral signature is new, how many coarse visual scenes the trace
+crossed, its duration, and whether it returned to its initiating signature.
+Novel endpoints and broader, longer transitions receive positive value;
+returns to the source receive a penalty. Later candidate scoring and archive
+selection can reuse the running value for that exact initiating choice.
+
+Boot-time passive motion has no initiating choice and is logged but does not
+produce a learned sample. An archive restore discards any active trace before
+arming the restored branch as a new initiating choice, preventing credit from
+crossing an uncaused save-state jump. Option traces and values migrate with
+provisional behavioral signatures, reset between attempts, and never update
+the frozen neural model.
+
 The value is learned online from pixels and transition topology and is erased
 on reset. It is not part of the neural checkpoint, so frozen evaluation still
 does not update persistent parameters.
