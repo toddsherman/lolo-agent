@@ -271,6 +271,22 @@ signature is committed or restored, later copies are not re-archived. This
 keeps the bounded archive focused on unvisited interactions within a single
 puzzle room instead of filling it with sprite-animation phases.
 
+Persistent visual transitions also create causal-outcome checkpoints. Their
+successor context is explored before capability-bearing ancestor contexts, and
+outcomes are restored breadth-first across context epochs. A restored outcome
+is keyed by coarse pixels plus the last learned directional pose; later copies
+of that key are logged as `causal_outcome_exhausted` and rejected. This is
+temporary episodic failure memory, not a semantic completion reward: it neither
+identifies the controlled sprite nor assigns meaning to any changed object.
+
+An evaluation can resume from a committed decision in an earlier telemetry
+run with `--resume-run` and `--resume-decision`. The emulator deterministically
+replays the parent event stream, verifies the selected frame, releases the
+temporary replay handles, and attaches a fresh planner to that self-discovered
+state. The child manifest hashes the parent event log. This makes discoveries
+durable enough for interrupted local experiments without converting an
+evaluator-selected action sequence into a demonstration.
+
 A causally supported action receives one neutral observation before another
 intervention. A one-step unchanged observation is ordinary stability and is not
 scored as a delayed return. Negative temporal credit requires at least the
@@ -289,4 +305,6 @@ ordinary movement remains usable.
 - The model has no explicit object slots, reachability head, or reversibility
   prediction yet; spatial causal signatures are temporary attempt memory, not
   persistent neural parameters.
-- Room completion remains evaluator-only and is not available to the planner.
+- Room completion remains evaluator-only and is not available to the planner;
+  the first-room completion was found through causal-outcome exploration rather
+  than a completion reward.

@@ -15,6 +15,7 @@ from .log_summary import build_run_summary
 from .native_env import NativeLibretroEnv
 from .neural_planner import NeuralPlanningConfig, VerifiedNeuralAgent
 from .neural_world_model import ACTION_ORDER, choose_torch_device
+from .replay import restore_logged_decision, validate_replay_inputs
 from .run_logging import LoggedEnvironment, RunLogger, sha256_file
 
 
@@ -33,6 +34,16 @@ def main() -> None:
     parser.add_argument("--verify-actions", type=int, default=4)
     parser.add_argument("--log-root", type=Path, default=Path("runs"))
     parser.add_argument("--run-id")
+    parser.add_argument(
+        "--resume-run",
+        type=Path,
+        help="telemetry run containing a previously self-discovered state",
+    )
+    parser.add_argument(
+        "--resume-decision",
+        type=int,
+        help="committed decision to reconstruct from --resume-run",
+    )
     parser.add_argument("--no-frame-images", action="store_true")
     parser.add_argument(
         "--bootstrap",
@@ -41,6 +52,10 @@ def main() -> None:
         help="evaluator-owned initialization fixture; strict power-on remains the default",
     )
     args = parser.parse_args()
+    if (args.resume_run is None) != (args.resume_decision is None):
+        parser.error("--resume-run and --resume-decision must be supplied together")
+    if args.resume_run is not None and args.bootstrap != "none":
+        parser.error("--resume-run cannot be combined with --bootstrap")
 
     device = choose_torch_device()
     model, horizon = load_ensemble_checkpoint(args.checkpoint, device=device, frozen=True)
@@ -50,17 +65,34 @@ def main() -> None:
         if args.action_durations
         else ()
     )
+    bootstrap_fixture = (
+        None if args.bootstrap == "none" else get_bootstrap_fixture(args.bootstrap)
+    )
+    gameplay_actions = (
+        ACTION_ORDER
+        if bootstrap_fixture is None and args.resume_run is None
+        else NeuralPlanningConfig().actions
+    )
     config = NeuralPlanningConfig(
-        actions=ACTION_ORDER,
+        actions=gameplay_actions,
         planning_depth=horizon,
         action_frames=args.action_frames,
         action_durations=action_durations,
         verify_actions=args.verify_actions,
     )
-    bootstrap_fixture = (
-        None if args.bootstrap == "none" else get_bootstrap_fixture(args.bootstrap)
-    )
     rom_sha256 = sha256_file(args.rom)
+    resume_metadata = None
+    if args.resume_run is not None:
+        source_manifest = validate_replay_inputs(
+            args.resume_run, args.host, args.core, args.rom
+        )
+        source_events = args.resume_run.expanduser().resolve() / "events.jsonl"
+        resume_metadata = {
+            "source_run": str(args.resume_run.expanduser().resolve()),
+            "source_run_id": source_manifest.get("run_id"),
+            "source_decision": args.resume_decision,
+            "source_events_sha256": sha256_file(source_events),
+        }
     metadata = {
         "mode": "frozen_neural_evaluation",
         "requested_decisions": args.decisions,
@@ -77,6 +109,7 @@ def main() -> None:
             },
         },
         "bootstrap": bootstrap_metadata(bootstrap_fixture),
+        "episodic_resume": resume_metadata,
     }
     logger = RunLogger(
         args.log_root,
@@ -95,9 +128,32 @@ def main() -> None:
                 base_height=native_env.base_height,
                 fps=native_env.fps,
             )
+            restored = (
+                None
+                if args.resume_run is None
+                else restore_logged_decision(
+                    native_env, args.resume_run, args.resume_decision
+                )
+            )
             env = LoggedEnvironment(native_env, logger)
             agent = VerifiedNeuralAgent(env, model, device, config, event_logger=logger)
-            if bootstrap_fixture is None:
+            if restored is not None:
+                initial_frame = env.start_attempt_from_current(
+                    restored.frame,
+                    reason=(
+                        f"episodic_resume:{restored.run_id}:"
+                        f"decision-{restored.decision}"
+                    ),
+                )
+                logger.log(
+                    "episodic_resume_completed",
+                    source_run_id=restored.run_id,
+                    source_decision=restored.decision,
+                    source_event_seq=restored.event_seq,
+                    **logger.frame_fields(initial_frame),
+                )
+                agent.reset(initial_frame=initial_frame)
+            elif bootstrap_fixture is None:
                 agent.reset()
             else:
                 initial_frame = apply_bootstrap_fixture(

@@ -24,6 +24,14 @@ class ReplayCapture:
     checked_observations: int
 
 
+@dataclass(frozen=True)
+class RestoredDecision:
+    frame: Frame
+    decision: int
+    event_seq: int
+    run_id: str
+
+
 def _verify_input(path: Path, recorded: Dict[str, Any], kind: str) -> None:
     expected = recorded.get("sha256") or recorded.get("file_sha256")
     if expected is None:
@@ -54,6 +62,113 @@ def _entry(frame: Frame, event: Dict[str, Any], kind: str, **fields: Any) -> Dic
     return result
 
 
+def validate_replay_inputs(
+    run_dir: Path,
+    host_path: Path,
+    core_path: Path,
+    rom_path: Path,
+) -> Dict[str, Any]:
+    run_dir = Path(run_dir).expanduser().resolve()
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    inputs = manifest.get("metadata", {}).get("inputs", {})
+    _verify_input(rom_path, inputs.get("rom", {}), "ROM")
+    _verify_input(core_path, inputs.get("core", {}), "core")
+    _verify_input(host_path, inputs.get("host", {}), "native host")
+    return manifest
+
+
+def restore_logged_decision(
+    env: NativeLibretroEnv,
+    run_dir: Path,
+    decision: int,
+) -> RestoredDecision:
+    """Reconstruct one self-discovered decision and leave the emulator there."""
+
+    if decision <= 0:
+        raise ValueError("resume decision must be positive")
+    run_dir = Path(run_dir).expanduser().resolve()
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    handles: Dict[str, object] = {}
+    current: Optional[Frame] = None
+    resume = manifest.get("metadata", {}).get("episodic_resume")
+    if resume:
+        source_run = Path(resume["source_run"]).expanduser().resolve()
+        source_events = source_run / "events.jsonl"
+        expected_source_events = resume.get("source_events_sha256")
+        if (
+            expected_source_events is not None
+            and sha256_file(source_events) != expected_source_events
+        ):
+            raise RuntimeError(
+                "episodic resume source telemetry digest mismatch"
+            )
+        current = restore_logged_decision(
+            env,
+            source_run,
+            int(resume["source_decision"]),
+        ).frame
+    try:
+        for event in read_events(run_dir):
+            kind = event["event"]
+            if kind == "env_reset":
+                current = env.reset()
+                _check_frame(current, event)
+            elif kind == "env_attached":
+                if current is None:
+                    raise RuntimeError(
+                        f"environment attachment without frame at event {event['seq']}"
+                    )
+                _check_frame(current, event)
+            elif kind == "state_saved":
+                state_id = event.get("state_id")
+                if not state_id or state_id in handles:
+                    raise RuntimeError(
+                        f"invalid state save alias at event {event['seq']}"
+                    )
+                handles[state_id] = env.save_state()
+                if current is not None:
+                    _check_frame(current, event)
+            elif kind == "state_loaded":
+                state_id = event.get("state_id")
+                if state_id not in handles:
+                    raise RuntimeError(
+                        f"unknown state alias {state_id!r} at event {event['seq']}"
+                    )
+                current = env.load_state(handles[state_id])
+                _check_frame(current, event)
+            elif kind == "state_released":
+                state_id = event.get("state_id")
+                if state_id not in handles:
+                    raise RuntimeError(
+                        f"unknown state release {state_id!r} at event {event['seq']}"
+                    )
+                env.release_state(handles.pop(state_id))
+            elif kind == "env_step":
+                current = env.step(
+                    Action(event["action"]), int(event["action_frames"])
+                )
+                _check_frame(current, event, "target_frame")
+            elif kind == "decision_committed" and int(event["decision"]) == decision:
+                if current is None:
+                    raise RuntimeError(
+                        f"decision without emulator frame at event {event['seq']}"
+                    )
+                _check_frame(current, event)
+                return RestoredDecision(
+                    current,
+                    decision,
+                    int(event["seq"]),
+                    str(manifest.get("run_id", run_dir.name)),
+                )
+    finally:
+        for handle in handles.values():
+            try:
+                env.release_state(handle)
+            except Exception:
+                pass
+    raise ValueError(f"decision {decision} not found in telemetry run {run_dir}")
+
+
 def capture_replay(
     run_dir: Path,
     host_path: Path,
@@ -63,11 +178,9 @@ def capture_replay(
     """Deterministically reconstruct all state operations and individual NES frames."""
 
     run_dir = Path(run_dir).expanduser().resolve()
-    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
-    inputs = manifest.get("metadata", {}).get("inputs", {})
-    _verify_input(rom_path, inputs.get("rom", {}), "ROM")
-    _verify_input(core_path, inputs.get("core", {}), "core")
-    _verify_input(host_path, inputs.get("host", {}), "native host")
+    manifest = validate_replay_inputs(
+        run_dir, host_path, core_path, rom_path
+    )
     events = list(read_events(run_dir))
     frames: Dict[str, Frame] = {}
     full: List[Dict[str, Any]] = []
@@ -79,6 +192,23 @@ def capture_replay(
 
     with NativeLibretroEnv(host_path, core_path, rom_path) as env:
         try:
+            resume = manifest.get("metadata", {}).get("episodic_resume")
+            if resume:
+                source_run = Path(resume["source_run"]).expanduser().resolve()
+                source_events = source_run / "events.jsonl"
+                expected_source_events = resume.get("source_events_sha256")
+                if (
+                    expected_source_events is not None
+                    and sha256_file(source_events) != expected_source_events
+                ):
+                    raise RuntimeError(
+                        "episodic resume source telemetry digest mismatch"
+                    )
+                current = restore_logged_decision(
+                    env,
+                    source_run,
+                    int(resume["source_decision"]),
+                ).frame
             for event in events:
                 kind = event["event"]
                 if kind == "env_reset":

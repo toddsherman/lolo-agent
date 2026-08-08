@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any, Counter as CounterType, Dict, List, Optional, Tuple, Union
+from typing import Any, Counter as CounterType, Dict, List, Optional, Sequence, Tuple, Union
 
 import torch
 from torch import Tensor
@@ -25,8 +25,6 @@ class NeuralPlanningConfig:
         Action.RIGHT,
         Action.A,
         Action.B,
-        Action.START,
-        Action.SELECT,
         Action.NOOP,
     )
     planning_depth: int = 3
@@ -44,13 +42,16 @@ class NeuralPlanningConfig:
     actual_change_weight: float = 0.25
     action_effect_weight: float = 0.75
     causal_spatial_novelty_weight: float = 2.0
+    causal_affordance_weight: float = 3.0
+    causal_event_archive_weight: float = 4.0
     causal_change_pixel_threshold: int = 12
     causal_spatial_columns: int = 16
     causal_spatial_rows: int = 15
+    causal_event_min_component_gap: int = 2
     action_coverage_weight: float = 0.35
     duration_coverage_weight: float = 0.2
     consecutive_repeat_weight: float = 0.5
-    archive_capacity: int = 96
+    archive_capacity: int = 256
     visual_stagnation_visits: int = 3
     archive_max_age: int = 512
     autonomous_change_threshold: float = 0.00025
@@ -112,6 +113,11 @@ class _ArchivedBranch:
     causal_spatial_novelty: float = 0.0
     causal_changed_pixels: int = 0
     causal_change_centroid: Optional[Tuple[float, float]] = None
+    causal_context_signature: str = ""
+    target_causal_context_signature: str = ""
+    causal_affordance_actions: Tuple[Action, ...] = ()
+    pose_action: Optional[Action] = None
+    causal_event_outcome: bool = False
 
 
 @dataclass(frozen=True)
@@ -356,6 +362,8 @@ class VerifiedNeuralAgent:
             or self.config.causal_spatial_rows <= 0
         ):
             raise ValueError("causal spatial grid dimensions must be positive")
+        if self.config.causal_event_min_component_gap <= 0:
+            raise ValueError("causal event component gap must be positive")
         self.model.freeze()
         self.planner = NeuralRolloutPlanner(model, device, self.config)
         self.novelty = VisualNovelty()
@@ -430,6 +438,34 @@ class VerifiedNeuralAgent:
     def _scene_signature(frame: Frame) -> str:
         return signature_key(frame.coarse_signature(columns=3, rows=3))
 
+    @staticmethod
+    def _affordance_checkpoint_key(
+        frame: Frame,
+        causal_context_signature: str,
+        actions: Sequence[Action],
+        pose_action: Optional[Action],
+    ) -> Tuple[str, Optional[Action], Tuple[Action, ...]]:
+        del causal_context_signature
+        return (
+            signature_key(frame.coarse_signature()),
+            pose_action,
+            tuple(sorted(set(actions), key=lambda action: action.value)),
+        )
+
+    @classmethod
+    def _causal_outcome_key(
+        cls, frame: Frame, pose_action: Optional[Action]
+    ) -> Tuple[str, Optional[Action]]:
+        return cls._signature(frame), pose_action
+
+    @staticmethod
+    def _resulting_pose_action(
+        current_pose_action: Optional[Action], action: Action
+    ) -> Optional[Action]:
+        if action in (Action.UP, Action.DOWN, Action.LEFT, Action.RIGHT):
+            return action
+        return current_pose_action
+
     def reset(self, initial_frame: Optional[Frame] = None) -> Frame:
         self.clear_archive()
         self.frame = self.env.reset() if initial_frame is None else initial_frame
@@ -441,6 +477,18 @@ class VerifiedNeuralAgent:
         self.action_effect_values = {}
         self.action_effect_samples = Counter()
         self.causal_spatial_visits = Counter()
+        self.causal_spatial_cell_visits: CounterType[Tuple[int, int]] = Counter()
+        self.discovered_interaction_actions: set[Action] = set()
+        self.discovered_interaction_durations: Dict[Action, set[int]] = {}
+        self.archive_branch_restores: CounterType[
+            Tuple[str, Optional[Action], Tuple[Action, ...]]
+        ] = Counter()
+        self.causal_outcome_restores: CounterType[
+            Tuple[str, Optional[Action]]
+        ] = Counter()
+        self.causal_outcome_contexts: set[str] = set()
+        self.current_causal_context_signature = "causal-context-root"
+        self.current_pose_action: Optional[Action] = None
         self.last_action = None
         self.last_duration = None
         self.last_action_was_causal_spatial = False
@@ -606,6 +654,73 @@ class VerifiedNeuralAgent:
             occupied.hex(),
             changed_pixels,
             (x_total / changed_pixels, y_total / changed_pixels),
+        )
+
+    @staticmethod
+    def _causal_frontier_key(
+        context_signature: str,
+        spatial_signature: str,
+        affordance_actions: Tuple[Action, ...] = (),
+    ) -> str:
+        affordances = ",".join(
+            sorted({action.value for action in affordance_actions})
+        )
+        return f"{context_signature}|affordances={affordances}:{spatial_signature}"
+
+    def _causal_spatial_cells(
+        self, spatial_signature: Optional[str]
+    ) -> set[Tuple[int, int]]:
+        if not spatial_signature:
+            return set()
+        try:
+            occupied = bytes.fromhex(spatial_signature)
+        except ValueError:
+            return set()
+        columns = self.config.causal_spatial_columns
+        return {
+            (index % columns, index // columns)
+            for index, value in enumerate(occupied)
+            if value
+        }
+
+    def _causal_target_context(
+        self, source_context: str, spatial_signature: Optional[str]
+    ) -> Tuple[str, bool, int]:
+        if not spatial_signature:
+            return source_context, False, 0
+        cells = self._causal_spatial_cells(spatial_signature)
+        components: List[set[Tuple[int, int]]] = []
+        while cells:
+            pending = [cells.pop()]
+            component = set(pending)
+            while pending:
+                x, y = pending.pop()
+                for neighbor in (
+                    (x - 1, y),
+                    (x + 1, y),
+                    (x, y - 1),
+                    (x, y + 1),
+                ):
+                    if neighbor in cells:
+                        cells.remove(neighbor)
+                        component.add(neighbor)
+                        pending.append(neighbor)
+            components.append(component)
+        if len(components) < 2:
+            return source_context, False, len(components)
+        minimum_gap = min(
+            abs(ax - bx) + abs(ay - by)
+            for index, first in enumerate(components)
+            for second in components[index + 1 :]
+            for ax, ay in first
+            for bx, by in second
+        )
+        if minimum_gap < self.config.causal_event_min_component_gap:
+            return source_context, False, len(components)
+        return (
+            f"{source_context}>{spatial_signature}",
+            True,
+            len(components),
         )
 
     def _verified_without_learned_hazards(
@@ -1580,8 +1695,13 @@ class VerifiedNeuralAgent:
     def _archive_causal_spatial_bonus(self, branch: _ArchivedBranch) -> float:
         if not branch.causal_spatial_signature:
             return 0.0
+        frontier_key = self._causal_frontier_key(
+            branch.causal_context_signature,
+            branch.causal_spatial_signature,
+            branch.causal_affordance_actions,
+        )
         return self.config.causal_spatial_novelty_weight / math.sqrt(
-            self.causal_spatial_visits[branch.causal_spatial_signature] + 1
+            self.causal_spatial_visits[frontier_key] + 1
         )
 
     def _archive_frontier_score(self, branch: _ArchivedBranch) -> float:
@@ -1606,12 +1726,29 @@ class VerifiedNeuralAgent:
         )
         option_bonus = self.config.temporal_option_score_weight * option_value
         causal_spatial_bonus = self._archive_causal_spatial_bonus(branch)
+        affordance_bonus = (
+            self.config.causal_affordance_weight
+            * math.sqrt(len(branch.causal_affordance_actions))
+        )
+        causal_event_bonus = (
+            self.config.causal_event_archive_weight
+            if branch.causal_event_outcome
+            else 0.0
+        )
         if choice_is_known:
-            return choice_value + option_bonus + causal_spatial_bonus
+            return (
+                choice_value
+                + option_bonus
+                + causal_spatial_bonus
+                + affordance_bonus
+                + causal_event_bonus
+            )
         return (
             max(own_value, self.config.frontier_origin_weight * origin_value)
             + option_bonus
             + causal_spatial_bonus
+            + affordance_bonus
+            + causal_event_bonus
         )
 
     def _record_delayed_return(
@@ -1688,6 +1825,39 @@ class VerifiedNeuralAgent:
                 raise RuntimeError("behavior probes require a current frame")
             selection = self._behavior_probe_selection(self.frame)
         probe_keys = list(selection.keys)
+        long_press_keys = []
+        short_press_keys = []
+        maximum_duration = max(self.planner.duration_choices)
+        for action in (
+            Action.UP,
+            Action.DOWN,
+            Action.LEFT,
+            Action.RIGHT,
+        ):
+            candidate = (action, maximum_duration)
+            if (
+                action in self.config.actions
+                and candidate in best_by_action
+                and candidate not in probe_keys
+            ):
+                probe_keys.append(candidate)
+                long_press_keys.append(candidate)
+        for action in (Action.A, Action.B):
+            effective_durations = self.discovered_interaction_durations.get(
+                action, set()
+            )
+            if not effective_durations:
+                continue
+            minimum_duration = min(effective_durations)
+            candidate = (action, minimum_duration)
+            if (
+                action in self.config.actions
+                and action in self.discovered_interaction_actions
+                and candidate in best_by_action
+                and candidate not in probe_keys
+            ):
+                probe_keys.append(candidate)
+                short_press_keys.append(candidate)
         continuation_key = None
         continuation_action = None
         if self.last_action_was_causal_spatial and self.last_action is not None:
@@ -1722,6 +1892,12 @@ class VerifiedNeuralAgent:
                     ],
                     "causal_continuation": (
                         (action, duration) == continuation_key
+                    ),
+                    "long_press_control": (
+                        (action, duration) in long_press_keys
+                    ),
+                    "short_press_control": (
+                        (action, duration) in short_press_keys
                     ),
                 }
                 for action, duration in probe_keys
@@ -1922,7 +2098,10 @@ class VerifiedNeuralAgent:
             ):
                 best_by_action[timed_action] = plan
         current_scene = self._scene_signature(self.frame)
+        source_frame = self.frame
+        source_causal_context_signature = self.current_causal_context_signature
         source_signature = self.current_frontier_signature
+        source_pose_action = self.current_pose_action
         best_by_button: Dict[Action, NeuralPlan] = {}
         for plan in best_by_action.values():
             action = plan.path[0]
@@ -2074,24 +2253,88 @@ class VerifiedNeuralAgent:
                 causal_spatial_visits = (
                     0
                     if causal_spatial_signature is None
-                    else self.causal_spatial_visits[causal_spatial_signature]
+                    else self.causal_spatial_visits[
+                        self._causal_frontier_key(
+                            source_causal_context_signature,
+                            causal_spatial_signature,
+                        )
+                    ]
                 )
                 causal_spatial_novelty = (
                     0.0
                     if causal_spatial_signature is None
                     else 1.0 / math.sqrt(causal_spatial_visits + 1)
                 )
+                (
+                    target_causal_context_signature,
+                    causal_event_detected,
+                    causal_component_count,
+                ) = self._causal_target_context(
+                    source_causal_context_signature,
+                    causal_spatial_signature,
+                )
+                if action in (Action.A, Action.B):
+                    if causal_spatial_signature:
+                        self.discovered_interaction_actions.add(action)
+                        self.discovered_interaction_durations.setdefault(
+                            action, set()
+                        ).add(duration)
+                    target_causal_context_signature = (
+                        source_causal_context_signature
+                    )
+                    causal_event_detected = False
                 observed_action_effects[(action, duration)] = {
                     "contrast": contrast,
                     "value": effect_value,
                     "samples": effect_samples,
                     "causal_spatial_signature": causal_spatial_signature,
+                    "causal_context_signature": source_causal_context_signature,
+                    "causal_frontier_key": (
+                        None
+                        if causal_spatial_signature is None
+                        else self._causal_frontier_key(
+                            source_causal_context_signature,
+                            causal_spatial_signature,
+                        )
+                    ),
                     "causal_changed_pixels": causal_changed_pixels,
                     "causal_change_centroid": causal_change_centroid,
                     "causal_spatial_visits": causal_spatial_visits,
                     "causal_spatial_novelty": causal_spatial_novelty,
+                    "target_causal_context_signature": (
+                        target_causal_context_signature
+                    ),
+                    "causal_event_detected": causal_event_detected,
+                    "causal_component_count": causal_component_count,
                 }
             verified = []
+            source_causal_affordance_actions = tuple(
+                sorted(
+                    {
+                        action
+                        for (action, _duration), effect in observed_action_effects.items()
+                        if action in (Action.A, Action.B)
+                        and effect["causal_spatial_signature"]
+                    },
+                    key=lambda action: action.value,
+                )
+            )
+            for effect in observed_action_effects.values():
+                spatial_signature = effect["causal_spatial_signature"]
+                if not spatial_signature:
+                    continue
+                frontier_key = self._causal_frontier_key(
+                    source_causal_context_signature,
+                    spatial_signature,
+                    source_causal_affordance_actions,
+                )
+                visits = self.causal_spatial_visits[frontier_key]
+                effect["causal_frontier_key"] = frontier_key
+                effect["causal_spatial_visits"] = visits
+                effect["causal_spatial_novelty"] = 1.0 / math.sqrt(
+                    visits + 1
+                )
+            branch_causal_contexts: Dict[int, Dict[str, Any]] = {}
             for (
                 plan,
                 state,
@@ -2162,6 +2405,66 @@ class VerifiedNeuralAgent:
                     causal_spatial_novelty = observed_effect[
                         "causal_spatial_novelty"
                     ]
+                transition_spatial_signature = self._causal_spatial_effect(
+                    target, self.frame
+                )[0]
+                (
+                    branch_target_causal_context_signature,
+                    branch_causal_event_detected,
+                    branch_causal_component_count,
+                ) = self._causal_target_context(
+                    source_causal_context_signature,
+                    transition_spatial_signature,
+                )
+                causal_event_basis = (
+                    "observed_transition"
+                    if branch_causal_event_detected
+                    else None
+                )
+                if plan.path[0] in (Action.A, Action.B):
+                    branch_target_causal_context_signature = (
+                        source_causal_context_signature
+                    )
+                    branch_causal_event_detected = False
+                    causal_event_basis = None
+                transition_cells = self._causal_spatial_cells(
+                    transition_spatial_signature
+                )
+                causal_event_novel_cells = sum(
+                    self.causal_spatial_cell_visits[cell] == 0
+                    for cell in transition_cells
+                )
+                if (
+                    branch_causal_event_detected
+                    and causal_event_novel_cells == 0
+                ):
+                    branch_target_causal_context_signature = (
+                        source_causal_context_signature
+                    )
+                    branch_causal_event_detected = False
+                    causal_event_basis = None
+                if (
+                    observed_effect is not None
+                    and observed_effect["causal_event_detected"]
+                ):
+                    branch_target_causal_context_signature = observed_effect[
+                        "target_causal_context_signature"
+                    ]
+                    branch_causal_event_detected = True
+                    branch_causal_component_count = observed_effect[
+                        "causal_component_count"
+                    ]
+                    causal_event_basis = "matched_action_effect"
+                branch_causal_contexts[id(state)] = {
+                    "target": branch_target_causal_context_signature,
+                    "detected": branch_causal_event_detected,
+                    "components": branch_causal_component_count,
+                    "basis": causal_event_basis,
+                    "transition_spatial_signature": (
+                        transition_spatial_signature
+                    ),
+                    "novel_cells": causal_event_novel_cells,
+                }
                 action_effect_bonus = (
                     self.config.action_effect_weight * action_effect_value
                     if temporal_option_value >= 0.0
@@ -2228,6 +2531,15 @@ class VerifiedNeuralAgent:
                     action_effect_samples=action_effect_samples,
                     action_effect_bonus=action_effect_bonus,
                     causal_spatial_signature=causal_spatial_signature,
+                    causal_context_signature=source_causal_context_signature,
+                    target_causal_context_signature=(
+                        branch_target_causal_context_signature
+                    ),
+                    causal_event_detected=branch_causal_event_detected,
+                    causal_component_count=branch_causal_component_count,
+                    causal_event_basis=causal_event_basis,
+                    causal_event_novel_cells=causal_event_novel_cells,
+                    transition_spatial_signature=transition_spatial_signature,
                     causal_changed_pixels=causal_changed_pixels,
                     causal_change_centroid=causal_change_centroid,
                     causal_spatial_visits=causal_spatial_visits,
@@ -2491,6 +2803,7 @@ class VerifiedNeuralAgent:
             committed_spatial_effect = observed_action_effects.get(
                 (action, duration)
             )
+            committed_context = branch_causal_contexts[id(state)]
             committed_causal_spatial_signature = (
                 None
                 if committed_spatial_effect is None
@@ -2498,8 +2811,27 @@ class VerifiedNeuralAgent:
             )
             if committed_causal_spatial_signature is not None:
                 self.causal_spatial_visits[
-                    committed_causal_spatial_signature
+                    self._causal_frontier_key(
+                        source_causal_context_signature,
+                        committed_causal_spatial_signature,
+                        source_causal_affordance_actions,
+                    )
                 ] += 1
+                self.causal_spatial_cell_visits.update(
+                    self._causal_spatial_cells(
+                        committed_causal_spatial_signature
+                    )
+                )
+            committed_target_causal_context_signature = (
+                committed_context["target"]
+            )
+            self.current_causal_context_signature = (
+                committed_target_causal_context_signature
+            )
+            if committed_context["detected"]:
+                self.causal_outcome_contexts.add(
+                    committed_target_causal_context_signature
+                )
             self.action_counts[action] += 1
             self.duration_counts[duration] += 1
             self.action_duration_counts[(action, duration)] += 1
@@ -2509,6 +2841,9 @@ class VerifiedNeuralAgent:
                 else 1
             )
             self.last_action = action
+            self.current_pose_action = self._resulting_pose_action(
+                self.current_pose_action, action
+            )
             self.last_duration = duration
             self.last_action_was_causal_spatial = (
                 committed_causal_spatial_signature is not None
@@ -2594,6 +2929,110 @@ class VerifiedNeuralAgent:
                 self.current_scene = target_scene
                 self.scene_streak = 1
             added = 0
+            committed_causal_outcome_key = self._causal_outcome_key(
+                target, self.current_pose_action
+            )
+            if (
+                committed_context["detected"]
+                and not self.causal_outcome_restores[
+                    committed_causal_outcome_key
+                ]
+                and not any(
+                    branch.frame.digest == target.digest
+                    for branch in self.archive
+                )
+                and not any(
+                    branch.causal_event_outcome
+                    and self._causal_outcome_key(
+                        branch.frame, branch.pose_action
+                    )
+                    == committed_causal_outcome_key
+                    for branch in self.archive
+                )
+            ):
+                committed_effect = observed_action_effects.get(
+                    (action, duration)
+                )
+                self.archive.append(
+                    _ArchivedBranch(
+                        state,
+                        target,
+                        plan,
+                        score,
+                        target_scene,
+                        self.decision_index,
+                        source_signature,
+                        target_frontier_signature,
+                        option_initiation_eligible,
+                        option_counterfactual_contrast,
+                        option_counterfactuals,
+                        committed_causal_spatial_signature or "",
+                        (
+                            0.0
+                            if committed_effect is None
+                            else committed_effect["causal_spatial_novelty"]
+                        ),
+                        (
+                            0
+                            if committed_effect is None
+                            else committed_effect["causal_changed_pixels"]
+                        ),
+                        (
+                            None
+                            if committed_effect is None
+                            else committed_effect["causal_change_centroid"]
+                        ),
+                        source_causal_context_signature,
+                        committed_target_causal_context_signature,
+                        source_causal_affordance_actions,
+                        self.current_pose_action,
+                        True,
+                    )
+                )
+                added += 1
+                self._emit(
+                    "archive_causal_outcome_added",
+                    decision=self.decision_index,
+                    state_id=self._state_id(state),
+                    action=action,
+                    action_frames=duration,
+                    causal_context_signature=(
+                        source_causal_context_signature
+                    ),
+                    target_causal_context_signature=(
+                        committed_target_causal_context_signature
+                    ),
+                    causal_spatial_signature=(
+                        committed_causal_spatial_signature
+                    ),
+                    causal_affordance_actions=(
+                        source_causal_affordance_actions
+                    ),
+                    causal_affordance_count=len(
+                        source_causal_affordance_actions
+                    ),
+                    persistent_frontier_value=(
+                        self._archive_frontier_score(self.archive[-1])
+                    ),
+                    **self._frame_fields(target),
+                )
+            elif (
+                committed_context["detected"]
+                and self.causal_outcome_restores[
+                    committed_causal_outcome_key
+                ]
+            ):
+                self._emit(
+                    "archive_branch_rejected",
+                    decision=self.decision_index,
+                    reason="causal_outcome_exhausted",
+                    action=action,
+                    action_frames=duration,
+                    previous_restores=self.causal_outcome_restores[
+                        committed_causal_outcome_key
+                    ],
+                    **self._frame_fields(target),
+                )
             for (
                 alternative_score,
                 alternative_plan,
@@ -2659,6 +3098,75 @@ class VerifiedNeuralAgent:
                         alternative_plan.durations[0],
                     )
                 )
+                alternative_context = branch_causal_contexts[
+                    id(alternative_state)
+                ]
+                alternative_pose_action = self._resulting_pose_action(
+                    source_pose_action,
+                    alternative_plan.path[0],
+                )
+                alternative_causal_outcome_key = self._causal_outcome_key(
+                    alternative_frame, alternative_pose_action
+                )
+                if alternative_context["detected"] and (
+                    self.causal_outcome_restores[
+                        alternative_causal_outcome_key
+                    ]
+                    or any(
+                        branch.causal_event_outcome
+                        and self._causal_outcome_key(
+                            branch.frame, branch.pose_action
+                        )
+                        == alternative_causal_outcome_key
+                        for branch in self.archive
+                    )
+                ):
+                    self._emit(
+                        "archive_branch_rejected",
+                        decision=self.decision_index,
+                        reason="causal_outcome_exhausted",
+                        action=alternative_plan.path[0],
+                        action_frames=alternative_plan.durations[0],
+                        previous_restores=self.causal_outcome_restores[
+                            alternative_causal_outcome_key
+                        ],
+                        state_id=self._state_id(alternative_state),
+                        **self._frame_fields(alternative_frame),
+                    )
+                    continue
+                alternative_restore_key = self._affordance_checkpoint_key(
+                    alternative_frame,
+                    alternative_context["target"],
+                    source_causal_affordance_actions,
+                    alternative_pose_action,
+                )
+                previous_restores = self.archive_branch_restores[
+                    alternative_restore_key
+                ]
+                if source_causal_affordance_actions and previous_restores:
+                    self._emit(
+                        "archive_branch_rejected",
+                        decision=self.decision_index,
+                        reason="archive_branch_exhausted",
+                        action=alternative_plan.path[0],
+                        action_frames=alternative_plan.durations[0],
+                        causal_context_signature=(
+                            source_causal_context_signature
+                        ),
+                        target_causal_context_signature=(
+                            alternative_context["target"]
+                        ),
+                        causal_affordance_actions=(
+                            source_causal_affordance_actions
+                        ),
+                        causal_affordance_count=len(
+                            source_causal_affordance_actions
+                        ),
+                        previous_restores=previous_restores,
+                        state_id=self._state_id(alternative_state),
+                        **self._frame_fields(alternative_frame),
+                    )
+                    continue
                 alternative_causal_spatial_signature = (
                     ""
                     if alternative_effect is None
@@ -2683,11 +3191,19 @@ class VerifiedNeuralAgent:
                     alternative_causal_spatial_signature
                     and (
                         self.causal_spatial_visits[
-                            alternative_causal_spatial_signature
+                            self._causal_frontier_key(
+                                source_causal_context_signature,
+                                alternative_causal_spatial_signature,
+                                source_causal_affordance_actions,
+                            )
                         ]
                         > 0
                         or any(
-                            branch.causal_spatial_signature
+                            branch.causal_context_signature
+                            == source_causal_context_signature
+                            and branch.causal_affordance_actions
+                            == source_causal_affordance_actions
+                            and branch.causal_spatial_signature
                             == alternative_causal_spatial_signature
                             for branch in self.archive
                         )
@@ -2702,6 +3218,9 @@ class VerifiedNeuralAgent:
                         action_frames=alternative_plan.durations[0],
                         causal_spatial_signature=(
                             alternative_causal_spatial_signature
+                        ),
+                        causal_context_signature=(
+                            source_causal_context_signature
                         ),
                         state_id=self._state_id(alternative_state),
                         **self._frame_fields(alternative_frame),
@@ -2738,6 +3257,11 @@ class VerifiedNeuralAgent:
                         alternative_causal_spatial_novelty,
                         alternative_causal_changed_pixels,
                         alternative_causal_change_centroid,
+                        source_causal_context_signature,
+                        alternative_context["target"],
+                        source_causal_affordance_actions,
+                        alternative_pose_action,
+                        alternative_context["detected"],
                     )
                 )
                 added += 1
@@ -2773,6 +3297,23 @@ class VerifiedNeuralAgent:
                     causal_spatial_signature=(
                         alternative_causal_spatial_signature or None
                     ),
+                    causal_context_signature=source_causal_context_signature,
+                    target_causal_context_signature=(
+                        alternative_context["target"]
+                    ),
+                    causal_event_detected=alternative_context["detected"],
+                    causal_component_count=alternative_context["components"],
+                    causal_event_basis=alternative_context["basis"],
+                    causal_event_novel_cells=alternative_context["novel_cells"],
+                    causal_affordance_actions=(
+                        source_causal_affordance_actions
+                    ),
+                    causal_affordance_count=len(
+                        source_causal_affordance_actions
+                    ),
+                    transition_spatial_signature=alternative_context[
+                        "transition_spatial_signature"
+                    ],
                     causal_spatial_novelty=(
                         alternative_causal_spatial_novelty
                     ),
@@ -2782,6 +3323,102 @@ class VerifiedNeuralAgent:
                     ),
                     **self._frame_fields(alternative_frame),
                 )
+            if source_causal_affordance_actions:
+                checkpoint_key = self._affordance_checkpoint_key(
+                    source_frame,
+                    source_causal_context_signature,
+                    source_causal_affordance_actions,
+                    source_pose_action,
+                )
+                existing_checkpoint = next(
+                    (
+                        branch
+                        for branch in self.archive
+                        if branch.frame.digest == source_frame.digest
+                    ),
+                    None,
+                )
+                checkpoint_restores = self.archive_branch_restores[
+                    checkpoint_key
+                ]
+                if checkpoint_restores:
+                    self._emit(
+                        "archive_affordance_checkpoint_exhausted",
+                        decision=self.decision_index,
+                        causal_context_signature=(
+                            source_causal_context_signature
+                        ),
+                        causal_affordance_actions=(
+                            source_causal_affordance_actions
+                        ),
+                        causal_affordance_count=len(
+                            source_causal_affordance_actions
+                        ),
+                        previous_restores=checkpoint_restores,
+                        **self._frame_fields(source_frame),
+                    )
+                elif existing_checkpoint is not None:
+                    existing_checkpoint.causal_affordance_actions = tuple(
+                        sorted(
+                            set(existing_checkpoint.causal_affordance_actions)
+                            | set(source_causal_affordance_actions),
+                            key=lambda action: action.value,
+                        )
+                    )
+                else:
+                    affordance_effect = next(
+                        effect
+                        for (candidate_action, _duration), effect in (
+                            observed_action_effects.items()
+                        )
+                        if candidate_action in source_causal_affordance_actions
+                        and effect["causal_spatial_signature"]
+                    )
+                    checkpoint_plan = NeuralPlan(
+                        (Action.NOOP,),
+                        (min(self.planner.duration_choices),),
+                        max(item[1].score for item in verified),
+                        0.0,
+                    )
+                    self.archive.append(
+                        _ArchivedBranch(
+                            root,
+                            source_frame,
+                            checkpoint_plan,
+                            max(item[0] for item in verified),
+                            current_scene,
+                            self.decision_index,
+                            source_signature,
+                            source_signature,
+                            False,
+                            0.0,
+                            0,
+                            affordance_effect["causal_spatial_signature"],
+                            affordance_effect["causal_spatial_novelty"],
+                            affordance_effect["causal_changed_pixels"],
+                            affordance_effect["causal_change_centroid"],
+                            source_causal_context_signature,
+                            source_causal_context_signature,
+                            source_causal_affordance_actions,
+                            source_pose_action,
+                        )
+                    )
+                    added += 1
+                    self._emit(
+                        "archive_affordance_checkpoint_added",
+                        decision=self.decision_index,
+                        state_id=self._state_id(root),
+                        causal_context_signature=(
+                            source_causal_context_signature
+                        ),
+                        causal_affordance_actions=(
+                            source_causal_affordance_actions
+                        ),
+                        causal_affordance_count=len(
+                            source_causal_affordance_actions
+                        ),
+                        **self._frame_fields(source_frame),
+                    )
             archive_state_ids_before_prune = {
                 id(branch.state) for branch in self.archive
             }
@@ -2871,6 +3508,23 @@ class VerifiedNeuralAgent:
                 action_effect_samples=committed_action_effect_samples,
                 action_effect_bonus=committed_action_effect_bonus,
                 causal_spatial_signature=committed_causal_spatial_signature,
+                causal_context_signature=source_causal_context_signature,
+                target_causal_context_signature=(
+                    committed_target_causal_context_signature
+                ),
+                causal_event_detected=(
+                    committed_context["detected"]
+                ),
+                causal_component_count=committed_context["components"],
+                causal_event_basis=committed_context["basis"],
+                causal_event_novel_cells=committed_context["novel_cells"],
+                causal_affordance_actions=source_causal_affordance_actions,
+                causal_affordance_count=len(
+                    source_causal_affordance_actions
+                ),
+                transition_spatial_signature=committed_context[
+                    "transition_spatial_signature"
+                ],
                 causal_spatial_novelty=committed_causal_spatial_novelty,
                 causal_spatial_visits_before=(
                     committed_causal_spatial_visits_before
@@ -2979,6 +3633,34 @@ class VerifiedNeuralAgent:
                     )
                 )
             ]
+        global_causal_event_eligible = [
+            branch for branch in eligible if branch.causal_event_outcome
+        ]
+        same_context_eligible = [
+            branch
+            for branch in eligible
+            if branch.causal_context_signature
+            == self.current_causal_context_signature
+        ]
+        if global_causal_event_eligible:
+            eligible = global_causal_event_eligible
+        elif same_context_eligible:
+            if (
+                self.current_causal_context_signature
+                in self.causal_outcome_contexts
+            ):
+                eligible = same_context_eligible
+            else:
+                ancestor_affordance_eligible = [
+                    branch
+                    for branch in eligible
+                    if branch not in same_context_eligible
+                    and branch.causal_affordance_actions
+                ]
+                eligible = (
+                    same_context_eligible
+                    + ancestor_affordance_eligible
+                )
         if not eligible:
             if delayed_return:
                 self._emit(
@@ -3026,15 +3708,50 @@ class VerifiedNeuralAgent:
                 filtered=hazardous_eligible,
                 alternatives_remaining=len(eligible),
             )
-        branch = max(
-            eligible,
-            key=lambda item: (
+        causal_event_eligible = [
+            candidate
+            for candidate in eligible
+            if candidate.causal_event_outcome
+        ]
+        causal_event_outcome_preferred = bool(causal_event_eligible)
+        if causal_event_eligible:
+            eligible = causal_event_eligible
+            affordance_breadth_first = False
+            restore_key = lambda item: (
+                -item.created,
+                self._archive_frontier_score(item),
+                self.novelty.score(self._signature(item.frame)),
+                item.score,
+            )
+        else:
+            affordance_eligible = [
+                candidate
+                for candidate in eligible
+                if candidate.causal_affordance_actions
+            ]
+            affordance_breadth_first = bool(affordance_eligible)
+            if affordance_eligible:
+                eligible = affordance_eligible
+        if not causal_event_eligible and affordance_breadth_first:
+            eligible = affordance_eligible
+            restore_key = lambda item: (
+                -item.created,
+                self._archive_frontier_score(item),
+                self.novelty.score(self._signature(item.frame)),
+                item.score,
+            )
+        elif not causal_event_eligible:
+            restore_key = lambda item: (
                 self._archive_frontier_score(item),
                 self.novelty.score(self._signature(item.frame)),
                 item.created,
                 item.score,
-            ),
+            )
+        branch = max(
+            eligible,
+            key=restore_key,
         )
+        causal_context_preferred = branch in same_context_eligible
         self.archive.remove(branch)
         self._discard_temporal_option("archive_restore")
         self._discard_pending_temporal_option("archive_restore")
@@ -3062,6 +3779,34 @@ class VerifiedNeuralAgent:
             or self._fallback_frontier_signature(branch.frame)
         )
         self.current_frontier_signature = restored_frontier_signature
+        restored_causal_context_signature = (
+            branch.target_causal_context_signature
+            or branch.causal_context_signature
+            or "causal-context-root"
+        )
+        if branch.causal_affordance_actions:
+            self.archive_branch_restores[
+                self._affordance_checkpoint_key(
+                    branch.frame,
+                    restored_causal_context_signature,
+                    branch.causal_affordance_actions,
+                    branch.pose_action,
+                )
+            ] += 1
+        if branch.causal_event_outcome:
+            self.causal_outcome_restores[
+                self._causal_outcome_key(
+                    branch.frame, branch.pose_action
+                )
+            ] += 1
+        self.current_pose_action = branch.pose_action
+        self.current_causal_context_signature = (
+            restored_causal_context_signature
+        )
+        if branch.causal_event_outcome:
+            self.causal_outcome_contexts.add(
+                restored_causal_context_signature
+            )
         self._restart_frontier_trace(
             restored_frontier_signature, recovery_reason
         )
@@ -3104,7 +3849,13 @@ class VerifiedNeuralAgent:
         restored_causal_spatial_visits_before = (
             0
             if not branch.causal_spatial_signature
-            else self.causal_spatial_visits[branch.causal_spatial_signature]
+            else self.causal_spatial_visits[
+                self._causal_frontier_key(
+                    branch.causal_context_signature,
+                    branch.causal_spatial_signature,
+                    branch.causal_affordance_actions,
+                )
+            ]
         )
         restored_causal_spatial_novelty = (
             0.0
@@ -3112,7 +3863,18 @@ class VerifiedNeuralAgent:
             else 1.0 / math.sqrt(restored_causal_spatial_visits_before + 1)
         )
         if branch.causal_spatial_signature:
-            self.causal_spatial_visits[branch.causal_spatial_signature] += 1
+            self.causal_spatial_visits[
+                self._causal_frontier_key(
+                    branch.causal_context_signature,
+                    branch.causal_spatial_signature,
+                    branch.causal_affordance_actions,
+                )
+            ] += 1
+            self.causal_spatial_cell_visits.update(
+                self._causal_spatial_cells(
+                    branch.causal_spatial_signature
+                )
+            )
         self.last_action = branch.plan.path[0]
         self.last_duration = branch.plan.durations[0]
         self.last_action_was_causal_spatial = bool(
@@ -3129,6 +3891,11 @@ class VerifiedNeuralAgent:
             "archive_branch_restored",
             decision=self.decision_index,
             reason=recovery_reason,
+            causal_context_preferred=causal_context_preferred,
+            causal_event_outcome_preferred=(
+                causal_event_outcome_preferred
+            ),
+            affordance_breadth_first=affordance_breadth_first,
             state_id=restored_state_id,
             created_decision=branch.created,
             age=self.decision_index - branch.created,
@@ -3147,6 +3914,17 @@ class VerifiedNeuralAgent:
             action_effect_samples=restored_action_effect_samples,
             action_effect_bonus=restored_action_effect_bonus,
             causal_spatial_signature=branch.causal_spatial_signature or None,
+            causal_context_signature=branch.causal_context_signature,
+            target_causal_context_signature=(
+                restored_causal_context_signature
+            ),
+            causal_event_detected=(
+                branch.causal_event_outcome
+                or restored_causal_context_signature
+                != branch.causal_context_signature
+            ),
+            causal_affordance_actions=branch.causal_affordance_actions,
+            causal_affordance_count=len(branch.causal_affordance_actions),
             causal_spatial_novelty=restored_causal_spatial_novelty,
             causal_spatial_visits_before=(
                 restored_causal_spatial_visits_before
@@ -3182,6 +3960,10 @@ class VerifiedNeuralAgent:
             branches_examined=0,
             restored_archive=True,
             restore_reason=recovery_reason,
+            causal_event_outcome_preferred=(
+                causal_event_outcome_preferred
+            ),
+            affordance_breadth_first=affordance_breadth_first,
             committed_state_id=restored_state_id,
             archive_branches_added=0,
             archive_size=len(self.archive),
@@ -3192,6 +3974,17 @@ class VerifiedNeuralAgent:
             action_effect_samples=restored_action_effect_samples,
             action_effect_bonus=restored_action_effect_bonus,
             causal_spatial_signature=branch.causal_spatial_signature or None,
+            causal_context_signature=branch.causal_context_signature,
+            target_causal_context_signature=(
+                restored_causal_context_signature
+            ),
+            causal_event_detected=(
+                branch.causal_event_outcome
+                or restored_causal_context_signature
+                != branch.causal_context_signature
+            ),
+            causal_affordance_actions=branch.causal_affordance_actions,
+            causal_affordance_count=len(branch.causal_affordance_actions),
             causal_spatial_novelty=restored_causal_spatial_novelty,
             causal_spatial_visits_before=(
                 restored_causal_spatial_visits_before
@@ -3247,7 +4040,14 @@ class VerifiedNeuralAgent:
                 (branch for branch in self.archive if branch.scene in crowded_scenes),
                 key=lambda item: (
                     self._archive_frontier_score(item),
-                    item.created,
+                    (
+                        -item.created
+                        if (
+                            item.causal_affordance_actions
+                            or item.causal_event_outcome
+                        )
+                        else item.created
+                    ),
                     item.score,
                 ),
             )

@@ -480,10 +480,51 @@ digest remained unchanged. Deterministic replay verification passed for 14,063
 observations. The 240-fps committed and full players are under
 `experiments/lolo1-medium/extended_evaluations/cycle-000010-first-heart-causal-dedup-500/replays/`.
 
+## First autonomously completed room
+
+The longer pixel-only run `cycle-000010-floor1-explicit-pose-3000` collected the
+right-hand heart around decision 135, discovered a button-dependent persistent
+visual transformation around decision 777, moved the changed object around
+decisions 799–801, and collected the upper heart at decision 879. No heart,
+life, chest, room, sprite, or coordinate label entered the planner or reward.
+Evaluator inspection was applied only after events were logged.
+
+That run exposed a general episodic-memory defect: after a persistent visual
+transition, archive restoration could prefer an ancestor capability and lose
+the newly reached world state. Causal outcomes are now retained explicitly,
+restored breadth-first across causal-context epochs, and exhausted by coarse
+pixels plus learned directional pose. Equivalent copies are rejected rather
+than re-added. Deterministic episodic resume reconstructs a committed discovery
+from its parent event stream and hashes that parent log in the child manifest.
+
+The canonical completion trace is
+`cycle-000010-floor1-resume-d879-finite-causal-bfs-1000`. It resumed the
+self-discovered decision-879 state, used only gameplay actions, and found the
+room-clear transition without a completion reward. A saved `UP@16` branch
+created at decision 496 was restored at decision 506, producing the black
+transition frame. The next room was visible at decision 508. Evaluator-only
+annotations mark the exact boundary between `stage-1-floor-1` and
+`stage-1-floor-2`.
+
+The stopped-after-clear log contains 528 committed decisions, 4,660 real
+investigated actions, 3,618 verified branches, 126 archive restores, 1,311
+unique telemetry frames, 214 committed causal-event detections, and 51 delayed
+visual-return recoveries. Both 240-fps players passed deterministic replay for
+14,458 observations. The committed replay contains 5,232 frames; the full
+planning replay contains 52,586 frames, including 5,227 state-load markers.
+Artifacts are under
+`experiments/lolo1-medium/extended_evaluations/cycle-000010-floor1-resume-d879-finite-causal-bfs-1000/`.
+
+The run manifest reports `error` because the native process was deliberately
+interrupted after the next room was visually confirmed; the append-only event
+stream, evaluator annotation, summaries, and replay integrity all remain
+valid. The replay verifier reconstructs both the source run and resumed child
+before checking every recorded endpoint.
+
 ## Next research target
 
-Turn temporary spatial effects into persistent object-centric or slot-based
-mechanics that survive across rooms and training cycles, then learn explicit
-reachability and reversibility estimates. The first collectible demonstrates
-within-room causal exploration, but it does not yet establish room completion,
-multi-object planning, or generalization to withheld rooms.
+Carry causal-outcome memory into the next rooms, then turn temporary spatial
+effects into persistent object-centric or slot-based mechanics that survive
+across rooms and training cycles. Learn explicit reachability and reversibility
+estimates, and validate generalization on withheld rooms before attempting the
+frozen Lolo 2 protocol.

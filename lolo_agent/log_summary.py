@@ -114,10 +114,16 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
     causal_spatial_observations = 0
     causal_spatial_signatures: set[str] = set()
     committed_causal_spatial_signatures: set[str] = set()
+    causal_events_detected = 0
+    archive_rejections_by_reason: Counter[str] = Counter()
 
     edge_counts: Counter[Tuple[str, str, str, int]] = Counter()
     node_details: Dict[str, Dict[str, Any]] = {}
     for event in events:
+        if event["event"] == "archive_branch_rejected":
+            archive_rejections_by_reason[
+                str(event.get("reason", "unspecified"))
+            ] += 1
         if event["event"] == "branch_verified":
             if event.get("action_effect_contrast") is not None:
                 action_effect_observations += 1
@@ -211,6 +217,8 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             if source and target:
                 edge_counts[(source, target, action, action_frames)] += 1
         elif event["event"] == "decision_committed":
+            if event.get("causal_event_detected"):
+                causal_events_detected += 1
             action = str(event["action"])
             actions[action] += 1
             action_frames = int(event.get("action_frames") or 1)
@@ -258,6 +266,29 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                     "action_effect_bonus": event.get("action_effect_bonus"),
                     "causal_spatial_signature": event.get(
                         "causal_spatial_signature"
+                    ),
+                    "causal_context_signature": event.get(
+                        "causal_context_signature"
+                    ),
+                    "target_causal_context_signature": event.get(
+                        "target_causal_context_signature",
+                        event.get("causal_context_signature"),
+                    ),
+                    "causal_event_detected": event.get(
+                        "causal_event_detected", False
+                    ),
+                    "causal_component_count": event.get(
+                        "causal_component_count", 0
+                    ),
+                    "causal_event_basis": event.get("causal_event_basis"),
+                    "causal_event_novel_cells": event.get(
+                        "causal_event_novel_cells", 0
+                    ),
+                    "causal_affordance_count": event.get(
+                        "causal_affordance_count", 0
+                    ),
+                    "transition_spatial_signature": event.get(
+                        "transition_spatial_signature"
                     ),
                     "causal_spatial_novelty": event.get(
                         "causal_spatial_novelty"
@@ -350,6 +381,14 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "action_effect_samples",
         "action_effect_bonus",
         "causal_spatial_signature",
+        "causal_context_signature",
+        "target_causal_context_signature",
+        "causal_event_detected",
+        "causal_component_count",
+        "causal_event_basis",
+        "causal_event_novel_cells",
+        "causal_affordance_count",
+        "transition_spatial_signature",
         "causal_spatial_novelty",
         "causal_spatial_visits_before",
         "causal_changed_pixels",
@@ -454,8 +493,20 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             "learned_hazards_filtered", 0
         ),
         "learned_hazard_filtered_choices": learned_hazard_filtered_choices,
-        "archive_hazard_rejections": event_counts.get(
+        "archive_branch_rejections": event_counts.get(
             "archive_branch_rejected", 0
+        ),
+        "archive_rejections_by_reason": dict(
+            sorted(archive_rejections_by_reason.items())
+        ),
+        "archive_hazard_rejections": archive_rejections_by_reason.get(
+            "learned_hazard", 0
+        ),
+        "causal_outcome_archive_additions": event_counts.get(
+            "archive_causal_outcome_added", 0
+        ),
+        "causal_outcome_exhaustions": archive_rejections_by_reason.get(
+            "causal_outcome_exhausted", 0
         ),
         "global_action_hazard_samples": global_action_hazard_samples,
         "matched_neutral_verifications": event_counts.get(
@@ -466,6 +517,7 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "committed_causal_spatial_signatures": len(
             committed_causal_spatial_signatures
         ),
+        "causal_events_detected": causal_events_detected,
         "temporal_options_started": event_counts.get(
             "temporal_option_started", 0
         ),

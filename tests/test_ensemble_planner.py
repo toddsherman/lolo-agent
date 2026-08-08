@@ -620,14 +620,125 @@ class EnsemblePlannerTests(unittest.TestCase):
             "scene",
             1,
             causal_spatial_signature="new-grid-cell",
+            causal_context_signature="world-a",
         )
 
         self.assertGreater(
             agent._archive_frontier_score(spatial),
             agent._archive_frontier_score(ordinary),
         )
-        agent.causal_spatial_visits["new-grid-cell"] = 3
+        agent.causal_spatial_visits[
+            agent._causal_frontier_key("world-a", "new-grid-cell")
+        ] = 3
         self.assertEqual(agent._archive_causal_spatial_bonus(spatial), 1.0)
+
+        same_effect_new_world = _ArchivedBranch(
+            3,
+            frame,
+            plan,
+            0.0,
+            "scene",
+            1,
+            causal_spatial_signature="new-grid-cell",
+            causal_context_signature="world-b",
+        )
+        self.assertEqual(
+            agent._archive_causal_spatial_bonus(same_effect_new_world),
+            2.0,
+        )
+
+        capable = _ArchivedBranch(
+            4,
+            frame,
+            plan,
+            0.0,
+            "scene",
+            1,
+            causal_affordance_actions=(Action.A, Action.RIGHT),
+        )
+        self.assertGreater(
+            agent._archive_frontier_score(capable),
+            agent._archive_frontier_score(ordinary),
+        )
+
+    def test_affordance_checkpoint_key_deduplicates_actions(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        agent = VerifiedNeuralAgent(
+            MockPuzzleEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(actions=(Action.RIGHT,), planning_depth=1),
+        )
+        frame = agent.reset()
+
+        key = agent._affordance_checkpoint_key(
+            frame, "world-a", (Action.B, Action.A, Action.A), Action.LEFT
+        )
+
+        self.assertEqual(
+            key,
+            (agent._signature(frame), Action.LEFT, (Action.A, Action.B)),
+        )
+        self.assertEqual(
+            key,
+            agent._affordance_checkpoint_key(
+                frame, "world-b", (Action.A, Action.B), Action.LEFT
+            ),
+        )
+        self.assertNotEqual(
+            key,
+            agent._affordance_checkpoint_key(
+                frame, "world-b", (Action.A, Action.B), Action.RIGHT
+            ),
+        )
+        first_pixels = bytearray(32 * 32)
+        first_pixels[0] = 10
+        first_pixels[1] = 20
+        second_pixels = bytearray(first_pixels)
+        second_pixels[0], second_pixels[1] = second_pixels[1], second_pixels[0]
+        first_pose = Frame(32, 32, 1, bytes(first_pixels))
+        second_pose = Frame(32, 32, 1, bytes(second_pixels))
+        self.assertNotEqual(first_pose.digest, second_pose.digest)
+        self.assertEqual(
+            agent._affordance_checkpoint_key(
+                first_pose, "world-a", (Action.A,), Action.UP
+            ),
+            agent._affordance_checkpoint_key(
+                second_pose, "world-b", (Action.A,), Action.UP
+            ),
+        )
+        agent.archive_branch_restores[key] += 1
+        agent.reset()
+        self.assertEqual(agent.archive_branch_restores[key], 0)
+
+    def test_disconnected_causal_effect_starts_a_new_frontier_context(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        agent = VerifiedNeuralAgent(
+            MockPuzzleEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(actions=(Action.RIGHT,), planning_depth=1),
+        )
+        connected = bytearray(16 * 15)
+        connected[6 * 16 + 12] = 1
+        connected[7 * 16 + 12] = 1
+        disconnected = bytearray(connected)
+        disconnected[5 * 16 + 14] = 1
+
+        same, detected, components = agent._causal_target_context(
+            "world-a", bytes(connected).hex()
+        )
+        self.assertEqual(same, "world-a")
+        self.assertFalse(detected)
+        self.assertEqual(components, 1)
+
+        target, detected, components = agent._causal_target_context(
+            "world-a", bytes(disconnected).hex()
+        )
+        self.assertTrue(detected)
+        self.assertEqual(components, 2)
+        self.assertNotEqual(target, "world-a")
+        self.assertTrue(target.startswith("world-a>"))
 
     def test_stagnation_can_restore_a_causal_frontier_in_the_same_scene(self) -> None:
         model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
@@ -666,6 +777,332 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertIsNotNone(restored)
         self.assertEqual(restored.frame.digest, alternative.digest)
 
+    def test_stagnation_prefers_a_branch_from_the_current_causal_context(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        env = UniqueStateEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                visual_stagnation_visits=1,
+            ),
+        )
+        current = agent.reset()
+        scene = agent._scene_signature(current)
+        plan = NeuralPlan((Action.RIGHT,), (1,), 1.0, 0.0)
+        agent.current_causal_context_signature = "new-world"
+        old_frame = Frame(8, 8, 1, bytes([0, 10]) + bytes(62))
+        new_frame = Frame(8, 8, 1, bytes([0, 20]) + bytes(62))
+        agent.archive = [
+            _ArchivedBranch(
+                state=env.save_state(),
+                frame=old_frame,
+                plan=plan,
+                score=100.0,
+                scene=scene,
+                created=2,
+                causal_spatial_signature="old-effect",
+                causal_context_signature="old-world",
+            ),
+            _ArchivedBranch(
+                state=env.save_state(),
+                frame=new_frame,
+                plan=plan,
+                score=0.0,
+                scene=scene,
+                created=1,
+                causal_spatial_signature="new-effect",
+                causal_context_signature="new-world",
+                target_causal_context_signature="new-world",
+            ),
+        ]
+        agent.visual_stagnation_streak = 1
+
+        restored = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(restored)
+        self.assertEqual(restored.frame.digest, new_frame.digest)
+
+    def test_stagnation_falls_back_to_an_ancestor_when_context_is_exhausted(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        env = UniqueStateEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                visual_stagnation_visits=1,
+            ),
+        )
+        current = agent.reset()
+        agent.current_causal_context_signature = "root>persistent-event"
+        agent.archive.append(
+            _ArchivedBranch(
+                state=env.save_state(),
+                frame=Frame(8, 8, 1, bytes([0, 10]) + bytes(62)),
+                plan=NeuralPlan((Action.RIGHT,), (1,), 1.0, 0.0),
+                score=100.0,
+                scene=agent._scene_signature(current),
+                created=0,
+                causal_spatial_signature="old-effect",
+                causal_context_signature="root",
+                target_causal_context_signature="root",
+            )
+        )
+        agent.visual_stagnation_streak = 1
+
+        restored = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(restored)
+
+    def test_stagnation_can_recover_a_lost_affordance_from_an_ancestor(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        env = UniqueStateEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                visual_stagnation_visits=1,
+            ),
+        )
+        current = agent.reset()
+        scene = agent._scene_signature(current)
+        plan = NeuralPlan((Action.RIGHT,), (1,), 1.0, 0.0)
+        agent.current_causal_context_signature = "new-world"
+        old_capable_frame = Frame(8, 8, 1, bytes([0, 10]) + bytes(62))
+        new_ordinary_frame = Frame(8, 8, 1, bytes([0, 20]) + bytes(62))
+        agent.archive = [
+            _ArchivedBranch(
+                state=env.save_state(),
+                frame=old_capable_frame,
+                plan=plan,
+                score=0.0,
+                scene=scene,
+                created=1,
+                causal_spatial_signature="old-effect",
+                causal_context_signature="old-world",
+                causal_affordance_actions=(Action.A,),
+            ),
+            _ArchivedBranch(
+                state=env.save_state(),
+                frame=new_ordinary_frame,
+                plan=plan,
+                score=0.0,
+                scene=scene,
+                created=2,
+                causal_spatial_signature="new-effect",
+                causal_context_signature="new-world",
+                target_causal_context_signature="new-world",
+            ),
+        ]
+        agent.visual_stagnation_streak = 1
+
+        restored = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(restored)
+        self.assertEqual(restored.frame.digest, old_capable_frame.digest)
+
+    def test_stagnation_exhausts_a_new_causal_context_before_its_ancestors(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        env = UniqueStateEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                visual_stagnation_visits=1,
+            ),
+        )
+        current = agent.reset()
+        scene = agent._scene_signature(current)
+        plan = NeuralPlan((Action.RIGHT,), (1,), 1.0, 0.0)
+        agent.current_causal_context_signature = "new-causal-world"
+        agent.causal_outcome_contexts.add("new-causal-world")
+        old_capable_frame = Frame(8, 8, 1, bytes([0, 10]) + bytes(62))
+        new_successor_frame = Frame(8, 8, 1, bytes([0, 20]) + bytes(62))
+        agent.archive = [
+            _ArchivedBranch(
+                state=env.save_state(),
+                frame=old_capable_frame,
+                plan=plan,
+                score=100.0,
+                scene=scene,
+                created=1,
+                causal_spatial_signature="old-effect",
+                causal_context_signature="old-world",
+                causal_affordance_actions=(Action.A,),
+            ),
+            _ArchivedBranch(
+                state=env.save_state(),
+                frame=new_successor_frame,
+                plan=plan,
+                score=0.0,
+                scene=scene,
+                created=2,
+                causal_spatial_signature="new-effect",
+                causal_context_signature="new-causal-world",
+                target_causal_context_signature="new-causal-world",
+            ),
+        ]
+        agent.visual_stagnation_streak = 1
+
+        restored = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(restored)
+        self.assertEqual(restored.frame.digest, new_successor_frame.digest)
+
+    def test_archive_score_prioritizes_a_causal_event_outcome(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        agent = VerifiedNeuralAgent(
+            MockPuzzleEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(actions=(Action.RIGHT,), planning_depth=1),
+        )
+        frame = agent.reset()
+        plan = NeuralPlan((Action.RIGHT,), (4,), 0.0, 0.0)
+        ordinary = _ArchivedBranch(1, frame, plan, 0.0, "scene", 1)
+        outcome = _ArchivedBranch(
+            2,
+            frame,
+            plan,
+            0.0,
+            "scene",
+            1,
+            causal_event_outcome=True,
+        )
+
+        self.assertGreater(
+            agent._archive_frontier_score(outcome),
+            agent._archive_frontier_score(ordinary),
+        )
+
+    def test_stagnation_explores_causal_outcomes_breadth_first(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        env = UniqueStateEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                visual_stagnation_visits=1,
+            ),
+        )
+        current = agent.reset()
+        scene = agent._scene_signature(current)
+        plan = NeuralPlan((Action.RIGHT,), (1,), 1.0, 0.0)
+        agent.current_causal_context_signature = "current-world"
+        older_frame = Frame(8, 8, 1, bytes([0, 10]) + bytes(62))
+        newer_frame = Frame(8, 8, 1, bytes([0, 20]) + bytes(62))
+        agent.archive = [
+            _ArchivedBranch(
+                env.save_state(),
+                older_frame,
+                plan,
+                0.0,
+                scene,
+                1,
+                causal_spatial_signature="older-event",
+                causal_context_signature="older-world",
+                causal_event_outcome=True,
+            ),
+            _ArchivedBranch(
+                env.save_state(),
+                newer_frame,
+                plan,
+                100.0,
+                scene,
+                2,
+                causal_spatial_signature="newer-event",
+                causal_context_signature="newer-world",
+                causal_event_outcome=True,
+            ),
+        ]
+        agent.visual_stagnation_streak = 1
+
+        restored = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(restored)
+        self.assertEqual(restored.frame.digest, older_frame.digest)
+        self.assertEqual(
+            agent.causal_outcome_restores[
+                agent._causal_outcome_key(older_frame, None)
+            ],
+            1,
+        )
+
+    def test_stagnation_breaks_equal_affordance_ties_in_favor_of_older_branches(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        env = UniqueStateEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                visual_stagnation_visits=1,
+            ),
+        )
+        current = agent.reset()
+        scene = agent._scene_signature(current)
+        plan = NeuralPlan((Action.RIGHT,), (1,), 1.0, 0.0)
+        older_frame = Frame(8, 8, 1, bytes([0, 10]) + bytes(62))
+        newer_frame = Frame(8, 8, 1, bytes([0, 20]) + bytes(62))
+        agent.archive = [
+            _ArchivedBranch(
+                state=env.save_state(),
+                frame=older_frame,
+                plan=plan,
+                score=0.0,
+                scene=scene,
+                created=1,
+                causal_spatial_signature="old-effect",
+                causal_context_signature="causal-context-root",
+                causal_affordance_actions=(Action.A,),
+                pose_action=Action.RIGHT,
+            ),
+            _ArchivedBranch(
+                state=env.save_state(),
+                frame=newer_frame,
+                plan=plan,
+                score=0.0,
+                scene=scene,
+                created=2,
+                causal_spatial_signature="new-effect",
+                causal_context_signature="causal-context-root",
+                causal_affordance_actions=(Action.A,),
+                pose_action=Action.RIGHT,
+            ),
+        ]
+        agent.causal_spatial_visits[
+            agent._causal_frontier_key(
+                "causal-context-root", "old-effect", (Action.A,)
+            )
+        ] = 100
+        agent.visual_stagnation_streak = 1
+
+        restored = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(restored)
+        self.assertEqual(restored.frame.digest, older_frame.digest)
+        restored_key = agent._affordance_checkpoint_key(
+            older_frame, "causal-context-root", (Action.A,), Action.RIGHT
+        )
+        self.assertEqual(agent.archive_branch_restores[restored_key], 1)
+
     def test_verification_budget_covers_distinct_buttons_before_durations(self) -> None:
         model = EnsembleVisualDynamicsModel(
             latent_size=32,
@@ -695,6 +1132,41 @@ class EnsemblePlannerTests(unittest.TestCase):
             {action for scene, action in agent.scene_action_probes if scene == source_scene},
             set(actions),
         )
+
+    def test_control_probes_prefer_long_directional_presses(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32,
+            action_size=8,
+            ensemble_size=2,
+            duration_conditioned=True,
+            duration_size=4,
+            max_action_frames=8,
+        )
+        agent = VerifiedNeuralAgent(
+            MockPuzzleEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.LEFT, Action.RIGHT, Action.A),
+                action_durations=(1, 8),
+                planning_depth=1,
+                verify_actions=5,
+            ),
+        )
+        agent.reset()
+        plans = {
+            (action, duration): NeuralPlan(
+                (action,), (duration,), 0.0, 0.0
+            )
+            for action in agent.config.actions
+            for duration in agent.planner.duration_choices
+        }
+        ranked = [plans[(action, 1)] for action in agent.config.actions]
+
+        probed = agent._add_control_probes(ranked, plans)
+
+        self.assertIn((Action.LEFT, 8), {(p.path[0], p.durations[0]) for p in probed})
+        self.assertIn((Action.RIGHT, 8), {(p.path[0], p.durations[0]) for p in probed})
 
     def test_matched_control_probes_reserve_canonical_behavior_slots(self) -> None:
         model = EnsembleVisualDynamicsModel(

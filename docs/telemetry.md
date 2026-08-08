@@ -122,8 +122,11 @@ Matched-neutral exploration adds the following raw events and decision fields:
   `causal_spatial_bonus` describe action-dependent screen changes;
 - `causal_spatial_archive_bonus` records the live rarity value used when an
   archived branch is selected;
-- `archive_branch_rejected` distinguishes covered causal frontiers,
-  non-causal alternatives, and learned hazards.
+- `archive_branch_rejected` distinguishes covered causal frontiers, exhausted
+  causal outcomes, non-causal alternatives, and learned hazards;
+- `archive_causal_outcome_added` records a retained persistent visual
+  transition, while `causal_outcome_exhausted` is the rejection reason for an
+  already-restored coarse-pixel and directional-pose key.
 
 `summary.json` aggregates matched-neutral verifications, total and unique
 causal-spatial observations, and unique committed causal signatures.
@@ -158,6 +161,28 @@ research boundary during play.
 Use `--no-frame-images` for digest-only profiling runs. The default keeps PNGs
 because they make state timelines and transition-graph inspection much easier.
 
+## Episodic resume
+
+Use a state the agent previously reached without replaying a hand-authored
+controller sequence:
+
+```bash
+lolo-neural-run \
+  --host build/lolo-libretro-host \
+  --rom "Adventures of Lolo.nes" \
+  --core "$HOME/Library/Application Support/RetroArch/cores/nestopia_libretro.dylib" \
+  --checkpoint checkpoints/cycle-000010.pt \
+  --resume-run runs/<parent-run> \
+  --resume-decision 879 \
+  --decisions 500
+```
+
+The child run records `episodic_resume_completed` and stores the parent run ID,
+decision, source location, and source-event SHA-256 in its manifest. Replay
+validates that hash and reconstructs the parent decision before applying the
+child event stream. Gameplay-only resumes exclude `START` and `SELECT` from the
+agent action set.
+
 ## Deterministic high-speed playback
 
 The event stream contains enough information to reconstruct the entire native
@@ -178,6 +203,8 @@ The renderer verifies the ROM, core, and host binaries against the run manifest,
 recreates state handles in event order, and expands every multi-frame controller
 press into individual NES frames. It checks every reconstructed endpoint
 against the original telemetry and fails on the first divergence.
+For an episodically resumed run it first verifies and replays the content-hashed
+parent log, so the same integrity check covers the provenance boundary.
 
 Two standalone local players are generated:
 

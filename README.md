@@ -138,6 +138,12 @@ Open `runs/<run-id>/replays/committed/index.html` or
 `runs/<run-id>/replays/full/index.html`. Players support scrubbing, stepping,
 keyboard control, and playback from 5 to 240 frames per second.
 
+A later local session can continue from a decision the agent reached itself by
+passing `--resume-run runs/<parent-run> --resume-decision <n>` to
+`lolo-neural-run`. The child manifest hashes that parent telemetry, replay
+reconstructs both logs as one provenance chain, and gameplay resumes exclude
+the title-screen `START`/`SELECT` controls.
+
 ## Durable learning experiments
 
 Run repeated collection, MPS training, and frozen evaluation with explicit
