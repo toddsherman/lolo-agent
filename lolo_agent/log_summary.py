@@ -95,6 +95,7 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
     frontier_choice_samples = 0
     committed_frontier_values: List[float] = []
     abstraction_clusters: set[str] = set()
+    behavior_clusters: set[str] = set()
 
     edge_counts: Counter[Tuple[str, str, str, int]] = Counter()
     node_details: Dict[str, Dict[str, Any]] = {}
@@ -117,6 +118,8 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             )
         if event["event"] == "visual_abstraction_assigned":
             abstraction_clusters.add(str(event["cluster"]))
+        elif event["event"] == "behavioral_abstraction_assigned":
+            behavior_clusters.add(str(event["cluster"]))
         frame = event.get("frame") or event.get("target_frame")
         if frame:
             frames.add(frame)
@@ -181,6 +184,12 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                         "committed_choice_frontier_value"
                     ),
                     "abstract_signature": event.get("abstract_signature"),
+                    "source_behavioral_signature": event.get(
+                        "source_behavioral_signature"
+                    ),
+                    "target_frontier_signature": event.get(
+                        "target_frontier_signature"
+                    ),
                     "frame": event.get("frame"),
                     "scene_signature": event.get("scene_signature"),
                     "scene_streak": event.get("scene_streak"),
@@ -212,6 +221,8 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "persistent_frontier_value",
         "committed_choice_frontier_value",
         "abstract_signature",
+        "source_behavioral_signature",
+        "target_frontier_signature",
         "frame",
         "scene_signature",
         "scene_streak",
@@ -298,6 +309,16 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             "visual_abstraction_assigned", 0
         ),
         "visual_abstraction_clusters": len(abstraction_clusters),
+        "behavioral_abstraction_assignments": event_counts.get(
+            "behavioral_abstraction_assigned", 0
+        ),
+        "behavioral_abstraction_clusters": len(behavior_clusters),
+        "behavioral_abstraction_deferrals": event_counts.get(
+            "behavioral_abstraction_deferred", 0
+        ),
+        "frontier_signature_migrations": event_counts.get(
+            "frontier_signature_migrated", 0
+        ),
         "verified_branches": event_counts.get("branch_verified", 0),
         "unique_frames": len(frames),
         "unique_scenes": len(scenes),

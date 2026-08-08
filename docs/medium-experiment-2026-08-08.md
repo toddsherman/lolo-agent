@@ -185,12 +185,47 @@ The deterministic players are under
 Replay verification passed for all 6,056 recorded observations. The committed
 view contains 3,676 timeline frames and the full planning view contains 15,592.
 
+## Behavioral-equivalence follow-up
+
+Purely visual clusters are now only candidate sets. Each current saved state is
+tested with two fixed, equal-duration controller probes. The agent compares the
+resulting source-to-successor latent displacements and shares frontier evidence
+only below a 0.02 mean RMSE threshold. Unprobed successors keep unique
+provisional signatures; values and active traces migrate only after behavioral
+compatibility is observed. Calibration on the preceding audit placed the 95th
+percentile for distinct frames in one visual cluster at 0.020116.
+
+The 320-decision frozen behavioral audit recorded:
+
+- 201 exact frames and 59 coarse scenes, up from 157 and 44;
+- 67 visual clusters refined into 72 behavioral clusters across 285 planning
+  roots, with zero deferred classifications;
+- 285 provisional-to-behavioral frontier migrations and 117 learned choice
+  samples;
+- 25 delayed returns and recoveries, 35 total archive restores, 151
+  autonomous-motion decisions, and 79 grace waits;
+- 1,710 real verified branches and an unchanged frozen parameter digest.
+
+The committed trajectory reached the final story tableau at decision 131, but
+did not match the evaluator-only Floor 1 coarse signature
+`040604030303040302`. Behavioral refinement broadened exploration without
+advancing beyond the prior deepest frontier. A follow-up that forced a third
+equal-duration discrimination probe displaced too much ordinary exploration:
+it fell to 112 exact frames and 38 scenes and never reached the final tableau.
+That variant was rejected.
+
+The deterministic players are under
+`experiments/lolo1-medium/extended_evaluations/cycle-000010-behavioral-abstraction-320/replays/`.
+Replay verification passed for all 6,056 recorded observations. The committed
+view contains 3,861 timeline frames and the full planning view contains 15,967.
+
 ## Next research target
 
-Replace purely visual similarity with interaction-derived behavioral
-equivalence. From saved states in each visual cluster, probe a small shared set
-of actions and compare their successor-latent distributions. States should
-share return evidence only when both their pixels and observed futures agree.
-This is the next step toward distinguishing visually similar states with
-different control consequences without using evaluator room hashes, menu
-labels, or supplied progress semantics.
+Make behavioral probing active and cumulative. Repeated visits to a visual
+cluster should rotate through controller actions, retain partial successor
+profiles, and select future probes by how strongly they distinguish competing
+behavioral hypotheses. This should improve controllability detection without
+permanently consuming more of every decision's verification budget. The next
+planner should then use those learned distinctions to preserve temporal
+progress through long non-interactive sequences, still without supplied game
+semantics.

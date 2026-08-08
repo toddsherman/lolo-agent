@@ -61,6 +61,9 @@ class NeuralPlanningConfig:
     frontier_score_weight: float = 0.6
     frontier_origin_weight: float = 0.35
     abstraction_latent_rmse_threshold: float = 0.04
+    behavioral_abstraction_rmse_threshold: float = 0.02
+    behavioral_abstraction_min_shared_probes: int = 2
+    behavioral_probe_count: int = 2
 
 
 @dataclass(frozen=True)
@@ -89,6 +92,7 @@ class _ArchivedBranch:
     scene: str
     created: int
     origin_signature: str = ""
+    frontier_signature: str = ""
 
 
 @dataclass(frozen=True)
@@ -115,6 +119,15 @@ class _VisualCluster:
     key: str
     scene: str
     centroid: Tensor
+    count: int = 1
+
+
+@dataclass
+class _BehaviorCluster:
+    key: str
+    visual_cluster: str
+    probe_centroids: Dict[Tuple[Action, int], Tensor]
+    probe_counts: CounterType[Tuple[Action, int]]
     count: int = 1
 
 
@@ -269,6 +282,12 @@ class VerifiedNeuralAgent:
             raise ValueError("frontier discount must be in (0, 1]")
         if self.config.abstraction_latent_rmse_threshold < 0.0:
             raise ValueError("abstraction latent threshold must be non-negative")
+        if self.config.behavioral_abstraction_rmse_threshold < 0.0:
+            raise ValueError("behavioral abstraction threshold must be non-negative")
+        if self.config.behavioral_abstraction_min_shared_probes <= 0:
+            raise ValueError("behavioral abstraction requires a shared probe")
+        if self.config.behavioral_probe_count <= 0:
+            raise ValueError("behavioral probe count must be positive")
         self.model.freeze()
         self.planner = NeuralRolloutPlanner(model, device, self.config)
         self.novelty = VisualNovelty()
@@ -293,7 +312,12 @@ class VerifiedNeuralAgent:
         self.frontier_choice_samples: CounterType[Tuple[str, Action, int]] = Counter()
         self.visual_clusters: List[_VisualCluster] = []
         self.frame_clusters: Dict[str, str] = {}
+        self.frame_latents: Dict[str, Tensor] = {}
         self.cluster_serial = 0
+        self.behavior_clusters: List[_BehaviorCluster] = []
+        self.behavior_cluster_serial = 0
+        self.provisional_state_serial = 0
+        self.current_frontier_signature = ""
         self.current_scene: Optional[str] = None
         self.scene_streak = 0
         self.visual_stagnation_streak = 0
@@ -342,8 +366,14 @@ class VerifiedNeuralAgent:
         self.autonomous_grace_remaining = 0
         self.visual_clusters = []
         self.frame_clusters = {}
+        self.frame_latents = {}
         self.cluster_serial = 0
-        initial_signature = self._abstract_signature(self.frame)
+        self.behavior_clusters = []
+        self.behavior_cluster_serial = 0
+        self.provisional_state_serial = 0
+        self._abstract_signature(self.frame)
+        initial_signature = self._new_provisional_signature()
+        self.current_frontier_signature = initial_signature
         self.frontier_values = {}
         self.frontier_samples = Counter()
         self.frontier_traces = [_FrontierTrace(0, initial_signature)]
@@ -405,8 +435,8 @@ class VerifiedNeuralAgent:
         )
 
     @torch.no_grad()
-    def _abstract_signature(self, frame: Frame) -> str:
-        cached = self.frame_clusters.get(frame.digest)
+    def _frame_latent(self, frame: Frame) -> Tensor:
+        cached = self.frame_latents.get(frame.digest)
         if cached is not None:
             return cached
         latent = (
@@ -416,6 +446,15 @@ class VerifiedNeuralAgent:
             .detach()
             .to(device="cpu")
         )
+        self.frame_latents[frame.digest] = latent
+        return latent
+
+    @torch.no_grad()
+    def _abstract_signature(self, frame: Frame) -> str:
+        cached = self.frame_clusters.get(frame.digest)
+        if cached is not None:
+            return cached
+        latent = self._frame_latent(frame)
         scene = self._scene_signature(frame)
         candidates = [
             cluster for cluster in self.visual_clusters if cluster.scene == scene
@@ -455,6 +494,194 @@ class VerifiedNeuralAgent:
             scene=scene,
             latent_rmse_to_centroid=None if created else distance,
             threshold=self.config.abstraction_latent_rmse_threshold,
+            exact_signature=self._signature(frame),
+            **self._frame_fields(frame),
+        )
+        return nearest.key
+
+    def _new_provisional_signature(self) -> str:
+        self.provisional_state_serial += 1
+        return f"provisional-state-{self.provisional_state_serial:08d}"
+
+    @staticmethod
+    def _fallback_frontier_signature(frame: Frame) -> str:
+        return f"unprofiled-frame-{frame.digest}"
+
+    def _behavior_probe_keys(self) -> Tuple[Tuple[Action, int], ...]:
+        actions = []
+        if Action.NOOP in self.config.actions:
+            actions.append(Action.NOOP)
+        actions.extend(action for action in self.config.actions if action != Action.NOOP)
+        duration = max(self.planner.duration_choices)
+        return tuple(
+            (action, duration)
+            for action in actions[: self.config.behavioral_probe_count]
+        )
+
+    def _merge_frontier_state_value(self, source: str, target: str) -> None:
+        source_count = self.frontier_samples.pop(source, 0)
+        if not source_count:
+            self.frontier_values.pop(source, None)
+            return
+        target_count = self.frontier_samples.get(target, 0)
+        source_value = self.frontier_values.pop(source, 0.0)
+        target_value = self.frontier_values.get(target, 0.0)
+        combined_count = source_count + target_count
+        self.frontier_samples[target] = combined_count
+        self.frontier_values[target] = (
+            source_count * source_value + target_count * target_value
+        ) / combined_count
+
+    def _migrate_frontier_signature(self, source: str, target: str) -> None:
+        if source == target:
+            return
+        self._merge_frontier_state_value(source, target)
+        migrated_choices = 0
+        for choice in list(self.frontier_choice_samples):
+            signature, action, duration = choice
+            if signature != source:
+                continue
+            target_choice = (target, action, duration)
+            source_count = self.frontier_choice_samples.pop(choice)
+            target_count = self.frontier_choice_samples.get(target_choice, 0)
+            source_value = self.frontier_choice_values.pop(choice, 0.0)
+            target_value = self.frontier_choice_values.get(target_choice, 0.0)
+            combined_count = source_count + target_count
+            self.frontier_choice_samples[target_choice] = combined_count
+            self.frontier_choice_values[target_choice] = (
+                source_count * source_value + target_count * target_value
+            ) / combined_count
+            migrated_choices += 1
+        migrated_traces = 0
+        for trace in self.frontier_traces:
+            if trace.signature == source:
+                trace.signature = target
+                migrated_traces += 1
+            if trace.choice is not None and trace.choice[0] == source:
+                trace.choice = (target, trace.choice[1], trace.choice[2])
+        migrated_origins = 0
+        for branch in self.archive:
+            if branch.origin_signature == source:
+                branch.origin_signature = target
+                migrated_origins += 1
+        self._emit(
+            "frontier_signature_migrated",
+            decision=self.decision_index + 1,
+            source_signature=source,
+            target_signature=target,
+            migrated_choice_values=migrated_choices,
+            migrated_traces=migrated_traces,
+            migrated_archive_origins=migrated_origins,
+        )
+
+    @torch.no_grad()
+    def _behavioral_signature(
+        self,
+        frame: Frame,
+        outcomes: Dict[Tuple[Action, int], Frame],
+        provisional_signature: str,
+    ) -> str:
+        source_latent = self._frame_latent(frame)
+        requested = self._behavior_probe_keys()
+        profile = {
+            probe: self._frame_latent(outcomes[probe]) - source_latent
+            for probe in requested
+            if probe in outcomes
+        }
+        visual_cluster = self._abstract_signature(frame)
+        if len(profile) < self.config.behavioral_abstraction_min_shared_probes:
+            self._emit(
+                "behavioral_abstraction_deferred",
+                decision=self.decision_index + 1,
+                provisional_signature=provisional_signature,
+                visual_cluster=visual_cluster,
+                observed_probes=[
+                    {"action": action, "action_frames": duration}
+                    for action, duration in profile
+                ],
+                required_shared_probes=(
+                    self.config.behavioral_abstraction_min_shared_probes
+                ),
+                **self._frame_fields(frame),
+            )
+            return provisional_signature
+
+        nearest = None
+        nearest_distance = math.inf
+        nearest_probe_distances: Dict[Tuple[Action, int], float] = {}
+        for cluster in self.behavior_clusters:
+            if cluster.visual_cluster != visual_cluster:
+                continue
+            shared = sorted(set(profile) & set(cluster.probe_centroids))
+            if len(shared) < self.config.behavioral_abstraction_min_shared_probes:
+                continue
+            probe_distances = {
+                probe: float(
+                    (profile[probe] - cluster.probe_centroids[probe])
+                    .pow(2)
+                    .mean()
+                    .sqrt()
+                )
+                for probe in shared
+            }
+            distance = sum(probe_distances.values()) / len(probe_distances)
+            if distance < nearest_distance:
+                nearest = cluster
+                nearest_distance = distance
+                nearest_probe_distances = probe_distances
+        created = (
+            nearest is None
+            or nearest_distance
+            > self.config.behavioral_abstraction_rmse_threshold
+        )
+        if created:
+            self.behavior_cluster_serial += 1
+            nearest = _BehaviorCluster(
+                key=f"behavior-cluster-{self.behavior_cluster_serial:06d}",
+                visual_cluster=visual_cluster,
+                probe_centroids={probe: value.clone() for probe, value in profile.items()},
+                probe_counts=Counter({probe: 1 for probe in profile}),
+            )
+            self.behavior_clusters.append(nearest)
+        else:
+            assert nearest is not None
+            nearest.count += 1
+            for probe, value in profile.items():
+                count = nearest.probe_counts[probe] + 1
+                centroid = nearest.probe_centroids.get(probe)
+                nearest.probe_centroids[probe] = (
+                    value.clone()
+                    if centroid is None
+                    else centroid + (value - centroid) / count
+                )
+                nearest.probe_counts[probe] = count
+        assert nearest is not None
+        self._migrate_frontier_signature(provisional_signature, nearest.key)
+        self._emit(
+            "behavioral_abstraction_assigned",
+            decision=self.decision_index + 1,
+            cluster=nearest.key,
+            cluster_created=created,
+            cluster_size=nearest.count,
+            visual_cluster=visual_cluster,
+            provisional_signature=provisional_signature,
+            successor_delta_rmse=None if created else nearest_distance,
+            maximum_probe_rmse=(
+                None
+                if created
+                else max(nearest_probe_distances.values(), default=0.0)
+            ),
+            threshold=self.config.behavioral_abstraction_rmse_threshold,
+            matched_probes=[
+                {
+                    "action": action,
+                    "action_frames": duration,
+                    "successor_delta_rmse": nearest_probe_distances.get(
+                        (action, duration)
+                    ),
+                }
+                for action, duration in profile
+            ],
             exact_signature=self._signature(frame),
             **self._frame_fields(frame),
         )
@@ -622,7 +849,10 @@ class VerifiedNeuralAgent:
         )
 
     def _archive_frontier_score(self, branch: _ArchivedBranch) -> float:
-        own_value = self._frontier_estimate(self._abstract_signature(branch.frame))
+        own_value = self._frontier_estimate(
+            branch.frontier_signature
+            or self._fallback_frontier_signature(branch.frame)
+        )
         origin_value = (
             self._frontier_estimate(branch.origin_signature)
             if branch.origin_signature
@@ -705,26 +935,10 @@ class VerifiedNeuralAgent:
         ranked: List[NeuralPlan],
         best_by_action: Dict[Tuple[Action, int], NeuralPlan],
     ) -> List[NeuralPlan]:
-        if len(self.planner.duration_choices) <= 1 or self.config.verify_actions < 2:
+        probe_keys = self._behavior_probe_keys()
+        if self.config.verify_actions < len(probe_keys):
             return ranked
-        duration = max(self.planner.duration_choices)
-        probes = []
-        noop = best_by_action.get((Action.NOOP, duration))
-        if noop is not None:
-            probes.append(noop)
-        controls = [
-            plan
-            for (action, action_duration), plan in best_by_action.items()
-            if action != Action.NOOP and action_duration == duration
-        ]
-        if controls:
-            probes.append(
-                max(
-                    controls,
-                    key=lambda plan: plan.score
-                    - self._action_penalty(plan.path[0], plan.durations[0]),
-                )
-            )
+        probes = [best_by_action[key] for key in probe_keys if key in best_by_action]
         required_actions = {probe.path[0] for probe in probes}
         result = list(ranked)
         for probe in probes:
@@ -797,6 +1011,7 @@ class VerifiedNeuralAgent:
             scene_streak=self.scene_streak,
             visual_stagnation_streak=self.visual_stagnation_streak,
             visual_stagnation_limit=self.config.visual_stagnation_visits,
+            frontier_signature=self.current_frontier_signature,
             scene_visits=self.scene_visits,
             archive_size=len(self.archive),
             **self._frame_fields(self.frame),
@@ -831,7 +1046,7 @@ class VerifiedNeuralAgent:
             ):
                 best_by_action[timed_action] = plan
         current_scene = self._scene_signature(self.frame)
-        source_signature = self._abstract_signature(self.frame)
+        source_signature = self.current_frontier_signature
         best_by_button: Dict[Action, NeuralPlan] = {}
         for plan in best_by_action.values():
             action = plan.path[0]
@@ -872,7 +1087,7 @@ class VerifiedNeuralAgent:
 
         root = self.env.save_state()
         states = [root]
-        verified = []
+        raw_verified = []
         release_state = getattr(self.env, "release_state", None)
         try:
             for candidate_rank, plan in enumerate(ranked, 1):
@@ -897,9 +1112,63 @@ class VerifiedNeuralAgent:
                     self.frame, plan.path[0], duration, target
                 )
                 visual_change = self.frame.mean_absolute_difference(target)
-                target_abstract_signature = self._abstract_signature(target)
+                target_visual_cluster = self._abstract_signature(target)
+                target_frontier_signature = self._new_provisional_signature()
+                raw_verified.append(
+                    (
+                        plan,
+                        state,
+                        target,
+                        novelty,
+                        error,
+                        visual_change,
+                        target_scene,
+                        target_signature_is_new,
+                        target_scene_is_new,
+                        scene_novelty,
+                        effective_novelty,
+                        candidate_rank,
+                        self.scene_action_probes[(current_scene, plan.path[0])],
+                        getattr(self.env, "last_step_seq", None),
+                        getattr(self.env, "last_state_event_seq", None),
+                        target_visual_cluster,
+                        target_frontier_signature,
+                    )
+                )
+
+            probe_outcomes = {
+                (item[0].path[0], item[0].durations[0]): item[2]
+                for item in raw_verified
+            }
+            source_signature = self._behavioral_signature(
+                self.frame,
+                probe_outcomes,
+                source_signature,
+            )
+            self.current_frontier_signature = source_signature
+            verified = []
+            for (
+                plan,
+                state,
+                target,
+                novelty,
+                error,
+                visual_change,
+                target_scene,
+                target_signature_is_new,
+                target_scene_is_new,
+                scene_novelty,
+                effective_novelty,
+                candidate_rank,
+                scene_action_probe_count,
+                env_step_seq,
+                state_save_seq,
+                target_visual_cluster,
+                target_frontier_signature,
+            ) in raw_verified:
+                duration = plan.durations[0]
                 persistent_frontier_value = self._frontier_estimate(
-                    target_abstract_signature
+                    target_frontier_signature
                 )
                 choice_frontier_value, choice_frontier_is_known = (
                     self._choice_frontier_estimate(
@@ -917,17 +1186,26 @@ class VerifiedNeuralAgent:
                     + self.config.frontier_score_weight * persistent_frontier_value
                     - self._action_penalty(plan.path[0], duration)
                 )
-                verified.append((score, plan, state, target, novelty, error, visual_change))
+                verified.append(
+                    (
+                        score,
+                        plan,
+                        state,
+                        target,
+                        novelty,
+                        error,
+                        visual_change,
+                        target_frontier_signature,
+                    )
+                )
                 self._emit(
                     "branch_verified",
                     decision=self.decision_index + 1,
                     branch_id=f"decision-{self.decision_index + 1:08d}-branch-{candidate_rank:02d}",
                     candidate_rank=candidate_rank,
-                    scene_action_probe_count=self.scene_action_probes[
-                        (current_scene, plan.path[0])
-                    ],
-                    env_step_seq=getattr(self.env, "last_step_seq", None),
-                    state_save_seq=getattr(self.env, "last_state_event_seq", None),
+                    scene_action_probe_count=scene_action_probe_count,
+                    env_step_seq=env_step_seq,
+                    state_save_seq=state_save_seq,
                     action=plan.path[0],
                     action_frames=duration,
                     path=plan.path,
@@ -945,7 +1223,9 @@ class VerifiedNeuralAgent:
                     persistent_frontier_value=persistent_frontier_value,
                     choice_frontier_value=choice_frontier_value,
                     choice_frontier_is_known=choice_frontier_is_known,
-                    abstract_signature=target_abstract_signature,
+                    abstract_signature=target_visual_cluster,
+                    source_behavioral_signature=source_signature,
+                    target_frontier_signature=target_frontier_signature,
                     action_penalty=self._action_penalty(plan.path[0], duration),
                     combined_score=score,
                     state_id=self._state_id(state),
@@ -1008,11 +1288,21 @@ class VerifiedNeuralAgent:
                         ),
                     ),
                 )
-            score, plan, state, target, _chosen_novelty, _error, _visual_change = chosen
+            (
+                score,
+                plan,
+                state,
+                target,
+                _chosen_novelty,
+                _error,
+                _visual_change,
+                target_frontier_signature,
+            ) = chosen
             self.env.load_state(state)
             self.frame = target
             target_signature = self._signature(target)
-            target_abstract_signature = self._abstract_signature(target)
+            target_visual_cluster = self._abstract_signature(target)
+            self.current_frontier_signature = target_frontier_signature
             target_scene = self._scene_signature(target)
             target_signature_is_new = self.novelty.count(target_signature) == 0
             target_scene_is_new = self.scene_visits[target_scene] == 0
@@ -1034,7 +1324,7 @@ class VerifiedNeuralAgent:
                 + self.config.scene_novelty_weight * float(target_scene_is_new)
             )
             self._update_persistent_frontier(
-                target_abstract_signature,
+                target_frontier_signature,
                 frontier_reward,
                 source_signature,
                 action,
@@ -1046,7 +1336,7 @@ class VerifiedNeuralAgent:
                 duration,
                 target,
                 target_scene,
-                target_abstract_signature,
+                target_frontier_signature,
             )
             self.scene_visits[target_scene] += 1
             self.visual_stagnation_streak = (
@@ -1068,6 +1358,7 @@ class VerifiedNeuralAgent:
                 _alternative_novelty,
                 _alternative_error,
                 _alternative_change,
+                alternative_frontier_signature,
             ) in verified:
                 if alternative_state == state:
                     continue
@@ -1087,6 +1378,7 @@ class VerifiedNeuralAgent:
                         self._scene_signature(alternative_frame),
                         self.decision_index,
                         source_signature,
+                        alternative_frontier_signature,
                     )
                 )
                 added += 1
@@ -1102,6 +1394,7 @@ class VerifiedNeuralAgent:
                     score=alternative_score,
                     scene=self._scene_signature(alternative_frame),
                     origin_signature=source_signature,
+                    frontier_signature=alternative_frontier_signature,
                     persistent_frontier_value=archive_frontier_value,
                     **self._frame_fields(alternative_frame),
                 )
@@ -1128,9 +1421,11 @@ class VerifiedNeuralAgent:
                 target_signature_is_new=target_signature_is_new,
                 target_scene_is_new=target_scene_is_new,
                 persistent_frontier_value=self._frontier_estimate(
-                    target_abstract_signature
+                    target_frontier_signature
                 ),
-                abstract_signature=target_abstract_signature,
+                abstract_signature=target_visual_cluster,
+                source_behavioral_signature=source_signature,
+                target_frontier_signature=target_frontier_signature,
                 committed_choice_frontier_value=self._choice_frontier_estimate(
                     source_signature, action, duration
                 )[0],
@@ -1227,9 +1522,14 @@ class VerifiedNeuralAgent:
         self.decision_index += 1
         self.visual_last_visit[self._signature(branch.frame)] = self.decision_index
         selected_frontier_value = self._archive_frontier_score(branch)
-        restored_abstract_signature = self._abstract_signature(branch.frame)
+        restored_visual_cluster = self._abstract_signature(branch.frame)
+        restored_frontier_signature = (
+            branch.frontier_signature
+            or self._fallback_frontier_signature(branch.frame)
+        )
+        self.current_frontier_signature = restored_frontier_signature
         self._restart_frontier_trace(
-            restored_abstract_signature, recovery_reason
+            restored_frontier_signature, recovery_reason
         )
         self.delayed_return_recovery = False
         self.delayed_return_loop_start = None
@@ -1246,7 +1546,8 @@ class VerifiedNeuralAgent:
             durations=branch.plan.durations,
             score=branch.score,
             persistent_frontier_value=selected_frontier_value,
-            abstract_signature=restored_abstract_signature,
+            abstract_signature=restored_visual_cluster,
+            target_frontier_signature=restored_frontier_signature,
             archive_size=len(self.archive),
             **self._frame_fields(branch.frame),
         )
@@ -1265,7 +1566,8 @@ class VerifiedNeuralAgent:
             archive_branches_added=0,
             archive_size=len(self.archive),
             persistent_frontier_value=selected_frontier_value,
-            abstract_signature=restored_abstract_signature,
+            abstract_signature=restored_visual_cluster,
+            target_frontier_signature=restored_frontier_signature,
             action_counts=self.action_counts,
             duration_counts=self.duration_counts,
             scene_streak=self.scene_streak,

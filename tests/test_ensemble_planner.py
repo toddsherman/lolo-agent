@@ -344,7 +344,7 @@ class EnsemblePlannerTests(unittest.TestCase):
             set(actions),
         )
 
-    def test_matched_control_probes_reserve_noop_and_non_neutral_slots(self) -> None:
+    def test_matched_control_probes_reserve_canonical_behavior_slots(self) -> None:
         model = EnsembleVisualDynamicsModel(
             latent_size=32,
             action_size=8,
@@ -379,15 +379,18 @@ class EnsemblePlannerTests(unittest.TestCase):
             (plan.path[0], plan.durations[0]): plan for plan in ranked
         }
         noop = NeuralPlan((Action.NOOP,), (16,), 0.0, 0.0)
+        up = NeuralPlan((Action.UP,), (16,), 0.0, 0.0)
         start = NeuralPlan((Action.START,), (16,), 100.0, 0.0)
         best[(Action.NOOP, 16)] = noop
+        best[(Action.UP, 16)] = up
         best[(Action.START, 16)] = start
 
         result = agent._add_control_probes(ranked, best)
 
         self.assertEqual(len(result), 6)
         self.assertIn(noop, result)
-        self.assertIn(start, result)
+        self.assertIn(up, result)
+        self.assertNotIn(start, result)
 
     def test_delayed_visual_return_credits_the_loop_and_requests_recovery(self) -> None:
         model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
@@ -449,7 +452,7 @@ class EnsemblePlannerTests(unittest.TestCase):
             ),
         )
         initial = agent.reset()
-        initial_signature = agent._abstract_signature(initial)
+        initial_signature = agent.current_frontier_signature
         for decision, signature in enumerate(("one", "two", "three"), 1):
             agent.decision_index = decision
             agent._update_persistent_frontier(signature, 1.0)
@@ -520,6 +523,64 @@ class EnsemblePlannerTests(unittest.TestCase):
         )
         self.assertTrue(known)
         self.assertEqual(shared, 3.0)
+        self.assertEqual(before, model.checkpoint_digest)
+
+    def test_behavioral_abstraction_shares_only_matching_observed_futures(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        agent = VerifiedNeuralAgent(
+            MockPuzzleEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.LEFT, Action.RIGHT),
+                planning_depth=1,
+                abstraction_latent_rmse_threshold=100.0,
+                behavioral_abstraction_rmse_threshold=1e-9,
+            ),
+        )
+        before = model.checkpoint_digest
+        source = agent.reset()
+        matching_outcomes = {
+            (Action.LEFT, 4): self.frame(6),
+            (Action.RIGHT, 4): self.frame(7),
+        }
+        first = agent._behavioral_signature(
+            source, matching_outcomes, agent.current_frontier_signature
+        )
+        choice = (first, Action.LEFT, 4)
+        agent.frontier_choice_values[choice] = 3.0
+        agent.frontier_choice_samples[choice] = 1
+
+        second_provisional = agent._new_provisional_signature()
+        value, known = agent._choice_frontier_estimate(
+            second_provisional, Action.LEFT, 4
+        )
+        self.assertFalse(known)
+        self.assertEqual(value, 0.0)
+        agent.frontier_values[second_provisional] = 2.0
+        agent.frontier_samples[second_provisional] = 1
+        second = agent._behavioral_signature(
+            source, matching_outcomes, second_provisional
+        )
+        self.assertEqual(first, second)
+        self.assertEqual(agent.frontier_values[first], 2.0)
+        self.assertNotIn(second_provisional, agent.frontier_values)
+        value, known = agent._choice_frontier_estimate(second, Action.LEFT, 4)
+        self.assertTrue(known)
+        self.assertEqual(value, 3.0)
+
+        different = agent._behavioral_signature(
+            source,
+            {
+                (Action.LEFT, 4): self.frame(200),
+                (Action.RIGHT, 4): self.frame(201),
+            },
+            agent._new_provisional_signature(),
+        )
+        self.assertNotEqual(first, different)
+        value, known = agent._choice_frontier_estimate(different, Action.LEFT, 4)
+        self.assertFalse(known)
+        self.assertEqual(value, 0.0)
         self.assertEqual(before, model.checkpoint_digest)
 
     def test_frontier_choice_value_learns_a_delayed_return_outcome(self) -> None:

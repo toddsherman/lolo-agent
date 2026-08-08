@@ -149,6 +149,23 @@ guards against merging visually distinct regions that happen to be close in an
 imperfect latent space. Both cluster membership and value memory reset for each
 evaluation attempt.
 
+### Interaction-derived behavioral refinement
+
+Visual clusters are candidates for sharing, not sufficient evidence. Whenever
+a state becomes the current planning root, the verifier reserves a small,
+fixed set of controller probes at a common duration. For each probe it records
+the frozen-encoder displacement from the source pixels to the observed
+successor pixels. A state joins an existing behavioral cluster only when its
+visual cluster matches and the mean successor-displacement RMSE over shared
+probes is below the configured threshold.
+
+Unprobed successor states receive unique provisional frontier signatures. They
+do not inherit another state's value merely because their pixels look alike.
+When a provisional state is later probed, its temporary values, active traces,
+and archived origin references migrate into the matching behavioral cluster.
+The cluster centroids and migrations are temporary evaluation memory; model
+weights remain frozen.
+
 The value is learned online from pixels and transition topology and is erased
 on reset. It is not part of the neural checkpoint, so frozen evaluation still
 does not update persistent parameters.

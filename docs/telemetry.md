@@ -41,6 +41,9 @@ Telemetry includes:
   used to rank each archived branch, including state/action/duration samples;
 - frozen-encoder abstraction assignments, latent distance, cluster creation,
   running cluster size, and the abstract signature used by each decision;
+- interaction-derived behavioral-cluster assignments, matched controller
+  probes, per-probe successor-latent distances, provisional-state deferrals,
+  and frontier-signature migrations;
 - committed decisions, temporary action counts, scene streaks, archive size,
   exact-visual stagnation streaks, and restored-branch status.
 

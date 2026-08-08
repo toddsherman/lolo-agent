@@ -70,6 +70,8 @@ class RunLoggingTests(unittest.TestCase):
             self.assertEqual(summary["delayed_return_recoveries"], 0)
             self.assertEqual(summary["persistent_frontier_updates"], 1)
             self.assertGreaterEqual(summary["visual_abstraction_clusters"], 1)
+            self.assertGreaterEqual(summary["behavioral_abstraction_clusters"], 1)
+            self.assertEqual(summary["behavioral_abstraction_deferrals"], 0)
             self.assertEqual(summary["annotations"][0]["source"], "evaluator")
             self.assertTrue((logger.run_dir / "transitions.json").is_file())
             with (logger.run_dir / "decisions.csv").open(encoding="utf-8") as handle:
@@ -77,6 +79,8 @@ class RunLoggingTests(unittest.TestCase):
             self.assertEqual(rows[0]["level"], "withheld-room-A")
             self.assertNotEqual(rows[0]["persistent_frontier_value"], "")
             self.assertNotEqual(rows[0]["abstract_signature"], "")
+            self.assertNotEqual(rows[0]["source_behavioral_signature"], "")
+            self.assertNotEqual(rows[0]["target_frontier_signature"], "")
 
     def test_frames_are_content_addressed_and_deduplicated(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
