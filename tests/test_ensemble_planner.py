@@ -14,8 +14,36 @@ from lolo_agent.ensemble_world_model import (
 )
 from lolo_agent.environment import Action
 from lolo_agent.mock_puzzle import MockPuzzleEnv
-from lolo_agent.neural_planner import NeuralPlanningConfig, VerifiedNeuralAgent
+from lolo_agent.neural_planner import (
+    NeuralPlan,
+    NeuralPlanningConfig,
+    VerifiedNeuralAgent,
+    _ArchivedBranch,
+)
 from lolo_agent.pixels import Frame
+
+
+class AutonomousAnimationEnv:
+    def __init__(self) -> None:
+        self.tick = 0
+
+    def reset(self) -> Frame:
+        self.tick = 0
+        return self._frame()
+
+    def step(self, action: Action, frames: int = 1) -> Frame:
+        self.tick += frames
+        return self._frame()
+
+    def save_state(self) -> int:
+        return self.tick
+
+    def load_state(self, state: int) -> Frame:
+        self.tick = state
+        return self._frame()
+
+    def _frame(self) -> Frame:
+        return Frame(8, 8, 1, bytes([self.tick % 256]) * 64)
 
 
 class EnsemblePlannerTests(unittest.TestCase):
@@ -179,3 +207,82 @@ class EnsemblePlannerTests(unittest.TestCase):
                     actions=(Action.RIGHT,), planning_depth=1, action_frames=8
                 ),
             )
+
+    def test_uncontrollable_animation_selects_long_noop_without_archiving(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32,
+            action_size=8,
+            ensemble_size=2,
+            duration_conditioned=True,
+            duration_size=4,
+            max_action_frames=8,
+        )
+        agent = VerifiedNeuralAgent(
+            AutonomousAnimationEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.A, Action.NOOP),
+                action_durations=(1, 4),
+                planning_depth=1,
+                beam_width=4,
+                verify_actions=4,
+            ),
+        )
+        agent.reset()
+        decision = agent.decide()
+        self.assertEqual(decision.action, Action.NOOP)
+        self.assertEqual(decision.action_frames, 4)
+        self.assertEqual(agent.archive, [])
+
+    def test_archive_pruning_preserves_a_minority_scene(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        agent = VerifiedNeuralAgent(
+            MockPuzzleEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                archive_capacity=3,
+            ),
+        )
+        frame = Frame(2, 2, 1, b"\x00" * 4)
+        plan = NeuralPlan((Action.RIGHT,), (4,), 0.0, 0.0)
+        agent.archive = [
+            _ArchivedBranch(index, frame, plan, float(index), "crowded", index)
+            for index in range(4)
+        ] + [_ArchivedBranch(99, frame, plan, 1.0, "minority", 0)]
+        agent._prune_archive()
+        self.assertEqual(len(agent.archive), 3)
+        self.assertIn("minority", {branch.scene for branch in agent.archive})
+
+    def test_verification_budget_covers_distinct_buttons_before_durations(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32,
+            action_size=8,
+            ensemble_size=2,
+            duration_conditioned=True,
+            duration_size=4,
+            max_action_frames=8,
+        )
+        actions = (Action.LEFT, Action.RIGHT, Action.A)
+        agent = VerifiedNeuralAgent(
+            MockPuzzleEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=actions,
+                action_durations=(1, 4),
+                planning_depth=1,
+                verify_actions=3,
+            ),
+        )
+        agent.reset()
+        source_scene = agent.current_scene
+        decision = agent.decide()
+        self.assertEqual(decision.branches_examined, 3)
+        self.assertEqual(
+            {action for scene, action in agent.scene_action_probes if scene == source_scene},
+            set(actions),
+        )

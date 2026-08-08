@@ -137,6 +137,10 @@ segments, per-cycle checkpoints, phase state, metrics, collection telemetry,
 and frozen-evaluation telemetry are retained below the experiment directory.
 See [docs/experiments.md](docs/experiments.md).
 
+The first 10-cycle duration-aware audit and its observed failure modes are
+documented in
+[docs/medium-experiment-2026-08-08.md](docs/medium-experiment-2026-08-08.md).
+
 To connect an emulator, implement `PixelSaveStateEnv` from
 `lolo_agent/environment.py`. Keep success, room number, sprite identity, and RAM
 outside that interface. An evaluation harness may inspect success to score a

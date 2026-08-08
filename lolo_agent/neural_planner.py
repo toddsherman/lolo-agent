@@ -38,6 +38,8 @@ class NeuralPlanningConfig:
     uncertainty_weight: float = 1.0
     latent_change_weight: float = 0.35
     actual_novelty_weight: float = 1.0
+    scene_novelty_weight: float = 0.75
+    within_scene_novelty_floor: float = 0.25
     prediction_error_weight: float = 0.5
     actual_change_weight: float = 0.25
     action_coverage_weight: float = 0.35
@@ -45,7 +47,9 @@ class NeuralPlanningConfig:
     consecutive_repeat_weight: float = 0.5
     archive_capacity: int = 96
     scene_stagnation_visits: int = 8
-    archive_max_age: int = 32
+    archive_max_age: int = 512
+    autonomous_change_threshold: float = 0.00025
+    action_equivalence_threshold: float = 0.0001
 
 
 @dataclass(frozen=True)
@@ -108,6 +112,10 @@ class NeuralRolloutPlanner:
         source = frame_tensor(frame, self.device).unsqueeze(0)
         initial = self.model.initial_ensemble(source)[:, 0]
         frontier = [_LatentNode((), (), initial, 0.0, 0.0)]
+        effective_beam_width = max(
+            self.config.beam_width,
+            len(self.config.actions) * len(self.duration_choices),
+        )
         for depth in range(self.config.planning_depth):
             pairs = [
                 (node, action, duration)
@@ -171,16 +179,16 @@ class NeuralRolloutPlanner:
                 if first not in first_actions:
                     selected.append(item)
                     first_actions.add(first)
-                    if len(selected) == self.config.beam_width:
+                    if len(selected) == effective_beam_width:
                         break
-            if len(selected) < self.config.beam_width:
+            if len(selected) < effective_beam_width:
                 selected_ids = {id(item) for item in selected}
                 selected.extend(
                     item
                     for item in expanded
                     if id(item) not in selected_ids
                 )
-            frontier = selected[: self.config.beam_width]
+            frontier = selected[:effective_beam_width]
         return [
             NeuralPlan(node.path, node.durations, node.score, node.uncertainty)
             for node in frontier
@@ -226,6 +234,7 @@ class VerifiedNeuralAgent:
         self.last_duration: Optional[int] = None
         self.action_streak = 0
         self.scene_visits: CounterType[str] = Counter()
+        self.scene_action_probes: CounterType[Tuple[str, Action]] = Counter()
         self.current_scene: Optional[str] = None
         self.scene_streak = 0
         self.archive: List[_ArchivedBranch] = []
@@ -264,6 +273,7 @@ class VerifiedNeuralAgent:
         self.last_duration = None
         self.action_streak = 0
         self.scene_visits = Counter()
+        self.scene_action_probes = Counter()
         self.current_scene = self._scene_signature(self.frame)
         self.scene_visits[self.current_scene] += 1
         self.scene_streak = 1
@@ -305,6 +315,76 @@ class VerifiedNeuralAgent:
             else 0.0
         )
         return coverage + duration_coverage + consecutive
+
+    def _add_control_probes(
+        self,
+        ranked: List[NeuralPlan],
+        best_by_action: Dict[Tuple[Action, int], NeuralPlan],
+    ) -> List[NeuralPlan]:
+        if len(self.planner.duration_choices) <= 1 or self.config.verify_actions < 2:
+            return ranked
+        duration = max(self.planner.duration_choices)
+        probes = []
+        noop = best_by_action.get((Action.NOOP, duration))
+        if noop is not None:
+            probes.append(noop)
+        controls = [
+            plan
+            for (action, action_duration), plan in best_by_action.items()
+            if action != Action.NOOP and action_duration == duration
+        ]
+        if controls:
+            probes.append(
+                max(
+                    controls,
+                    key=lambda plan: plan.score
+                    - self._action_penalty(plan.path[0], plan.durations[0]),
+                )
+            )
+        result = list(ranked)
+        for probe in probes:
+            action = probe.path[0]
+            matching_index = next(
+                (index for index, item in enumerate(result) if item.path[0] == action),
+                None,
+            )
+            if matching_index is not None:
+                result[matching_index] = probe
+                continue
+            if len(result) >= self.config.verify_actions:
+                result.pop()
+            result.append(probe)
+        return result
+
+    def _autonomous_choice(
+        self, source: Frame, verified: List[Tuple[Any, ...]]
+    ) -> Optional[Tuple[Tuple[Any, ...], float, float]]:
+        qualified = []
+        for duration in self.planner.duration_choices:
+            group = [item for item in verified if item[1].durations[0] == duration]
+            if len({item[1].path[0] for item in group}) < 2:
+                continue
+            spread = max(
+                left[3].mean_absolute_difference(right[3])
+                for index, left in enumerate(group)
+                for right in group[index + 1 :]
+            )
+            change = sum(source.mean_absolute_difference(item[3]) for item in group) / len(
+                group
+            )
+            if (
+                spread <= self.config.action_equivalence_threshold
+                and change >= self.config.autonomous_change_threshold
+            ):
+                preferred = next(
+                    (item for item in group if item[1].path[0] == Action.NOOP),
+                    max(group, key=lambda item: item[0]),
+                )
+                qualified.append((duration, preferred, spread, change))
+        if not qualified:
+            return None
+        _duration, preferred, spread, change = max(qualified, key=lambda item: item[0])
+        return preferred, spread, change
 
     def decide(self) -> Decision:
         if self.frame is None:
@@ -352,9 +432,20 @@ class VerifiedNeuralAgent:
                 or plan.score > best_by_action[timed_action].score
             ):
                 best_by_action[timed_action] = plan
+        current_scene = self._scene_signature(self.frame)
+        best_by_button: Dict[Action, NeuralPlan] = {}
+        for plan in best_by_action.values():
+            action = plan.path[0]
+            existing = best_by_button.get(action)
+            adjusted = plan.score - self._action_penalty(action, plan.durations[0])
+            if existing is None or adjusted > existing.score - self._action_penalty(
+                existing.path[0], existing.durations[0]
+            ):
+                best_by_button[action] = plan
         ranked = sorted(
-            best_by_action.values(),
+            best_by_button.values(),
             key=lambda plan: (
+                self.scene_action_probes[(current_scene, plan.path[0])],
                 -(plan.score - self._action_penalty(plan.path[0], plan.durations[0])),
                 tuple(
                     (action.value, duration)
@@ -362,6 +453,21 @@ class VerifiedNeuralAgent:
                 ),
             ),
         )[: self.config.verify_actions]
+        if len(ranked) < self.config.verify_actions:
+            selected = {(plan.path[0], plan.durations[0]) for plan in ranked}
+            remaining = sorted(
+                (
+                    plan
+                    for key, plan in best_by_action.items()
+                    if key not in selected
+                ),
+                key=lambda plan: -(
+                    plan.score
+                    - self._action_penalty(plan.path[0], plan.durations[0])
+                ),
+            )
+            ranked.extend(remaining[: self.config.verify_actions - len(ranked)])
+        ranked = self._add_control_probes(ranked, best_by_action)
         if not ranked:
             raise RuntimeError("neural planner produced no action candidates")
 
@@ -374,16 +480,24 @@ class VerifiedNeuralAgent:
                 self.env.load_state(root)
                 duration = plan.durations[0]
                 target = self.env.step(plan.path[0], duration)
+                self.scene_action_probes[(current_scene, plan.path[0])] += 1
                 state = self.env.save_state()
                 states.append(state)
                 novelty = self.novelty.score(self._signature(target))
+                target_scene = self._scene_signature(target)
+                scene_novelty = 1.0 / math.sqrt(self.scene_visits[target_scene] + 1)
+                effective_novelty = novelty * (
+                    self.config.within_scene_novelty_floor
+                    + (1.0 - self.config.within_scene_novelty_floor) * scene_novelty
+                )
                 error = self.planner.one_step_error(
                     self.frame, plan.path[0], duration, target
                 )
                 visual_change = self.frame.mean_absolute_difference(target)
                 score = (
                     plan.score
-                    + self.config.actual_novelty_weight * novelty
+                    + self.config.actual_novelty_weight * effective_novelty
+                    + self.config.scene_novelty_weight * scene_novelty
                     + self.config.prediction_error_weight * error
                     + self.config.actual_change_weight * visual_change
                     - self._action_penalty(plan.path[0], duration)
@@ -394,6 +508,9 @@ class VerifiedNeuralAgent:
                     decision=self.decision_index + 1,
                     branch_id=f"decision-{self.decision_index + 1:08d}-branch-{candidate_rank:02d}",
                     candidate_rank=candidate_rank,
+                    scene_action_probe_count=self.scene_action_probes[
+                        (current_scene, plan.path[0])
+                    ],
                     env_step_seq=getattr(self.env, "last_step_seq", None),
                     state_save_seq=getattr(self.env, "last_state_event_seq", None),
                     action=plan.path[0],
@@ -403,6 +520,9 @@ class VerifiedNeuralAgent:
                     model_score=plan.score,
                     model_uncertainty=plan.uncertainty,
                     novelty=novelty,
+                    effective_novelty=effective_novelty,
+                    scene_novelty=scene_novelty,
+                    target_scene=target_scene,
                     prediction_error=error,
                     visual_change=visual_change,
                     action_penalty=self._action_penalty(plan.path[0], duration),
@@ -410,16 +530,31 @@ class VerifiedNeuralAgent:
                     state_id=self._state_id(state),
                     **self._frame_fields(target),
                 )
-            score, plan, state, target, _novelty, _error, _visual_change = max(
-                verified,
-                key=lambda item: (
-                    item[0],
-                    tuple(
-                        (action.value, duration)
-                        for action, duration in zip(item[1].path, item[1].durations)
+            autonomous = self._autonomous_choice(self.frame, verified)
+            if autonomous is not None:
+                chosen, outcome_spread, autonomous_change = autonomous
+                self._emit(
+                    "autonomous_dynamics_detected",
+                    decision=self.decision_index + 1,
+                    selected_action=chosen[1].path[0],
+                    selected_duration=chosen[1].durations[0],
+                    outcome_spread=outcome_spread,
+                    autonomous_change=autonomous_change,
+                )
+            else:
+                chosen = max(
+                    verified,
+                    key=lambda item: (
+                        item[0],
+                        tuple(
+                            (action.value, duration)
+                            for action, duration in zip(
+                                item[1].path, item[1].durations
+                            )
+                        ),
                     ),
-                ),
-            )
+                )
+            score, plan, state, target, _novelty, _error, _visual_change = chosen
             self.env.load_state(state)
             self.frame = target
             self.novelty.observe(self._signature(target))
@@ -453,6 +588,13 @@ class VerifiedNeuralAgent:
                 _alternative_change,
             ) in verified:
                 if alternative_state == state:
+                    continue
+                if autonomous is not None:
+                    continue
+                if any(
+                    branch.frame.digest == alternative_frame.digest
+                    for branch in self.archive
+                ):
                     continue
                 self.archive.append(
                     _ArchivedBranch(
@@ -493,6 +635,7 @@ class VerifiedNeuralAgent:
                 committed_state_id=self._state_id(state),
                 archive_branches_added=added,
                 archive_size=len(self.archive),
+                autonomous_dynamics=autonomous is not None,
                 action_counts=self.action_counts,
                 duration_counts=self.duration_counts,
                 scene_streak=self.scene_streak,
@@ -593,9 +736,19 @@ class VerifiedNeuralAgent:
     def _prune_archive(self) -> None:
         if len(self.archive) <= self.config.archive_capacity:
             return
-        self.archive.sort(key=lambda item: (item.created, item.score))
-        removed = self.archive[: len(self.archive) - self.config.archive_capacity]
-        self.archive = self.archive[len(removed) :]
+        removed = []
+        while len(self.archive) > self.config.archive_capacity:
+            scene_counts = Counter(branch.scene for branch in self.archive)
+            largest_count = max(scene_counts.values())
+            crowded_scenes = {
+                scene for scene, count in scene_counts.items() if count == largest_count
+            }
+            victim = min(
+                (branch for branch in self.archive if branch.scene in crowded_scenes),
+                key=lambda item: (item.created, item.score),
+            )
+            self.archive.remove(victim)
+            removed.append(victim)
         release_state = getattr(self.env, "release_state", None)
         if release_state is not None:
             for branch in removed:

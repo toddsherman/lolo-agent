@@ -35,6 +35,18 @@ and replay therefore distinguish, for example, `RIGHT@1` from `RIGHT@16`.
 Fixed-duration version-one checkpoints remain supported but cannot safely plan
 over multiple press lengths.
 
+During real verification, the agent prioritizes least-tested distinct buttons
+within the current coarse visual scene before spending branch budget on extra
+durations. Equal-duration `NOOP` and non-`NOOP` probes estimate temporary
+controllability. If different buttons produce the same evolving pixels, the
+agent selects the longest neutral wait and avoids archiving timestamps as if
+they were meaningful alternatives.
+
+Exact-frame novelty is moderated by coarse-scene novelty. Archive pruning is
+also scene-diverse: branches from a highly populated scene are removed before
+the last frontier from a minority scene. Both mechanisms are visual and
+temporary; neither introduces menu, room, object, or success labels.
+
 ## Multi-step validation
 
 Sequence groups, rather than individual frames, are assigned to training or

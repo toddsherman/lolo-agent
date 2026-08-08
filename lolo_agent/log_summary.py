@@ -224,6 +224,9 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             str(key): value for key, value in sorted(investigated_durations.items())
         },
         "archive_restores": event_counts.get("archive_branch_restored", 0),
+        "autonomous_dynamics_decisions": event_counts.get(
+            "autonomous_dynamics_detected", 0
+        ),
         "verified_branches": event_counts.get("branch_verified", 0),
         "unique_frames": len(frames),
         "unique_scenes": len(scenes),
