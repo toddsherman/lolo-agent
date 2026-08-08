@@ -32,7 +32,10 @@ Telemetry includes:
 - each real verified branch with a stable branch ID, candidate rank, action,
   plan, novelty, prediction error, visual change, penalty, total score, and the
   exact `env_step` event that produced it;
-- archive insertions, restorations, and pruning;
+- archive insertions, restorations, pruning, and restoration reasons;
+- delayed visual-return detections, loop length, prior visit, every credited
+  decision and scene/action/duration choice, plus unavailable recoveries;
+- autonomous-motion detections and neutral grace waits across short pauses;
 - committed decisions, temporary action counts, scene streaks, archive size,
   and restored-branch status.
 
@@ -44,8 +47,10 @@ serialized. State lifecycle records use run-local aliases such as
 `decisions.csv` is the convenient per-decision view. `transitions.json` contains
 nodes for visual states and counted directed edges for all investigated
 controller transitions. `summary.json` contains total and per-attempt counts,
-committed versus investigated action distributions, archive restores, branches,
-states, unique frames, and unique coarse scenes.
+committed versus investigated action distributions, archive restores, delayed
+returns and recoveries, branches, states, unique frames, and unique coarse
+scenes. The decision CSV exposes both the restore reason and whether a delayed
+return recovery was pending after each committed emulator action.
 
 ## Attempts and level labels
 

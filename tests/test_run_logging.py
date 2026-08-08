@@ -66,6 +66,8 @@ class RunLoggingTests(unittest.TestCase):
             self.assertEqual(summary["committed_decisions"], 1)
             self.assertEqual(summary["verified_branches"], 2)
             self.assertEqual(summary["committed_durations"], {"1": 1})
+            self.assertEqual(summary["delayed_visual_returns"], 0)
+            self.assertEqual(summary["delayed_return_recoveries"], 0)
             self.assertEqual(summary["annotations"][0]["source"], "evaluator")
             self.assertTrue((logger.run_dir / "transitions.json").is_file())
             with (logger.run_dir / "decisions.csv").open(encoding="utf-8") as handle:

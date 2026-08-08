@@ -21,8 +21,8 @@ decode every imagined step during search.
 5. commit one branch and archive recent alternatives.
 
 The neural model is frozen during this process. Novelty counts, controller
-coverage, action streaks, and archived state handles are temporary attempt
-memory and are discarded after the run.
+coverage, action streaks, delayed-return costs, and archived state handles are
+temporary attempt memory and are discarded after the run.
 
 All proposals, real verification branches, committed decisions, archive
 operations, opaque state lifecycles, and pixel observations are recorded by the
@@ -40,7 +40,9 @@ within the current coarse visual scene before spending branch budget on extra
 durations. Equal-duration `NOOP` and non-`NOOP` probes estimate temporary
 controllability. If different buttons produce the same evolving pixels, the
 agent selects the longest neutral wait and avoids archiving timestamps as if
-they were meaningful alternatives.
+they were meaningful alternatives. A short visual-dynamics grace window keeps
+neutral waiting through temporary static pauses, then expires automatically if
+motion does not resume.
 
 Exact-frame novelty is moderated by coarse-scene novelty. Archive pruning is
 also scene-diverse: branches from a highly populated scene are removed before
@@ -96,12 +98,21 @@ as a menu, password entry, death, room, or success state.
 This mechanism was necessary because exact-frame novelty can remain high during
 animations or cursor movement even when controller exploration is repetitive.
 
+The agent also tracks delayed returns to informative visual signatures. If a
+trajectory reaches the same sufficiently varied pixel signature again after
+several decisions, it assigns temporary cost to the intervening
+scene/action/duration choices. On the next decision it restores a distinct
+archived state from inside that loop when one is available. Later planning in
+the same attempt penalizes choices that previously participated in such a
+return. Solid fades are excluded using visual variation alone; there are no
+screen, object, menu, death, or progress labels.
+
 ## Known limitations
 
 - The training sample is dominated by boot, menu, and castle animation frames.
-- Controller duration is fixed at four emulator frames. An eight-frame audit
-  changed behavior substantially, so duration should become a learned action
-  variable rather than a hand-selected permanent macro.
+- Controller duration is represented explicitly by duration-conditioned
+  checkpoints, although the current discrete duration set remains configured
+  rather than autonomously expanded.
 - Action coverage currently provides a strong temporary exploration prior and
   can over-regularize behavior toward uniform controller use.
 - The model has no explicit object slots, reachability head, or reversibility

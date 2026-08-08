@@ -46,6 +46,32 @@ class AutonomousAnimationEnv:
         return Frame(8, 8, 1, bytes([self.tick % 256]) * 64)
 
 
+class AnimationPauseEnv:
+    def __init__(self) -> None:
+        self.tick = 0
+
+    def reset(self) -> Frame:
+        self.tick = 0
+        return self._frame()
+
+    def step(self, action: Action, frames: int = 1) -> Frame:
+        if self.tick >= 4 and action == Action.A:
+            self.tick = 255
+        elif self.tick < 4:
+            self.tick = min(4, self.tick + frames)
+        return self._frame()
+
+    def save_state(self) -> int:
+        return self.tick
+
+    def load_state(self, state: int) -> Frame:
+        self.tick = state
+        return self._frame()
+
+    def _frame(self) -> Frame:
+        return Frame(8, 8, 1, bytes([self.tick]) * 64)
+
+
 class EnsemblePlannerTests(unittest.TestCase):
     def frame(self, offset: int) -> Frame:
         return Frame(32, 32, 3, bytes((index + offset) % 256 for index in range(32 * 32 * 3)))
@@ -235,6 +261,36 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(decision.action_frames, 4)
         self.assertEqual(agent.archive, [])
 
+    def test_autonomous_grace_waits_through_a_temporary_static_pause(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32,
+            action_size=8,
+            ensemble_size=2,
+            duration_conditioned=True,
+            duration_size=4,
+            max_action_frames=8,
+        )
+        agent = VerifiedNeuralAgent(
+            AnimationPauseEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.A, Action.NOOP),
+                action_durations=(1, 4),
+                planning_depth=1,
+                beam_width=4,
+                verify_actions=4,
+                autonomous_grace_decisions=2,
+            ),
+        )
+        agent.reset()
+        moving = agent.decide()
+        paused = agent.decide()
+        self.assertEqual(moving.action, Action.NOOP)
+        self.assertEqual(paused.action, Action.NOOP)
+        self.assertEqual(paused.action_frames, 4)
+        self.assertEqual(agent.frame.pixels[0], 4)
+
     def test_archive_pruning_preserves_a_minority_scene(self) -> None:
         model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
         agent = VerifiedNeuralAgent(
@@ -286,3 +342,128 @@ class EnsemblePlannerTests(unittest.TestCase):
             {action for scene, action in agent.scene_action_probes if scene == source_scene},
             set(actions),
         )
+
+    def test_matched_control_probes_reserve_noop_and_non_neutral_slots(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32,
+            action_size=8,
+            ensemble_size=2,
+            duration_conditioned=True,
+            duration_size=4,
+            max_action_frames=16,
+        )
+        agent = VerifiedNeuralAgent(
+            MockPuzzleEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                action_durations=(1, 16),
+                planning_depth=1,
+                verify_actions=6,
+            ),
+        )
+        ranked_actions = (
+            Action.UP,
+            Action.DOWN,
+            Action.LEFT,
+            Action.RIGHT,
+            Action.A,
+            Action.B,
+        )
+        ranked = [
+            NeuralPlan((action,), (1,), float(index), 0.0)
+            for index, action in enumerate(ranked_actions)
+        ]
+        best = {
+            (plan.path[0], plan.durations[0]): plan for plan in ranked
+        }
+        noop = NeuralPlan((Action.NOOP,), (16,), 0.0, 0.0)
+        start = NeuralPlan((Action.START,), (16,), 100.0, 0.0)
+        best[(Action.NOOP, 16)] = noop
+        best[(Action.START, 16)] = start
+
+        result = agent._add_control_probes(ranked, best)
+
+        self.assertEqual(len(result), 6)
+        self.assertIn(noop, result)
+        self.assertIn(start, result)
+
+    def test_delayed_visual_return_credits_the_loop_and_requests_recovery(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        agent = VerifiedNeuralAgent(
+            MockPuzzleEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.LEFT, Action.RIGHT),
+                planning_depth=1,
+                delayed_return_min_length=3,
+            ),
+        )
+        agent.reset()
+        frames = [
+            Frame(
+                8,
+                8,
+                1,
+                bytes((((x + y + offset) % 8) * 30) for y in range(8) for x in range(8)),
+            )
+            for offset in range(3)
+        ]
+        agent.visual_last_visit = {}
+        transitions = (
+            (1, "scene-a", Action.RIGHT, frames[0]),
+            (2, "scene-b", Action.DOWN, frames[1]),
+            (3, "scene-c", Action.LEFT, frames[2]),
+            (4, "scene-d", Action.UP, frames[0]),
+        )
+        for decision, source_scene, action, target in transitions:
+            agent.decision_index = decision
+            agent._record_delayed_return(
+                source_scene,
+                action,
+                4,
+                target,
+                agent._scene_signature(target),
+            )
+
+        self.assertTrue(agent.delayed_return_recovery)
+        self.assertEqual(agent.delayed_return_loop_start, 1)
+        self.assertEqual(sum(agent.delayed_return_costs.values()), 3)
+        self.assertEqual(agent.delayed_return_costs[("scene-d", Action.UP, 4)], 1)
+
+    def test_delayed_return_restores_a_distinct_branch_before_stagnation(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        env = MockPuzzleEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                scene_stagnation_visits=99,
+            ),
+        )
+        agent.reset()
+        branch_frame = env.step(Action.RIGHT)
+        branch_state = env.save_state()
+        plan = NeuralPlan((Action.RIGHT,), (1,), 0.0, 0.0)
+        agent.archive = [
+            _ArchivedBranch(
+                branch_state,
+                branch_frame,
+                plan,
+                0.0,
+                agent._scene_signature(branch_frame),
+                2,
+            )
+        ]
+        agent.delayed_return_recovery = True
+        agent.delayed_return_loop_start = 1
+
+        decision = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(decision)
+        self.assertTrue(decision.restored_archive)
+        self.assertFalse(agent.delayed_return_recovery)

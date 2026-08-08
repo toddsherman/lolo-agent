@@ -83,14 +83,41 @@ castle into the opening story sequence within 210 decisions. It did not yet
 reach Floor 1 in frozen planning, so this is a navigation milestone rather than
 a puzzle-solving result.
 
+## Delayed-return and passive-sequence follow-up
+
+The planner now detects delayed returns to informative visual signatures,
+temporarily credits the intervening scene/action/duration choices with return
+cost, and restores a distinct archived branch from the loop. This is attempt
+memory only and does not modify the frozen world model. A 360-decision audit
+detected 35 delayed visual returns and recovered from all 35.
+
+The same audit exposed brief static pauses inside otherwise action-independent
+visual sequences. A four-decision neutral grace window was added, along with a
+fix ensuring equal-duration `NOOP` and non-neutral probes both survive branch
+selection. The corrected 280-decision audit recorded:
+
+- 27 delayed visual returns and 27 successful return recoveries;
+- 158 autonomous-motion decisions and 53 neutral grace waits;
+- 1,482 real verified branches, 134 telemetry frames, and 44 coarse scenes;
+- an unchanged frozen parameter digest of
+  `35909b3723be9a36859852aa80a324e0e9d94ce722e34b12b78238afd1d22dfe`.
+
+Post-run evaluator comparison found no exact match to the three known Floor 1
+collection frames and no match to their coarse room signature. The agent
+therefore still has not reached Floor 1 in frozen planning. This is a negative
+result: delayed-return recovery and passive-sequence persistence are working,
+but temporary memory still lacks a reliable way to retain and prefer the
+deepest persistent visual frontier over older story/menu branches.
+
+The corrected run has deterministic high-speed players at
+`experiments/lolo1-medium/extended_evaluations/cycle-000010-control-fixed-280/replays/`.
+Replay verification passed for all 5,254 recorded observations; the committed
+view contains 3,545 timeline frames and the full planning view contains 13,857.
+
 ## Next research target
 
-The next target is a frozen trajectory that reliably reaches Floor 1 and then
-spends most of its interaction budget there. The remaining issue is delayed
-progress: a locally novel action can skip or reset a sequence and only reveal
-that it returned to a known region several decisions later.
-
-The next model/planner addition should learn multi-step return-to-known-state
-risk and use it to prefer persistent visual frontiers. It should be learned
-from the transition graph and save-state experiments, not from menu labels or a
-supplied definition of progress.
+Learn a persistent-frontier value from branch topology and visual dwell time:
+states should gain temporary value when they lead to visual regions that remain
+novel over multiple subsequent decisions, and lose it when descendants return
+to an earlier region. This should use only interaction trajectories and save
+states, not evaluator room hashes, menu labels, or supplied progress semantics.

@@ -50,6 +50,11 @@ class NeuralPlanningConfig:
     archive_max_age: int = 512
     autonomous_change_threshold: float = 0.00025
     action_equivalence_threshold: float = 0.0001
+    autonomous_grace_decisions: int = 4
+    delayed_return_min_length: int = 4
+    delayed_return_credit_horizon: int = 48
+    delayed_return_weight: float = 0.75
+    informative_signature_bins: int = 4
 
 
 @dataclass(frozen=True)
@@ -77,6 +82,16 @@ class _ArchivedBranch:
     score: float
     scene: str
     created: int
+
+
+@dataclass(frozen=True)
+class _CommittedTransition:
+    decision: int
+    source_scene: str
+    action: Action
+    duration: int
+    target_scene: str
+    target_signature: str
 
 
 class NeuralRolloutPlanner:
@@ -235,6 +250,12 @@ class VerifiedNeuralAgent:
         self.action_streak = 0
         self.scene_visits: CounterType[str] = Counter()
         self.scene_action_probes: CounterType[Tuple[str, Action]] = Counter()
+        self.delayed_return_costs: CounterType[Tuple[str, Action, int]] = Counter()
+        self.transition_history: List[_CommittedTransition] = []
+        self.visual_last_visit: Dict[str, int] = {}
+        self.delayed_return_recovery = False
+        self.delayed_return_loop_start: Optional[int] = None
+        self.autonomous_grace_remaining = 0
         self.current_scene: Optional[str] = None
         self.scene_streak = 0
         self.archive: List[_ArchivedBranch] = []
@@ -274,6 +295,12 @@ class VerifiedNeuralAgent:
         self.action_streak = 0
         self.scene_visits = Counter()
         self.scene_action_probes = Counter()
+        self.delayed_return_costs = Counter()
+        self.transition_history = []
+        self.visual_last_visit = {self._signature(self.frame): 0}
+        self.delayed_return_recovery = False
+        self.delayed_return_loop_start = None
+        self.autonomous_grace_remaining = 0
         self.current_scene = self._scene_signature(self.frame)
         self.scene_visits[self.current_scene] += 1
         self.scene_streak = 1
@@ -314,7 +341,75 @@ class VerifiedNeuralAgent:
             if action == self.last_action and duration == self.last_duration
             else 0.0
         )
-        return coverage + duration_coverage + consecutive
+        return_penalty = 0.0
+        if self.current_scene is not None:
+            return_penalty = self.config.delayed_return_weight * math.sqrt(
+                self.delayed_return_costs[(self.current_scene, action, duration)]
+            )
+        return coverage + duration_coverage + consecutive + return_penalty
+
+    def _informative_signature(self, frame: Frame) -> bool:
+        signature = frame.coarse_signature()
+        return (
+            len(set(signature)) >= self.config.informative_signature_bins
+            and max(signature) - min(signature) >= 3
+        )
+
+    def _record_delayed_return(
+        self,
+        source_scene: str,
+        action: Action,
+        duration: int,
+        target: Frame,
+        target_scene: str,
+    ) -> None:
+        signature = self._signature(target)
+        transition = _CommittedTransition(
+            self.decision_index,
+            source_scene,
+            action,
+            duration,
+            target_scene,
+            signature,
+        )
+        self.transition_history.append(transition)
+        previous = self.visual_last_visit.get(signature)
+        self.visual_last_visit[signature] = self.decision_index
+        if (
+            previous is None
+            or self.decision_index - previous < self.config.delayed_return_min_length
+            or not self._informative_signature(target)
+        ):
+            return
+        start_decision = max(
+            previous + 1,
+            self.decision_index - self.config.delayed_return_credit_horizon + 1,
+        )
+        credited = [
+            item for item in self.transition_history if item.decision >= start_decision
+        ]
+        for item in credited:
+            self.delayed_return_costs[
+                (item.source_scene, item.action, item.duration)
+            ] += 1
+        self.delayed_return_recovery = True
+        self.delayed_return_loop_start = previous
+        self._emit(
+            "delayed_visual_return_detected",
+            decision=self.decision_index,
+            returned_signature=signature,
+            previous_decision=previous,
+            loop_length=self.decision_index - previous,
+            credited_decisions=[item.decision for item in credited],
+            credited_choices=[
+                {
+                    "source_scene": item.source_scene,
+                    "action": item.action,
+                    "duration": item.duration,
+                }
+                for item in credited
+            ],
+        )
 
     def _add_control_probes(
         self,
@@ -341,18 +436,30 @@ class VerifiedNeuralAgent:
                     - self._action_penalty(plan.path[0], plan.durations[0]),
                 )
             )
+        required_actions = {probe.path[0] for probe in probes}
         result = list(ranked)
         for probe in probes:
-            action = probe.path[0]
             matching_index = next(
-                (index for index, item in enumerate(result) if item.path[0] == action),
+                (
+                    index
+                    for index, item in enumerate(result)
+                    if item.path[0] == probe.path[0]
+                ),
                 None,
             )
             if matching_index is not None:
                 result[matching_index] = probe
                 continue
             if len(result) >= self.config.verify_actions:
-                result.pop()
+                removable_index = next(
+                    (
+                        index
+                        for index in range(len(result) - 1, -1, -1)
+                        if result[index].path[0] not in required_actions
+                    ),
+                    len(result) - 1,
+                )
+                result.pop(removable_index)
             result.append(probe)
         return result
 
@@ -533,6 +640,7 @@ class VerifiedNeuralAgent:
             autonomous = self._autonomous_choice(self.frame, verified)
             if autonomous is not None:
                 chosen, outcome_spread, autonomous_change = autonomous
+                self.autonomous_grace_remaining = self.config.autonomous_grace_decisions
                 self._emit(
                     "autonomous_dynamics_detected",
                     decision=self.decision_index + 1,
@@ -541,6 +649,38 @@ class VerifiedNeuralAgent:
                     outcome_spread=outcome_spread,
                     autonomous_change=autonomous_change,
                 )
+            elif self.autonomous_grace_remaining > 0:
+                neutral = [
+                    item
+                    for item in verified
+                    if item[1].path[0] == Action.NOOP
+                ]
+                if neutral:
+                    chosen = max(
+                        neutral,
+                        key=lambda item: (item[1].durations[0], item[0]),
+                    )
+                    self.autonomous_grace_remaining -= 1
+                    self._emit(
+                        "autonomous_grace_wait",
+                        decision=self.decision_index + 1,
+                        selected_duration=chosen[1].durations[0],
+                        grace_remaining=self.autonomous_grace_remaining,
+                    )
+                else:
+                    self.autonomous_grace_remaining = 0
+                    chosen = max(
+                        verified,
+                        key=lambda item: (
+                            item[0],
+                            tuple(
+                                (action.value, duration)
+                                for action, duration in zip(
+                                    item[1].path, item[1].durations
+                                )
+                            ),
+                        ),
+                    )
             else:
                 chosen = max(
                     verified,
@@ -571,6 +711,13 @@ class VerifiedNeuralAgent:
             self.last_duration = duration
             self.decision_index += 1
             target_scene = self._scene_signature(target)
+            self._record_delayed_return(
+                current_scene,
+                action,
+                duration,
+                target,
+                target_scene,
+            )
             self.scene_visits[target_scene] += 1
             if target_scene == self.current_scene:
                 self.scene_streak += 1
@@ -636,6 +783,8 @@ class VerifiedNeuralAgent:
                 archive_branches_added=added,
                 archive_size=len(self.archive),
                 autonomous_dynamics=autonomous is not None,
+                autonomous_grace_remaining=self.autonomous_grace_remaining,
+                delayed_return_recovery_pending=self.delayed_return_recovery,
                 action_counts=self.action_counts,
                 duration_counts=self.duration_counts,
                 scene_streak=self.scene_streak,
@@ -660,15 +809,43 @@ class VerifiedNeuralAgent:
     def _restore_if_stagnant(self) -> Optional[Decision]:
         assert self.frame is not None
         current_scene = self._scene_signature(self.frame)
-        if self.scene_streak < self.config.scene_stagnation_visits:
+        delayed_return = self.delayed_return_recovery
+        if not delayed_return and self.scene_streak < self.config.scene_stagnation_visits:
             return None
-        minimum_created = max(0, self.decision_index - self.config.archive_max_age)
-        eligible = [
-            branch
-            for branch in self.archive
-            if branch.scene != current_scene and branch.created >= minimum_created
-        ]
+        recovery_reason = "delayed_visual_return" if delayed_return else "scene_stagnation"
+        if delayed_return:
+            loop_start = self.delayed_return_loop_start or 0
+            current_signature = self._signature(self.frame)
+            eligible = [
+                branch
+                for branch in self.archive
+                if branch.created >= loop_start
+                and self._signature(branch.frame) != current_signature
+            ]
+            if not eligible:
+                eligible = [
+                    branch
+                    for branch in self.archive
+                    if self._signature(branch.frame) != current_signature
+                ]
+        else:
+            minimum_created = max(0, self.decision_index - self.config.archive_max_age)
+            eligible = [
+                branch
+                for branch in self.archive
+                if branch.scene != current_scene and branch.created >= minimum_created
+            ]
         if not eligible:
+            if delayed_return:
+                self._emit(
+                    "delayed_return_recovery_unavailable",
+                    decision=self.decision_index,
+                    loop_start=self.delayed_return_loop_start,
+                    archive_size=len(self.archive),
+                    **self._frame_fields(self.frame),
+                )
+                self.delayed_return_recovery = False
+                self.delayed_return_loop_start = None
             return None
         branch = max(
             eligible,
@@ -690,9 +867,13 @@ class VerifiedNeuralAgent:
         self.current_scene = branch.scene
         self.scene_streak = 1
         self.decision_index += 1
+        self.visual_last_visit[self._signature(branch.frame)] = self.decision_index
+        self.delayed_return_recovery = False
+        self.delayed_return_loop_start = None
         self._emit(
             "archive_branch_restored",
             decision=self.decision_index,
+            reason=recovery_reason,
             state_id=restored_state_id,
             created_decision=branch.created,
             age=self.decision_index - branch.created,
@@ -714,6 +895,7 @@ class VerifiedNeuralAgent:
             score=branch.score,
             branches_examined=0,
             restored_archive=True,
+            restore_reason=recovery_reason,
             committed_state_id=restored_state_id,
             archive_branches_added=0,
             archive_size=len(self.archive),

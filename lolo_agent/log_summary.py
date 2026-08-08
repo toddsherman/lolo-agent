@@ -90,10 +90,16 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         }
     )
     decision_rows: List[Dict[str, Any]] = []
+    delayed_return_recoveries = 0
 
     edge_counts: Counter[Tuple[str, str, str, int]] = Counter()
     node_details: Dict[str, Dict[str, Any]] = {}
     for event in events:
+        if (
+            event["event"] == "archive_branch_restored"
+            and event.get("reason") == "delayed_visual_return"
+        ):
+            delayed_return_recoveries += 1
         frame = event.get("frame") or event.get("target_frame")
         if frame:
             frames.add(frame)
@@ -143,6 +149,10 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                     "score": event.get("score"),
                     "branches_examined": event.get("branches_examined", 0),
                     "restored_archive": restored,
+                    "restore_reason": event.get("restore_reason", ""),
+                    "delayed_return_recovery_pending": event.get(
+                        "delayed_return_recovery_pending", False
+                    ),
                     "frame": event.get("frame"),
                     "scene_signature": event.get("scene_signature"),
                     "scene_streak": event.get("scene_streak"),
@@ -165,6 +175,8 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "score",
         "branches_examined",
         "restored_archive",
+        "restore_reason",
+        "delayed_return_recovery_pending",
         "frame",
         "scene_signature",
         "scene_streak",
@@ -224,9 +236,14 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             str(key): value for key, value in sorted(investigated_durations.items())
         },
         "archive_restores": event_counts.get("archive_branch_restored", 0),
+        "delayed_visual_returns": event_counts.get(
+            "delayed_visual_return_detected", 0
+        ),
+        "delayed_return_recoveries": delayed_return_recoveries,
         "autonomous_dynamics_decisions": event_counts.get(
             "autonomous_dynamics_detected", 0
         ),
+        "autonomous_grace_waits": event_counts.get("autonomous_grace_wait", 0),
         "verified_branches": event_counts.get("branch_verified", 0),
         "unique_frames": len(frames),
         "unique_scenes": len(scenes),
