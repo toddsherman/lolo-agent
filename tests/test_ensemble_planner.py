@@ -809,6 +809,58 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertTrue(known)
         self.assertLess(learned, 0.0)
 
+    def test_temporal_option_penalizes_a_return_to_an_earlier_known_state(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        agent = VerifiedNeuralAgent(
+            MockPuzzleEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(actions=(Action.SELECT,), planning_depth=1),
+        )
+        agent.reset()
+        choice = ("moved-state", Action.SELECT, 1)
+        agent.behavior_visits["earlier-state"] = 1
+        agent.pending_option_choice = choice
+        agent.pending_option_decision = 1
+        agent.pending_option_causal_evidence = True
+        agent.decision_index = 1
+        agent._advance_temporal_option("animation", "fade", passive=True)
+        agent.decision_index = 2
+        agent._advance_temporal_option("earlier-state", "room", passive=False)
+
+        learned, known = agent._temporal_option_estimate(*choice)
+        self.assertTrue(known)
+        self.assertLess(learned, 0.0)
+
+    def test_temporal_option_action_prior_generalizes_unseen_state_and_duration(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        agent = VerifiedNeuralAgent(
+            MockPuzzleEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(actions=(Action.SELECT,), planning_depth=1),
+        )
+        agent.reset()
+        exact_choice = ("moved-state", Action.SELECT, 1)
+        agent._record_temporal_option_sample(exact_choice, -2.0)
+
+        exact, exact_known = agent._temporal_option_estimate(*exact_choice)
+        inherited, inherited_known = agent._temporal_option_estimate(
+            "earlier-state", Action.SELECT, 8
+        )
+
+        self.assertTrue(exact_known)
+        self.assertEqual(exact, -2.0)
+        self.assertTrue(inherited_known)
+        self.assertEqual(
+            inherited,
+            -2.0 * agent.config.temporal_option_action_prior_weight,
+        )
+
     def test_temporal_option_requires_action_dependent_counterfactual_evidence(
         self,
     ) -> None:
@@ -936,6 +988,47 @@ class EnsemblePlannerTests(unittest.TestCase):
         learned, known = agent._temporal_option_estimate(*choice)
         self.assertFalse(known)
         self.assertEqual(learned, 0.0)
+
+    def test_new_delayed_intervention_supersedes_active_option_credit(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        agent = VerifiedNeuralAgent(
+            MockPuzzleEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(actions=(Action.UP, Action.SELECT), planning_depth=1),
+        )
+        agent.reset()
+        prior_choice = ("source", Action.UP, 16)
+        agent.active_temporal_option = _TemporalOptionTrace(
+            choice=prior_choice,
+            initiation_decision=1,
+            start_decision=2,
+            entry_signature="animation",
+            entry_scene="scene",
+            causal_evidence=True,
+        )
+
+        superseded = agent._supersede_temporal_option_for_intervention(
+            Action.SELECT, has_causal_candidate=True
+        )
+
+        self.assertTrue(superseded)
+        self.assertIsNone(agent.active_temporal_option)
+        self.assertEqual(agent._temporal_option_estimate(*prior_choice), (0.0, False))
+
+        agent.active_temporal_option = _TemporalOptionTrace(
+            choice=prior_choice,
+            initiation_decision=1,
+            start_decision=2,
+            entry_signature="animation",
+            entry_scene="scene",
+        )
+        self.assertFalse(
+            agent._supersede_temporal_option_for_intervention(
+                Action.NOOP, has_causal_candidate=True
+            )
+        )
+        self.assertIsNotNone(agent.active_temporal_option)
 
     def test_archive_recovery_prefers_learned_persistent_frontier_value(self) -> None:
         model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)

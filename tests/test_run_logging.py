@@ -99,6 +99,7 @@ class RunLoggingTests(unittest.TestCase):
             self.assertNotEqual(rows[0]["target_frontier_signature"], "")
             self.assertNotEqual(rows[0]["temporal_option_value"], "")
             self.assertNotEqual(rows[0]["temporal_option_is_known"], "")
+            self.assertNotEqual(rows[0]["temporal_option_value_source"], "")
             self.assertNotEqual(rows[0]["active_temporal_option"], "")
             self.assertNotEqual(
                 rows[0]["temporal_option_initiation_eligible"], ""

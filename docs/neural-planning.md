@@ -205,10 +205,14 @@ save-state restoration, reset, or error cleanup.
 
 The endpoint sample uses only interaction-derived quantities: whether the
 endpoint behavioral signature is new, how many coarse visual scenes the trace
-crossed, its duration, and whether it returned to its initiating signature.
-Novel endpoints and broader, longer transitions receive positive value;
-returns to the source receive a penalty. Later candidate scoring and archive
-selection can reuse the running value for that exact initiating choice.
+crossed, its duration, and whether it returned to a behavioral signature seen
+before initiation. Novel endpoints and broader, longer transitions receive
+positive value; returns to the source or another previously known endpoint
+receive a penalty. Later candidate scoring and archive selection can reuse the
+running value for that exact initiating choice. Until a state/action/duration
+choice has its own sample, it also receives a discounted prior from causally
+supported option samples for the same controller action elsewhere in the
+attempt. Exact local evidence overrides this action-level prior.
 
 Boot-time passive motion has no initiating choice and is logged but does not
 produce a learned sample. Timer-driven sequences whose matched counterfactual

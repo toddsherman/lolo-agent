@@ -39,8 +39,9 @@ Telemetry includes:
 - temporal-option starts, every passive continuation, controllable endpoints,
   credited initiating state/action/duration choices, same-duration
   counterfactual counts and pixel contrast, novelty/scene-span/duration/return
-  score components, learned values, and traces discarded at save-state jumps
-  or run boundaries;
+  score components, returns to the source or another previously known
+  behavioral endpoint, exact-choice and action-level learned values, and traces
+  discarded at save-state jumps or run boundaries;
 - delayed temporal-counterfactual reservation, every matched neutral step with
   source and target state aliases, factual-versus-counterfactual pixel
   contrast, endpoint contrast, and explicit state-release reasons;
@@ -91,9 +92,10 @@ scenes. The decision CSV exposes both the restore reason and whether a delayed
 return recovery was pending after each committed emulator action. It also
 records the successor-novelty reward and learned persistent-frontier value.
 It also exposes the learned temporal-option value used for each committed
-choice, whether that estimate already had a sample, and whether a passive
-option trace remained active after the decision. Summary counts distinguish
-started, completed, discarded, and credited option samples.
+choice, whether that estimate came from the exact choice, an action-level
+prior, or no evidence, and whether a passive option trace remained active after
+the decision. Summary counts distinguish started, completed, discarded, and
+credited option samples.
 
 ## Attempts and level labels
 

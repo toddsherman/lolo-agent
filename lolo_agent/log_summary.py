@@ -228,6 +228,9 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                     "temporal_option_is_known": event.get(
                         "temporal_option_is_known", False
                     ),
+                    "temporal_option_value_source": event.get(
+                        "temporal_option_value_source", "unseen"
+                    ),
                     "active_temporal_option": event.get(
                         "active_temporal_option", False
                     ),
@@ -282,6 +285,7 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "committed_choice_frontier_value",
         "temporal_option_value",
         "temporal_option_is_known",
+        "temporal_option_value_source",
         "active_temporal_option",
         "temporal_option_initiation_eligible",
         "temporal_option_counterfactual_contrast",

@@ -363,12 +363,27 @@ created and released. Replay verification passed for all 6,082 observations.
 The committed trajectory contains 4,367 frames; the full planning trace
 contains 17,353.
 
-It did not solve Floor 1. Visual inspection showed the initial upward move
-entering the left enemy's path, repeated fade/restart sequences, and the life
-display decreasing from five to three. The planner treated those changing
-pixels as novelty and selected 163 neutral waits, so the result exposes a need
-to learn temporary value for preserving controllability and avoiding
-action-caused visual collapse without supplying a death label.
+It did not solve Floor 1. Controlled save-state branches corrected the initial
+diagnosis: the harmless upward move survived at least 320 neutral frames, while
+the `SELECT@1` choice at decision 2 caused the exact delayed fade at frame 177
+and room restart at frame 193. The life display then decreased from five to
+four. The planner incorrectly left an earlier `UP@16` temporal-option trace
+active and credited the entire passive sequence to that prior movement instead
+of allowing `SELECT@1` to supersede it. The planner treated the subsequent
+changing pixels as novelty and selected 163 neutral waits.
+
+The corrected controller lets a new non-neutral action with a matched
+counterfactual supersede the older passive trace. It also treats a causally
+divergent endpoint that was behaviorally known before initiation as a return,
+even when it is not the exact initiating state. In the matched native audit,
+`SELECT@1` was paired with `A@1`, the endpoints differed by normalized pixel
+contrast `0.003275`, and the return assigned Select a temporary value of
+`-1.4323`. A discounted action-level prior carried that evidence to untested
+Select states and durations. Over 80 decisions the second Select probe moved
+from the baseline's decision 35 to decision 79, so no second give-up completed
+within the audit. The run recorded 438 verified branches, 101 exact frames,
+nine coarse scenes, and released all 553 saved states; replay verification
+passed for all 1,680 observations.
 
 The durable experiment runner now applies the same opt-in bootstrap before
 collection and frozen evaluation. A new `lolo1-puzzle` experiment initialized
@@ -381,11 +396,8 @@ cycles alone are therefore not yet evidence of useful progress.
 
 ## Next research target
 
-Learn progress potential and controllability survival from directed
-reachability rather than passive duration or raw pixel novelty alone. The
-temporary interaction graph can identify visual regions that are easy to leave
-but not recover through tested controller transitions, action choices followed
-by loss of control and a visual restart, and states whose descendants repeatedly
-expand the reachable frontier. Ranking branches by this evidence may avoid
-repeated lethal exploration without assuming object identity, death, room
-completion, or success.
+Replace the long neutral waits with planning over controllable tile-scale
+effects and multi-action reachability. The delayed counterfactual now identifies
+and suppresses give-up behavior without naming `SELECT`, death, lives, or room
+reset; the remaining bottleneck is purposeful spatial interaction rather than
+startup or causal reset attribution.

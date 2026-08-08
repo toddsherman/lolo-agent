@@ -70,6 +70,7 @@ class NeuralPlanningConfig:
     temporal_option_duration_weight: float = 0.25
     temporal_option_duration_scale: int = 16
     temporal_option_return_penalty: float = 2.0
+    temporal_option_action_prior_weight: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -337,6 +338,8 @@ class VerifiedNeuralAgent:
             raise ValueError("behavioral probe count must be positive")
         if self.config.temporal_option_duration_scale <= 0:
             raise ValueError("temporal option duration scale must be positive")
+        if not 0.0 <= self.config.temporal_option_action_prior_weight <= 1.0:
+            raise ValueError("temporal option action prior weight must be in [0, 1]")
         self.model.freeze()
         self.planner = NeuralRolloutPlanner(model, device, self.config)
         self.novelty = VisualNovelty()
@@ -376,6 +379,8 @@ class VerifiedNeuralAgent:
         self.active_temporal_option: Optional[_TemporalOptionTrace] = None
         self.temporal_option_values: Dict[Tuple[str, Action, int], float] = {}
         self.temporal_option_samples: CounterType[Tuple[str, Action, int]] = Counter()
+        self.temporal_option_action_values: Dict[Action, float] = {}
+        self.temporal_option_action_samples: CounterType[Action] = Counter()
         self.current_scene: Optional[str] = None
         self.scene_streak = 0
         self.visual_stagnation_streak = 0
@@ -441,6 +446,8 @@ class VerifiedNeuralAgent:
         self.active_temporal_option = None
         self.temporal_option_values = {}
         self.temporal_option_samples = Counter()
+        self.temporal_option_action_values = {}
+        self.temporal_option_action_samples = Counter()
         self.frontier_values = {}
         self.frontier_samples = Counter()
         self.frontier_traces = [_FrontierTrace(0, initial_signature)]
@@ -968,9 +975,24 @@ class VerifiedNeuralAgent:
         self, signature: str, action: Action, duration: int
     ) -> Tuple[float, bool]:
         choice = (signature, action, duration)
-        return self.temporal_option_values.get(choice, 0.0), bool(
-            self.temporal_option_samples[choice]
-        )
+        if self.temporal_option_samples[choice]:
+            return self.temporal_option_values.get(choice, 0.0), True
+        if self.temporal_option_action_samples[action]:
+            return (
+                self.config.temporal_option_action_prior_weight
+                * self.temporal_option_action_values.get(action, 0.0),
+                True,
+            )
+        return 0.0, False
+
+    def _temporal_option_estimate_source(
+        self, signature: str, action: Action, duration: int
+    ) -> str:
+        if self.temporal_option_samples[(signature, action, duration)]:
+            return "exact_choice"
+        if self.temporal_option_action_samples[action]:
+            return "action_prior"
+        return "unseen"
 
     def _record_temporal_option_sample(
         self, choice: Tuple[str, Action, int], sample: float
@@ -980,6 +1002,13 @@ class VerifiedNeuralAgent:
         value = previous + (sample - previous) / count
         self.temporal_option_samples[choice] = count
         self.temporal_option_values[choice] = value
+        action = choice[1]
+        action_count = self.temporal_option_action_samples[action] + 1
+        action_previous = self.temporal_option_action_values.get(action, 0.0)
+        self.temporal_option_action_samples[action] = action_count
+        self.temporal_option_action_values[action] = action_previous + (
+            sample - action_previous
+        ) / action_count
         return value
 
     def _release_option_counterfactual(
@@ -1033,6 +1062,28 @@ class VerifiedNeuralAgent:
                     trace.counterfactual, reason
                 )
         self.active_temporal_option = None
+
+    def _supersede_temporal_option_for_intervention(
+        self,
+        action: Action,
+        has_causal_candidate: bool,
+    ) -> bool:
+        if (
+            self.active_temporal_option is None
+            or action == Action.NOOP
+            or not has_causal_candidate
+        ):
+            return False
+        prior_choice = self.active_temporal_option.choice
+        self._discard_temporal_option("superseded_by_intervention")
+        self._emit(
+            "temporal_option_superseded",
+            decision=self.decision_index + 1,
+            prior_choice=prior_choice,
+            action=action,
+            reason="new_action_with_counterfactual",
+        )
+        return True
 
     def _advance_option_counterfactual(
         self,
@@ -1179,12 +1230,13 @@ class VerifiedNeuralAgent:
         returned_to_source = bool(
             trace.choice is not None and signature == trace.choice[0]
         )
+        returned_to_known_state = not endpoint_is_new
         sample = (
             self.config.temporal_option_novelty_weight * float(endpoint_is_new)
             + self.config.temporal_option_scene_span_weight * scene_span
             + self.config.temporal_option_duration_weight * duration_progress
             - self.config.temporal_option_return_penalty
-            * float(returned_to_source)
+            * float(returned_to_known_state)
         )
         learned_value = None
         sample_count = 0
@@ -1207,9 +1259,20 @@ class VerifiedNeuralAgent:
             scene_span=scene_span,
             duration_progress=duration_progress,
             returned_to_source=returned_to_source,
+            returned_to_known_state=returned_to_known_state,
             sample=sample,
             learned_value=learned_value,
             sample_count=sample_count,
+            action_prior_value=(
+                None
+                if trace.choice is None
+                else self.temporal_option_action_values.get(trace.choice[1])
+            ),
+            action_prior_sample_count=(
+                0
+                if trace.choice is None
+                else self.temporal_option_action_samples[trace.choice[1]]
+            ),
             credited=credited,
             causal_evidence=trace.causal_evidence,
             counterfactual_steps=(
@@ -1836,6 +1899,11 @@ class VerifiedNeuralAgent:
                     choice_frontier_is_known=choice_frontier_is_known,
                     temporal_option_value=temporal_option_value,
                     temporal_option_is_known=temporal_option_is_known,
+                    temporal_option_value_source=(
+                        self._temporal_option_estimate_source(
+                            source_signature, plan.path[0], duration
+                        )
+                    ),
                     temporal_option_bonus=(
                         self.config.temporal_option_score_weight
                         * temporal_option_value
@@ -1940,6 +2008,11 @@ class VerifiedNeuralAgent:
                 None
                 if option_initiation_eligible
                 else self._delayed_option_counterfactual(chosen, verified)
+            )
+            self._supersede_temporal_option_for_intervention(
+                plan.path[0],
+                option_initiation_eligible
+                or delayed_counterfactual_branch is not None,
             )
             self.env.load_state(state)
             self.frame = target
@@ -2152,6 +2225,11 @@ class VerifiedNeuralAgent:
                 temporal_option_is_known=self._temporal_option_estimate(
                     source_signature, action, duration
                 )[1],
+                temporal_option_value_source=(
+                    self._temporal_option_estimate_source(
+                        source_signature, action, duration
+                    )
+                ),
                 active_temporal_option=(
                     self.active_temporal_option is not None
                 ),
@@ -2322,6 +2400,9 @@ class VerifiedNeuralAgent:
             persistent_frontier_value=selected_frontier_value,
             temporal_option_value=restored_option_value,
             temporal_option_is_known=restored_option_known,
+            temporal_option_value_source=(
+                self._temporal_option_estimate_source(*restored_choice)
+            ),
             temporal_option_initiation_eligible=(
                 branch.option_initiation_eligible
             ),
@@ -2351,6 +2432,9 @@ class VerifiedNeuralAgent:
             persistent_frontier_value=selected_frontier_value,
             temporal_option_value=restored_option_value,
             temporal_option_is_known=restored_option_known,
+            temporal_option_value_source=(
+                self._temporal_option_estimate_source(*restored_choice)
+            ),
             active_temporal_option=False,
             temporal_option_initiation_eligible=(
                 branch.option_initiation_eligible
