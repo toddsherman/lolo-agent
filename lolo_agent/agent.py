@@ -38,6 +38,8 @@ class Decision:
     score: float
     branches_examined: int
     restored_archive: bool = False
+    action_frames: int = 1
+    planned_durations: Tuple[int, ...] = ()
 
 
 @dataclass

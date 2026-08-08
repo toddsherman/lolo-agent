@@ -75,11 +75,19 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
     annotations = list(read_annotations(run_dir))
     event_counts = Counter(event["event"] for event in events)
     actions = Counter()
+    durations = Counter()
     investigated_actions = Counter()
+    investigated_durations = Counter()
     frames: set[str] = set()
     scenes: set[str] = set()
     attempts: Dict[int, Dict[str, Any]] = defaultdict(
-        lambda: {"decisions": 0, "restores": 0, "actions": Counter(), "env_steps": 0}
+        lambda: {
+            "decisions": 0,
+            "restores": 0,
+            "actions": Counter(),
+            "durations": Counter(),
+            "env_steps": 0,
+        }
     )
     decision_rows: List[Dict[str, Any]] = []
 
@@ -104,6 +112,7 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         if event["event"] == "env_step":
             action = str(event["action"])
             investigated_actions[action] += 1
+            investigated_durations[int(event["action_frames"])] += 1
             attempts[attempt]["env_steps"] += 1
             source = event.get("source_frame")
             target = event.get("target_frame")
@@ -112,8 +121,11 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         elif event["event"] == "decision_committed":
             action = str(event["action"])
             actions[action] += 1
+            action_frames = int(event.get("action_frames") or 1)
+            durations[action_frames] += 1
             attempts[attempt]["decisions"] += 1
             attempts[attempt]["actions"][action] += 1
+            attempts[attempt]["durations"][action_frames] += 1
             restored = bool(event.get("restored_archive"))
             if restored:
                 attempts[attempt]["restores"] += 1
@@ -125,7 +137,9 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                     "level": _level_for_event(event, annotations) or "",
                     "decision": event["decision"],
                     "action": action,
+                    "action_frames": event.get("action_frames"),
                     "path": ",".join(event.get("path", [])),
+                    "durations": ",".join(str(value) for value in event.get("durations", [])),
                     "score": event.get("score"),
                     "branches_examined": event.get("branches_examined", 0),
                     "restored_archive": restored,
@@ -145,7 +159,9 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "level",
         "decision",
         "action",
+        "action_frames",
         "path",
+        "durations",
         "score",
         "branches_examined",
         "restored_archive",
@@ -188,6 +204,9 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             "restores": values["restores"],
             "env_steps": values["env_steps"],
             "actions": dict(sorted(values["actions"].items())),
+            "durations": {
+                str(key): value for key, value in sorted(values["durations"].items())
+            },
         }
     summary = {
         "schema_version": SCHEMA_VERSION,
@@ -199,7 +218,11 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "attempts": attempt_rows,
         "committed_decisions": len(decision_rows),
         "committed_actions": dict(sorted(actions.items())),
+        "committed_durations": {str(key): value for key, value in sorted(durations.items())},
         "investigated_actions": dict(sorted(investigated_actions.items())),
+        "investigated_durations": {
+            str(key): value for key, value in sorted(investigated_durations.items())
+        },
         "archive_restores": event_counts.get("archive_branch_restored", 0),
         "verified_branches": event_counts.get("branch_verified", 0),
         "unique_frames": len(frames),

@@ -5,7 +5,7 @@ import math
 import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple, Union
+from typing import Any, List, Optional, Sequence, Tuple, Union
 
 import torch
 from torch import Tensor, nn
@@ -21,10 +21,15 @@ class VisualSequence:
     group: int
     frames: Tuple[Frame, ...]
     actions: Tuple[Action, ...]
+    durations: Tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.actions or len(self.frames) != len(self.actions) + 1:
             raise ValueError("a visual sequence requires one more frame than actions")
+        if self.durations and len(self.durations) != len(self.actions):
+            raise ValueError("sequence durations must align with actions")
+        if any(duration <= 0 for duration in self.durations):
+            raise ValueError("action durations must be positive")
 
 
 @dataclass(frozen=True)
@@ -50,6 +55,10 @@ class EnsembleVisualDynamicsModel(nn.Module):
         latent_size: int = 256,
         action_size: int = 32,
         ensemble_size: int = 3,
+        duration_conditioned: bool = False,
+        duration_size: int = 16,
+        max_action_frames: int = 32,
+        fixed_action_frames: int = 4,
     ) -> None:
         super().__init__()
         if ensemble_size < 2:
@@ -57,6 +66,11 @@ class EnsembleVisualDynamicsModel(nn.Module):
         self.latent_size = latent_size
         self.action_size = action_size
         self.ensemble_size = ensemble_size
+        self.duration_conditioned = duration_conditioned
+        self.duration_size = duration_size
+        self.max_action_frames = max_action_frames
+        self.fixed_action_frames = fixed_action_frames
+        self.fixed_action_frames_locked = False
         self.encoder_convolution = nn.Sequential(
             nn.Conv2d(3, 32, kernel_size=5, stride=2, padding=2),
             nn.SiLU(),
@@ -70,10 +84,18 @@ class EnsembleVisualDynamicsModel(nn.Module):
         )
         self.encoder_projection = nn.Linear(128 * 4 * 4, latent_size)
         self.action_embedding = nn.Embedding(len(ACTION_ORDER), action_size)
+        self.duration_embedding = (
+            nn.Embedding(max_action_frames + 1, duration_size)
+            if duration_conditioned
+            else None
+        )
+        dynamics_input_size = latent_size + action_size + (
+            duration_size if duration_conditioned else 0
+        )
         self.dynamics_heads = nn.ModuleList(
             [
                 nn.Sequential(
-                    nn.Linear(latent_size + action_size, latent_size * 2),
+                    nn.Linear(dynamics_input_size, latent_size * 2),
                     nn.SiLU(),
                     nn.Linear(latent_size * 2, latent_size),
                 )
@@ -103,10 +125,21 @@ class EnsembleVisualDynamicsModel(nn.Module):
         latent = self.encode(frames)
         return latent.unsqueeze(0).expand(self.ensemble_size, -1, -1).contiguous()
 
-    def transition_ensemble(self, latents: Tensor, actions: Tensor) -> Tensor:
+    def transition_ensemble(
+        self, latents: Tensor, actions: Tensor, durations: Optional[Tensor] = None
+    ) -> Tensor:
         if latents.ndim != 3 or latents.shape[0] != self.ensemble_size:
             raise ValueError("latents must have shape [ensemble, batch, latent]")
         embedded = self.action_embedding(actions)
+        if self.duration_conditioned:
+            if durations is None:
+                raise ValueError("duration-conditioned dynamics require durations")
+            if torch.any(durations <= 0) or torch.any(durations > self.max_action_frames):
+                raise ValueError(
+                    f"durations must be between 1 and {self.max_action_frames} frames"
+                )
+            assert self.duration_embedding is not None
+            embedded = torch.cat((embedded, self.duration_embedding(durations)), dim=1)
         predictions = []
         for index, head in enumerate(self.dynamics_heads):
             latent = latents[index]
@@ -114,7 +147,9 @@ class EnsembleVisualDynamicsModel(nn.Module):
             predictions.append(latent + delta)
         return torch.stack(predictions)
 
-    def rollout(self, source: Tensor, actions: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
+    def rollout(
+        self, source: Tensor, actions: Tensor, durations: Optional[Tensor] = None
+    ) -> Tuple[Tensor, Tensor, Tensor]:
         if actions.ndim != 2:
             raise ValueError("actions must have shape [batch, horizon]")
         latents = self.initial_ensemble(source)
@@ -122,7 +157,8 @@ class EnsembleVisualDynamicsModel(nn.Module):
         means = []
         uncertainty = []
         for step in range(actions.shape[1]):
-            latents = self.transition_ensemble(latents, actions[:, step])
+            step_durations = None if durations is None else durations[:, step]
+            latents = self.transition_ensemble(latents, actions[:, step], step_durations)
             mean = latents.mean(dim=0)
             pixels.append(self.decode(mean))
             means.append(mean)
@@ -157,7 +193,7 @@ class EnsembleVisualDynamicsModel(nn.Module):
 
 def sequence_batch(
     sequences: Sequence[VisualSequence], device: Union[torch.device, str]
-) -> Tuple[Tensor, Tensor]:
+) -> Tuple[Tensor, Tensor, Tensor]:
     horizon = len(sequences[0].actions)
     if any(len(sequence.actions) != horizon for sequence in sequences):
         raise ValueError("all sequences in a batch must have the same horizon")
@@ -169,13 +205,22 @@ def sequence_batch(
         dtype=torch.long,
         device=device,
     )
-    return frames, actions
+    durations = torch.tensor(
+        [
+            list(sequence.durations) if sequence.durations else [4] * len(sequence.actions)
+            for sequence in sequences
+        ],
+        dtype=torch.long,
+        device=device,
+    )
+    return frames, actions, durations
 
 
 def ensemble_sequence_loss(
     model: EnsembleVisualDynamicsModel,
     frames: Tensor,
     actions: Tensor,
+    durations: Optional[Tensor] = None,
     discount: float = 0.9,
     bootstrap_mask: Optional[Tensor] = None,
 ) -> Tuple[Tensor, EnsembleTrainingMetrics]:
@@ -187,7 +232,8 @@ def ensemble_sequence_loss(
     latent_loss = source.new_zeros(())
     weight_total = 0.0
     for step in range(actions.shape[1]):
-        latents = model.transition_ensemble(latents, actions[:, step])
+        step_durations = None if durations is None else durations[:, step]
+        latents = model.transition_ensemble(latents, actions[:, step], step_durations)
         mean = latents.mean(dim=0)
         target = frames[:, step + 1]
         with torch.no_grad():
@@ -235,7 +281,7 @@ def train_ensemble_model(
         order = torch.randperm(len(sequences), generator=generator).tolist()
         for start in range(0, len(order), batch_size):
             batch = [sequences[index] for index in order[start : start + batch_size]]
-            frames, actions = sequence_batch(batch, device)
+            frames, actions, durations = sequence_batch(batch, device)
             bootstrap_mask = (
                 torch.rand(
                     (model.ensemble_size, len(batch)),
@@ -250,7 +296,11 @@ def train_ensemble_model(
             bootstrap_mask = bootstrap_mask.to(device=device, dtype=frames.dtype)
             optimizer.zero_grad(set_to_none=True)
             loss, metrics = ensemble_sequence_loss(
-                model, frames, actions, bootstrap_mask=bootstrap_mask
+                model,
+                frames,
+                actions,
+                durations if model.duration_conditioned else None,
+                bootstrap_mask=bootstrap_mask,
             )
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 5.0)
@@ -277,8 +327,10 @@ def validate_ensemble_model(
     count = 0
     for start in range(0, len(sequences), batch_size):
         batch = sequences[start : start + batch_size]
-        frames, actions = sequence_batch(batch, device)
-        predictions, _latents, uncertainty = model.rollout(frames[:, 0], actions)
+        frames, actions, durations = sequence_batch(batch, device)
+        predictions, _latents, uncertainty = model.rollout(
+            frames[:, 0], actions, durations if model.duration_conditioned else None
+        )
         errors = (predictions - frames[:, 1:]).abs().mean(dim=(2, 3, 4))
         for step in range(horizon):
             step_errors = errors[:, step].detach().cpu().tolist()
@@ -312,27 +364,50 @@ def collect_branched_sequences(
     branches_per_root: int = 2,
     horizon: int = 3,
     action_frames: int = 4,
+    action_durations: Optional[Sequence[int]] = None,
     seed: int = 0,
+    reset_env: bool = True,
+    group_offset: int = 0,
+    event_logger: Optional[Any] = None,
 ) -> List[VisualSequence]:
     if min(roots, branches_per_root, horizon, action_frames) <= 0:
         raise ValueError("collector sizes must be positive")
     randomizer = random.Random(seed)
-    current = env.reset()
+    duration_choices = tuple(action_durations or (action_frames,))
+    if any(duration <= 0 for duration in duration_choices):
+        raise ValueError("action durations must be positive")
+    current = env.reset() if reset_env else env.observe()  # type: ignore[attr-defined]
     release_state = getattr(env, "release_state", None)
     sequences = []
-    for group in range(roots):
+    for local_group in range(roots):
+        group = group_offset + local_group
+        if event_logger is not None:
+            event_logger.log("collection_root_started", group=group)
         root = env.save_state()
         branches = []
-        for _ in range(branches_per_root):
+        for branch_index in range(branches_per_root):
             env.load_state(root)
             frames = [current]
             actions = []
+            durations = []
             for _ in range(horizon):
                 action = randomizer.choice(ACTION_ORDER)
+                duration = randomizer.choice(duration_choices)
                 actions.append(action)
-                frames.append(env.step(action, action_frames))
+                durations.append(duration)
+                frames.append(env.step(action, duration))
             child = env.save_state()
-            sequences.append(VisualSequence(group, tuple(frames), tuple(actions)))
+            sequence = VisualSequence(group, tuple(frames), tuple(actions), tuple(durations))
+            sequences.append(sequence)
+            if event_logger is not None:
+                event_logger.log(
+                    "training_sequence_collected",
+                    group=group,
+                    branch=branch_index + 1,
+                    actions=actions,
+                    durations=durations,
+                    frames=[frame.digest for frame in frames],
+                )
             branches.append((child, frames[-1]))
         chosen, current = randomizer.choice(branches)
         env.load_state(chosen)
@@ -363,13 +438,17 @@ def save_ensemble_checkpoint(
     digest = model.checkpoint_digest
     torch.save(
         {
-            "version": 1,
+            "version": 2,
             "model": {
                 name: value.detach().cpu() for name, value in model.state_dict().items()
             },
             "latent_size": model.latent_size,
             "action_size": model.action_size,
             "ensemble_size": model.ensemble_size,
+            "duration_conditioned": model.duration_conditioned,
+            "duration_size": model.duration_size,
+            "max_action_frames": model.max_action_frames,
+            "fixed_action_frames": model.fixed_action_frames,
             "planning_horizon": planning_horizon,
             "actions": [action.value for action in ACTION_ORDER],
             "digest": digest,
@@ -385,7 +464,7 @@ def load_ensemble_checkpoint(
     frozen: bool = True,
 ) -> Tuple[EnsembleVisualDynamicsModel, int]:
     checkpoint = torch.load(Path(path), map_location="cpu", weights_only=True)
-    if checkpoint.get("version") != 1:
+    if checkpoint.get("version") not in (1, 2):
         raise ValueError("unsupported ensemble checkpoint version")
     if checkpoint.get("actions") != [action.value for action in ACTION_ORDER]:
         raise ValueError("checkpoint controller action order does not match runtime")
@@ -393,8 +472,13 @@ def load_ensemble_checkpoint(
         latent_size=int(checkpoint["latent_size"]),
         action_size=int(checkpoint["action_size"]),
         ensemble_size=int(checkpoint["ensemble_size"]),
+        duration_conditioned=bool(checkpoint.get("duration_conditioned", False)),
+        duration_size=int(checkpoint.get("duration_size", 16)),
+        max_action_frames=int(checkpoint.get("max_action_frames", 32)),
+        fixed_action_frames=int(checkpoint.get("fixed_action_frames", 4)),
     )
     model.load_state_dict(checkpoint["model"])
+    model.fixed_action_frames_locked = True
     if model.checkpoint_digest != checkpoint.get("digest"):
         raise ValueError("ensemble checkpoint parameter digest mismatch")
     model.to(device)

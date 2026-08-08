@@ -27,6 +27,7 @@ def main() -> None:
     parser.add_argument("--branches", type=int, default=2)
     parser.add_argument("--horizon", type=int, default=3)
     parser.add_argument("--action-frames", type=int, default=4)
+    parser.add_argument("--action-durations")
     parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--agent-decisions", type=int, default=3)
@@ -36,6 +37,11 @@ def main() -> None:
 
     torch.manual_seed(args.seed)
     device = choose_torch_device()
+    action_durations = (
+        tuple(int(value) for value in args.action_durations.split(","))
+        if args.action_durations
+        else (args.action_frames,)
+    )
     with NativeLibretroEnv(args.host, args.core, args.rom) as env:
         sequences = collect_branched_sequences(
             env,
@@ -43,10 +49,15 @@ def main() -> None:
             branches_per_root=args.branches,
             horizon=args.horizon,
             action_frames=args.action_frames,
+            action_durations=action_durations,
             seed=args.seed,
         )
     training, validation = split_sequence_groups(sequences)
-    model = EnsembleVisualDynamicsModel()
+    model = EnsembleVisualDynamicsModel(
+        duration_conditioned=len(action_durations) > 1,
+        max_action_frames=max(32, max(action_durations)),
+        fixed_action_frames=action_durations[0],
+    )
     before_report = validate_ensemble_model(model, validation, device, args.batch_size)
     history = train_ensemble_model(
         model,
@@ -69,6 +80,7 @@ def main() -> None:
                 actions=ACTION_ORDER,
                 planning_depth=args.horizon,
                 action_frames=args.action_frames,
+                action_durations=action_durations if len(action_durations) > 1 else (),
             ),
         )
         agent.reset()
@@ -88,7 +100,10 @@ def main() -> None:
     print(f"uncertainty_error_correlation={after_report.uncertainty_error_correlation:.6f}")
     for index, decision in enumerate(decisions, 1):
         path = ",".join(action.value for action in decision.planned_path)
-        print(f"decision_{index}={decision.action.value} plan={path} verified={decision.branches_examined}")
+        print(
+            f"decision_{index}={decision.action.value}@{decision.action_frames} "
+            f"plan={path} verified={decision.branches_examined}"
+        )
     print(f"checkpoint_sha256={frozen_digest}")
     print("frozen_planner_audit=pass")
 

@@ -20,6 +20,10 @@ def main() -> None:
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--decisions", type=int, default=20)
     parser.add_argument("--action-frames", type=int, default=4)
+    parser.add_argument(
+        "--action-durations",
+        help="comma-separated press lengths; requires a duration-conditioned checkpoint",
+    )
     parser.add_argument("--verify-actions", type=int, default=4)
     parser.add_argument("--log-root", type=Path, default=Path("runs"))
     parser.add_argument("--run-id")
@@ -29,10 +33,16 @@ def main() -> None:
     device = choose_torch_device()
     model, horizon = load_ensemble_checkpoint(args.checkpoint, device=device, frozen=True)
     before = model.checkpoint_digest
+    action_durations = (
+        tuple(int(value) for value in args.action_durations.split(","))
+        if args.action_durations
+        else ()
+    )
     config = NeuralPlanningConfig(
         actions=ACTION_ORDER,
         planning_depth=horizon,
         action_frames=args.action_frames,
+        action_durations=action_durations,
         verify_actions=args.verify_actions,
     )
     metadata = {
@@ -95,6 +105,7 @@ def main() -> None:
         path = ",".join(action.value for action in decision.planned_path)
         print(
             f"{index:04d} action={decision.action.value:<6} "
+            f"frames={decision.action_frames:<2} "
             f"score={decision.score:.6f} plan={path} verified={decision.branches_examined} "
             f"restored={decision.restored_archive}"
         )

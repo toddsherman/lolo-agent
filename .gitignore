@@ -12,6 +12,7 @@ artifacts/
 runs/
 checkpoints/
 build/
+experiments/
 
 # Python
 .venv/

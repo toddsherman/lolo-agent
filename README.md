@@ -117,6 +117,26 @@ Open `runs/<run-id>/replays/committed/index.html` or
 `runs/<run-id>/replays/full/index.html`. Players support scrubbing, stepping,
 keyboard control, and playback from 5 to 240 frames per second.
 
+## Durable learning experiments
+
+Run repeated collection, MPS training, and frozen evaluation with explicit
+variable-duration controller actions:
+
+```bash
+lolo-experiment \
+  --experiment-dir experiments/lolo1-main \
+  --host build/lolo-libretro-host \
+  --rom "Adventures of Lolo.nes" \
+  --core "$HOME/Library/Application Support/RetroArch/cores/nestopia_libretro.dylib" \
+  --cycles 10 \
+  --durations 1,2,4,8,16
+```
+
+Running the same command again completes ten additional cycles. Atomic dataset
+segments, per-cycle checkpoints, phase state, metrics, collection telemetry,
+and frozen-evaluation telemetry are retained below the experiment directory.
+See [docs/experiments.md](docs/experiments.md).
+
 To connect an emulator, implement `PixelSaveStateEnv` from
 `lolo_agent/environment.py`. Keep success, room number, sprite identity, and RAM
 outside that interface. An evaluation harness may inspect success to score a

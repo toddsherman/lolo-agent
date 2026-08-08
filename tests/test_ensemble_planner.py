@@ -112,3 +112,70 @@ class EnsemblePlannerTests(unittest.TestCase):
         second = agent.decide()
         self.assertFalse(first.restored_archive)
         self.assertTrue(second.restored_archive)
+
+    def test_duration_conditioned_planner_selects_a_press_length(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32,
+            action_size=8,
+            ensemble_size=2,
+            duration_conditioned=True,
+            duration_size=4,
+            max_action_frames=8,
+        )
+        env = MockPuzzleEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.LEFT, Action.RIGHT),
+                action_durations=(1, 3),
+                planning_depth=1,
+                beam_width=4,
+                verify_actions=4,
+            ),
+        )
+        agent.reset()
+        decision = agent.decide()
+        self.assertIn(decision.action_frames, (1, 3))
+        self.assertEqual(decision.planned_durations, (decision.action_frames,))
+        self.assertEqual(decision.branches_examined, 4)
+
+    def test_duration_checkpoint_round_trip(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32,
+            action_size=8,
+            ensemble_size=2,
+            duration_conditioned=True,
+            duration_size=4,
+            max_action_frames=16,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "duration-ensemble.pt"
+            digest = save_ensemble_checkpoint(model, path, planning_horizon=2)
+            loaded, horizon = load_ensemble_checkpoint(path, frozen=True)
+        self.assertEqual(horizon, 2)
+        self.assertEqual(digest, loaded.checkpoint_digest)
+        self.assertTrue(loaded.duration_conditioned)
+        self.assertEqual(loaded.max_action_frames, 16)
+
+    def test_loaded_fixed_duration_checkpoint_rejects_a_different_duration(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32,
+            action_size=8,
+            ensemble_size=2,
+            fixed_action_frames=4,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fixed-ensemble.pt"
+            save_ensemble_checkpoint(model, path, planning_horizon=1)
+            loaded, _ = load_ensemble_checkpoint(path, frozen=True)
+        with self.assertRaises(ValueError):
+            VerifiedNeuralAgent(
+                MockPuzzleEnv(),
+                loaded,
+                "cpu",
+                NeuralPlanningConfig(
+                    actions=(Action.RIGHT,), planning_depth=1, action_frames=8
+                ),
+            )

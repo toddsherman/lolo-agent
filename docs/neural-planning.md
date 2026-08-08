@@ -29,6 +29,12 @@ operations, opaque state lifecycles, and pixel observations are recorded by the
 event-sourced telemetry layer described in [telemetry.md](telemetry.md). Logging
 is observational and does not return evaluator annotations to the planner.
 
+New duration-conditioned checkpoints also embed the number of emulator frames
+for which each controller button is held. Planning, verification, telemetry,
+and replay therefore distinguish, for example, `RIGHT@1` from `RIGHT@16`.
+Fixed-duration version-one checkpoints remain supported but cannot safely plan
+over multiple press lengths.
+
 ## Multi-step validation
 
 Sequence groups, rather than individual frames, are assigned to training or
