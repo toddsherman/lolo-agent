@@ -91,6 +91,9 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
     )
     decision_rows: List[Dict[str, Any]] = []
     delayed_return_recoveries = 0
+    frontier_penalized_traces = 0
+    frontier_choice_samples = 0
+    committed_frontier_values: List[float] = []
 
     edge_counts: Counter[Tuple[str, str, str, int]] = Counter()
     node_details: Dict[str, Dict[str, Any]] = {}
@@ -100,6 +103,17 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             and event.get("reason") == "delayed_visual_return"
         ):
             delayed_return_recoveries += 1
+        if event["event"] == "persistent_frontier_return_penalized":
+            penalized = event.get("penalized_traces", ())
+            frontier_penalized_traces += len(penalized)
+            frontier_choice_samples += sum(
+                item.get("choice") is not None for item in penalized
+            )
+        elif event["event"] == "persistent_frontier_updated":
+            frontier_choice_samples += sum(
+                item.get("choice") is not None
+                for item in event.get("completed_samples", ())
+            )
         frame = event.get("frame") or event.get("target_frame")
         if frame:
             frames.add(frame)
@@ -135,6 +149,9 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             restored = bool(event.get("restored_archive"))
             if restored:
                 attempts[attempt]["restores"] += 1
+            frontier_value = event.get("persistent_frontier_value")
+            if frontier_value is not None:
+                committed_frontier_values.append(float(frontier_value))
             decision_rows.append(
                 {
                     "seq": event["seq"],
@@ -152,6 +169,13 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                     "restore_reason": event.get("restore_reason", ""),
                     "delayed_return_recovery_pending": event.get(
                         "delayed_return_recovery_pending", False
+                    ),
+                    "persistent_frontier_reward": event.get(
+                        "persistent_frontier_reward"
+                    ),
+                    "persistent_frontier_value": frontier_value,
+                    "committed_choice_frontier_value": event.get(
+                        "committed_choice_frontier_value"
                     ),
                     "frame": event.get("frame"),
                     "scene_signature": event.get("scene_signature"),
@@ -177,6 +201,9 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "restored_archive",
         "restore_reason",
         "delayed_return_recovery_pending",
+        "persistent_frontier_reward",
+        "persistent_frontier_value",
+        "committed_choice_frontier_value",
         "frame",
         "scene_signature",
         "scene_streak",
@@ -244,6 +271,20 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             "autonomous_dynamics_detected", 0
         ),
         "autonomous_grace_waits": event_counts.get("autonomous_grace_wait", 0),
+        "persistent_frontier_updates": event_counts.get(
+            "persistent_frontier_updated", 0
+        ),
+        "persistent_frontier_return_events": event_counts.get(
+            "persistent_frontier_return_penalized", 0
+        ),
+        "persistent_frontier_penalized_traces": frontier_penalized_traces,
+        "persistent_frontier_choice_samples": frontier_choice_samples,
+        "persistent_frontier_trace_restarts": event_counts.get(
+            "persistent_frontier_trace_restarted", 0
+        ),
+        "maximum_committed_frontier_value": max(
+            committed_frontier_values, default=0.0
+        ),
         "verified_branches": event_counts.get("branch_verified", 0),
         "unique_frames": len(frames),
         "unique_scenes": len(scenes),

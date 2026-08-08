@@ -107,6 +107,35 @@ the same attempt penalizes choices that previously participated in such a
 return. Solid fades are excluded using visual variation alone; there are no
 screen, object, menu, death, or progress labels.
 
+## Persistent-frontier value
+
+Every recently visited visual state carries a temporary successor-novelty
+trace. First visits to exact-frame and coarse-scene signatures are credited
+backward through those traces with a discount; repeated pixels contribute zero.
+A state therefore gains value only when its
+descendants continue producing unfamiliar visual regions over several real
+decisions. After the configured horizon, the observed discounted return is
+folded into that signature's running value estimate.
+
+If the trajectory returns to a prior informative signature, provisional gains
+inside the loop are discarded and the affected signatures receive a negative
+return sample. Save-state alternatives inherit value from the visual state
+where they were created. Candidate actions, archive restoration, and archive
+pruning use these learned temporary estimates in addition to immediate novelty.
+Traces restart after an archive jump so evidence is never propagated across a
+teleport that the controller did not cause.
+
+The same return is learned for the originating
+visual-signature/action/duration choice. Inherited state value is used only
+while an alternative is untested; once that exact choice has produced a
+trajectory, its own successor return overrides the inherited optimism. This
+lets two controller choices from the same pixels acquire different values
+without assigning a semantic meaning to either button.
+
+The value is learned online from pixels and transition topology and is erased
+on reset. It is not part of the neural checkpoint, so frozen evaluation still
+does not update persistent parameters.
+
 ## Known limitations
 
 - The training sample is dominated by boot, menu, and castle animation frames.

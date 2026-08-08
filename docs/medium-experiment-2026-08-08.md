@@ -114,10 +114,46 @@ The corrected run has deterministic high-speed players at
 Replay verification passed for all 5,254 recorded observations; the committed
 view contains 3,545 timeline frames and the full planning view contains 13,857.
 
+## Persistent-frontier follow-up
+
+Persistent-frontier learning is now implemented as temporary discounted
+successor novelty. First visits to exact and coarse visual signatures are
+credited backward through recent state traces. A delayed return discards
+provisional gains within the loop and records a negative sample. Save-state
+restoration and candidate scoring use the resulting values.
+
+An initial audit revealed that count-based novelty still gave small positive
+rewards to identical repeated pixels. The frontier reward was tightened to
+first visits only, with a regression test proving that repeated static frames
+produce exactly zero value. Values were then conditioned on
+visual-signature/action/duration choices so a tried branch can override the
+optimism inherited from its parent state.
+
+The final 320-decision action-conditioned audit recorded:
+
+- 286 successor-novelty updates;
+- 21 delayed-return penalty events covering 240 traces;
+- 110 learned state/action/duration return samples;
+- 34 frontier-trace restarts following archive jumps;
+- 1,716 real verified branches and 157 unique telemetry frames;
+- a passing frozen-model digest audit.
+
+Evaluator-only post-run checks again found neither the Floor card's coarse
+signature nor any exact or coarse Floor 1 match. The committed trajectory was
+unchanged from the state-only frontier audit. Exact visual signatures are too
+specific to transfer a learned choice value between neighboring animation
+frames, even when those frames depict the same underlying situation.
+
+The verified high-speed players are under
+`experiments/lolo1-medium/extended_evaluations/cycle-000010-action-frontier-320/replays/`.
+Replay checked all 6,075 observations. The committed view contains 3,623
+timeline frames and the full planning view contains 15,703.
+
 ## Next research target
 
-Learn a persistent-frontier value from branch topology and visual dwell time:
-states should gain temporary value when they lead to visual regions that remain
-novel over multiple subsequent decisions, and lose it when descendants return
-to an earlier region. This should use only interaction trajectories and save
-states, not evaluator room hashes, menu labels, or supplied progress semantics.
+Learn the abstraction used for temporary value sharing. Nearby frames should
+share return evidence when their action-conditioned futures are similar, while
+remaining separate when identical-looking states have different futures. This
+requires interaction-derived behavioral equivalence or learned latent-state
+clustering, not evaluator room hashes, menu labels, or supplied progress
+semantics.

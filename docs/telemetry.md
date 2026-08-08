@@ -36,6 +36,9 @@ Telemetry includes:
 - delayed visual-return detections, loop length, prior visit, every credited
   decision and scene/action/duration choice, plus unavailable recoveries;
 - autonomous-motion detections and neutral grace waits across short pauses;
+- persistent-frontier successor-novelty updates, completed samples, loop
+  penalties, provisional traces discarded at save-state jumps, and the value
+  used to rank each archived branch, including state/action/duration samples;
 - committed decisions, temporary action counts, scene streaks, archive size,
   and restored-branch status.
 
@@ -50,7 +53,8 @@ controller transitions. `summary.json` contains total and per-attempt counts,
 committed versus investigated action distributions, archive restores, delayed
 returns and recoveries, branches, states, unique frames, and unique coarse
 scenes. The decision CSV exposes both the restore reason and whether a delayed
-return recovery was pending after each committed emulator action.
+return recovery was pending after each committed emulator action. It also
+records the successor-novelty reward and learned persistent-frontier value.
 
 ## Attempts and level labels
 

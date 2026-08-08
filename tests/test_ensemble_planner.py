@@ -419,6 +419,7 @@ class EnsemblePlannerTests(unittest.TestCase):
         )
         for decision, source_scene, action, target in transitions:
             agent.decision_index = decision
+            agent._update_persistent_frontier(agent._signature(target), 1.0)
             agent._record_delayed_return(
                 source_scene,
                 action,
@@ -431,6 +432,148 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(agent.delayed_return_loop_start, 1)
         self.assertEqual(sum(agent.delayed_return_costs.values()), 3)
         self.assertEqual(agent.delayed_return_costs[("scene-d", Action.UP, 4)], 1)
+        self.assertLess(agent.frontier_values[agent._signature(frames[0])], 0.0)
+
+    def test_persistent_frontier_accumulates_discounted_successor_novelty(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        agent = VerifiedNeuralAgent(
+            MockPuzzleEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                frontier_credit_horizon=3,
+                frontier_discount=1.0,
+            ),
+        )
+        initial = agent.reset()
+        initial_signature = agent._signature(initial)
+        for decision, signature in enumerate(("one", "two", "three"), 1):
+            agent.decision_index = decision
+            agent._update_persistent_frontier(signature, 1.0)
+
+        self.assertEqual(agent.frontier_values[initial_signature], 3.0)
+        self.assertEqual(agent._frontier_estimate("one"), 2.0)
+        self.assertEqual(agent._frontier_estimate("two"), 1.0)
+
+    def test_repeated_identical_pixels_do_not_create_frontier_reward(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        agent = VerifiedNeuralAgent(
+            MockPuzzleEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.NOOP,),
+                planning_depth=1,
+                verify_actions=1,
+                action_frames=1,
+            ),
+        )
+        initial = agent.reset()
+        agent.run(3)
+
+        self.assertEqual(agent._frontier_estimate(agent._signature(initial)), 0.0)
+        self.assertTrue(
+            all(trace.discounted_return == 0.0 for trace in agent.frontier_traces)
+        )
+
+    def test_frontier_choice_value_learns_a_delayed_return_outcome(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        agent = VerifiedNeuralAgent(
+            MockPuzzleEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(actions=(Action.RIGHT,), planning_depth=1),
+        )
+        agent.reset()
+        agent.decision_index = 1
+        agent._update_persistent_frontier(
+            "target", 1.0, "source", Action.RIGHT, 4
+        )
+        provisional, known = agent._choice_frontier_estimate(
+            "source", Action.RIGHT, 4
+        )
+        self.assertTrue(known)
+        self.assertEqual(provisional, 1.0)
+
+        agent._penalize_frontier_loop(1)
+
+        learned, known = agent._choice_frontier_estimate(
+            "source", Action.RIGHT, 4
+        )
+        self.assertTrue(known)
+        self.assertEqual(learned, -agent.config.frontier_return_penalty)
+
+    def test_known_bad_archive_choice_overrides_inherited_origin_value(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        agent = VerifiedNeuralAgent(
+            MockPuzzleEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(actions=(Action.RIGHT,), planning_depth=1),
+        )
+        frame = agent.reset()
+        plan = NeuralPlan((Action.RIGHT,), (4,), 0.0, 0.0)
+        branch = _ArchivedBranch(
+            b"state", frame, plan, 0.0, "scene", 1, "valuable-origin"
+        )
+        agent.frontier_values["valuable-origin"] = 10.0
+        self.assertGreater(agent._archive_frontier_score(branch), 0.0)
+        choice = ("valuable-origin", Action.RIGHT, 4)
+        agent.frontier_choice_values[choice] = -2.0
+        agent.frontier_choice_samples[choice] = 1
+
+        self.assertEqual(agent._archive_frontier_score(branch), 0.0)
+
+    def test_archive_recovery_prefers_learned_persistent_frontier_value(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        env = MockPuzzleEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                scene_stagnation_visits=1,
+            ),
+        )
+        agent.reset()
+        root = env.save_state()
+        low_frame = env.step(Action.RIGHT)
+        low_state = env.save_state()
+        env.load_state(root)
+        high_frame = env.step(Action.DOWN)
+        high_state = env.save_state()
+        low_plan = NeuralPlan((Action.RIGHT,), (1,), 100.0, 0.0)
+        high_plan = NeuralPlan((Action.DOWN,), (1,), -100.0, 0.0)
+        agent.archive = [
+            _ArchivedBranch(
+                low_state,
+                low_frame,
+                low_plan,
+                100.0,
+                "low-scene",
+                1,
+                "low-origin",
+            ),
+            _ArchivedBranch(
+                high_state,
+                high_frame,
+                high_plan,
+                -100.0,
+                "high-scene",
+                1,
+                "high-origin",
+            ),
+        ]
+        agent.frontier_values["low-origin"] = 1.0
+        agent.frontier_values["high-origin"] = 10.0
+
+        decision = agent._restore_if_stagnant()
+
+        self.assertEqual(decision.frame.digest, high_frame.digest)
 
     def test_delayed_return_restores_a_distinct_branch_before_stagnation(self) -> None:
         model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
