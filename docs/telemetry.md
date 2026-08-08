@@ -39,8 +39,10 @@ Telemetry includes:
 - persistent-frontier successor-novelty updates, completed samples, loop
   penalties, provisional traces discarded at save-state jumps, and the value
   used to rank each archived branch, including state/action/duration samples;
+- frozen-encoder abstraction assignments, latent distance, cluster creation,
+  running cluster size, and the abstract signature used by each decision;
 - committed decisions, temporary action counts, scene streaks, archive size,
-  and restored-branch status.
+  exact-visual stagnation streaks, and restored-branch status.
 
 Frame pixels are stored once under their digest, even if thousands of events
 refer to the same screen. Save-state bytes and native state tokens are never

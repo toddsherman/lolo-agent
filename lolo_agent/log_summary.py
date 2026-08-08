@@ -94,6 +94,7 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
     frontier_penalized_traces = 0
     frontier_choice_samples = 0
     committed_frontier_values: List[float] = []
+    abstraction_clusters: set[str] = set()
 
     edge_counts: Counter[Tuple[str, str, str, int]] = Counter()
     node_details: Dict[str, Dict[str, Any]] = {}
@@ -114,6 +115,8 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                 item.get("choice") is not None
                 for item in event.get("completed_samples", ())
             )
+        if event["event"] == "visual_abstraction_assigned":
+            abstraction_clusters.add(str(event["cluster"]))
         frame = event.get("frame") or event.get("target_frame")
         if frame:
             frames.add(frame)
@@ -177,9 +180,13 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                     "committed_choice_frontier_value": event.get(
                         "committed_choice_frontier_value"
                     ),
+                    "abstract_signature": event.get("abstract_signature"),
                     "frame": event.get("frame"),
                     "scene_signature": event.get("scene_signature"),
                     "scene_streak": event.get("scene_streak"),
+                    "visual_stagnation_streak": event.get(
+                        "visual_stagnation_streak"
+                    ),
                     "archive_size": event.get("archive_size"),
                     "committed_state_id": event.get("committed_state_id"),
                     "action_counts": json.dumps(event.get("action_counts", {}), sort_keys=True),
@@ -204,9 +211,11 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "persistent_frontier_reward",
         "persistent_frontier_value",
         "committed_choice_frontier_value",
+        "abstract_signature",
         "frame",
         "scene_signature",
         "scene_streak",
+        "visual_stagnation_streak",
         "archive_size",
         "committed_state_id",
         "action_counts",
@@ -285,6 +294,10 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "maximum_committed_frontier_value": max(
             committed_frontier_values, default=0.0
         ),
+        "visual_abstraction_assignments": event_counts.get(
+            "visual_abstraction_assigned", 0
+        ),
+        "visual_abstraction_clusters": len(abstraction_clusters),
         "verified_branches": event_counts.get("branch_verified", 0),
         "unique_frames": len(frames),
         "unique_scenes": len(scenes),

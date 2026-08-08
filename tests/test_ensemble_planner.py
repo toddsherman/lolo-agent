@@ -158,11 +158,12 @@ class EnsemblePlannerTests(unittest.TestCase):
                 planning_depth=1,
                 beam_width=2,
                 verify_actions=2,
-                scene_stagnation_visits=1,
+                visual_stagnation_visits=1,
             ),
         )
         agent.reset()
         first = agent.decide()
+        agent.visual_stagnation_streak = 1
         second = agent.decide()
         self.assertFalse(first.restored_archive)
         self.assertTrue(second.restored_archive)
@@ -448,7 +449,7 @@ class EnsemblePlannerTests(unittest.TestCase):
             ),
         )
         initial = agent.reset()
-        initial_signature = agent._signature(initial)
+        initial_signature = agent._abstract_signature(initial)
         for decision, signature in enumerate(("one", "two", "three"), 1):
             agent.decision_index = decision
             agent._update_persistent_frontier(signature, 1.0)
@@ -473,10 +474,53 @@ class EnsemblePlannerTests(unittest.TestCase):
         initial = agent.reset()
         agent.run(3)
 
-        self.assertEqual(agent._frontier_estimate(agent._signature(initial)), 0.0)
+        self.assertEqual(
+            agent._frontier_estimate(agent._abstract_signature(initial)), 0.0
+        )
         self.assertTrue(
             all(trace.discounted_return == 0.0 for trace in agent.frontier_traces)
         )
+
+    def test_frozen_encoder_clusters_nearby_frames_and_shares_choice_value(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        agent = VerifiedNeuralAgent(
+            MockPuzzleEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                abstraction_latent_rmse_threshold=100.0,
+            ),
+        )
+        before = model.checkpoint_digest
+        agent.reset()
+        first = self.frame(5)
+        changed = bytearray(first.pixels)
+        changed[0] = (changed[0] + 1) % 256
+        nearby = Frame(first.width, first.height, first.channels, bytes(changed))
+        different = Frame(32, 32, 3, b"\xff" * (32 * 32 * 3))
+        self.assertEqual(
+            agent._scene_signature(first), agent._scene_signature(nearby)
+        )
+        self.assertNotEqual(
+            agent._scene_signature(first), agent._scene_signature(different)
+        )
+
+        first_cluster = agent._abstract_signature(first)
+        nearby_cluster = agent._abstract_signature(nearby)
+        different_cluster = agent._abstract_signature(different)
+        self.assertEqual(first_cluster, nearby_cluster)
+        self.assertNotEqual(first_cluster, different_cluster)
+        choice = (first_cluster, Action.RIGHT, 4)
+        agent.frontier_choice_values[choice] = 3.0
+        agent.frontier_choice_samples[choice] = 1
+        shared, known = agent._choice_frontier_estimate(
+            nearby_cluster, Action.RIGHT, 4
+        )
+        self.assertTrue(known)
+        self.assertEqual(shared, 3.0)
+        self.assertEqual(before, model.checkpoint_digest)
 
     def test_frontier_choice_value_learns_a_delayed_return_outcome(self) -> None:
         model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
@@ -524,7 +568,7 @@ class EnsemblePlannerTests(unittest.TestCase):
         agent.frontier_choice_values[choice] = -2.0
         agent.frontier_choice_samples[choice] = 1
 
-        self.assertEqual(agent._archive_frontier_score(branch), 0.0)
+        self.assertEqual(agent._archive_frontier_score(branch), -2.0)
 
     def test_archive_recovery_prefers_learned_persistent_frontier_value(self) -> None:
         model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
@@ -536,7 +580,7 @@ class EnsemblePlannerTests(unittest.TestCase):
             NeuralPlanningConfig(
                 actions=(Action.RIGHT,),
                 planning_depth=1,
-                scene_stagnation_visits=1,
+                visual_stagnation_visits=1,
             ),
         )
         agent.reset()
@@ -570,6 +614,7 @@ class EnsemblePlannerTests(unittest.TestCase):
         ]
         agent.frontier_values["low-origin"] = 1.0
         agent.frontier_values["high-origin"] = 10.0
+        agent.visual_stagnation_streak = 1
 
         decision = agent._restore_if_stagnant()
 
@@ -585,7 +630,7 @@ class EnsemblePlannerTests(unittest.TestCase):
             NeuralPlanningConfig(
                 actions=(Action.RIGHT,),
                 planning_depth=1,
-                scene_stagnation_visits=99,
+                visual_stagnation_visits=99,
             ),
         )
         agent.reset()

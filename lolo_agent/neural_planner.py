@@ -46,7 +46,7 @@ class NeuralPlanningConfig:
     duration_coverage_weight: float = 0.2
     consecutive_repeat_weight: float = 0.5
     archive_capacity: int = 96
-    scene_stagnation_visits: int = 8
+    visual_stagnation_visits: int = 8
     archive_max_age: int = 512
     autonomous_change_threshold: float = 0.00025
     action_equivalence_threshold: float = 0.0001
@@ -60,6 +60,7 @@ class NeuralPlanningConfig:
     frontier_return_penalty: float = 2.0
     frontier_score_weight: float = 0.6
     frontier_origin_weight: float = 0.35
+    abstraction_latent_rmse_threshold: float = 0.04
 
 
 @dataclass(frozen=True)
@@ -107,6 +108,14 @@ class _FrontierTrace:
     discounted_return: float = 0.0
     next_discount: float = 1.0
     choice: Optional[Tuple[str, Action, int]] = None
+
+
+@dataclass
+class _VisualCluster:
+    key: str
+    scene: str
+    centroid: Tensor
+    count: int = 1
 
 
 class NeuralRolloutPlanner:
@@ -258,6 +267,8 @@ class VerifiedNeuralAgent:
             raise ValueError("frontier credit horizon must be positive")
         if not 0.0 < self.config.frontier_discount <= 1.0:
             raise ValueError("frontier discount must be in (0, 1]")
+        if self.config.abstraction_latent_rmse_threshold < 0.0:
+            raise ValueError("abstraction latent threshold must be non-negative")
         self.model.freeze()
         self.planner = NeuralRolloutPlanner(model, device, self.config)
         self.novelty = VisualNovelty()
@@ -280,8 +291,12 @@ class VerifiedNeuralAgent:
         self.frontier_traces: List[_FrontierTrace] = []
         self.frontier_choice_values: Dict[Tuple[str, Action, int], float] = {}
         self.frontier_choice_samples: CounterType[Tuple[str, Action, int]] = Counter()
+        self.visual_clusters: List[_VisualCluster] = []
+        self.frame_clusters: Dict[str, str] = {}
+        self.cluster_serial = 0
         self.current_scene: Optional[str] = None
         self.scene_streak = 0
+        self.visual_stagnation_streak = 0
         self.archive: List[_ArchivedBranch] = []
         self.decision_index = 0
         self.event_logger = event_logger
@@ -325,7 +340,10 @@ class VerifiedNeuralAgent:
         self.delayed_return_recovery = False
         self.delayed_return_loop_start = None
         self.autonomous_grace_remaining = 0
-        initial_signature = self._signature(self.frame)
+        self.visual_clusters = []
+        self.frame_clusters = {}
+        self.cluster_serial = 0
+        initial_signature = self._abstract_signature(self.frame)
         self.frontier_values = {}
         self.frontier_samples = Counter()
         self.frontier_traces = [_FrontierTrace(0, initial_signature)]
@@ -334,6 +352,7 @@ class VerifiedNeuralAgent:
         self.current_scene = self._scene_signature(self.frame)
         self.scene_visits[self.current_scene] += 1
         self.scene_streak = 1
+        self.visual_stagnation_streak = 0
         self.archive = []
         self.decision_index = 0
         self._emit(
@@ -384,6 +403,62 @@ class VerifiedNeuralAgent:
             len(set(signature)) >= self.config.informative_signature_bins
             and max(signature) - min(signature) >= 3
         )
+
+    @torch.no_grad()
+    def _abstract_signature(self, frame: Frame) -> str:
+        cached = self.frame_clusters.get(frame.digest)
+        if cached is not None:
+            return cached
+        latent = (
+            self.model.encode(
+                frame_tensor(frame, self.planner.device).unsqueeze(0)
+            )[0]
+            .detach()
+            .to(device="cpu")
+        )
+        scene = self._scene_signature(frame)
+        candidates = [
+            cluster for cluster in self.visual_clusters if cluster.scene == scene
+        ]
+        nearest = None
+        distance = math.inf
+        for cluster in candidates:
+            candidate_distance = float(
+                (latent - cluster.centroid).pow(2).mean().sqrt()
+            )
+            if candidate_distance < distance:
+                nearest = cluster
+                distance = candidate_distance
+        created = (
+            nearest is None
+            or distance > self.config.abstraction_latent_rmse_threshold
+        )
+        if created:
+            self.cluster_serial += 1
+            nearest = _VisualCluster(
+                f"latent-cluster-{self.cluster_serial:06d}",
+                scene,
+                latent.clone(),
+            )
+            self.visual_clusters.append(nearest)
+        else:
+            assert nearest is not None
+            nearest.count += 1
+            nearest.centroid += (latent - nearest.centroid) / nearest.count
+        assert nearest is not None
+        self.frame_clusters[frame.digest] = nearest.key
+        self._emit(
+            "visual_abstraction_assigned",
+            cluster=nearest.key,
+            cluster_created=created,
+            cluster_size=nearest.count,
+            scene=scene,
+            latent_rmse_to_centroid=None if created else distance,
+            threshold=self.config.abstraction_latent_rmse_threshold,
+            exact_signature=self._signature(frame),
+            **self._frame_fields(frame),
+        )
+        return nearest.key
 
     def _frontier_estimate(self, signature: str) -> float:
         completed = self.frontier_values.get(signature, 0.0)
@@ -547,7 +622,7 @@ class VerifiedNeuralAgent:
         )
 
     def _archive_frontier_score(self, branch: _ArchivedBranch) -> float:
-        own_value = self._frontier_estimate(self._signature(branch.frame))
+        own_value = self._frontier_estimate(self._abstract_signature(branch.frame))
         origin_value = (
             self._frontier_estimate(branch.origin_signature)
             if branch.origin_signature
@@ -559,7 +634,7 @@ class VerifiedNeuralAgent:
             branch.plan.durations[0],
         )
         if choice_is_known:
-            return max(own_value, choice_value)
+            return choice_value
         return max(own_value, self.config.frontier_origin_weight * origin_value)
 
     def _record_delayed_return(
@@ -569,6 +644,7 @@ class VerifiedNeuralAgent:
         duration: int,
         target: Frame,
         target_scene: str,
+        frontier_signature: Optional[str] = None,
     ) -> None:
         signature = self._signature(target)
         transition = _CommittedTransition(
@@ -603,7 +679,9 @@ class VerifiedNeuralAgent:
         self.delayed_return_loop_start = previous
         self._penalize_frontier_loop(previous)
         self.frontier_traces.append(
-            _FrontierTrace(self.decision_index, signature)
+            _FrontierTrace(
+                self.decision_index, frontier_signature or signature
+            )
         )
         self._emit(
             "delayed_visual_return_detected",
@@ -717,6 +795,8 @@ class VerifiedNeuralAgent:
             last_duration=self.last_duration,
             action_streak=self.action_streak,
             scene_streak=self.scene_streak,
+            visual_stagnation_streak=self.visual_stagnation_streak,
+            visual_stagnation_limit=self.config.visual_stagnation_visits,
             scene_visits=self.scene_visits,
             archive_size=len(self.archive),
             **self._frame_fields(self.frame),
@@ -751,7 +831,7 @@ class VerifiedNeuralAgent:
             ):
                 best_by_action[timed_action] = plan
         current_scene = self._scene_signature(self.frame)
-        source_signature = self._signature(self.frame)
+        source_signature = self._abstract_signature(self.frame)
         best_by_button: Dict[Action, NeuralPlan] = {}
         for plan in best_by_action.values():
             action = plan.path[0]
@@ -817,8 +897,9 @@ class VerifiedNeuralAgent:
                     self.frame, plan.path[0], duration, target
                 )
                 visual_change = self.frame.mean_absolute_difference(target)
+                target_abstract_signature = self._abstract_signature(target)
                 persistent_frontier_value = self._frontier_estimate(
-                    self._signature(target)
+                    target_abstract_signature
                 )
                 choice_frontier_value, choice_frontier_is_known = (
                     self._choice_frontier_estimate(
@@ -826,9 +907,7 @@ class VerifiedNeuralAgent:
                     )
                 )
                 if choice_frontier_is_known:
-                    persistent_frontier_value = max(
-                        persistent_frontier_value, choice_frontier_value
-                    )
+                    persistent_frontier_value = choice_frontier_value
                 score = (
                     plan.score
                     + self.config.actual_novelty_weight * effective_novelty
@@ -866,6 +945,7 @@ class VerifiedNeuralAgent:
                     persistent_frontier_value=persistent_frontier_value,
                     choice_frontier_value=choice_frontier_value,
                     choice_frontier_is_known=choice_frontier_is_known,
+                    abstract_signature=target_abstract_signature,
                     action_penalty=self._action_penalty(plan.path[0], duration),
                     combined_score=score,
                     state_id=self._state_id(state),
@@ -932,6 +1012,7 @@ class VerifiedNeuralAgent:
             self.env.load_state(state)
             self.frame = target
             target_signature = self._signature(target)
+            target_abstract_signature = self._abstract_signature(target)
             target_scene = self._scene_signature(target)
             target_signature_is_new = self.novelty.count(target_signature) == 0
             target_scene_is_new = self.scene_visits[target_scene] == 0
@@ -953,7 +1034,7 @@ class VerifiedNeuralAgent:
                 + self.config.scene_novelty_weight * float(target_scene_is_new)
             )
             self._update_persistent_frontier(
-                target_signature,
+                target_abstract_signature,
                 frontier_reward,
                 source_signature,
                 action,
@@ -965,8 +1046,14 @@ class VerifiedNeuralAgent:
                 duration,
                 target,
                 target_scene,
+                target_abstract_signature,
             )
             self.scene_visits[target_scene] += 1
+            self.visual_stagnation_streak = (
+                0
+                if target_signature_is_new
+                else self.visual_stagnation_streak + 1
+            )
             if target_scene == self.current_scene:
                 self.scene_streak += 1
             else:
@@ -1041,14 +1128,16 @@ class VerifiedNeuralAgent:
                 target_signature_is_new=target_signature_is_new,
                 target_scene_is_new=target_scene_is_new,
                 persistent_frontier_value=self._frontier_estimate(
-                    target_signature
+                    target_abstract_signature
                 ),
+                abstract_signature=target_abstract_signature,
                 committed_choice_frontier_value=self._choice_frontier_estimate(
                     source_signature, action, duration
                 )[0],
                 action_counts=self.action_counts,
                 duration_counts=self.duration_counts,
                 scene_streak=self.scene_streak,
+                visual_stagnation_streak=self.visual_stagnation_streak,
                 **self._frame_fields(target),
             )
             return Decision(
@@ -1071,9 +1160,15 @@ class VerifiedNeuralAgent:
         assert self.frame is not None
         current_scene = self._scene_signature(self.frame)
         delayed_return = self.delayed_return_recovery
-        if not delayed_return and self.scene_streak < self.config.scene_stagnation_visits:
+        if (
+            not delayed_return
+            and self.visual_stagnation_streak
+            < self.config.visual_stagnation_visits
+        ):
             return None
-        recovery_reason = "delayed_visual_return" if delayed_return else "scene_stagnation"
+        recovery_reason = (
+            "delayed_visual_return" if delayed_return else "visual_stagnation"
+        )
         if delayed_return:
             loop_start = self.delayed_return_loop_start or 0
             current_signature = self._signature(self.frame)
@@ -1128,11 +1223,13 @@ class VerifiedNeuralAgent:
         self.scene_visits[branch.scene] += 1
         self.current_scene = branch.scene
         self.scene_streak = 1
+        self.visual_stagnation_streak = 0
         self.decision_index += 1
         self.visual_last_visit[self._signature(branch.frame)] = self.decision_index
         selected_frontier_value = self._archive_frontier_score(branch)
+        restored_abstract_signature = self._abstract_signature(branch.frame)
         self._restart_frontier_trace(
-            self._signature(branch.frame), recovery_reason
+            restored_abstract_signature, recovery_reason
         )
         self.delayed_return_recovery = False
         self.delayed_return_loop_start = None
@@ -1149,6 +1246,7 @@ class VerifiedNeuralAgent:
             durations=branch.plan.durations,
             score=branch.score,
             persistent_frontier_value=selected_frontier_value,
+            abstract_signature=restored_abstract_signature,
             archive_size=len(self.archive),
             **self._frame_fields(branch.frame),
         )
@@ -1167,9 +1265,11 @@ class VerifiedNeuralAgent:
             archive_branches_added=0,
             archive_size=len(self.archive),
             persistent_frontier_value=selected_frontier_value,
+            abstract_signature=restored_abstract_signature,
             action_counts=self.action_counts,
             duration_counts=self.duration_counts,
             scene_streak=self.scene_streak,
+            visual_stagnation_streak=self.visual_stagnation_streak,
             **self._frame_fields(branch.frame),
         )
         return Decision(

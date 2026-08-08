@@ -90,13 +90,15 @@ sequences across multiple seeds:
 ## Episodic recovery
 
 Verified but rejected branches are retained temporarily as opaque native state
-handles. If the agent remains in the same coarse visual scene for several
+handles. If the agent stops producing new exact visual signatures for several
 consecutive decisions, it may restore a recent branch from a different scene.
 The archive has a fixed capacity and age window. No screen or object is labeled
 as a menu, password entry, death, room, or success state.
 
 This mechanism was necessary because exact-frame novelty can remain high during
 animations or cursor movement even when controller exploration is repetitive.
+Coarse-scene dwell remains telemetry but no longer triggers recovery by itself;
+an animation that keeps producing new frames is not treated as stagnant.
 
 The agent also tracks delayed returns to informative visual signatures. If a
 trajectory reaches the same sufficiently varied pixel signature again after
@@ -131,6 +133,21 @@ while an alternative is untested; once that exact choice has produced a
 trajectory, its own successor return overrides the inherited optimism. This
 lets two controller choices from the same pixels acquire different values
 without assigning a semantic meaning to either button.
+
+### Learned visual abstraction
+
+Frontier keys are online clusters in the frozen encoder's latent space rather
+than exact pixel signatures. A frame is compared only with clusters sharing its
+coarse visual scene, then joins the nearest cluster below a latent-RMSE
+threshold or starts a new one. Cluster centroids are temporary running means;
+updating them does not alter neural parameters. Exact signatures remain in use
+for novelty and conservative delayed-loop detection.
+
+This lets neighboring animation frames share action-duration return evidence
+when the learned encoder represents them similarly. The coarse-scene partition
+guards against merging visually distinct regions that happen to be close in an
+imperfect latent space. Both cluster membership and value memory reset for each
+evaluation attempt.
 
 The value is learned online from pixels and transition topology and is erased
 on reset. It is not part of the neural checkpoint, so frozen evaluation still

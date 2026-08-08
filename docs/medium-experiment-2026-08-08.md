@@ -149,11 +149,48 @@ The verified high-speed players are under
 Replay checked all 6,075 observations. The committed view contains 3,623
 timeline frames and the full planning view contains 15,703.
 
+## Frozen-encoder abstraction follow-up
+
+The temporary frontier now keys values by online clusters in the frozen visual
+encoder rather than exact frame hashes. Clustering is constrained to frames
+with the same coarse visual signature. Offline calibration over the previous
+audit measured same-scene latent RMSE at 0.00089 median and 0.03287 at the 90th
+percentile, versus 0.2649 at the 10th percentile for different scenes. A 0.04
+threshold was therefore selected before this audit.
+
+The first real audit exposed two independent control bugs. A known negative
+action value was being erased by zero-valued state optimism, and remaining in
+one coarse scene was treated as stagnation even while the screen continued to
+animate. The corrected controller lets a sampled action value override state
+optimism and triggers stagnation recovery only after repeated exact visuals.
+
+The corrected 320-decision audit recorded:
+
+- 157 exact telemetry frames assigned to 51 temporary latent clusters;
+- 285 successor-novelty updates and 107 learned choice samples;
+- 23 delayed visual returns, all followed by recovery;
+- 35 total archive restores, 108 autonomous-motion decisions, and 107 grace
+  waits;
+- 1,710 real verified branches and a passing frozen-model digest audit.
+
+The committed trajectory changed and reached the final visible story tableau,
+showing Lolo beside the clouds and castle. Evaluator-only comparison still
+found neither the Floor card nor an exact or coarse Floor 1 match, so the agent
+has not yet entered the first puzzle room. A follow-up that increased waiting
+time after every repeated-cluster recovery regressed to an early static logo;
+that heuristic was rejected rather than retained.
+
+The deterministic players are under
+`experiments/lolo1-medium/extended_evaluations/cycle-000010-visual-stagnation-320/replays/`.
+Replay verification passed for all 6,056 recorded observations. The committed
+view contains 3,676 timeline frames and the full planning view contains 15,592.
+
 ## Next research target
 
-Learn the abstraction used for temporary value sharing. Nearby frames should
-share return evidence when their action-conditioned futures are similar, while
-remaining separate when identical-looking states have different futures. This
-requires interaction-derived behavioral equivalence or learned latent-state
-clustering, not evaluator room hashes, menu labels, or supplied progress
-semantics.
+Replace purely visual similarity with interaction-derived behavioral
+equivalence. From saved states in each visual cluster, probe a small shared set
+of actions and compare their successor-latent distributions. States should
+share return evidence only when both their pixels and observed futures agree.
+This is the next step toward distinguishing visually similar states with
+different control consequences without using evaluator room hashes, menu
+labels, or supplied progress semantics.
