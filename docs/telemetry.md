@@ -111,6 +111,26 @@ prior, or no evidence, and whether a passive option trace remained active after
 the decision. Summary counts distinguish started, completed, discarded, and
 credited option samples.
 
+Matched-neutral exploration adds the following raw events and decision fields:
+
+- `matched_neutral_verified` identifies evaluator-generated `NOOP` endpoints
+  paired by root state and duration;
+- `causal_observation_wait` records the neutral observation committed before a
+  new intervention;
+- `causal_spatial_signature`, `causal_changed_pixels`,
+  `causal_change_centroid`, `causal_spatial_novelty`, and
+  `causal_spatial_bonus` describe action-dependent screen changes;
+- `causal_spatial_archive_bonus` records the live rarity value used when an
+  archived branch is selected;
+- `archive_branch_rejected` distinguishes covered causal frontiers,
+  non-causal alternatives, and learned hazards.
+
+`summary.json` aggregates matched-neutral verifications, total and unique
+causal-spatial observations, and unique committed causal signatures.
+`decisions.csv` includes the corresponding per-commit fields so a visualization
+can map where action-dependent changes occurred without adding semantic object
+labels.
+
 ## Attempts and level labels
 
 An attempt begins whenever the environment is reset. Because room number,

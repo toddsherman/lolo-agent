@@ -111,6 +111,9 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
     action_effect_known_branches = 0
     learned_hazard_filtered_choices = 0
     global_action_hazard_samples = 0
+    causal_spatial_observations = 0
+    causal_spatial_signatures: set[str] = set()
+    committed_causal_spatial_signatures: set[str] = set()
 
     edge_counts: Counter[Tuple[str, str, str, int]] = Counter()
     node_details: Dict[str, Dict[str, Any]] = {}
@@ -121,6 +124,10 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                 action_effect_observations_by_action[str(event["action"])] += 1
             if event.get("action_effect_is_known"):
                 action_effect_known_branches += 1
+            causal_signature = event.get("causal_spatial_signature")
+            if causal_signature:
+                causal_spatial_observations += 1
+                causal_spatial_signatures.add(str(causal_signature))
         elif event["event"] == "learned_hazards_filtered":
             learned_hazard_filtered_choices += len(event.get("filtered", ()))
         if (
@@ -249,6 +256,24 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                     ),
                     "action_effect_samples": event.get("action_effect_samples", 0),
                     "action_effect_bonus": event.get("action_effect_bonus"),
+                    "causal_spatial_signature": event.get(
+                        "causal_spatial_signature"
+                    ),
+                    "causal_spatial_novelty": event.get(
+                        "causal_spatial_novelty"
+                    ),
+                    "causal_spatial_visits_before": event.get(
+                        "causal_spatial_visits_before"
+                    ),
+                    "causal_changed_pixels": event.get(
+                        "causal_changed_pixels"
+                    ),
+                    "causal_change_centroid": json.dumps(
+                        event.get("causal_change_centroid")
+                    ),
+                    "causal_spatial_bonus": event.get(
+                        "causal_spatial_bonus"
+                    ),
                     "temporal_option_value": event.get("temporal_option_value"),
                     "temporal_option_is_known": event.get(
                         "temporal_option_is_known", False
@@ -295,6 +320,11 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                     ),
                 }
             )
+            committed_causal_signature = event.get("causal_spatial_signature")
+            if committed_causal_signature:
+                committed_causal_spatial_signatures.add(
+                    str(committed_causal_signature)
+                )
 
     decision_columns = [
         "seq",
@@ -319,6 +349,12 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "action_effect_is_known",
         "action_effect_samples",
         "action_effect_bonus",
+        "causal_spatial_signature",
+        "causal_spatial_novelty",
+        "causal_spatial_visits_before",
+        "causal_changed_pixels",
+        "causal_change_centroid",
+        "causal_spatial_bonus",
         "temporal_option_value",
         "temporal_option_is_known",
         "temporal_option_value_source",
@@ -422,6 +458,14 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             "archive_branch_rejected", 0
         ),
         "global_action_hazard_samples": global_action_hazard_samples,
+        "matched_neutral_verifications": event_counts.get(
+            "matched_neutral_verified", 0
+        ),
+        "causal_spatial_observations": causal_spatial_observations,
+        "unique_causal_spatial_signatures": len(causal_spatial_signatures),
+        "committed_causal_spatial_signatures": len(
+            committed_causal_spatial_signatures
+        ),
         "temporal_options_started": event_counts.get(
             "temporal_option_started", 0
         ),

@@ -298,6 +298,72 @@ class EnsemblePlannerTests(unittest.TestCase):
         source = sources.pop()
         self.assertEqual(agent._action_effect_estimate(source, Action.A)[0], 0.0)
         self.assertEqual(agent._action_effect_estimate(source, Action.RIGHT)[0], 1.0)
+        self.assertEqual(sum(agent.causal_spatial_visits.values()), 1)
+
+    def test_causal_option_commits_a_neutral_observation_before_intervening(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=9, ensemble_size=2)
+        agent = VerifiedNeuralAgent(
+            AutonomousAnimationEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.NOOP, Action.RIGHT, Action.SELECT),
+                planning_depth=1,
+                beam_width=3,
+                verify_actions=3,
+                action_frames=4,
+                actual_novelty_weight=0.0,
+                scene_novelty_weight=0.0,
+                prediction_error_weight=0.0,
+                actual_change_weight=0.0,
+                action_effect_weight=0.0,
+                causal_spatial_novelty_weight=1.0,
+                action_coverage_weight=0.0,
+                duration_coverage_weight=0.0,
+                consecutive_repeat_weight=0.0,
+            ),
+        )
+        agent.reset()
+        agent.pending_option_choice = ("source", Action.RIGHT, 4)
+        agent.pending_option_decision = 0
+        agent.pending_option_causal_evidence = True
+        plans = [
+            NeuralPlan((Action.NOOP,), (4,), 0.0, 0.0),
+            NeuralPlan((Action.RIGHT,), (4,), 2.0, 0.0),
+            NeuralPlan((Action.SELECT,), (4,), 1.0, 0.0),
+        ]
+        agent.planner.plan = lambda _frame: plans
+
+        decision = agent.decide()
+
+        self.assertEqual(decision.action, Action.NOOP)
+
+    def test_causal_spatial_signature_localizes_matched_pixel_change(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        agent = VerifiedNeuralAgent(
+            ActionEffectEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                causal_spatial_columns=1,
+                causal_spatial_rows=1,
+            ),
+        )
+        neutral_pixels = bytearray(64)
+        neutral_pixels[0] = 255
+        factual_pixels = bytearray(64)
+        factual_pixels[4] = 255
+
+        signature, changed_pixels, centroid = agent._causal_spatial_effect(
+            Frame(8, 8, 1, bytes(factual_pixels)),
+            Frame(8, 8, 1, bytes(neutral_pixels)),
+        )
+
+        self.assertIsNotNone(signature)
+        self.assertEqual(changed_pixels, 2)
+        self.assertEqual(centroid, (2.0, 0.0))
 
     def test_learned_hazard_is_verified_but_not_committed_when_safe(self) -> None:
         model = EnsembleVisualDynamicsModel(latent_size=32, action_size=9, ensemble_size=2)
@@ -535,6 +601,71 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(len(agent.archive), 3)
         self.assertIn("minority", {branch.scene for branch in agent.archive})
 
+    def test_archive_score_prefers_a_rare_causal_spatial_frontier(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        agent = VerifiedNeuralAgent(
+            MockPuzzleEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(actions=(Action.RIGHT,), planning_depth=1),
+        )
+        frame = agent.reset()
+        plan = NeuralPlan((Action.RIGHT,), (4,), 0.0, 0.0)
+        ordinary = _ArchivedBranch(1, frame, plan, 0.0, "scene", 1)
+        spatial = _ArchivedBranch(
+            2,
+            frame,
+            plan,
+            0.0,
+            "scene",
+            1,
+            causal_spatial_signature="new-grid-cell",
+        )
+
+        self.assertGreater(
+            agent._archive_frontier_score(spatial),
+            agent._archive_frontier_score(ordinary),
+        )
+        agent.causal_spatial_visits["new-grid-cell"] = 3
+        self.assertEqual(agent._archive_causal_spatial_bonus(spatial), 1.0)
+
+    def test_stagnation_can_restore_a_causal_frontier_in_the_same_scene(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        env = UniqueStateEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                visual_stagnation_visits=1,
+            ),
+        )
+        current = agent.reset()
+        state = env.save_state()
+        alternative = Frame(8, 8, 1, bytes([0, 255]) + bytes(62))
+        scene = agent._scene_signature(current)
+        agent.archive.append(
+            _ArchivedBranch(
+                state=state,
+                frame=alternative,
+                plan=NeuralPlan((Action.RIGHT,), (1,), 1.0, 0.0),
+                score=1.0,
+                scene=scene,
+                created=0,
+                origin_signature=agent.current_frontier_signature,
+                frontier_signature="causal-frontier",
+                causal_spatial_signature="changed-cell",
+            )
+        )
+        agent.visual_stagnation_streak = 1
+
+        restored = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(restored)
+        self.assertEqual(restored.frame.digest, alternative.digest)
+
     def test_verification_budget_covers_distinct_buttons_before_durations(self) -> None:
         model = EnsembleVisualDynamicsModel(
             latent_size=32,
@@ -601,18 +732,67 @@ class EnsemblePlannerTests(unittest.TestCase):
         }
         noop = NeuralPlan((Action.NOOP,), (16,), 0.0, 0.0)
         up = NeuralPlan((Action.UP,), (16,), 0.0, 0.0)
+        right_long = NeuralPlan((Action.RIGHT,), (16,), 0.0, 0.0)
         start = NeuralPlan((Action.START,), (16,), 100.0, 0.0)
         best[(Action.NOOP, 16)] = noop
         best[(Action.UP, 16)] = up
+        best[(Action.RIGHT, 16)] = right_long
         best[(Action.START, 16)] = start
 
         agent.reset()
+        agent.last_action = Action.RIGHT
+        agent.last_action_was_causal_spatial = True
         result = agent._add_control_probes(ranked, best)
 
         self.assertEqual(len(result), 6)
         self.assertIn(noop, result)
         self.assertIn(up, result)
+        self.assertIn(right_long, result)
         self.assertNotIn(start, result)
+
+    def test_causal_continuation_survives_the_neutral_observation(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32,
+            action_size=8,
+            ensemble_size=2,
+            duration_conditioned=True,
+            duration_size=4,
+            max_action_frames=16,
+        )
+        agent = VerifiedNeuralAgent(
+            MockPuzzleEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                action_durations=(1, 16),
+                planning_depth=1,
+                verify_actions=6,
+            ),
+        )
+        agent.reset()
+        agent.active_temporal_option = _TemporalOptionTrace(
+            choice=("source", Action.RIGHT, 16),
+            initiation_decision=1,
+            start_decision=2,
+            entry_signature="source",
+            entry_scene="scene",
+            causal_evidence=True,
+        )
+        ranked = [
+            NeuralPlan((Action.UP,), (1,), 0.0, 0.0),
+            NeuralPlan((Action.DOWN,), (1,), 0.0, 0.0),
+        ]
+        right_long = NeuralPlan((Action.RIGHT,), (16,), 0.0, 0.0)
+        best = {
+            (Action.UP, 1): ranked[0],
+            (Action.DOWN, 1): ranked[1],
+            (Action.NOOP, 16): NeuralPlan((Action.NOOP,), (16,), 0.0, 0.0),
+            (Action.RIGHT, 16): right_long,
+        }
+
+        result = agent._add_control_probes(ranked, best)
+
+        self.assertIn(right_long, result)
 
     def test_active_behavior_probe_rotates_then_separates_hypotheses(self) -> None:
         model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
@@ -988,14 +1168,42 @@ class EnsemblePlannerTests(unittest.TestCase):
         agent.pending_option_choice = choice
         agent.pending_option_decision = 1
         agent.pending_option_causal_evidence = True
-        agent.decision_index = 1
-        agent._advance_temporal_option("animation", "scene", passive=True)
-        agent.decision_index = 2
+        for decision in range(1, 5):
+            agent.decision_index = decision
+            agent._advance_temporal_option(
+                f"animation-{decision}",
+                f"scene-{decision}",
+                passive=True,
+            )
+        agent.decision_index = 5
         agent._advance_temporal_option("source", "scene", passive=False)
 
         learned, known = agent._temporal_option_estimate(*choice)
         self.assertTrue(known)
         self.assertLess(learned, 0.0)
+
+    def test_single_neutral_observation_is_not_a_delayed_return_hazard(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        agent = VerifiedNeuralAgent(
+            MockPuzzleEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(actions=(Action.RIGHT,), planning_depth=1),
+        )
+        agent.reset()
+        choice = ("source", Action.RIGHT, 16)
+        agent.behavior_visits["source"] = 1
+        agent.pending_option_choice = choice
+        agent.pending_option_decision = 1
+        agent.pending_option_causal_evidence = True
+        agent.decision_index = 1
+        agent._advance_temporal_option("source", "room", passive=True)
+        agent.decision_index = 2
+        agent._advance_temporal_option("source", "room", passive=False)
+
+        learned, known = agent._temporal_option_estimate(*choice)
+        self.assertTrue(known)
+        self.assertGreaterEqual(learned, 0.0)
 
     def test_temporal_option_penalizes_a_return_to_an_earlier_known_state(
         self,
@@ -1013,14 +1221,48 @@ class EnsemblePlannerTests(unittest.TestCase):
         agent.pending_option_choice = choice
         agent.pending_option_decision = 1
         agent.pending_option_causal_evidence = True
-        agent.decision_index = 1
-        agent._advance_temporal_option("animation", "fade", passive=True)
-        agent.decision_index = 2
+        for decision in range(1, 5):
+            agent.decision_index = decision
+            agent._advance_temporal_option(
+                f"animation-{decision}",
+                f"fade-{decision}",
+                passive=True,
+            )
+        agent.decision_index = 5
         agent._advance_temporal_option("earlier-state", "room", passive=False)
 
         learned, known = agent._temporal_option_estimate(*choice)
         self.assertTrue(known)
         self.assertLess(learned, 0.0)
+
+    def test_robust_direct_causal_return_generalizes_action_hazard(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=9, ensemble_size=2)
+        agent = VerifiedNeuralAgent(
+            MockPuzzleEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(actions=(Action.SELECT,), planning_depth=1),
+        )
+        agent.reset()
+        choice = ("source", Action.SELECT, 1)
+        agent.behavior_visits["known-endpoint"] = 1
+        agent.pending_option_choice = choice
+        agent.pending_option_decision = 1
+        agent.pending_option_causal_evidence = True
+        for decision in range(1, 5):
+            agent.decision_index = decision
+            agent._advance_temporal_option(
+                f"animation-{decision}",
+                f"scene-{decision}",
+                passive=True,
+            )
+        agent.decision_index = 5
+        agent._advance_temporal_option(
+            "known-endpoint", "endpoint-scene", passive=False
+        )
+
+        self.assertEqual(agent.temporal_option_action_samples[Action.SELECT], 1)
+        self.assertLess(agent.temporal_option_action_values[Action.SELECT], 0.0)
 
     def test_temporal_option_action_prior_generalizes_unseen_state_and_duration(
         self,

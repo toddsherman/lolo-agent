@@ -452,11 +452,38 @@ coverage, hazard filtering, archive rejection, and global-hazard qualification
 are now available in the raw event stream. Decision-level values are also in
 `decisions.csv`, and `summary.json` aggregates them for visualization.
 
+## First autonomously collected heart
+
+Matched same-root, same-duration `NOOP` endpoints now produce a temporary
+16×15 causal-spatial signature. Rare signatures add verified branch value, a
+learned movement effect can reserve a continuation probe across its neutral
+observation, and the archive admits causal alternatives within the same coarse
+scene. The archive keeps one unvisited copy of each causal effect and rejects
+animation-only alternatives without option evidence. Visual stagnation now
+restores one of these frontiers after three unchanged decisions.
+
+The clean frozen run
+`cycle-000010-first-heart-causal-dedup-500` collected the right-hand heart on
+Floor 1 at committed decision 374. An `UP@16` branch created at decision 371
+was retained as an unvisited causal frontier and restored three decisions
+later. Its changed-pixel centroid was approximately `(202.17, 105.35)`. The
+right heart crop fell from 166 bright/pink pixels to 26 while the left crop
+remained at 166; the missing heart and the changed HUD resource count persisted
+through subsequent committed frames. This success criterion was evaluator-only
+and never entered planning or model input.
+
+The run completed all 500 decisions with 3,447 verified branches, 117 archive
+restores, 575 unique logged frames, 1,082 matched-neutral verifications, 118
+unique causal-spatial signatures, and 115 committed causal signatures. All
+3,886 native states were released exactly once and the checkpoint parameter
+digest remained unchanged. Deterministic replay verification passed for 14,063
+observations. The 240-fps committed and full players are under
+`experiments/lolo1-medium/extended_evaluations/cycle-000010-first-heart-causal-dedup-500/replays/`.
+
 ## Next research target
 
-Learn stable spatial entities and tile-scale displacement from pixels, then
-plan multi-action reachability toward persistent visual changes. The agent now
-discovers control, distinguishes inert actions, and suppresses give-up behavior
-without naming `SELECT`, death, lives, or room reset. The remaining bottleneck
-is purposeful spatial interaction and credit for collectibles rather than
-startup, causal reset attribution, or controller duration coverage.
+Turn temporary spatial effects into persistent object-centric or slot-based
+mechanics that survive across rooms and training cycles, then learn explicit
+reachability and reversibility estimates. The first collectible demonstrates
+within-room causal exploration, but it does not yet establish room completion,
+multi-object planning, or generalization to withheld rooms.

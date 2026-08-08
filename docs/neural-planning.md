@@ -252,6 +252,32 @@ The value is learned online from pixels and transition topology and is erased
 on reset. It is not part of the neural checkpoint, so frozen evaluation still
 does not update persistent parameters.
 
+## Matched-neutral spatial effects
+
+Every verified non-neutral action duration is compared with a `NOOP` endpoint
+from the same save state and the same number of emulator frames. The evaluator
+thresholds the per-pixel difference, projects changed pixels onto a 16×15
+screen grid, and records the occupied cells, changed-pixel count, and centroid.
+No sprite class, tile identity, room coordinate, or controller meaning is
+supplied. A rare action-dependent spatial signature receives temporary novelty
+value and can reserve a verification slot for continuing the same learned
+control after a neutral observation.
+
+The save-state archive uses these signatures as causal frontiers. It retains at
+most one unvisited branch for a spatial effect, rejects animation-only
+alternatives with no option evidence, and permits a causally distinct branch to
+be restored even when it shares the current coarse 3×3 scene signature. Once a
+signature is committed or restored, later copies are not re-archived. This
+keeps the bounded archive focused on unvisited interactions within a single
+puzzle room instead of filling it with sprite-animation phases.
+
+A causally supported action receives one neutral observation before another
+intervention. A one-step unchanged observation is ordinary stability and is not
+scored as a delayed return. Negative temporal credit requires at least the
+configured minimum passive duration plus more than one visual signature or
+scene. This allows an extended reset sequence to become a learned hazard while
+ordinary movement remains usable.
+
 ## Known limitations
 
 - The training sample is dominated by boot, menu, and castle animation frames.
@@ -261,5 +287,6 @@ does not update persistent parameters.
 - Action coverage currently provides a strong temporary exploration prior and
   can over-regularize behavior toward uniform controller use.
 - The model has no explicit object slots, reachability head, or reversibility
-  prediction yet.
+  prediction yet; spatial causal signatures are temporary attempt memory, not
+  persistent neural parameters.
 - Room completion remains evaluator-only and is not available to the planner.

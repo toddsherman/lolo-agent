@@ -43,11 +43,15 @@ class NeuralPlanningConfig:
     prediction_error_weight: float = 0.5
     actual_change_weight: float = 0.25
     action_effect_weight: float = 0.75
+    causal_spatial_novelty_weight: float = 2.0
+    causal_change_pixel_threshold: int = 12
+    causal_spatial_columns: int = 16
+    causal_spatial_rows: int = 15
     action_coverage_weight: float = 0.35
     duration_coverage_weight: float = 0.2
     consecutive_repeat_weight: float = 0.5
     archive_capacity: int = 96
-    visual_stagnation_visits: int = 8
+    visual_stagnation_visits: int = 3
     archive_max_age: int = 512
     autonomous_change_threshold: float = 0.00025
     action_equivalence_threshold: float = 0.0001
@@ -104,6 +108,10 @@ class _ArchivedBranch:
     option_initiation_eligible: bool = False
     option_counterfactual_contrast: float = 0.0
     option_counterfactuals: int = 0
+    causal_spatial_signature: str = ""
+    causal_spatial_novelty: float = 0.0
+    causal_changed_pixels: int = 0
+    causal_change_centroid: Optional[Tuple[float, float]] = None
 
 
 @dataclass(frozen=True)
@@ -341,6 +349,13 @@ class VerifiedNeuralAgent:
             raise ValueError("temporal option duration scale must be positive")
         if not 0.0 <= self.config.temporal_option_action_prior_weight <= 1.0:
             raise ValueError("temporal option action prior weight must be in [0, 1]")
+        if self.config.causal_change_pixel_threshold < 0:
+            raise ValueError("causal pixel threshold must be non-negative")
+        if (
+            self.config.causal_spatial_columns <= 0
+            or self.config.causal_spatial_rows <= 0
+        ):
+            raise ValueError("causal spatial grid dimensions must be positive")
         self.model.freeze()
         self.planner = NeuralRolloutPlanner(model, device, self.config)
         self.novelty = VisualNovelty()
@@ -350,8 +365,10 @@ class VerifiedNeuralAgent:
         self.action_duration_counts: CounterType[Tuple[Action, int]] = Counter()
         self.action_effect_values: Dict[Tuple[str, Action], float] = {}
         self.action_effect_samples: CounterType[Tuple[str, Action]] = Counter()
+        self.causal_spatial_visits: CounterType[str] = Counter()
         self.last_action: Optional[Action] = None
         self.last_duration: Optional[int] = None
+        self.last_action_was_causal_spatial = False
         self.action_streak = 0
         self.scene_visits: CounterType[str] = Counter()
         self.scene_action_probes: CounterType[Tuple[str, Action]] = Counter()
@@ -423,8 +440,10 @@ class VerifiedNeuralAgent:
         self.action_duration_counts = Counter()
         self.action_effect_values = {}
         self.action_effect_samples = Counter()
+        self.causal_spatial_visits = Counter()
         self.last_action = None
         self.last_duration = None
+        self.last_action_was_causal_spatial = False
         self.action_streak = 0
         self.scene_visits = Counter()
         self.scene_action_probes = Counter()
@@ -541,6 +560,53 @@ class VerifiedNeuralAgent:
         key = (source_signature, action)
         count = self.action_effect_samples[key]
         return self.action_effect_values.get(key, 0.0), count > 0, count
+
+    def _causal_spatial_effect(
+        self, factual: Frame, neutral: Frame
+    ) -> Tuple[Optional[str], int, Optional[Tuple[float, float]]]:
+        if (
+            factual.width != neutral.width
+            or factual.height != neutral.height
+            or factual.channels != neutral.channels
+        ):
+            return None, 0, None
+        columns = min(self.config.causal_spatial_columns, factual.width)
+        rows = min(self.config.causal_spatial_rows, factual.height)
+        cells = [0] * (columns * rows)
+        changed_pixels = 0
+        x_total = 0
+        y_total = 0
+        for y in range(factual.height):
+            for x in range(factual.width):
+                offset = (y * factual.width + x) * factual.channels
+                difference = sum(
+                    abs(
+                        factual.pixels[offset + channel]
+                        - neutral.pixels[offset + channel]
+                    )
+                    for channel in range(factual.channels)
+                ) / factual.channels
+                if difference < self.config.causal_change_pixel_threshold:
+                    continue
+                changed_pixels += 1
+                x_total += x
+                y_total += y
+                gx = min(columns - 1, x * columns // factual.width)
+                gy = min(rows - 1, y * rows // factual.height)
+                cells[gy * columns + gx] += 1
+        if not changed_pixels:
+            return None, 0, None
+        occupied = bytes(1 if count else 0 for count in cells)
+        if not any(occupied):
+            return None, changed_pixels, (
+                x_total / changed_pixels,
+                y_total / changed_pixels,
+            )
+        return (
+            occupied.hex(),
+            changed_pixels,
+            (x_total / changed_pixels, y_total / changed_pixels),
+        )
 
     def _verified_without_learned_hazards(
         self, source_signature: str, verified: List[Tuple[Any, ...]]
@@ -1302,21 +1368,25 @@ class VerifiedNeuralAgent:
             trace.choice is not None and signature == trace.choice[0]
         )
         returned_to_known_state = not endpoint_is_new
+        robust_delayed_return = bool(
+            returned_to_known_state
+            and trace.passive_decisions >= self.config.delayed_return_min_length
+            and (len(trace.signatures) > 1 or len(trace.scenes) > 1)
+        )
         sample = (
             self.config.temporal_option_novelty_weight * float(endpoint_is_new)
             + self.config.temporal_option_scene_span_weight * scene_span
             + self.config.temporal_option_duration_weight * duration_progress
             - self.config.temporal_option_return_penalty
-            * float(returned_to_known_state)
+            * float(robust_delayed_return)
         )
         learned_value = None
         sample_count = 0
         credited = trace.choice is not None and trace.causal_evidence
         action_hazard_generalized = bool(
-            trace.counterfactual is not None
+            trace.causal_evidence
             and sample < 0.0
-            and trace.passive_decisions >= self.config.delayed_return_min_length
-            and (len(trace.signatures) > 1 or len(trace.scenes) > 1)
+            and robust_delayed_return
         )
         if credited:
             learned_value = self._record_temporal_option_sample(
@@ -1341,6 +1411,7 @@ class VerifiedNeuralAgent:
             duration_progress=duration_progress,
             returned_to_source=returned_to_source,
             returned_to_known_state=returned_to_known_state,
+            robust_delayed_return=robust_delayed_return,
             sample=sample,
             learned_value=learned_value,
             sample_count=sample_count,
@@ -1506,6 +1577,13 @@ class VerifiedNeuralAgent:
             frontier_value=self._frontier_estimate(signature),
         )
 
+    def _archive_causal_spatial_bonus(self, branch: _ArchivedBranch) -> float:
+        if not branch.causal_spatial_signature:
+            return 0.0
+        return self.config.causal_spatial_novelty_weight / math.sqrt(
+            self.causal_spatial_visits[branch.causal_spatial_signature] + 1
+        )
+
     def _archive_frontier_score(self, branch: _ArchivedBranch) -> float:
         own_value = self._frontier_estimate(
             branch.frontier_signature
@@ -1527,11 +1605,13 @@ class VerifiedNeuralAgent:
             branch.plan.durations[0],
         )
         option_bonus = self.config.temporal_option_score_weight * option_value
+        causal_spatial_bonus = self._archive_causal_spatial_bonus(branch)
         if choice_is_known:
-            return choice_value + option_bonus
+            return choice_value + option_bonus + causal_spatial_bonus
         return (
             max(own_value, self.config.frontier_origin_weight * origin_value)
             + option_bonus
+            + causal_spatial_bonus
         )
 
     def _record_delayed_return(
@@ -1607,7 +1687,25 @@ class VerifiedNeuralAgent:
             if self.frame is None:
                 raise RuntimeError("behavior probes require a current frame")
             selection = self._behavior_probe_selection(self.frame)
-        probe_keys = selection.keys
+        probe_keys = list(selection.keys)
+        continuation_key = None
+        continuation_action = None
+        if self.last_action_was_causal_spatial and self.last_action is not None:
+            continuation_action = self.last_action
+        elif (
+            self.active_temporal_option is not None
+            and self.active_temporal_option.causal_evidence
+            and self.active_temporal_option.choice is not None
+        ):
+            continuation_action = self.active_temporal_option.choice[1]
+        if continuation_action is not None:
+            candidate = (
+                continuation_action,
+                max(self.planner.duration_choices),
+            )
+            if candidate in best_by_action and candidate not in probe_keys:
+                continuation_key = candidate
+                probe_keys.append(candidate)
         self._emit(
             "behavior_probe_selected",
             decision=self.decision_index + 1,
@@ -1622,9 +1720,20 @@ class VerifiedNeuralAgent:
                     "prior_observations": self.visual_probe_counts[
                         (selection.visual_cluster, action, duration)
                     ],
+                    "causal_continuation": (
+                        (action, duration) == continuation_key
+                    ),
                 }
                 for action, duration in probe_keys
             ],
+            causal_continuation=(
+                None
+                if continuation_key is None
+                else {
+                    "action": continuation_key[0],
+                    "action_frames": continuation_key[1],
+                }
+            ),
         )
         if self.config.verify_actions < len(probe_keys):
             return ranked
@@ -1662,7 +1771,11 @@ class VerifiedNeuralAgent:
         qualified = []
         for duration in self.planner.duration_choices:
             group = [item for item in verified if item[1].durations[0] == duration]
-            if len({item[1].path[0] for item in group}) < 2:
+            neutral = next(
+                (item for item in group if item[1].path[0] == Action.NOOP),
+                None,
+            )
+            if neutral is None or len({item[1].path[0] for item in group}) < 2:
                 continue
             spread = max(
                 left[3].mean_absolute_difference(right[3])
@@ -1676,11 +1789,7 @@ class VerifiedNeuralAgent:
                 spread <= self.config.action_equivalence_threshold
                 and change >= self.config.autonomous_change_threshold
             ):
-                preferred = next(
-                    (item for item in group if item[1].path[0] == Action.NOOP),
-                    max(group, key=lambda item: item[0]),
-                )
-                qualified.append((duration, preferred, spread, change))
+                qualified.append((duration, neutral, spread, change))
         if not qualified:
             return None
         _duration, preferred, spread, change = max(qualified, key=lambda item: item[0])
@@ -1907,6 +2016,33 @@ class VerifiedNeuralAgent:
                     )
                 )
 
+            neutral_outcomes = {
+                item[0].durations[0]: item[2]
+                for item in raw_verified
+                if item[0].path[0] == Action.NOOP
+            }
+            requested_neutral_durations = sorted(
+                {
+                    item[0].durations[0]
+                    for item in raw_verified
+                    if item[0].path[0] != Action.NOOP
+                }
+                - set(neutral_outcomes)
+            )
+            for duration in requested_neutral_durations:
+                self.env.load_state(root)
+                neutral_target = self.env.step(Action.NOOP, duration)
+                neutral_outcomes[duration] = neutral_target
+                self._emit(
+                    "matched_neutral_verified",
+                    decision=self.decision_index + 1,
+                    action=Action.NOOP,
+                    action_frames=duration,
+                    env_step_seq=getattr(self.env, "last_step_seq", None),
+                    source_state_id=self._state_id(root),
+                    **self._frame_fields(neutral_target),
+                )
+
             probe_outcomes = {
                 (item[0].path[0], item[0].durations[0]): item[2]
                 for item in raw_verified
@@ -1918,14 +2054,7 @@ class VerifiedNeuralAgent:
                 probe_selection,
             )
             self.current_frontier_signature = source_signature
-            neutral_outcomes = {
-                item[0].durations[0]: item[2]
-                for item in raw_verified
-                if item[0].path[0] == Action.NOOP
-            }
-            observed_action_effects: Dict[
-                Tuple[Action, int], Tuple[float, float, int]
-            ] = {}
+            observed_action_effects: Dict[Tuple[Action, int], Dict[str, Any]] = {}
             for item in raw_verified:
                 plan = item[0]
                 action = plan.path[0]
@@ -1937,11 +2066,31 @@ class VerifiedNeuralAgent:
                 effect_value, effect_samples = self._record_action_effect(
                     source_signature, action, contrast
                 )
-                observed_action_effects[(action, duration)] = (
-                    contrast,
-                    effect_value,
-                    effect_samples,
+                (
+                    causal_spatial_signature,
+                    causal_changed_pixels,
+                    causal_change_centroid,
+                ) = self._causal_spatial_effect(item[2], neutral_target)
+                causal_spatial_visits = (
+                    0
+                    if causal_spatial_signature is None
+                    else self.causal_spatial_visits[causal_spatial_signature]
                 )
+                causal_spatial_novelty = (
+                    0.0
+                    if causal_spatial_signature is None
+                    else 1.0 / math.sqrt(causal_spatial_visits + 1)
+                )
+                observed_action_effects[(action, duration)] = {
+                    "contrast": contrast,
+                    "value": effect_value,
+                    "samples": effect_samples,
+                    "causal_spatial_signature": causal_spatial_signature,
+                    "causal_changed_pixels": causal_changed_pixels,
+                    "causal_change_centroid": causal_change_centroid,
+                    "causal_spatial_visits": causal_spatial_visits,
+                    "causal_spatial_novelty": causal_spatial_novelty,
+                }
             verified = []
             for (
                 plan,
@@ -1988,15 +2137,39 @@ class VerifiedNeuralAgent:
                         source_signature, plan.path[0]
                     )
                     action_effect_contrast = None
+                    causal_spatial_signature = None
+                    causal_changed_pixels = 0
+                    causal_change_centroid = None
+                    causal_spatial_visits = 0
+                    causal_spatial_novelty = 0.0
                 else:
-                    (
-                        action_effect_contrast,
-                        action_effect_value,
-                        action_effect_samples,
-                    ) = observed_effect
+                    action_effect_contrast = observed_effect["contrast"]
+                    action_effect_value = observed_effect["value"]
+                    action_effect_samples = observed_effect["samples"]
                     action_effect_is_known = True
+                    causal_spatial_signature = observed_effect[
+                        "causal_spatial_signature"
+                    ]
+                    causal_changed_pixels = observed_effect[
+                        "causal_changed_pixels"
+                    ]
+                    causal_change_centroid = observed_effect[
+                        "causal_change_centroid"
+                    ]
+                    causal_spatial_visits = observed_effect[
+                        "causal_spatial_visits"
+                    ]
+                    causal_spatial_novelty = observed_effect[
+                        "causal_spatial_novelty"
+                    ]
                 action_effect_bonus = (
                     self.config.action_effect_weight * action_effect_value
+                    if temporal_option_value >= 0.0
+                    else 0.0
+                )
+                causal_spatial_bonus = (
+                    self.config.causal_spatial_novelty_weight
+                    * causal_spatial_novelty
                     if temporal_option_value >= 0.0
                     else 0.0
                 )
@@ -2009,6 +2182,7 @@ class VerifiedNeuralAgent:
                     + self.config.prediction_error_weight * error
                     + self.config.actual_change_weight * visual_change
                     + action_effect_bonus
+                    + causal_spatial_bonus
                     + self.config.frontier_score_weight * persistent_frontier_value
                     + self.config.temporal_option_score_weight
                     * temporal_option_value
@@ -2053,6 +2227,12 @@ class VerifiedNeuralAgent:
                     action_effect_is_known=action_effect_is_known,
                     action_effect_samples=action_effect_samples,
                     action_effect_bonus=action_effect_bonus,
+                    causal_spatial_signature=causal_spatial_signature,
+                    causal_changed_pixels=causal_changed_pixels,
+                    causal_change_centroid=causal_change_centroid,
+                    causal_spatial_visits=causal_spatial_visits,
+                    causal_spatial_novelty=causal_spatial_novelty,
+                    causal_spatial_bonus=causal_spatial_bonus,
                     persistent_frontier_value=persistent_frontier_value,
                     choice_frontier_value=choice_frontier_value,
                     choice_frontier_is_known=choice_frontier_is_known,
@@ -2102,14 +2282,36 @@ class VerifiedNeuralAgent:
             causal_counterfactual_active = (
                 self.pending_option_counterfactual is not None
                 or (
+                    self.pending_option_choice is not None
+                    and self.pending_option_causal_evidence
+                )
+                or (
                     self.active_temporal_option is not None
-                    and self.active_temporal_option.counterfactual is not None
+                    and (
+                        self.active_temporal_option.counterfactual is not None
+                        or self.active_temporal_option.causal_evidence
+                    )
                 )
             )
+            causal_observation_wait = None
+            if (
+                self.pending_option_choice is not None
+                and self.pending_option_causal_evidence
+            ):
+                neutral = [
+                    item
+                    for item in selection_verified
+                    if item[1].path[0] == Action.NOOP
+                ]
+                if neutral:
+                    causal_observation_wait = max(
+                        neutral,
+                        key=lambda item: (item[1].durations[0], item[0]),
+                    )
             if (
                 autonomous is not None
                 and learned_control_actions
-                and not causal_counterfactual_active
+                and causal_observation_wait is None
             ):
                 self._emit(
                     "autonomous_dynamics_rejected",
@@ -2122,7 +2324,17 @@ class VerifiedNeuralAgent:
                 autonomous = None
             passive_transition = False
             grace_continuation = False
-            if autonomous is not None:
+            if causal_observation_wait is not None:
+                chosen = causal_observation_wait
+                passive_transition = True
+                self._emit(
+                    "causal_observation_wait",
+                    decision=self.decision_index + 1,
+                    choice=self.pending_option_choice,
+                    selected_duration=chosen[1].durations[0],
+                    counterfactual_active=causal_counterfactual_active,
+                )
+            elif autonomous is not None:
                 chosen, outcome_spread, autonomous_change = autonomous
                 self.autonomous_grace_remaining = self.config.autonomous_grace_decisions
                 passive_transition = True
@@ -2240,6 +2452,21 @@ class VerifiedNeuralAgent:
                 option_counterfactual_contrast,
                 option_counterfactuals,
             ) = self._option_initiation_evidence(chosen, verified)
+            chosen_matched_effect = observed_action_effects.get(
+                (plan.path[0], plan.durations[0])
+            )
+            if (
+                plan.path[0] != Action.NOOP
+                and chosen_matched_effect is not None
+                and chosen_matched_effect["contrast"]
+                > self.config.action_equivalence_threshold
+            ):
+                option_initiation_eligible = True
+                option_counterfactual_contrast = max(
+                    option_counterfactual_contrast,
+                    chosen_matched_effect["contrast"],
+                )
+                option_counterfactuals += 1
             delayed_counterfactual_branch = (
                 None
                 if option_initiation_eligible
@@ -2261,6 +2488,18 @@ class VerifiedNeuralAgent:
             self.novelty.observe(target_signature)
             action = plan.path[0]
             duration = plan.durations[0]
+            committed_spatial_effect = observed_action_effects.get(
+                (action, duration)
+            )
+            committed_causal_spatial_signature = (
+                None
+                if committed_spatial_effect is None
+                else committed_spatial_effect["causal_spatial_signature"]
+            )
+            if committed_causal_spatial_signature is not None:
+                self.causal_spatial_visits[
+                    committed_causal_spatial_signature
+                ] += 1
             self.action_counts[action] += 1
             self.duration_counts[duration] += 1
             self.action_duration_counts[(action, duration)] += 1
@@ -2271,6 +2510,9 @@ class VerifiedNeuralAgent:
             )
             self.last_action = action
             self.last_duration = duration
+            self.last_action_was_causal_spatial = (
+                committed_causal_spatial_signature is not None
+            )
             self.decision_index += 1
             frontier_reward = (
                 float(target_signature_is_new)
@@ -2411,6 +2653,74 @@ class VerifiedNeuralAgent:
                     ),
                     verified,
                 )
+                alternative_effect = observed_action_effects.get(
+                    (
+                        alternative_plan.path[0],
+                        alternative_plan.durations[0],
+                    )
+                )
+                alternative_causal_spatial_signature = (
+                    ""
+                    if alternative_effect is None
+                    else alternative_effect["causal_spatial_signature"] or ""
+                )
+                alternative_causal_spatial_novelty = (
+                    0.0
+                    if alternative_effect is None
+                    else alternative_effect["causal_spatial_novelty"]
+                )
+                alternative_causal_changed_pixels = (
+                    0
+                    if alternative_effect is None
+                    else alternative_effect["causal_changed_pixels"]
+                )
+                alternative_causal_change_centroid = (
+                    None
+                    if alternative_effect is None
+                    else alternative_effect["causal_change_centroid"]
+                )
+                causal_frontier_already_covered = bool(
+                    alternative_causal_spatial_signature
+                    and (
+                        self.causal_spatial_visits[
+                            alternative_causal_spatial_signature
+                        ]
+                        > 0
+                        or any(
+                            branch.causal_spatial_signature
+                            == alternative_causal_spatial_signature
+                            for branch in self.archive
+                        )
+                    )
+                )
+                if causal_frontier_already_covered:
+                    self._emit(
+                        "archive_branch_rejected",
+                        decision=self.decision_index,
+                        reason="causal_frontier_already_covered",
+                        action=alternative_plan.path[0],
+                        action_frames=alternative_plan.durations[0],
+                        causal_spatial_signature=(
+                            alternative_causal_spatial_signature
+                        ),
+                        state_id=self._state_id(alternative_state),
+                        **self._frame_fields(alternative_frame),
+                    )
+                    continue
+                if (
+                    not alternative_causal_spatial_signature
+                    and not alternative_option_eligible
+                ):
+                    self._emit(
+                        "archive_branch_rejected",
+                        decision=self.decision_index,
+                        reason="no_causal_frontier",
+                        action=alternative_plan.path[0],
+                        action_frames=alternative_plan.durations[0],
+                        state_id=self._state_id(alternative_state),
+                        **self._frame_fields(alternative_frame),
+                    )
+                    continue
                 self.archive.append(
                     _ArchivedBranch(
                         alternative_state,
@@ -2424,10 +2734,17 @@ class VerifiedNeuralAgent:
                         alternative_option_eligible,
                         alternative_option_contrast,
                         alternative_option_counterfactuals,
+                        alternative_causal_spatial_signature,
+                        alternative_causal_spatial_novelty,
+                        alternative_causal_changed_pixels,
+                        alternative_causal_change_centroid,
                     )
                 )
                 added += 1
                 archive_frontier_value = self._archive_frontier_score(self.archive[-1])
+                archive_causal_spatial_bonus = self._archive_causal_spatial_bonus(
+                    self.archive[-1]
+                )
                 self._emit(
                     "archive_branch_added",
                     decision=self.decision_index,
@@ -2441,6 +2758,9 @@ class VerifiedNeuralAgent:
                     origin_signature=source_signature,
                     frontier_signature=alternative_frontier_signature,
                     persistent_frontier_value=archive_frontier_value,
+                    causal_spatial_archive_bonus=(
+                        archive_causal_spatial_bonus
+                    ),
                     temporal_option_initiation_eligible=(
                         alternative_option_eligible
                     ),
@@ -2449,6 +2769,16 @@ class VerifiedNeuralAgent:
                     ),
                     temporal_option_counterfactuals=(
                         alternative_option_counterfactuals
+                    ),
+                    causal_spatial_signature=(
+                        alternative_causal_spatial_signature or None
+                    ),
+                    causal_spatial_novelty=(
+                        alternative_causal_spatial_novelty
+                    ),
+                    causal_changed_pixels=alternative_causal_changed_pixels,
+                    causal_change_centroid=(
+                        alternative_causal_change_centroid
                     ),
                     **self._frame_fields(alternative_frame),
                 )
@@ -2469,17 +2799,39 @@ class VerifiedNeuralAgent:
                 ) = self._action_effect_estimate(source_signature, action)
                 committed_action_effect_contrast = None
             else:
-                (
-                    committed_action_effect_contrast,
-                    committed_action_effect_value,
-                    committed_action_effect_samples,
-                ) = committed_effect
+                committed_action_effect_contrast = committed_effect["contrast"]
+                committed_action_effect_value = committed_effect["value"]
+                committed_action_effect_samples = committed_effect["samples"]
                 committed_action_effect_is_known = True
             committed_temporal_option_value = self._temporal_option_estimate(
                 source_signature, action, duration
             )[0]
             committed_action_effect_bonus = (
                 self.config.action_effect_weight * committed_action_effect_value
+                if committed_temporal_option_value >= 0.0
+                else 0.0
+            )
+            if committed_effect is None:
+                committed_causal_spatial_novelty = 0.0
+                committed_causal_changed_pixels = 0
+                committed_causal_change_centroid = None
+                committed_causal_spatial_visits_before = 0
+            else:
+                committed_causal_spatial_novelty = committed_effect[
+                    "causal_spatial_novelty"
+                ]
+                committed_causal_changed_pixels = committed_effect[
+                    "causal_changed_pixels"
+                ]
+                committed_causal_change_centroid = committed_effect[
+                    "causal_change_centroid"
+                ]
+                committed_causal_spatial_visits_before = committed_effect[
+                    "causal_spatial_visits"
+                ]
+            committed_causal_spatial_bonus = (
+                self.config.causal_spatial_novelty_weight
+                * committed_causal_spatial_novelty
                 if committed_temporal_option_value >= 0.0
                 else 0.0
             )
@@ -2518,6 +2870,14 @@ class VerifiedNeuralAgent:
                 action_effect_is_known=committed_action_effect_is_known,
                 action_effect_samples=committed_action_effect_samples,
                 action_effect_bonus=committed_action_effect_bonus,
+                causal_spatial_signature=committed_causal_spatial_signature,
+                causal_spatial_novelty=committed_causal_spatial_novelty,
+                causal_spatial_visits_before=(
+                    committed_causal_spatial_visits_before
+                ),
+                causal_changed_pixels=committed_causal_changed_pixels,
+                causal_change_centroid=committed_causal_change_centroid,
+                causal_spatial_bonus=committed_causal_spatial_bonus,
                 temporal_option_value=committed_temporal_option_value,
                 temporal_option_is_known=self._temporal_option_estimate(
                     source_signature, action, duration
@@ -2610,7 +2970,14 @@ class VerifiedNeuralAgent:
             eligible = [
                 branch
                 for branch in self.archive
-                if branch.scene != current_scene and branch.created >= minimum_created
+                if branch.created >= minimum_created
+                and (
+                    branch.scene != current_scene
+                    or (
+                        bool(branch.causal_spatial_signature)
+                        and branch.frame.digest != self.frame.digest
+                    )
+                )
             ]
         if not eligible:
             if delayed_return:
@@ -2686,6 +3053,9 @@ class VerifiedNeuralAgent:
         self.decision_index += 1
         self.visual_last_visit[self._signature(branch.frame)] = self.decision_index
         selected_frontier_value = self._archive_frontier_score(branch)
+        selected_causal_spatial_archive_bonus = (
+            self._archive_causal_spatial_bonus(branch)
+        )
         restored_visual_cluster = self._abstract_signature(branch.frame)
         restored_frontier_signature = (
             branch.frontier_signature
@@ -2731,6 +3101,30 @@ class VerifiedNeuralAgent:
             if restored_option_value >= 0.0
             else 0.0
         )
+        restored_causal_spatial_visits_before = (
+            0
+            if not branch.causal_spatial_signature
+            else self.causal_spatial_visits[branch.causal_spatial_signature]
+        )
+        restored_causal_spatial_novelty = (
+            0.0
+            if not branch.causal_spatial_signature
+            else 1.0 / math.sqrt(restored_causal_spatial_visits_before + 1)
+        )
+        if branch.causal_spatial_signature:
+            self.causal_spatial_visits[branch.causal_spatial_signature] += 1
+        self.last_action = branch.plan.path[0]
+        self.last_duration = branch.plan.durations[0]
+        self.last_action_was_causal_spatial = bool(
+            branch.causal_spatial_signature
+        )
+        self.action_streak = 1
+        restored_causal_spatial_bonus = (
+            self.config.causal_spatial_novelty_weight
+            * restored_causal_spatial_novelty
+            if restored_option_value >= 0.0
+            else 0.0
+        )
         self._emit(
             "archive_branch_restored",
             decision=self.decision_index,
@@ -2744,11 +3138,22 @@ class VerifiedNeuralAgent:
             durations=branch.plan.durations,
             score=branch.score,
             persistent_frontier_value=selected_frontier_value,
+            causal_spatial_archive_bonus=(
+                selected_causal_spatial_archive_bonus
+            ),
             action_effect_contrast=None,
             action_effect_value=restored_action_effect_value,
             action_effect_is_known=restored_action_effect_known,
             action_effect_samples=restored_action_effect_samples,
             action_effect_bonus=restored_action_effect_bonus,
+            causal_spatial_signature=branch.causal_spatial_signature or None,
+            causal_spatial_novelty=restored_causal_spatial_novelty,
+            causal_spatial_visits_before=(
+                restored_causal_spatial_visits_before
+            ),
+            causal_changed_pixels=branch.causal_changed_pixels,
+            causal_change_centroid=branch.causal_change_centroid,
+            causal_spatial_bonus=restored_causal_spatial_bonus,
             temporal_option_value=restored_option_value,
             temporal_option_is_known=restored_option_known,
             temporal_option_value_source=(
@@ -2786,6 +3191,14 @@ class VerifiedNeuralAgent:
             action_effect_is_known=restored_action_effect_known,
             action_effect_samples=restored_action_effect_samples,
             action_effect_bonus=restored_action_effect_bonus,
+            causal_spatial_signature=branch.causal_spatial_signature or None,
+            causal_spatial_novelty=restored_causal_spatial_novelty,
+            causal_spatial_visits_before=(
+                restored_causal_spatial_visits_before
+            ),
+            causal_changed_pixels=branch.causal_changed_pixels,
+            causal_change_centroid=branch.causal_change_centroid,
+            causal_spatial_bonus=restored_causal_spatial_bonus,
             temporal_option_value=restored_option_value,
             temporal_option_is_known=restored_option_known,
             temporal_option_value_source=(
