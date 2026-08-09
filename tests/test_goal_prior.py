@@ -180,14 +180,6 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
 
         self.assertEqual(decision.action, Action.UP)
         self.assertGreaterEqual(decision.score, 2.0)
-        self.assertTrue(
-            any(
-                branch.frame.digest == decision.frame.digest
-                and branch.goal_heart_slots == ((80, 48),)
-                and branch.goal_progress_reward == 0.0
-                for branch in agent.archive
-            )
-        )
 
     def test_archive_recovery_softly_prefers_a_closer_goal_checkpoint(self) -> None:
         model = EnsembleVisualDynamicsModel(

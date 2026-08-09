@@ -3164,31 +3164,22 @@ class VerifiedNeuralAgent:
             committed_causal_outcome_key = self._causal_outcome_key(
                 target, self.current_pose_action
             )
-            committed_navigation_progress = bool(
-                committed_goal_analysis is not None
-                and committed_goal_analysis.navigation_reward > 0.0
-            )
             if (
-                (committed_context["detected"] or committed_navigation_progress)
+                committed_context["detected"]
+                and not self.causal_outcome_restores[
+                    committed_causal_outcome_key
+                ]
                 and not any(
                     branch.frame.digest == target.digest
                     for branch in self.archive
                 )
-                and (
-                    committed_navigation_progress
-                    or (
-                        not self.causal_outcome_restores[
-                            committed_causal_outcome_key
-                        ]
-                        and not any(
-                            branch.causal_event_outcome
-                            and self._causal_outcome_key(
-                                branch.frame, branch.pose_action
-                            )
-                            == committed_causal_outcome_key
-                            for branch in self.archive
-                        )
+                and not any(
+                    branch.causal_event_outcome
+                    and self._causal_outcome_key(
+                        branch.frame, branch.pose_action
                     )
+                    == committed_causal_outcome_key
+                    for branch in self.archive
                 )
             ):
                 committed_effect = observed_action_effects.get(
@@ -3227,7 +3218,7 @@ class VerifiedNeuralAgent:
                         committed_target_causal_context_signature,
                         source_causal_affordance_actions,
                         self.current_pose_action,
-                        committed_context["detected"],
+                        True,
                         (
                             ()
                             if committed_goal_analysis is None
@@ -3252,11 +3243,7 @@ class VerifiedNeuralAgent:
                 )
                 added += 1
                 self._emit(
-                    (
-                        "archive_causal_outcome_added"
-                        if committed_context["detected"]
-                        else "human_prior_navigation_checkpoint_added"
-                    ),
+                    "archive_causal_outcome_added",
                     decision=self.decision_index,
                     state_id=self._state_id(state),
                     action=action,
@@ -3279,7 +3266,6 @@ class VerifiedNeuralAgent:
                     persistent_frontier_value=(
                         self._archive_frontier_score(self.archive[-1])
                     ),
-                    **self._human_prior_fields(committed_goal_analysis),
                     **self._frame_fields(target),
                 )
             elif (
@@ -3370,10 +3356,6 @@ class VerifiedNeuralAgent:
                 alternative_goal_analysis = branch_goal_analyses[
                     id(alternative_state)
                 ]
-                alternative_navigation_progress = bool(
-                    alternative_goal_analysis is not None
-                    and alternative_goal_analysis.navigation_reward > 0.0
-                )
                 alternative_pose_action = self._resulting_pose_action(
                     source_pose_action,
                     alternative_plan.path[0],
@@ -3485,10 +3467,7 @@ class VerifiedNeuralAgent:
                 if causal_frontier_already_covered:
                     if (
                         alternative_goal_analysis is not None
-                        and (
-                            alternative_goal_analysis.milestone_reward > 0.0
-                            or alternative_navigation_progress
-                        )
+                        and alternative_goal_analysis.milestone_reward > 0.0
                     ):
                         causal_frontier_already_covered = False
                 if causal_frontier_already_covered:
@@ -3513,10 +3492,7 @@ class VerifiedNeuralAgent:
                     and not alternative_option_eligible
                     and not (
                         alternative_goal_analysis is not None
-                        and (
-                            alternative_goal_analysis.milestone_reward > 0.0
-                            or alternative_navigation_progress
-                        )
+                        and alternative_goal_analysis.milestone_reward > 0.0
                     )
                 ):
                     self._emit(
