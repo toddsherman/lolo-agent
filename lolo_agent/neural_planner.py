@@ -3948,6 +3948,51 @@ class VerifiedNeuralAgent:
                         filtered_branches=removed,
                         alternatives_remaining=len(eligible),
                     )
+        if (
+            self.goal_prior is not None
+            and self.goal_prior.navigation_reward > 0.0
+            and self.goal_prior.current_slots()
+        ):
+            current_goal_distance = self.goal_prior.distance_to_hearts(
+                self.frame
+            )
+            if current_goal_distance is not None:
+                non_regressive_navigation_eligible = []
+                filtered_navigation_archives = []
+                for branch in eligible:
+                    branch_goal_distance = self.goal_prior.distance_to_hearts(
+                        branch.frame,
+                        branch.goal_heart_slots,
+                    )
+                    if (
+                        branch_goal_distance is not None
+                        and branch_goal_distance <= current_goal_distance
+                    ):
+                        non_regressive_navigation_eligible.append(branch)
+                    else:
+                        filtered_navigation_archives.append(
+                            {
+                                "state_id": self._state_id(branch.state),
+                                "goal_distance": branch_goal_distance,
+                                "remaining_hearts": branch.goal_remaining_hearts,
+                            }
+                        )
+                if filtered_navigation_archives:
+                    self._emit(
+                        "human_prior_navigation_regressive_archives_filtered",
+                        decision=self.decision_index + 1,
+                        current_goal_distance=current_goal_distance,
+                        filtered_branches=len(filtered_navigation_archives),
+                        filtered_examples=filtered_navigation_archives[:32],
+                        filtered_unknown_distances=sum(
+                            item["goal_distance"] is None
+                            for item in filtered_navigation_archives
+                        ),
+                        alternatives_remaining=len(
+                            non_regressive_navigation_eligible
+                        ),
+                    )
+                eligible = non_regressive_navigation_eligible
         global_goal_eligible = [
             branch for branch in eligible if branch.goal_progress_reward > 0.0
         ]

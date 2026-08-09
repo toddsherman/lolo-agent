@@ -205,6 +205,14 @@ class PixelHeartGoalPrior:
             for x, y in heart_slots
         )
 
+    def distance_to_hearts(
+        self,
+        frame: Frame,
+        hearts: Optional[Iterable[HeartSlot]] = None,
+    ) -> Optional[float]:
+        heart_slots = self.current_present if hearts is None else hearts
+        return self._nearest_distance(self.detect_player(frame), heart_slots)
+
     @staticmethod
     def mean_intensity(frame: Frame) -> float:
         return sum(frame.pixels) / (255.0 * len(frame.pixels))

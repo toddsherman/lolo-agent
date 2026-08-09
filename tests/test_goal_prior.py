@@ -3,7 +3,12 @@ import unittest
 from lolo_agent.ensemble_world_model import EnsembleVisualDynamicsModel
 from lolo_agent.environment import Action
 from lolo_agent.goal_prior import HEART_PROTOTYPE, PixelHeartGoalPrior
-from lolo_agent.neural_planner import NeuralPlanningConfig, VerifiedNeuralAgent
+from lolo_agent.neural_planner import (
+    NeuralPlan,
+    NeuralPlanningConfig,
+    VerifiedNeuralAgent,
+    _ArchivedBranch,
+)
 from lolo_agent.pixels import Frame
 
 
@@ -138,6 +143,8 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
         self.assertEqual(closer_analysis.navigation_reward, 2.0)
         self.assertEqual(farther_analysis.navigation_reward, -2.0)
         self.assertEqual(closer_analysis.milestone_reward, 0.0)
+        self.assertEqual(prior.distance_to_hearts(source), 11.0)
+        self.assertEqual(prior.distance_to_hearts(closer), 10.0)
 
     def test_verified_planner_uses_navigation_without_clipping_intrinsic(self) -> None:
         model = EnsembleVisualDynamicsModel(
@@ -173,6 +180,47 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
 
         self.assertEqual(decision.action, Action.UP)
         self.assertGreaterEqual(decision.score, 2.0)
+
+    def test_archive_recovery_cannot_undo_navigation_progress(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = HeartNavigationEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.UP,),
+                planning_depth=1,
+                human_prior_heart_reward=25.0,
+                human_prior_navigation_reward=1.0,
+            ),
+        )
+        agent.reset()
+        farther = room_frame(((80, 48),), player=(80, 192))
+        closer = room_frame(((80, 48),), player=(80, 80))
+        agent.frame = closer
+        plan = NeuralPlan((Action.UP,), (1,), 1.0, 0.0)
+        agent.archive = [
+            _ArchivedBranch(
+                state=(80, 192),
+                frame=farther,
+                plan=plan,
+                score=10.0,
+                scene=agent._scene_signature(farther),
+                created=0,
+                goal_heart_slots=((80, 48),),
+                goal_remaining_hearts=1,
+                goal_total_hearts=1,
+            )
+        ]
+        agent.delayed_return_recovery = True
+
+        restored = agent._restore_if_stagnant()
+
+        self.assertIsNone(restored)
+        self.assertEqual(agent.frame.digest, closer.digest)
 
     def test_verified_planner_prioritizes_a_real_heart_event(self) -> None:
         model = EnsembleVisualDynamicsModel(
