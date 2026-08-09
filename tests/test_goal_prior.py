@@ -7,7 +7,7 @@ from lolo_agent.neural_planner import NeuralPlanningConfig, VerifiedNeuralAgent
 from lolo_agent.pixels import Frame
 
 
-def room_frame(hearts=(), fill=(86, 29, 0)) -> Frame:
+def room_frame(hearts=(), fill=(86, 29, 0), player=None) -> Frame:
     width, height = 256, 240
     pixels = bytearray(fill * (width * height))
     for x, y in hearts:
@@ -16,6 +16,18 @@ def room_frame(hearts=(), fill=(86, 29, 0)) -> Frame:
                 source = HEART_PROTOTYPE[row * 16 + column]
                 offset = ((y + row) * width + x + column) * 3
                 pixels[offset : offset + 3] = bytes(source)
+    if player is not None:
+        x, y = player
+        player_pixels = (
+            [(21, 95, 217)] * 80
+            + [(255, 255, 255)] * 60
+            + [(0, 0, 0)] * 60
+            + [(86, 29, 0)] * 56
+        )
+        for index, value in enumerate(player_pixels):
+            row, column = divmod(index, 16)
+            offset = ((y + row) * width + x + column) * 3
+            pixels[offset : offset + 3] = bytes(value)
     return Frame(width, height, 3, bytes(pixels))
 
 
@@ -42,6 +54,33 @@ class HeartRewardEnv:
 
     def _frame(self) -> Frame:
         return room_frame(((48, 48),) if self.heart_present else ())
+
+
+class HeartNavigationEnv:
+    def __init__(self) -> None:
+        self.player = (80, 192)
+
+    def reset(self) -> Frame:
+        self.player = (80, 192)
+        return self._frame()
+
+    def step(self, action: Action, frames: int = 1) -> Frame:
+        del frames
+        if action == Action.UP:
+            self.player = (80, 176)
+        elif action == Action.RIGHT:
+            self.player = (96, 192)
+        return self._frame()
+
+    def save_state(self):
+        return self.player
+
+    def load_state(self, state) -> Frame:
+        self.player = state
+        return self._frame()
+
+    def _frame(self) -> Frame:
+        return room_frame(((80, 48),), player=self.player)
 
 
 class PixelHeartGoalPriorTests(unittest.TestCase):
@@ -83,6 +122,57 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
 
         self.assertEqual(analysis.collected, ())
         self.assertEqual(analysis.remaining_hearts, 2)
+
+    def test_navigation_reward_is_symmetric_pixel_progress(self) -> None:
+        source = room_frame(((48, 48),), player=(80, 192))
+        closer = room_frame(((48, 48),), player=(80, 176))
+        farther = room_frame(((48, 48),), player=(96, 192))
+        prior = PixelHeartGoalPrior(navigation_reward=2.0)
+        prior.observe_room(source)
+
+        closer_analysis = prior.analyze(source, closer)
+        farther_analysis = prior.analyze(source, farther)
+
+        self.assertEqual(closer_analysis.source_player_slot, (80, 192))
+        self.assertEqual(closer_analysis.target_player_slot, (80, 176))
+        self.assertEqual(closer_analysis.navigation_reward, 2.0)
+        self.assertEqual(farther_analysis.navigation_reward, -2.0)
+        self.assertEqual(closer_analysis.milestone_reward, 0.0)
+
+    def test_verified_planner_uses_navigation_without_clipping_intrinsic(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        agent = VerifiedNeuralAgent(
+            HeartNavigationEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.NOOP, Action.UP, Action.RIGHT),
+                planning_depth=1,
+                beam_width=3,
+                verify_actions=3,
+                action_frames=1,
+                actual_novelty_weight=0.0,
+                scene_novelty_weight=0.0,
+                prediction_error_weight=0.0,
+                actual_change_weight=0.0,
+                action_effect_weight=0.0,
+                causal_spatial_novelty_weight=0.0,
+                action_coverage_weight=0.0,
+                duration_coverage_weight=0.0,
+                consecutive_repeat_weight=0.0,
+                delayed_return_weight=0.0,
+                human_prior_heart_reward=25.0,
+                human_prior_navigation_reward=2.0,
+            ),
+        )
+
+        agent.reset()
+        decision = agent.decide()
+
+        self.assertEqual(decision.action, Action.UP)
+        self.assertGreaterEqual(decision.score, 2.0)
 
     def test_verified_planner_prioritizes_a_real_heart_event(self) -> None:
         model = EnsembleVisualDynamicsModel(

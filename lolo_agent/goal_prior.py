@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Dict, Iterable, Optional, Sequence, Tuple
 
@@ -47,13 +48,22 @@ class HeartGoalAnalysis:
     target_similarities: Tuple[Tuple[int, int, float], ...]
     heart_reward: float
     all_hearts_reward: float
+    navigation_reward: float
     total_reward: float
     global_visual_change: float
     target_intensity: float
+    source_player_slot: Optional[HeartSlot]
+    target_player_slot: Optional[HeartSlot]
+    source_heart_distance: Optional[float]
+    target_heart_distance: Optional[float]
 
     @property
     def remaining_hearts(self) -> int:
         return len(self.target_present)
+
+    @property
+    def milestone_reward(self) -> float:
+        return self.heart_reward + self.all_hearts_reward
 
     def telemetry(self) -> Dict[str, object]:
         return {
@@ -70,7 +80,13 @@ class HeartGoalAnalysis:
             ],
             "human_prior_heart_reward": self.heart_reward,
             "human_prior_all_hearts_reward": self.all_hearts_reward,
+            "human_prior_navigation_reward": self.navigation_reward,
+            "human_prior_milestone_reward": self.milestone_reward,
             "human_prior_goal_reward": self.total_reward,
+            "human_prior_source_player_slot": self.source_player_slot,
+            "human_prior_target_player_slot": self.target_player_slot,
+            "human_prior_source_heart_distance": self.source_heart_distance,
+            "human_prior_target_heart_distance": self.target_heart_distance,
             "human_prior_global_visual_change": self.global_visual_change,
             "human_prior_target_intensity": self.target_intensity,
         }
@@ -87,6 +103,7 @@ class PixelHeartGoalPrior:
         self,
         heart_reward: float = 25.0,
         all_hearts_reward: float = 75.0,
+        navigation_reward: float = 0.0,
         discovery_similarity: float = 0.98,
         presence_similarity: float = 0.55,
         maximum_event_visual_change: float = 0.08,
@@ -94,6 +111,7 @@ class PixelHeartGoalPrior:
     ) -> None:
         self.heart_reward = float(heart_reward)
         self.all_hearts_reward = float(all_hearts_reward)
+        self.navigation_reward = float(navigation_reward)
         self.discovery_similarity = float(discovery_similarity)
         self.presence_similarity = float(presence_similarity)
         self.maximum_event_visual_change = float(maximum_event_visual_change)
@@ -102,6 +120,90 @@ class PixelHeartGoalPrior:
         self.current_present: set[HeartSlot] = set()
         self.initialized = False
         self.best_remaining_hearts: Optional[int] = None
+        self._player_cache: OrderedDict[str, Optional[HeartSlot]] = OrderedDict()
+
+    @staticmethod
+    def _snap_to_tile(slot: HeartSlot) -> HeartSlot:
+        return 16 * round(slot[0] / 16), 16 * round(slot[1] / 16)
+
+    def detect_player(self, frame: Frame) -> Optional[HeartSlot]:
+        """Locate Lolo from his visible palette, without reading emulator memory.
+
+        The scan is deliberately part of the explicitly labelled human-prior
+        track. Water uses Lolo's dark blue, so its two animated highlight
+        colours are rejected before candidates are ranked.
+        """
+
+        digest = frame.digest
+        if digest in self._player_cache:
+            self._player_cache.move_to_end(digest)
+            return self._player_cache[digest]
+        if self.mean_intensity(frame) < self.minimum_scene_intensity:
+            return None
+        blue = (21, 95, 217)
+        white = (255, 255, 255)
+        black = (0, 0, 0)
+        magenta = (183, 30, 123)
+        water_highlights = {(100, 176, 255), (192, 223, 255)}
+        best: Optional[Tuple[Tuple[int, ...], HeartSlot]] = None
+        for y in range(28, min(frame.height - 15, 205), 4):
+            for x in range(28, min(frame.width - 15, 205), 4):
+                counts = {
+                    blue: 0,
+                    white: 0,
+                    black: 0,
+                    magenta: 0,
+                }
+                water_pixels = 0
+                for row in range(y, y + 16):
+                    for column in range(x, x + 16):
+                        pixel = self._pixel(frame, column, row)
+                        if pixel in counts:
+                            counts[pixel] += 1
+                        if pixel in water_highlights:
+                            water_pixels += 1
+                blue_pixels = counts[blue]
+                white_pixels = counts[white]
+                black_pixels = counts[black]
+                magenta_pixels = counts[magenta]
+                if not (
+                    20 <= blue_pixels <= 120
+                    and white_pixels >= 20
+                    and black_pixels >= 25
+                    and magenta_pixels < 35
+                    and water_pixels < 10
+                ):
+                    continue
+                rank = (
+                    2 * blue_pixels + white_pixels,
+                    blue_pixels,
+                    white_pixels,
+                    black_pixels,
+                    -magenta_pixels,
+                    x,
+                    y,
+                )
+                if best is None or rank > best[0]:
+                    best = (rank, (x, y))
+        result = None if best is None else self._snap_to_tile(best[1])
+        self._player_cache[digest] = result
+        if len(self._player_cache) > 2048:
+            self._player_cache.popitem(last=False)
+        return result
+
+    @staticmethod
+    def _nearest_distance(
+        player: Optional[HeartSlot], hearts: Iterable[HeartSlot]
+    ) -> Optional[float]:
+        if player is None:
+            return None
+        heart_slots = tuple(hearts)
+        if not heart_slots:
+            return None
+        return min(
+            (abs(player[0] - x) + abs(player[1] - y)) / 16.0
+            for x, y in heart_slots
+        )
 
     @staticmethod
     def mean_intensity(frame: Frame) -> float:
@@ -179,6 +281,24 @@ class PixelHeartGoalPrior:
             if collected and not target_present
             else 0.0
         )
+        source_player = self.detect_player(source) if reliable else None
+        target_player = self.detect_player(target) if reliable else None
+        source_distance = self._nearest_distance(
+            source_player, target_present
+        )
+        target_distance = self._nearest_distance(
+            target_player, target_present
+        )
+        navigation_reward = 0.0
+        if (
+            reliable
+            and not collected
+            and source_distance is not None
+            and target_distance is not None
+        ):
+            navigation_reward = self.navigation_reward * (
+                source_distance - target_distance
+            )
         return HeartGoalAnalysis(
             reliable=reliable,
             known_slots=tuple(sorted(self.known_slots)),
@@ -188,9 +308,16 @@ class PixelHeartGoalPrior:
             target_similarities=similarities,
             heart_reward=heart_reward,
             all_hearts_reward=all_hearts_reward,
-            total_reward=heart_reward + all_hearts_reward,
+            navigation_reward=navigation_reward,
+            total_reward=(
+                heart_reward + all_hearts_reward + navigation_reward
+            ),
             global_visual_change=visual_change,
             target_intensity=target_intensity,
+            source_player_slot=source_player,
+            target_player_slot=target_player,
+            source_heart_distance=source_distance,
+            target_heart_distance=target_distance,
         )
 
     def commit(self, analysis: HeartGoalAnalysis, frame: Frame) -> None:

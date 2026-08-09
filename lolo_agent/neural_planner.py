@@ -82,6 +82,7 @@ class NeuralPlanningConfig:
     temporal_option_action_prior_weight: float = 1.0
     human_prior_heart_reward: float = 0.0
     human_prior_all_hearts_reward: float = 0.0
+    human_prior_navigation_reward: float = 0.0
     human_prior_intrinsic_clip: float = 10.0
 
 
@@ -378,6 +379,8 @@ class VerifiedNeuralAgent:
             raise ValueError("human-prior heart reward must be non-negative")
         if self.config.human_prior_all_hearts_reward < 0.0:
             raise ValueError("human-prior all-hearts reward must be non-negative")
+        if self.config.human_prior_navigation_reward < 0.0:
+            raise ValueError("human-prior navigation reward must be non-negative")
         if self.config.human_prior_intrinsic_clip <= 0.0:
             raise ValueError("human-prior intrinsic clip must be positive")
         self.model.freeze()
@@ -438,11 +441,13 @@ class VerifiedNeuralAgent:
         enabled = bool(
             self.config.human_prior_heart_reward
             or self.config.human_prior_all_hearts_reward
+            or self.config.human_prior_navigation_reward
         )
         self.goal_prior = (
             PixelHeartGoalPrior(
                 heart_reward=self.config.human_prior_heart_reward,
                 all_hearts_reward=self.config.human_prior_all_hearts_reward,
+                navigation_reward=self.config.human_prior_navigation_reward,
             )
             if enabled
             else None
@@ -470,11 +475,39 @@ class VerifiedNeuralAgent:
     def _human_prior_score(
         self, intrinsic_score: float, analysis: Optional[HeartGoalAnalysis]
     ) -> Tuple[float, float]:
-        if analysis is None or analysis.total_reward <= 0.0:
+        if analysis is None:
             return intrinsic_score, intrinsic_score
+        if analysis.milestone_reward <= 0.0:
+            return (
+                intrinsic_score + analysis.navigation_reward,
+                intrinsic_score,
+            )
         clip = self.config.human_prior_intrinsic_clip
         clipped = max(-clip, min(clip, intrinsic_score))
         return clipped + analysis.total_reward, clipped
+
+    def _commit_goal_prior(
+        self, analysis: HeartGoalAnalysis, frame: Frame
+    ) -> HeartGoalAnalysis:
+        if self.goal_prior is None:
+            return analysis
+        before = tuple(sorted(self.goal_prior.known_slots))
+        self.goal_prior.commit(analysis, frame)
+        after = tuple(sorted(self.goal_prior.known_slots))
+        if after != before:
+            self._emit(
+                "human_prior_calibrated",
+                decision=self.decision_index + 1,
+                reward_track="human_prior_v1",
+                discovered_heart_slots=after,
+                known_heart_slots=after,
+                current_heart_slots=self.goal_prior.current_slots(),
+                prototype="lolo-heart-16x16-v1",
+                agent_visible=True,
+                **self._frame_fields(frame),
+            )
+            return self.goal_prior.analyze(frame, frame)
+        return analysis
 
     def _human_prior_fields(
         self, analysis: Optional[HeartGoalAnalysis],
@@ -2721,7 +2754,7 @@ class VerifiedNeuralAgent:
                 item
                 for item in verified
                 if branch_goal_analyses[id(item[2])] is not None
-                and branch_goal_analyses[id(item[2])].total_reward > 0.0
+                and branch_goal_analyses[id(item[2])].milestone_reward > 0.0
             ]
             if positive_goal_branches:
                 selected_states = {id(item[2]) for item in selection_verified}
@@ -2782,7 +2815,7 @@ class VerifiedNeuralAgent:
                 max(
                     positive_goal_branches,
                     key=lambda item: (
-                        branch_goal_analyses[id(item[2])].total_reward,
+                        branch_goal_analyses[id(item[2])].milestone_reward,
                         item[0],
                     ),
                 )
@@ -2972,7 +3005,9 @@ class VerifiedNeuralAgent:
             self.env.load_state(state)
             self.frame = target
             if self.goal_prior is not None and committed_goal_analysis is not None:
-                self.goal_prior.commit(committed_goal_analysis, target)
+                committed_goal_analysis = self._commit_goal_prior(
+                    committed_goal_analysis, target
+                )
             target_signature = self._signature(target)
             target_visual_cluster = self._abstract_signature(target)
             self.current_frontier_signature = target_frontier_signature
@@ -3177,7 +3212,7 @@ class VerifiedNeuralAgent:
                         (
                             0.0
                             if committed_goal_analysis is None
-                            else committed_goal_analysis.total_reward
+                            else committed_goal_analysis.milestone_reward
                         ),
                         (
                             0
@@ -3417,7 +3452,7 @@ class VerifiedNeuralAgent:
                 if causal_frontier_already_covered:
                     if (
                         alternative_goal_analysis is not None
-                        and alternative_goal_analysis.total_reward > 0.0
+                        and alternative_goal_analysis.milestone_reward > 0.0
                     ):
                         causal_frontier_already_covered = False
                 if causal_frontier_already_covered:
@@ -3442,7 +3477,7 @@ class VerifiedNeuralAgent:
                     and not alternative_option_eligible
                     and not (
                         alternative_goal_analysis is not None
-                        and alternative_goal_analysis.total_reward > 0.0
+                        and alternative_goal_analysis.milestone_reward > 0.0
                     )
                 ):
                     self._emit(
@@ -3485,7 +3520,7 @@ class VerifiedNeuralAgent:
                         (
                             0.0
                             if alternative_goal_analysis is None
-                            else alternative_goal_analysis.total_reward
+                            else alternative_goal_analysis.milestone_reward
                         ),
                         (
                             0
