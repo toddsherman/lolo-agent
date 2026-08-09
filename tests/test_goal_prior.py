@@ -241,6 +241,58 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
         self.assertIsNotNone(restored)
         self.assertEqual(restored.frame.digest, closer.digest)
 
+    def test_navigation_progress_temporarily_suppresses_delayed_recovery(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = HeartNavigationEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.UP,),
+                planning_depth=1,
+                human_prior_heart_reward=25.0,
+                human_prior_navigation_reward=1.0,
+                human_prior_navigation_recovery_grace=2,
+            ),
+        )
+        agent.reset()
+        current = room_frame(((80, 48),), player=(80, 80))
+        farther = room_frame(((80, 48),), player=(80, 192))
+        agent.frame = current
+        plan = NeuralPlan((Action.UP,), (1,), 1.0, 0.0)
+        agent.archive = [
+            _ArchivedBranch(
+                state=(80, 192),
+                frame=farther,
+                plan=plan,
+                score=0.0,
+                scene=agent._scene_signature(farther),
+                created=0,
+                causal_event_outcome=True,
+                goal_heart_slots=((80, 48),),
+                goal_remaining_hearts=1,
+                goal_total_hearts=1,
+            )
+        ]
+        agent.last_navigation_progress_decision = 0
+        agent.delayed_return_recovery = True
+
+        suppressed = agent._restore_if_stagnant()
+
+        self.assertIsNone(suppressed)
+        self.assertEqual(agent.frame.digest, current.digest)
+        self.assertFalse(agent.delayed_return_recovery)
+
+        agent.decision_index = 2
+        agent.delayed_return_recovery = True
+        restored = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(restored)
+        self.assertEqual(restored.frame.digest, farther.digest)
+
     def test_verified_planner_prioritizes_a_real_heart_event(self) -> None:
         model = EnsembleVisualDynamicsModel(
             latent_size=32, action_size=8, ensemble_size=2

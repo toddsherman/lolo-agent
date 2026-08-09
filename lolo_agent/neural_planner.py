@@ -83,6 +83,7 @@ class NeuralPlanningConfig:
     human_prior_heart_reward: float = 0.0
     human_prior_all_hearts_reward: float = 0.0
     human_prior_navigation_reward: float = 0.0
+    human_prior_navigation_recovery_grace: int = 0
     human_prior_intrinsic_clip: float = 10.0
 
 
@@ -381,6 +382,10 @@ class VerifiedNeuralAgent:
             raise ValueError("human-prior all-hearts reward must be non-negative")
         if self.config.human_prior_navigation_reward < 0.0:
             raise ValueError("human-prior navigation reward must be non-negative")
+        if self.config.human_prior_navigation_recovery_grace < 0:
+            raise ValueError(
+                "human-prior navigation recovery grace must be non-negative"
+            )
         if self.config.human_prior_intrinsic_clip <= 0.0:
             raise ValueError("human-prior intrinsic clip must be positive")
         self.model.freeze()
@@ -436,6 +441,7 @@ class VerifiedNeuralAgent:
         self.decision_index = 0
         self.event_logger = event_logger
         self.goal_prior: Optional[PixelHeartGoalPrior] = None
+        self.last_navigation_progress_decision: Optional[int] = None
 
     def _reset_goal_prior(self) -> None:
         enabled = bool(
@@ -644,6 +650,7 @@ class VerifiedNeuralAgent:
         self.visual_stagnation_streak = 0
         self.archive = []
         self.decision_index = 0
+        self.last_navigation_progress_decision = None
         self._reset_goal_prior()
         self._calibrate_goal_prior(self.frame)
         self._emit(
@@ -3081,6 +3088,11 @@ class VerifiedNeuralAgent:
                 committed_causal_spatial_signature is not None
             )
             self.decision_index += 1
+            if (
+                committed_goal_analysis is not None
+                and committed_goal_analysis.navigation_reward > 0.0
+            ):
+                self.last_navigation_progress_decision = self.decision_index
             frontier_reward = (
                 float(target_signature_is_new)
                 + self.config.scene_novelty_weight * float(target_scene_is_new)
@@ -3910,6 +3922,27 @@ class VerifiedNeuralAgent:
         recovery_reason = (
             "delayed_visual_return" if delayed_return else "visual_stagnation"
         )
+        if (
+            delayed_return
+            and self.last_navigation_progress_decision is not None
+            and self.decision_index - self.last_navigation_progress_decision
+            < self.config.human_prior_navigation_recovery_grace
+        ):
+            self._emit(
+                "human_prior_navigation_recovery_suppressed",
+                decision=self.decision_index + 1,
+                progress_decision=self.last_navigation_progress_decision,
+                decisions_since_progress=(
+                    self.decision_index
+                    - self.last_navigation_progress_decision
+                ),
+                grace_decisions=(
+                    self.config.human_prior_navigation_recovery_grace
+                ),
+            )
+            self.delayed_return_recovery = False
+            self.delayed_return_loop_start = None
+            return None
         if delayed_return:
             loop_start = self.delayed_return_loop_start or 0
             current_signature = self._signature(self.frame)
@@ -4136,6 +4169,7 @@ class VerifiedNeuralAgent:
         if release_state is not None:
             release_state(branch.state)
         self.frame = branch.frame
+        self.last_navigation_progress_decision = None
         if self.goal_prior is not None:
             self.goal_prior.restore(branch.goal_heart_slots, branch.frame)
         self.novelty.observe(self._signature(branch.frame))

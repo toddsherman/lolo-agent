@@ -148,6 +148,12 @@ def main() -> None:
         default=0.0,
         help="reward per tile of pixel-detected progress toward a remaining heart",
     )
+    parser.add_argument(
+        "--human-prior-navigation-recovery-grace",
+        type=int,
+        default=2,
+        help="decisions before delayed-return recovery may abandon a closer heart frontier",
+    )
     parser.add_argument("--human-prior-intrinsic-clip", type=float, default=10.0)
     parser.add_argument("--log-root", type=Path, default=Path("runs"))
     parser.add_argument("--run-id")
@@ -216,6 +222,10 @@ def main() -> None:
         parser.error("--human-prior-all-hearts-reward must be non-negative")
     if args.human_prior_navigation_reward < 0.0:
         parser.error("--human-prior-navigation-reward must be non-negative")
+    if args.human_prior_navigation_recovery_grace < 0:
+        parser.error(
+            "--human-prior-navigation-recovery-grace must be non-negative"
+        )
     if args.human_prior_intrinsic_clip <= 0.0:
         parser.error("--human-prior-intrinsic-clip must be positive")
 
@@ -257,6 +267,11 @@ def main() -> None:
             args.human_prior_navigation_reward
             if args.human_prior_hearts
             else 0.0
+        ),
+        human_prior_navigation_recovery_grace=(
+            args.human_prior_navigation_recovery_grace
+            if args.human_prior_hearts
+            else 0
         ),
         human_prior_intrinsic_clip=args.human_prior_intrinsic_clip,
     )
