@@ -51,6 +51,7 @@ class NeuralPlanningConfig:
     action_coverage_weight: float = 0.35
     duration_coverage_weight: float = 0.2
     consecutive_repeat_weight: float = 0.5
+    consecutive_repeat_penalty_cap: Optional[float] = None
     archive_capacity: int = 256
     visual_stagnation_visits: int = 3
     archive_max_age: int = 512
@@ -60,6 +61,7 @@ class NeuralPlanningConfig:
     delayed_return_min_length: int = 4
     delayed_return_credit_horizon: int = 48
     delayed_return_weight: float = 0.75
+    delayed_return_penalty_cap: Optional[float] = None
     informative_signature_bins: int = 4
     frontier_credit_horizon: int = 48
     frontier_discount: float = 0.94
@@ -560,23 +562,48 @@ class VerifiedNeuralAgent:
                     pass
         self.archive = []
 
-    def _action_penalty(self, action: Action, duration: Optional[int] = None) -> float:
+    def _action_penalty_components(
+        self, action: Action, duration: Optional[int] = None
+    ) -> Dict[str, float]:
         duration = self.config.action_frames if duration is None else duration
         coverage = self.config.action_coverage_weight * math.sqrt(self.action_counts[action])
         duration_coverage = self.config.duration_coverage_weight * math.sqrt(
             self.action_duration_counts[(action, duration)]
         )
-        consecutive = (
+        consecutive_raw = (
             self.config.consecutive_repeat_weight * self.action_streak
             if action == self.last_action and duration == self.last_duration
             else 0.0
         )
-        return_penalty = 0.0
+        consecutive = (
+            consecutive_raw
+            if self.config.consecutive_repeat_penalty_cap is None
+            else min(consecutive_raw, self.config.consecutive_repeat_penalty_cap)
+        )
+        return_penalty_raw = 0.0
         if self.current_scene is not None:
-            return_penalty = self.config.delayed_return_weight * math.sqrt(
+            return_penalty_raw = self.config.delayed_return_weight * math.sqrt(
                 self.delayed_return_costs[(self.current_scene, action, duration)]
             )
-        return coverage + duration_coverage + consecutive + return_penalty
+        return_penalty = (
+            return_penalty_raw
+            if self.config.delayed_return_penalty_cap is None
+            else min(return_penalty_raw, self.config.delayed_return_penalty_cap)
+        )
+        return {
+            "action_coverage_penalty": coverage,
+            "duration_coverage_penalty": duration_coverage,
+            "consecutive_repeat_penalty_raw": consecutive_raw,
+            "consecutive_repeat_penalty": consecutive,
+            "delayed_return_penalty_raw": return_penalty_raw,
+            "delayed_return_penalty": return_penalty,
+            "action_penalty": (
+                coverage + duration_coverage + consecutive + return_penalty
+            ),
+        }
+
+    def _action_penalty(self, action: Action, duration: Optional[int] = None) -> float:
+        return self._action_penalty_components(action, duration)["action_penalty"]
 
     def _action_duration_count_rows(self) -> List[Dict[str, Any]]:
         return [
@@ -2085,6 +2112,9 @@ class VerifiedNeuralAgent:
                     "first_action_penalty": self._action_penalty(
                         plan.path[0], plan.durations[0]
                     ),
+                    "first_action_penalty_components": self._action_penalty_components(
+                        plan.path[0], plan.durations[0]
+                    ),
                 }
                 for rank, plan in enumerate(plans, 1)
             ],
@@ -2335,6 +2365,7 @@ class VerifiedNeuralAgent:
                     visits + 1
                 )
             branch_causal_contexts: Dict[int, Dict[str, Any]] = {}
+            branch_action_penalties: Dict[int, Dict[str, float]] = {}
             for (
                 plan,
                 state,
@@ -2478,6 +2509,10 @@ class VerifiedNeuralAgent:
                 )
                 if choice_frontier_is_known:
                     persistent_frontier_value = choice_frontier_value
+                action_penalty_components = self._action_penalty_components(
+                    plan.path[0], duration
+                )
+                branch_action_penalties[id(state)] = action_penalty_components
                 score = (
                     plan.score
                     + self.config.actual_novelty_weight * effective_novelty
@@ -2489,7 +2524,7 @@ class VerifiedNeuralAgent:
                     + self.config.frontier_score_weight * persistent_frontier_value
                     + self.config.temporal_option_score_weight
                     * temporal_option_value
-                    - self._action_penalty(plan.path[0], duration)
+                    - action_penalty_components["action_penalty"]
                 )
                 verified.append(
                     (
@@ -2562,7 +2597,7 @@ class VerifiedNeuralAgent:
                     abstract_signature=target_visual_cluster,
                     source_behavioral_signature=source_signature,
                     target_frontier_signature=target_frontier_signature,
-                    action_penalty=self._action_penalty(plan.path[0], duration),
+                    **action_penalty_components,
                     combined_score=score,
                     state_id=self._state_id(state),
                     **self._frame_fields(target),
@@ -3472,6 +3507,7 @@ class VerifiedNeuralAgent:
                 if committed_temporal_option_value >= 0.0
                 else 0.0
             )
+            committed_action_penalty_components = branch_action_penalties[id(state)]
             self._emit(
                 "decision_committed",
                 decision=self.decision_index,
@@ -3507,6 +3543,7 @@ class VerifiedNeuralAgent:
                 action_effect_is_known=committed_action_effect_is_known,
                 action_effect_samples=committed_action_effect_samples,
                 action_effect_bonus=committed_action_effect_bonus,
+                **committed_action_penalty_components,
                 causal_spatial_signature=committed_causal_spatial_signature,
                 causal_context_signature=source_causal_context_signature,
                 target_causal_context_signature=(

@@ -190,6 +190,32 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(len(report.horizon_uncertainty), 2)
         self.assertTrue(all(value >= 0 for value in report.horizon_uncertainty))
 
+    def test_mixed_horizon_training_and_validation(self) -> None:
+        sequences = [
+            VisualSequence(
+                group=0,
+                frames=(self.frame(0), self.frame(1)),
+                actions=(Action.RIGHT,),
+                durations=(1,),
+            ),
+            VisualSequence(
+                group=1,
+                frames=(self.frame(1), self.frame(2), self.frame(3)),
+                actions=(Action.DOWN, Action.LEFT),
+                durations=(2, 4),
+            ),
+        ]
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32,
+            action_size=8,
+            ensemble_size=2,
+            duration_conditioned=True,
+        )
+        history = train_ensemble_model(model, sequences, "cpu", epochs=1, batch_size=2)
+        report = validate_ensemble_model(model, sequences, "cpu", batch_size=2)
+        self.assertEqual(len(history), 2)
+        self.assertEqual(len(report.horizon_pixel_l1), 2)
+
     def test_verified_planner_preserves_frozen_model(self) -> None:
         model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
         env = MockPuzzleEnv()
@@ -260,6 +286,39 @@ class EnsemblePlannerTests(unittest.TestCase):
 
         self.assertEqual(agent._action_penalty(Action.UP, 16), 0.0)
         self.assertEqual(agent._action_penalty(Action.NOOP, 16), 10.0)
+
+    def test_delayed_return_penalty_can_be_capped_without_disabling_coverage(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        agent = VerifiedNeuralAgent(
+            MockPuzzleEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.UP,),
+                planning_depth=1,
+                action_coverage_weight=1.0,
+                duration_coverage_weight=1.0,
+                consecutive_repeat_weight=1.0,
+                delayed_return_weight=1.0,
+                delayed_return_penalty_cap=2.0,
+            ),
+        )
+        agent.action_counts[Action.UP] = 9
+        agent.action_duration_counts[(Action.UP, 4)] = 4
+        agent.last_action = Action.UP
+        agent.last_duration = 4
+        agent.action_streak = 1
+        agent.current_scene = "scene"
+        agent.delayed_return_costs[("scene", Action.UP, 4)] = 100
+
+        components = agent._action_penalty_components(Action.UP, 4)
+
+        self.assertEqual(components["action_coverage_penalty"], 3.0)
+        self.assertEqual(components["duration_coverage_penalty"], 2.0)
+        self.assertEqual(components["consecutive_repeat_penalty"], 1.0)
+        self.assertEqual(components["delayed_return_penalty_raw"], 10.0)
+        self.assertEqual(components["delayed_return_penalty"], 2.0)
+        self.assertEqual(components["action_penalty"], 8.0)
 
     def test_matched_noop_branch_prioritizes_discovered_control(self) -> None:
         model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)

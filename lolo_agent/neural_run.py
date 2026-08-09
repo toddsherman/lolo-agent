@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 from .bootstrap import (
     BOOTSTRAP_FIXTURES,
@@ -15,8 +16,96 @@ from .log_summary import build_run_summary
 from .native_env import NativeLibretroEnv
 from .neural_planner import NeuralPlanningConfig, VerifiedNeuralAgent
 from .neural_world_model import ACTION_ORDER, choose_torch_device
+from .pixels import Frame, signature_key
 from .replay import restore_logged_decision, validate_replay_inputs
 from .run_logging import LoggedEnvironment, RunLogger, sha256_file
+
+
+@dataclass
+class StableSceneChangeDetector:
+    """Evaluator-only visual stop rule; its state is never exposed to the agent.
+
+    A distinct in-room state is not enough to trigger the rule.  The detector first
+    requires a near-black transition frame, then waits for a non-dark scene to
+    remain stable.  This keeps ordinary puzzle-state changes from masquerading as
+    room boundaries without introducing any game-specific visual definitions.
+    """
+
+    initial_frame: Frame
+    stable_observations: int = 2
+    warmup_decisions: int = 4
+    minimum_difference: float = 0.05
+    dark_frame_threshold: float = 0.02
+    minimum_scene_intensity: float = 0.05
+
+    def __post_init__(self) -> None:
+        if self.stable_observations <= 0:
+            raise ValueError("stable observations must be positive")
+        if self.warmup_decisions < 0:
+            raise ValueError("warmup decisions must be non-negative")
+        if self.minimum_difference < 0.0:
+            raise ValueError("minimum difference must be non-negative")
+        if not 0.0 <= self.dark_frame_threshold <= 1.0:
+            raise ValueError("dark frame threshold must be between zero and one")
+        if not 0.0 <= self.minimum_scene_intensity <= 1.0:
+            raise ValueError("minimum scene intensity must be between zero and one")
+        if self.minimum_scene_intensity <= self.dark_frame_threshold:
+            raise ValueError("minimum scene intensity must exceed dark frame threshold")
+        self._baseline = {self._signature(self.initial_frame)}
+        self._transition_observed = False
+        self._candidate: Optional[str] = None
+        self._candidate_count = 0
+
+    @staticmethod
+    def _signature(frame: Frame) -> str:
+        return signature_key(frame.coarse_signature(columns=3, rows=3))
+
+    @staticmethod
+    def _mean_intensity(frame: Frame) -> float:
+        return sum(frame.pixels) / (255.0 * len(frame.pixels))
+
+    def observe(self, decision: int, frame: Frame) -> Optional[Dict[str, Any]]:
+        scene = self._signature(frame)
+        difference = self.initial_frame.mean_absolute_difference(frame)
+        intensity = self._mean_intensity(frame)
+        if decision <= self.warmup_decisions:
+            self._baseline.add(scene)
+            self._candidate = None
+            self._candidate_count = 0
+            return None
+        if intensity <= self.dark_frame_threshold:
+            self._transition_observed = True
+            self._candidate = None
+            self._candidate_count = 0
+            return None
+        if not self._transition_observed or intensity < self.minimum_scene_intensity:
+            self._candidate = None
+            self._candidate_count = 0
+            return None
+        if scene in self._baseline or difference < self.minimum_difference:
+            self._candidate = None
+            self._candidate_count = 0
+            return None
+        if scene == self._candidate:
+            self._candidate_count += 1
+        else:
+            self._candidate = scene
+            self._candidate_count = 1
+        if self._candidate_count < self.stable_observations:
+            return None
+        return {
+            "decision": decision,
+            "scene_signature": scene,
+            "stable_observations": self._candidate_count,
+            "minimum_difference": self.minimum_difference,
+            "difference_from_initial": difference,
+            "dark_transition_observed": self._transition_observed,
+            "dark_frame_threshold": self.dark_frame_threshold,
+            "minimum_scene_intensity": self.minimum_scene_intensity,
+            "scene_intensity": intensity,
+            "baseline_scene_signatures": sorted(self._baseline),
+            "frame": frame.digest,
+        }
 
 
 def main() -> None:
@@ -32,6 +121,18 @@ def main() -> None:
         help="comma-separated press lengths; requires a duration-conditioned checkpoint",
     )
     parser.add_argument("--verify-actions", type=int, default=4)
+    parser.add_argument("--archive-capacity", type=int, default=256)
+    parser.add_argument("--archive-max-age", type=int, default=512)
+    parser.add_argument(
+        "--consecutive-repeat-penalty-cap",
+        type=float,
+        help="optional cap on the weighted consecutive-repeat penalty",
+    )
+    parser.add_argument(
+        "--delayed-return-penalty-cap",
+        type=float,
+        help="optional cap on the weighted delayed-return penalty",
+    )
     parser.add_argument("--log-root", type=Path, default=Path("runs"))
     parser.add_argument("--run-id")
     parser.add_argument(
@@ -46,6 +147,17 @@ def main() -> None:
     )
     parser.add_argument("--no-frame-images", action="store_true")
     parser.add_argument(
+        "--stop-on-stable-scene-change",
+        type=int,
+        default=0,
+        metavar="OBSERVATIONS",
+        help="evaluator-only stop after a visually distinct scene remains stable; disabled by default",
+    )
+    parser.add_argument("--scene-change-warmup", type=int, default=4)
+    parser.add_argument("--scene-change-min-difference", type=float, default=0.05)
+    parser.add_argument("--scene-change-dark-threshold", type=float, default=0.02)
+    parser.add_argument("--scene-change-min-intensity", type=float, default=0.05)
+    parser.add_argument(
         "--bootstrap",
         choices=("none", *sorted(BOOTSTRAP_FIXTURES)),
         default="none",
@@ -56,6 +168,32 @@ def main() -> None:
         parser.error("--resume-run and --resume-decision must be supplied together")
     if args.resume_run is not None and args.bootstrap != "none":
         parser.error("--resume-run cannot be combined with --bootstrap")
+    if args.stop_on_stable_scene_change < 0:
+        parser.error("--stop-on-stable-scene-change must be non-negative")
+    if args.scene_change_warmup < 0:
+        parser.error("--scene-change-warmup must be non-negative")
+    if args.scene_change_min_difference < 0.0:
+        parser.error("--scene-change-min-difference must be non-negative")
+    if not 0.0 <= args.scene_change_dark_threshold <= 1.0:
+        parser.error("--scene-change-dark-threshold must be between zero and one")
+    if not 0.0 <= args.scene_change_min_intensity <= 1.0:
+        parser.error("--scene-change-min-intensity must be between zero and one")
+    if args.scene_change_min_intensity <= args.scene_change_dark_threshold:
+        parser.error("--scene-change-min-intensity must exceed --scene-change-dark-threshold")
+    if args.archive_capacity <= 0:
+        parser.error("--archive-capacity must be positive")
+    if args.archive_max_age <= 0:
+        parser.error("--archive-max-age must be positive")
+    if (
+        args.consecutive_repeat_penalty_cap is not None
+        and args.consecutive_repeat_penalty_cap < 0.0
+    ):
+        parser.error("--consecutive-repeat-penalty-cap must be non-negative")
+    if (
+        args.delayed_return_penalty_cap is not None
+        and args.delayed_return_penalty_cap < 0.0
+    ):
+        parser.error("--delayed-return-penalty-cap must be non-negative")
 
     device = choose_torch_device()
     model, horizon = load_ensemble_checkpoint(args.checkpoint, device=device, frozen=True)
@@ -79,6 +217,10 @@ def main() -> None:
         action_frames=args.action_frames,
         action_durations=action_durations,
         verify_actions=args.verify_actions,
+        archive_capacity=args.archive_capacity,
+        archive_max_age=args.archive_max_age,
+        consecutive_repeat_penalty_cap=args.consecutive_repeat_penalty_cap,
+        delayed_return_penalty_cap=args.delayed_return_penalty_cap,
     )
     rom_sha256 = sha256_file(args.rom)
     resume_metadata = None
@@ -110,6 +252,16 @@ def main() -> None:
         },
         "bootstrap": bootstrap_metadata(bootstrap_fixture),
         "episodic_resume": resume_metadata,
+        "evaluator_stop": {
+            "kind": "stable_scene_change",
+            "stable_observations": args.stop_on_stable_scene_change,
+            "warmup_decisions": args.scene_change_warmup,
+            "minimum_difference": args.scene_change_min_difference,
+            "dark_frame_threshold": args.scene_change_dark_threshold,
+            "minimum_scene_intensity": args.scene_change_min_intensity,
+            "requires_dark_transition": True,
+            "agent_visible": False,
+        },
     }
     logger = RunLogger(
         args.log_root,
@@ -154,13 +306,40 @@ def main() -> None:
                 )
                 agent.reset(initial_frame=initial_frame)
             elif bootstrap_fixture is None:
-                agent.reset()
+                initial_frame = agent.reset()
             else:
                 initial_frame = apply_bootstrap_fixture(
                     env, bootstrap_fixture, rom_sha256
                 )
                 agent.reset(initial_frame=initial_frame)
-            decisions = agent.run(args.decisions)
+            detector = (
+                StableSceneChangeDetector(
+                    initial_frame,
+                    stable_observations=args.stop_on_stable_scene_change,
+                    warmup_decisions=args.scene_change_warmup,
+                    minimum_difference=args.scene_change_min_difference,
+                    dark_frame_threshold=args.scene_change_dark_threshold,
+                    minimum_scene_intensity=args.scene_change_min_intensity,
+                )
+                if args.stop_on_stable_scene_change
+                else None
+            )
+            decisions = []
+            for decision_index in range(1, args.decisions + 1):
+                decision = agent.decide()
+                decisions.append(decision)
+                stop = (
+                    None
+                    if detector is None
+                    else detector.observe(decision_index, decision.frame)
+                )
+                if stop is not None:
+                    logger.log(
+                        "evaluator_stable_scene_change",
+                        agent_visible=False,
+                        **stop,
+                    )
+                    break
             agent.clear_archive()
         after = model.checkpoint_digest
         if before != after:

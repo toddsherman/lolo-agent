@@ -21,6 +21,8 @@ lolo-neural-run = "lolo_agent.neural_run:main"
 lolo-log = "lolo_agent.log_summary:main"
 lolo-replay = "lolo_agent.replay:main"
 lolo-experiment = "lolo_agent.experiment:main"
+lolo-import-experience = "lolo_agent.experience_import:main"
+lolo-reward-audit = "lolo_agent.reward_audit:main"
 
 [tool.setuptools.packages.find]
 include = ["lolo_agent*"]

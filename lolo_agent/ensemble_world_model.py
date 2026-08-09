@@ -278,9 +278,18 @@ def train_ensemble_model(
     generator = torch.Generator(device="cpu").manual_seed(seed)
     history = []
     for _ in range(epochs):
-        order = torch.randperm(len(sequences), generator=generator).tolist()
-        for start in range(0, len(order), batch_size):
-            batch = [sequences[index] for index in order[start : start + batch_size]]
+        horizons = sorted({len(sequence.actions) for sequence in sequences})
+        batches = []
+        for horizon in horizons:
+            bucket = [item for item in sequences if len(item.actions) == horizon]
+            order = torch.randperm(len(bucket), generator=generator).tolist()
+            batches.extend(
+                [bucket[index] for index in order[start : start + batch_size]]
+                for start in range(0, len(order), batch_size)
+            )
+        batch_order = torch.randperm(len(batches), generator=generator).tolist()
+        for batch_index in batch_order:
+            batch = batches[batch_index]
             frames, actions, durations = sequence_batch(batch, device)
             bootstrap_mask = (
                 torch.rand(
@@ -320,28 +329,34 @@ def validate_ensemble_model(
         raise ValueError("at least one validation sequence is required")
     model.to(device)
     model.eval()
-    horizon = len(sequences[0].actions)
-    error_sums = [0.0] * horizon
-    uncertainty_sums = [0.0] * horizon
+    maximum_horizon = max(len(sequence.actions) for sequence in sequences)
+    error_sums = [0.0] * maximum_horizon
+    uncertainty_sums = [0.0] * maximum_horizon
+    step_counts = [0] * maximum_horizon
     pairs: List[Tuple[float, float]] = []
-    count = 0
-    for start in range(0, len(sequences), batch_size):
-        batch = sequences[start : start + batch_size]
-        frames, actions, durations = sequence_batch(batch, device)
-        predictions, _latents, uncertainty = model.rollout(
-            frames[:, 0], actions, durations if model.duration_conditioned else None
-        )
-        errors = (predictions - frames[:, 1:]).abs().mean(dim=(2, 3, 4))
-        for step in range(horizon):
-            step_errors = errors[:, step].detach().cpu().tolist()
-            step_uncertainty = uncertainty[:, step].detach().cpu().tolist()
-            error_sums[step] += sum(step_errors)
-            uncertainty_sums[step] += sum(step_uncertainty)
-            pairs.extend(zip(step_uncertainty, step_errors))
-        count += len(batch)
+    for horizon in sorted({len(sequence.actions) for sequence in sequences}):
+        bucket = [item for item in sequences if len(item.actions) == horizon]
+        for start in range(0, len(bucket), batch_size):
+            batch = bucket[start : start + batch_size]
+            frames, actions, durations = sequence_batch(batch, device)
+            predictions, _latents, uncertainty = model.rollout(
+                frames[:, 0], actions, durations if model.duration_conditioned else None
+            )
+            errors = (predictions - frames[:, 1:]).abs().mean(dim=(2, 3, 4))
+            for step in range(horizon):
+                step_errors = errors[:, step].detach().cpu().tolist()
+                step_uncertainty = uncertainty[:, step].detach().cpu().tolist()
+                error_sums[step] += sum(step_errors)
+                uncertainty_sums[step] += sum(step_uncertainty)
+                step_counts[step] += len(batch)
+                pairs.extend(zip(step_uncertainty, step_errors))
     return ValidationReport(
-        horizon_pixel_l1=tuple(value / count for value in error_sums),
-        horizon_uncertainty=tuple(value / count for value in uncertainty_sums),
+        horizon_pixel_l1=tuple(
+            value / count for value, count in zip(error_sums, step_counts)
+        ),
+        horizon_uncertainty=tuple(
+            value / count for value, count in zip(uncertainty_sums, step_counts)
+        ),
         uncertainty_error_correlation=_pearson(pairs),
     )
 
