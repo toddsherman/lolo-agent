@@ -1873,6 +1873,19 @@ class VerifiedNeuralAgent:
             if branch.causal_event_outcome
             else 0.0
         )
+        goal_navigation_bonus = 0.0
+        if (
+            self.goal_prior is not None
+            and self.goal_prior.navigation_reward > 0.0
+            and branch.goal_heart_slots
+        ):
+            goal_distance = self.goal_prior.distance_to_hearts(
+                branch.frame, branch.goal_heart_slots
+            )
+            if goal_distance is not None:
+                goal_navigation_bonus = -(
+                    self.goal_prior.navigation_reward * goal_distance
+                )
         goal_progress_bonus = branch.goal_progress_reward
         if branch.goal_total_hearts > 0:
             collected_hearts = max(
@@ -1894,6 +1907,7 @@ class VerifiedNeuralAgent:
                 + causal_spatial_bonus
                 + affordance_bonus
                 + causal_event_bonus
+                + goal_navigation_bonus
                 + goal_progress_bonus
             )
         return (
@@ -1902,6 +1916,7 @@ class VerifiedNeuralAgent:
             + causal_spatial_bonus
             + affordance_bonus
             + causal_event_bonus
+            + goal_navigation_bonus
             + goal_progress_bonus
         )
 
@@ -3972,85 +3987,12 @@ class VerifiedNeuralAgent:
                         filtered_branches=removed,
                         alternatives_remaining=len(eligible),
                     )
-        navigation_archive_distances: Dict[int, float] = {}
-        if (
-            self.goal_prior is not None
-            and self.goal_prior.navigation_reward > 0.0
-            and self.goal_prior.current_slots()
-        ):
-            current_goal_distance = self.goal_prior.distance_to_hearts(
-                self.frame
-            )
-            if current_goal_distance is not None:
-                non_regressive_navigation_eligible = []
-                filtered_navigation_archives = []
-                for branch in eligible:
-                    if branch.goal_remaining_hearts < len(
-                        self.goal_prior.current_slots()
-                    ):
-                        non_regressive_navigation_eligible.append(branch)
-                        continue
-                    branch_goal_distance = self.goal_prior.distance_to_hearts(
-                        branch.frame,
-                        branch.goal_heart_slots,
-                    )
-                    if (
-                        branch_goal_distance is not None
-                        and branch_goal_distance <= current_goal_distance
-                    ):
-                        non_regressive_navigation_eligible.append(branch)
-                        navigation_archive_distances[id(branch)] = (
-                            branch_goal_distance
-                        )
-                    else:
-                        filtered_navigation_archives.append(
-                            {
-                                "state_id": self._state_id(branch.state),
-                                "goal_distance": branch_goal_distance,
-                                "remaining_hearts": branch.goal_remaining_hearts,
-                            }
-                        )
-                if filtered_navigation_archives:
-                    self._emit(
-                        "human_prior_navigation_regressive_archives_filtered",
-                        decision=self.decision_index + 1,
-                        current_goal_distance=current_goal_distance,
-                        filtered_branches=len(filtered_navigation_archives),
-                        filtered_examples=filtered_navigation_archives[:32],
-                        filtered_unknown_distances=sum(
-                            item["goal_distance"] is None
-                            for item in filtered_navigation_archives
-                        ),
-                        alternatives_remaining=len(
-                            non_regressive_navigation_eligible
-                        ),
-                    )
-                eligible = non_regressive_navigation_eligible
         global_goal_eligible = [
             branch for branch in eligible if branch.goal_progress_reward > 0.0
         ]
         global_causal_event_eligible = [
             branch for branch in eligible if branch.causal_event_outcome
         ]
-        navigation_goal_eligible = []
-        closest_navigation_distance = None
-        if not global_goal_eligible:
-            distance_candidates = [
-                branch
-                for branch in eligible
-                if id(branch) in navigation_archive_distances
-            ]
-            if distance_candidates:
-                closest_navigation_distance = min(
-                    navigation_archive_distances[id(branch)]
-                    for branch in distance_candidates
-                )
-                navigation_goal_eligible = [
-                    branch
-                    for branch in distance_candidates
-                    if navigation_archive_distances[id(branch)]
-                    == closest_navigation_distance
-                ]
         same_context_eligible = [
             branch
             for branch in eligible
@@ -4059,14 +4001,6 @@ class VerifiedNeuralAgent:
         ]
         if global_goal_eligible:
             eligible = global_goal_eligible
-        elif navigation_goal_eligible:
-            eligible = navigation_goal_eligible
-            self._emit(
-                "human_prior_navigation_archive_preferred",
-                decision=self.decision_index + 1,
-                goal_distance=closest_navigation_distance,
-                alternatives_remaining=len(eligible),
-            )
         elif global_causal_event_eligible:
             eligible = global_causal_event_eligible
         elif same_context_eligible:
