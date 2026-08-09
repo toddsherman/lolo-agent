@@ -277,7 +277,7 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
                 goal_total_hearts=1,
             )
         ]
-        agent.last_navigation_progress_decision = 0
+        agent.last_navigation_change_decision = 0
         agent.delayed_return_recovery = True
 
         suppressed = agent._restore_if_stagnant()
