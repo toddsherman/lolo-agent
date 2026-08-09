@@ -11,6 +11,7 @@ from torch import Tensor
 from .agent import Decision
 from .ensemble_world_model import EnsembleVisualDynamicsModel
 from .environment import Action, PixelSaveStateEnv
+from .goal_prior import HeartGoalAnalysis, PixelHeartGoalPrior
 from .memory import VisualNovelty
 from .neural_world_model import ACTION_TO_INDEX, frame_tensor
 from .pixels import Frame, signature_key
@@ -79,6 +80,9 @@ class NeuralPlanningConfig:
     temporal_option_duration_scale: int = 16
     temporal_option_return_penalty: float = 2.0
     temporal_option_action_prior_weight: float = 1.0
+    human_prior_heart_reward: float = 0.0
+    human_prior_all_hearts_reward: float = 0.0
+    human_prior_intrinsic_clip: float = 10.0
 
 
 @dataclass(frozen=True)
@@ -120,6 +124,9 @@ class _ArchivedBranch:
     causal_affordance_actions: Tuple[Action, ...] = ()
     pose_action: Optional[Action] = None
     causal_event_outcome: bool = False
+    goal_heart_slots: Tuple[Tuple[int, int], ...] = ()
+    goal_progress_reward: float = 0.0
+    goal_remaining_hearts: int = 0
 
 
 @dataclass(frozen=True)
@@ -366,6 +373,12 @@ class VerifiedNeuralAgent:
             raise ValueError("causal spatial grid dimensions must be positive")
         if self.config.causal_event_min_component_gap <= 0:
             raise ValueError("causal event component gap must be positive")
+        if self.config.human_prior_heart_reward < 0.0:
+            raise ValueError("human-prior heart reward must be non-negative")
+        if self.config.human_prior_all_hearts_reward < 0.0:
+            raise ValueError("human-prior all-hearts reward must be non-negative")
+        if self.config.human_prior_intrinsic_clip <= 0.0:
+            raise ValueError("human-prior intrinsic clip must be positive")
         self.model.freeze()
         self.planner = NeuralRolloutPlanner(model, device, self.config)
         self.novelty = VisualNovelty()
@@ -418,6 +431,64 @@ class VerifiedNeuralAgent:
         self.archive: List[_ArchivedBranch] = []
         self.decision_index = 0
         self.event_logger = event_logger
+        self.goal_prior: Optional[PixelHeartGoalPrior] = None
+
+    def _reset_goal_prior(self) -> None:
+        enabled = bool(
+            self.config.human_prior_heart_reward
+            or self.config.human_prior_all_hearts_reward
+        )
+        self.goal_prior = (
+            PixelHeartGoalPrior(
+                heart_reward=self.config.human_prior_heart_reward,
+                all_hearts_reward=self.config.human_prior_all_hearts_reward,
+            )
+            if enabled
+            else None
+        )
+
+    def _calibrate_goal_prior(self, frame: Frame) -> None:
+        if self.goal_prior is None:
+            return
+        before = tuple(sorted(self.goal_prior.known_slots))
+        discovered = self.goal_prior.observe_room(frame)
+        after = tuple(sorted(self.goal_prior.known_slots))
+        if after != before:
+            self._emit(
+                "human_prior_calibrated",
+                decision=self.decision_index,
+                reward_track="human_prior_v1",
+                discovered_heart_slots=discovered,
+                known_heart_slots=after,
+                current_heart_slots=self.goal_prior.current_slots(),
+                prototype="lolo-heart-16x16-v1",
+                agent_visible=True,
+                **self._frame_fields(frame),
+            )
+
+    def _human_prior_score(
+        self, intrinsic_score: float, analysis: Optional[HeartGoalAnalysis]
+    ) -> Tuple[float, float]:
+        if analysis is None or analysis.total_reward <= 0.0:
+            return intrinsic_score, intrinsic_score
+        clip = self.config.human_prior_intrinsic_clip
+        clipped = max(-clip, min(clip, intrinsic_score))
+        return clipped + analysis.total_reward, clipped
+
+    @staticmethod
+    def _human_prior_fields(
+        analysis: Optional[HeartGoalAnalysis],
+    ) -> Dict[str, Any]:
+        if analysis is None:
+            return {
+                "human_prior_enabled": False,
+                "human_prior_goal_reward": 0.0,
+            }
+        return {
+            "human_prior_enabled": True,
+            "human_prior_reward_track": "human_prior_v1",
+            **analysis.telemetry(),
+        }
 
     def _emit(self, event_type: str, **fields: Any) -> None:
         if self.event_logger is not None:
@@ -535,6 +606,8 @@ class VerifiedNeuralAgent:
         self.visual_stagnation_streak = 0
         self.archive = []
         self.decision_index = 0
+        self._reset_goal_prior()
+        self._calibrate_goal_prior(self.frame)
         self._emit(
             "agent_reset",
             decision=0,
@@ -1762,6 +1835,7 @@ class VerifiedNeuralAgent:
             if branch.causal_event_outcome
             else 0.0
         )
+        goal_progress_bonus = branch.goal_progress_reward
         if choice_is_known:
             return (
                 choice_value
@@ -1769,6 +1843,7 @@ class VerifiedNeuralAgent:
                 + causal_spatial_bonus
                 + affordance_bonus
                 + causal_event_bonus
+                + goal_progress_bonus
             )
         return (
             max(own_value, self.config.frontier_origin_weight * origin_value)
@@ -1776,6 +1851,7 @@ class VerifiedNeuralAgent:
             + causal_spatial_bonus
             + affordance_bonus
             + causal_event_bonus
+            + goal_progress_bonus
         )
 
     def _record_delayed_return(
@@ -2078,6 +2154,7 @@ class VerifiedNeuralAgent:
         if self.frame is None:
             self.reset()
         assert self.frame is not None
+        self._calibrate_goal_prior(self.frame)
         self._emit(
             "decision_started",
             decision=self.decision_index + 1,
@@ -2366,6 +2443,7 @@ class VerifiedNeuralAgent:
                 )
             branch_causal_contexts: Dict[int, Dict[str, Any]] = {}
             branch_action_penalties: Dict[int, Dict[str, float]] = {}
+            branch_goal_analyses: Dict[int, Optional[HeartGoalAnalysis]] = {}
             for (
                 plan,
                 state,
@@ -2513,7 +2591,7 @@ class VerifiedNeuralAgent:
                     plan.path[0], duration
                 )
                 branch_action_penalties[id(state)] = action_penalty_components
-                score = (
+                intrinsic_score = (
                     plan.score
                     + self.config.actual_novelty_weight * effective_novelty
                     + self.config.scene_novelty_weight * scene_novelty
@@ -2525,6 +2603,15 @@ class VerifiedNeuralAgent:
                     + self.config.temporal_option_score_weight
                     * temporal_option_value
                     - action_penalty_components["action_penalty"]
+                )
+                goal_analysis = (
+                    None
+                    if self.goal_prior is None
+                    else self.goal_prior.analyze(source_frame, target)
+                )
+                branch_goal_analyses[id(state)] = goal_analysis
+                score, clipped_intrinsic_score = self._human_prior_score(
+                    intrinsic_score, goal_analysis
                 )
                 verified.append(
                     (
@@ -2594,6 +2681,11 @@ class VerifiedNeuralAgent:
                         self.config.temporal_option_score_weight
                         * temporal_option_value
                     ),
+                    intrinsic_score=intrinsic_score,
+                    human_prior_clipped_intrinsic_score=(
+                        clipped_intrinsic_score
+                    ),
+                    **self._human_prior_fields(goal_analysis),
                     abstract_signature=target_visual_cluster,
                     source_behavioral_signature=source_signature,
                     target_frontier_signature=target_frontier_signature,
@@ -2607,6 +2699,19 @@ class VerifiedNeuralAgent:
                     source_signature, verified
                 )
             )
+            positive_goal_branches = [
+                item
+                for item in verified
+                if branch_goal_analyses[id(item[2])] is not None
+                and branch_goal_analyses[id(item[2])].total_reward > 0.0
+            ]
+            if positive_goal_branches:
+                selected_states = {id(item[2]) for item in selection_verified}
+                selection_verified.extend(
+                    item
+                    for item in positive_goal_branches
+                    if id(item[2]) not in selected_states
+                )
             if filtered_hazards:
                 self._emit(
                     "learned_hazards_filtered",
@@ -2655,6 +2760,17 @@ class VerifiedNeuralAgent:
                         neutral,
                         key=lambda item: (item[1].durations[0], item[0]),
                     )
+            human_prior_goal_choice = (
+                max(
+                    positive_goal_branches,
+                    key=lambda item: (
+                        branch_goal_analyses[id(item[2])].total_reward,
+                        item[0],
+                    ),
+                )
+                if positive_goal_branches
+                else None
+            )
             if (
                 autonomous is not None
                 and learned_control_actions
@@ -2671,7 +2787,17 @@ class VerifiedNeuralAgent:
                 autonomous = None
             passive_transition = False
             grace_continuation = False
-            if causal_observation_wait is not None:
+            if human_prior_goal_choice is not None:
+                chosen = human_prior_goal_choice
+                selected_analysis = branch_goal_analyses[id(chosen[2])]
+                self._emit(
+                    "human_prior_goal_choice",
+                    decision=self.decision_index + 1,
+                    action=chosen[1].path[0],
+                    action_frames=chosen[1].durations[0],
+                    **self._human_prior_fields(selected_analysis),
+                )
+            elif causal_observation_wait is not None:
                 chosen = causal_observation_wait
                 passive_transition = True
                 self._emit(
@@ -2783,6 +2909,7 @@ class VerifiedNeuralAgent:
                 _visual_change,
                 target_frontier_signature,
             ) = chosen
+            committed_goal_analysis = branch_goal_analyses[id(state)]
             self._advance_temporal_option(
                 source_signature,
                 current_scene,
@@ -2826,6 +2953,8 @@ class VerifiedNeuralAgent:
             )
             self.env.load_state(state)
             self.frame = target
+            if self.goal_prior is not None and committed_goal_analysis is not None:
+                self.goal_prior.commit(committed_goal_analysis, target)
             target_signature = self._signature(target)
             target_visual_cluster = self._abstract_signature(target)
             self.current_frontier_signature = target_frontier_signature
@@ -3022,6 +3151,21 @@ class VerifiedNeuralAgent:
                         source_causal_affordance_actions,
                         self.current_pose_action,
                         True,
+                        (
+                            ()
+                            if committed_goal_analysis is None
+                            else committed_goal_analysis.target_present
+                        ),
+                        (
+                            0.0
+                            if committed_goal_analysis is None
+                            else committed_goal_analysis.total_reward
+                        ),
+                        (
+                            0
+                            if committed_goal_analysis is None
+                            else committed_goal_analysis.remaining_hearts
+                        ),
                     )
                 )
                 added += 1
@@ -3136,6 +3280,9 @@ class VerifiedNeuralAgent:
                 alternative_context = branch_causal_contexts[
                     id(alternative_state)
                 ]
+                alternative_goal_analysis = branch_goal_analyses[
+                    id(alternative_state)
+                ]
                 alternative_pose_action = self._resulting_pose_action(
                     source_pose_action,
                     alternative_plan.path[0],
@@ -3245,6 +3392,12 @@ class VerifiedNeuralAgent:
                     )
                 )
                 if causal_frontier_already_covered:
+                    if (
+                        alternative_goal_analysis is not None
+                        and alternative_goal_analysis.total_reward > 0.0
+                    ):
+                        causal_frontier_already_covered = False
+                if causal_frontier_already_covered:
                     self._emit(
                         "archive_branch_rejected",
                         decision=self.decision_index,
@@ -3264,6 +3417,10 @@ class VerifiedNeuralAgent:
                 if (
                     not alternative_causal_spatial_signature
                     and not alternative_option_eligible
+                    and not (
+                        alternative_goal_analysis is not None
+                        and alternative_goal_analysis.total_reward > 0.0
+                    )
                 ):
                     self._emit(
                         "archive_branch_rejected",
@@ -3297,6 +3454,21 @@ class VerifiedNeuralAgent:
                         source_causal_affordance_actions,
                         alternative_pose_action,
                         alternative_context["detected"],
+                        (
+                            ()
+                            if alternative_goal_analysis is None
+                            else alternative_goal_analysis.target_present
+                        ),
+                        (
+                            0.0
+                            if alternative_goal_analysis is None
+                            else alternative_goal_analysis.total_reward
+                        ),
+                        (
+                            0
+                            if alternative_goal_analysis is None
+                            else alternative_goal_analysis.remaining_hearts
+                        ),
                     )
                 )
                 added += 1
@@ -3356,6 +3528,7 @@ class VerifiedNeuralAgent:
                     causal_change_centroid=(
                         alternative_causal_change_centroid
                     ),
+                    **self._human_prior_fields(alternative_goal_analysis),
                     **self._frame_fields(alternative_frame),
                 )
             if source_causal_affordance_actions:
@@ -3436,6 +3609,18 @@ class VerifiedNeuralAgent:
                             source_causal_context_signature,
                             source_causal_affordance_actions,
                             source_pose_action,
+                            False,
+                            (
+                                ()
+                                if self.goal_prior is None
+                                else self.goal_prior.current_slots()
+                            ),
+                            0.0,
+                            (
+                                0
+                                if self.goal_prior is None
+                                else len(self.goal_prior.current_slots())
+                            ),
                         )
                     )
                     added += 1
@@ -3591,6 +3776,7 @@ class VerifiedNeuralAgent:
                 temporal_option_delayed_counterfactual_armed=(
                     self.pending_option_counterfactual is not None
                 ),
+                **self._human_prior_fields(committed_goal_analysis),
                 action_counts=self.action_counts,
                 duration_counts=self.duration_counts,
                 action_duration_counts=self._action_duration_count_rows(),
@@ -3670,6 +3856,9 @@ class VerifiedNeuralAgent:
                     )
                 )
             ]
+        global_goal_eligible = [
+            branch for branch in eligible if branch.goal_progress_reward > 0.0
+        ]
         global_causal_event_eligible = [
             branch for branch in eligible if branch.causal_event_outcome
         ]
@@ -3679,7 +3868,9 @@ class VerifiedNeuralAgent:
             if branch.causal_context_signature
             == self.current_causal_context_signature
         ]
-        if global_causal_event_eligible:
+        if global_goal_eligible:
+            eligible = global_goal_eligible
+        elif global_causal_event_eligible:
             eligible = global_causal_event_eligible
         elif same_context_eligible:
             if (
@@ -3713,6 +3904,9 @@ class VerifiedNeuralAgent:
         safe_eligible = []
         hazardous_eligible = []
         for candidate in eligible:
+            if candidate.goal_progress_reward > 0.0:
+                safe_eligible.append(candidate)
+                continue
             value, known = self._temporal_option_estimate(
                 candidate.origin_signature,
                 candidate.plan.path[0],
@@ -3745,13 +3939,30 @@ class VerifiedNeuralAgent:
                 filtered=hazardous_eligible,
                 alternatives_remaining=len(eligible),
             )
-        causal_event_eligible = [
+        goal_eligible = [
             candidate
             for candidate in eligible
-            if candidate.causal_event_outcome
+            if candidate.goal_progress_reward > 0.0
         ]
+        if goal_eligible:
+            eligible = goal_eligible
+            affordance_breadth_first = False
+            causal_event_eligible = []
+            restore_key = lambda item: (
+                item.goal_progress_reward,
+                self._archive_frontier_score(item),
+                item.score,
+            )
+        else:
+            causal_event_eligible = [
+                candidate
+                for candidate in eligible
+                if candidate.causal_event_outcome
+            ]
         causal_event_outcome_preferred = bool(causal_event_eligible)
-        if causal_event_eligible:
+        if goal_eligible:
+            pass
+        elif causal_event_eligible:
             eligible = causal_event_eligible
             affordance_breadth_first = False
             restore_key = lambda item: (
@@ -3769,7 +3980,7 @@ class VerifiedNeuralAgent:
             affordance_breadth_first = bool(affordance_eligible)
             if affordance_eligible:
                 eligible = affordance_eligible
-        if not causal_event_eligible and affordance_breadth_first:
+        if not goal_eligible and not causal_event_eligible and affordance_breadth_first:
             eligible = affordance_eligible
             restore_key = lambda item: (
                 -item.created,
@@ -3777,7 +3988,7 @@ class VerifiedNeuralAgent:
                 self.novelty.score(self._signature(item.frame)),
                 item.score,
             )
-        elif not causal_event_eligible:
+        elif not goal_eligible and not causal_event_eligible:
             restore_key = lambda item: (
                 self._archive_frontier_score(item),
                 self.novelty.score(self._signature(item.frame)),
@@ -3798,6 +4009,8 @@ class VerifiedNeuralAgent:
         if release_state is not None:
             release_state(branch.state)
         self.frame = branch.frame
+        if self.goal_prior is not None:
+            self.goal_prior.restore(branch.goal_heart_slots, branch.frame)
         self.novelty.observe(self._signature(branch.frame))
         self.scene_visits[branch.scene] += 1
         self.current_scene = branch.scene
@@ -3969,6 +4182,13 @@ class VerifiedNeuralAgent:
             causal_changed_pixels=branch.causal_changed_pixels,
             causal_change_centroid=branch.causal_change_centroid,
             causal_spatial_bonus=restored_causal_spatial_bonus,
+            human_prior_enabled=self.goal_prior is not None,
+            human_prior_reward_track=(
+                "human_prior_v1" if self.goal_prior is not None else None
+            ),
+            human_prior_goal_reward=branch.goal_progress_reward,
+            human_prior_target_hearts=branch.goal_heart_slots,
+            human_prior_remaining_hearts=branch.goal_remaining_hearts,
             temporal_option_value=restored_option_value,
             temporal_option_is_known=restored_option_known,
             temporal_option_value_source=(
@@ -4029,6 +4249,13 @@ class VerifiedNeuralAgent:
             causal_changed_pixels=branch.causal_changed_pixels,
             causal_change_centroid=branch.causal_change_centroid,
             causal_spatial_bonus=restored_causal_spatial_bonus,
+            human_prior_enabled=self.goal_prior is not None,
+            human_prior_reward_track=(
+                "human_prior_v1" if self.goal_prior is not None else None
+            ),
+            human_prior_goal_reward=branch.goal_progress_reward,
+            human_prior_target_hearts=branch.goal_heart_slots,
+            human_prior_remaining_hearts=branch.goal_remaining_hearts,
             temporal_option_value=restored_option_value,
             temporal_option_is_known=restored_option_known,
             temporal_option_value_source=(

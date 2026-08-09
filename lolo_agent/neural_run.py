@@ -133,6 +133,16 @@ def main() -> None:
         type=float,
         help="optional cap on the weighted delayed-return penalty",
     )
+    parser.add_argument(
+        "--human-prior-hearts",
+        action="store_true",
+        help="enable the explicitly labeled pixel-heart goal-reward track",
+    )
+    parser.add_argument("--human-prior-heart-reward", type=float, default=25.0)
+    parser.add_argument(
+        "--human-prior-all-hearts-reward", type=float, default=75.0
+    )
+    parser.add_argument("--human-prior-intrinsic-clip", type=float, default=10.0)
     parser.add_argument("--log-root", type=Path, default=Path("runs"))
     parser.add_argument("--run-id")
     parser.add_argument(
@@ -194,6 +204,12 @@ def main() -> None:
         and args.delayed_return_penalty_cap < 0.0
     ):
         parser.error("--delayed-return-penalty-cap must be non-negative")
+    if args.human_prior_heart_reward < 0.0:
+        parser.error("--human-prior-heart-reward must be non-negative")
+    if args.human_prior_all_hearts_reward < 0.0:
+        parser.error("--human-prior-all-hearts-reward must be non-negative")
+    if args.human_prior_intrinsic_clip <= 0.0:
+        parser.error("--human-prior-intrinsic-clip must be positive")
 
     device = choose_torch_device()
     model, horizon = load_ensemble_checkpoint(args.checkpoint, device=device, frozen=True)
@@ -221,6 +237,15 @@ def main() -> None:
         archive_max_age=args.archive_max_age,
         consecutive_repeat_penalty_cap=args.consecutive_repeat_penalty_cap,
         delayed_return_penalty_cap=args.delayed_return_penalty_cap,
+        human_prior_heart_reward=(
+            args.human_prior_heart_reward if args.human_prior_hearts else 0.0
+        ),
+        human_prior_all_hearts_reward=(
+            args.human_prior_all_hearts_reward
+            if args.human_prior_hearts
+            else 0.0
+        ),
+        human_prior_intrinsic_clip=args.human_prior_intrinsic_clip,
     )
     rom_sha256 = sha256_file(args.rom)
     resume_metadata = None
@@ -237,6 +262,9 @@ def main() -> None:
         }
     metadata = {
         "mode": "frozen_neural_evaluation",
+        "reward_track": (
+            "human_prior_v1" if args.human_prior_hearts else "strict_rule_free"
+        ),
         "requested_decisions": args.decisions,
         "device": str(device),
         "planning_config": asdict(config),
