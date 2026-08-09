@@ -3149,22 +3149,31 @@ class VerifiedNeuralAgent:
             committed_causal_outcome_key = self._causal_outcome_key(
                 target, self.current_pose_action
             )
+            committed_navigation_progress = bool(
+                committed_goal_analysis is not None
+                and committed_goal_analysis.navigation_reward > 0.0
+            )
             if (
-                committed_context["detected"]
-                and not self.causal_outcome_restores[
-                    committed_causal_outcome_key
-                ]
+                (committed_context["detected"] or committed_navigation_progress)
                 and not any(
                     branch.frame.digest == target.digest
                     for branch in self.archive
                 )
-                and not any(
-                    branch.causal_event_outcome
-                    and self._causal_outcome_key(
-                        branch.frame, branch.pose_action
+                and (
+                    committed_navigation_progress
+                    or (
+                        not self.causal_outcome_restores[
+                            committed_causal_outcome_key
+                        ]
+                        and not any(
+                            branch.causal_event_outcome
+                            and self._causal_outcome_key(
+                                branch.frame, branch.pose_action
+                            )
+                            == committed_causal_outcome_key
+                            for branch in self.archive
+                        )
                     )
-                    == committed_causal_outcome_key
-                    for branch in self.archive
                 )
             ):
                 committed_effect = observed_action_effects.get(
@@ -3203,7 +3212,7 @@ class VerifiedNeuralAgent:
                         committed_target_causal_context_signature,
                         source_causal_affordance_actions,
                         self.current_pose_action,
-                        True,
+                        committed_context["detected"],
                         (
                             ()
                             if committed_goal_analysis is None
@@ -3228,7 +3237,11 @@ class VerifiedNeuralAgent:
                 )
                 added += 1
                 self._emit(
-                    "archive_causal_outcome_added",
+                    (
+                        "archive_causal_outcome_added"
+                        if committed_context["detected"]
+                        else "human_prior_navigation_checkpoint_added"
+                    ),
                     decision=self.decision_index,
                     state_id=self._state_id(state),
                     action=action,
@@ -3251,6 +3264,7 @@ class VerifiedNeuralAgent:
                     persistent_frontier_value=(
                         self._archive_frontier_score(self.archive[-1])
                     ),
+                    **self._human_prior_fields(committed_goal_analysis),
                     **self._frame_fields(target),
                 )
             elif (
@@ -3341,6 +3355,10 @@ class VerifiedNeuralAgent:
                 alternative_goal_analysis = branch_goal_analyses[
                     id(alternative_state)
                 ]
+                alternative_navigation_progress = bool(
+                    alternative_goal_analysis is not None
+                    and alternative_goal_analysis.navigation_reward > 0.0
+                )
                 alternative_pose_action = self._resulting_pose_action(
                     source_pose_action,
                     alternative_plan.path[0],
@@ -3452,7 +3470,10 @@ class VerifiedNeuralAgent:
                 if causal_frontier_already_covered:
                     if (
                         alternative_goal_analysis is not None
-                        and alternative_goal_analysis.milestone_reward > 0.0
+                        and (
+                            alternative_goal_analysis.milestone_reward > 0.0
+                            or alternative_navigation_progress
+                        )
                     ):
                         causal_frontier_already_covered = False
                 if causal_frontier_already_covered:
@@ -3477,7 +3498,10 @@ class VerifiedNeuralAgent:
                     and not alternative_option_eligible
                     and not (
                         alternative_goal_analysis is not None
-                        and alternative_goal_analysis.milestone_reward > 0.0
+                        and (
+                            alternative_goal_analysis.milestone_reward > 0.0
+                            or alternative_navigation_progress
+                        )
                     )
                 ):
                     self._emit(
@@ -3948,6 +3972,7 @@ class VerifiedNeuralAgent:
                         filtered_branches=removed,
                         alternatives_remaining=len(eligible),
                     )
+        navigation_archive_distances: Dict[int, float] = {}
         if (
             self.goal_prior is not None
             and self.goal_prior.navigation_reward > 0.0
@@ -3960,6 +3985,11 @@ class VerifiedNeuralAgent:
                 non_regressive_navigation_eligible = []
                 filtered_navigation_archives = []
                 for branch in eligible:
+                    if branch.goal_remaining_hearts < len(
+                        self.goal_prior.current_slots()
+                    ):
+                        non_regressive_navigation_eligible.append(branch)
+                        continue
                     branch_goal_distance = self.goal_prior.distance_to_hearts(
                         branch.frame,
                         branch.goal_heart_slots,
@@ -3969,6 +3999,9 @@ class VerifiedNeuralAgent:
                         and branch_goal_distance <= current_goal_distance
                     ):
                         non_regressive_navigation_eligible.append(branch)
+                        navigation_archive_distances[id(branch)] = (
+                            branch_goal_distance
+                        )
                     else:
                         filtered_navigation_archives.append(
                             {
@@ -3999,6 +4032,25 @@ class VerifiedNeuralAgent:
         global_causal_event_eligible = [
             branch for branch in eligible if branch.causal_event_outcome
         ]
+        navigation_goal_eligible = []
+        closest_navigation_distance = None
+        if not global_goal_eligible:
+            distance_candidates = [
+                branch
+                for branch in eligible
+                if id(branch) in navigation_archive_distances
+            ]
+            if distance_candidates:
+                closest_navigation_distance = min(
+                    navigation_archive_distances[id(branch)]
+                    for branch in distance_candidates
+                )
+                navigation_goal_eligible = [
+                    branch
+                    for branch in distance_candidates
+                    if navigation_archive_distances[id(branch)]
+                    == closest_navigation_distance
+                ]
         same_context_eligible = [
             branch
             for branch in eligible
@@ -4007,6 +4059,14 @@ class VerifiedNeuralAgent:
         ]
         if global_goal_eligible:
             eligible = global_goal_eligible
+        elif navigation_goal_eligible:
+            eligible = navigation_goal_eligible
+            self._emit(
+                "human_prior_navigation_archive_preferred",
+                decision=self.decision_index + 1,
+                goal_distance=closest_navigation_distance,
+                alternatives_remaining=len(eligible),
+            )
         elif global_causal_event_eligible:
             eligible = global_causal_event_eligible
         elif same_context_eligible:
