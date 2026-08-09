@@ -127,6 +127,7 @@ class _ArchivedBranch:
     goal_heart_slots: Tuple[Tuple[int, int], ...] = ()
     goal_progress_reward: float = 0.0
     goal_remaining_hearts: int = 0
+    goal_total_hearts: int = 0
 
 
 @dataclass(frozen=True)
@@ -475,9 +476,8 @@ class VerifiedNeuralAgent:
         clipped = max(-clip, min(clip, intrinsic_score))
         return clipped + analysis.total_reward, clipped
 
-    @staticmethod
     def _human_prior_fields(
-        analysis: Optional[HeartGoalAnalysis],
+        self, analysis: Optional[HeartGoalAnalysis],
     ) -> Dict[str, Any]:
         if analysis is None:
             return {
@@ -487,6 +487,11 @@ class VerifiedNeuralAgent:
         return {
             "human_prior_enabled": True,
             "human_prior_reward_track": "human_prior_v1",
+            "human_prior_best_remaining_hearts": (
+                None
+                if self.goal_prior is None
+                else self.goal_prior.best_remaining_hearts
+            ),
             **analysis.telemetry(),
         }
 
@@ -1836,6 +1841,19 @@ class VerifiedNeuralAgent:
             else 0.0
         )
         goal_progress_bonus = branch.goal_progress_reward
+        if branch.goal_total_hearts > 0:
+            collected_hearts = max(
+                0, branch.goal_total_hearts - branch.goal_remaining_hearts
+            )
+            goal_progress_bonus = max(
+                goal_progress_bonus,
+                self.config.human_prior_heart_reward * collected_hearts
+                + (
+                    self.config.human_prior_all_hearts_reward
+                    if branch.goal_remaining_hearts == 0
+                    else 0.0
+                ),
+            )
         if choice_is_known:
             return (
                 choice_value
@@ -3166,6 +3184,11 @@ class VerifiedNeuralAgent:
                             if committed_goal_analysis is None
                             else committed_goal_analysis.remaining_hearts
                         ),
+                        (
+                            0
+                            if committed_goal_analysis is None
+                            else len(committed_goal_analysis.known_slots)
+                        ),
                     )
                 )
                 added += 1
@@ -3469,6 +3492,11 @@ class VerifiedNeuralAgent:
                             if alternative_goal_analysis is None
                             else alternative_goal_analysis.remaining_hearts
                         ),
+                        (
+                            0
+                            if alternative_goal_analysis is None
+                            else len(alternative_goal_analysis.known_slots)
+                        ),
                     )
                 )
                 added += 1
@@ -3620,6 +3648,11 @@ class VerifiedNeuralAgent:
                                 0
                                 if self.goal_prior is None
                                 else len(self.goal_prior.current_slots())
+                            ),
+                            (
+                                0
+                                if self.goal_prior is None
+                                else len(self.goal_prior.known_slots)
                             ),
                         )
                     )
@@ -3856,6 +3889,30 @@ class VerifiedNeuralAgent:
                     )
                 )
             ]
+        if (
+            self.goal_prior is not None
+            and self.goal_prior.best_remaining_hearts is not None
+        ):
+            non_regressive_goal_eligible = [
+                branch
+                for branch in eligible
+                if branch.goal_total_hearts > 0
+                and branch.goal_remaining_hearts
+                <= self.goal_prior.best_remaining_hearts
+            ]
+            if non_regressive_goal_eligible:
+                removed = len(eligible) - len(non_regressive_goal_eligible)
+                eligible = non_regressive_goal_eligible
+                if removed:
+                    self._emit(
+                        "human_prior_regressive_archives_filtered",
+                        decision=self.decision_index + 1,
+                        best_remaining_hearts=(
+                            self.goal_prior.best_remaining_hearts
+                        ),
+                        filtered_branches=removed,
+                        alternatives_remaining=len(eligible),
+                    )
         global_goal_eligible = [
             branch for branch in eligible if branch.goal_progress_reward > 0.0
         ]
@@ -4189,6 +4246,12 @@ class VerifiedNeuralAgent:
             human_prior_goal_reward=branch.goal_progress_reward,
             human_prior_target_hearts=branch.goal_heart_slots,
             human_prior_remaining_hearts=branch.goal_remaining_hearts,
+            human_prior_total_hearts=branch.goal_total_hearts,
+            human_prior_best_remaining_hearts=(
+                None
+                if self.goal_prior is None
+                else self.goal_prior.best_remaining_hearts
+            ),
             temporal_option_value=restored_option_value,
             temporal_option_is_known=restored_option_known,
             temporal_option_value_source=(
@@ -4256,6 +4319,12 @@ class VerifiedNeuralAgent:
             human_prior_goal_reward=branch.goal_progress_reward,
             human_prior_target_hearts=branch.goal_heart_slots,
             human_prior_remaining_hearts=branch.goal_remaining_hearts,
+            human_prior_total_hearts=branch.goal_total_hearts,
+            human_prior_best_remaining_hearts=(
+                None
+                if self.goal_prior is None
+                else self.goal_prior.best_remaining_hearts
+            ),
             temporal_option_value=restored_option_value,
             temporal_option_is_known=restored_option_known,
             temporal_option_value_source=(

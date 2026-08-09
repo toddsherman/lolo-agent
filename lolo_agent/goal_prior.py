@@ -101,6 +101,7 @@ class PixelHeartGoalPrior:
         self.known_slots: set[HeartSlot] = set()
         self.current_present: set[HeartSlot] = set()
         self.initialized = False
+        self.best_remaining_hearts: Optional[int] = None
 
     @staticmethod
     def mean_intensity(frame: Frame) -> float:
@@ -145,6 +146,7 @@ class PixelHeartGoalPrior:
             self.known_slots = discovered
             self.current_present = discovered
             self.initialized = True
+            self.best_remaining_hearts = len(discovered)
         return tuple(sorted(discovered))
 
     def analyze(self, source: Frame, target: Frame) -> HeartGoalAnalysis:
@@ -197,6 +199,12 @@ class PixelHeartGoalPrior:
             return
         if analysis.reliable:
             self.current_present = set(analysis.target_present)
+            remaining = len(self.current_present)
+            self.best_remaining_hearts = (
+                remaining
+                if self.best_remaining_hearts is None
+                else min(self.best_remaining_hearts, remaining)
+            )
 
     def restore(self, present: Sequence[HeartSlot], frame: Frame) -> None:
         discovered = set(self.discover(frame))
