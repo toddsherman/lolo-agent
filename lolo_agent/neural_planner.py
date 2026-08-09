@@ -4067,17 +4067,29 @@ class VerifiedNeuralAgent:
                 if candidate.causal_event_outcome
             ]
         causal_event_outcome_preferred = bool(causal_event_eligible)
+        semantic_navigation_enabled = bool(
+            self.goal_prior is not None
+            and self.goal_prior.navigation_reward > 0.0
+        )
         if goal_eligible:
             pass
         elif causal_event_eligible:
             eligible = causal_event_eligible
             affordance_breadth_first = False
-            restore_key = lambda item: (
-                -item.created,
-                self._archive_frontier_score(item),
-                self.novelty.score(self._signature(item.frame)),
-                item.score,
-            )
+            if semantic_navigation_enabled:
+                restore_key = lambda item: (
+                    self._archive_frontier_score(item),
+                    -item.created,
+                    self.novelty.score(self._signature(item.frame)),
+                    item.score,
+                )
+            else:
+                restore_key = lambda item: (
+                    -item.created,
+                    self._archive_frontier_score(item),
+                    self.novelty.score(self._signature(item.frame)),
+                    item.score,
+                )
         else:
             affordance_eligible = [
                 candidate
@@ -4089,12 +4101,20 @@ class VerifiedNeuralAgent:
                 eligible = affordance_eligible
         if not goal_eligible and not causal_event_eligible and affordance_breadth_first:
             eligible = affordance_eligible
-            restore_key = lambda item: (
-                -item.created,
-                self._archive_frontier_score(item),
-                self.novelty.score(self._signature(item.frame)),
-                item.score,
-            )
+            if semantic_navigation_enabled:
+                restore_key = lambda item: (
+                    self._archive_frontier_score(item),
+                    -item.created,
+                    self.novelty.score(self._signature(item.frame)),
+                    item.score,
+                )
+            else:
+                restore_key = lambda item: (
+                    -item.created,
+                    self._archive_frontier_score(item),
+                    self.novelty.score(self._signature(item.frame)),
+                    item.score,
+                )
         elif not goal_eligible and not causal_event_eligible:
             restore_key = lambda item: (
                 self._archive_frontier_score(item),
