@@ -88,6 +88,7 @@ class NeuralPlanningConfig:
     human_prior_life_loss_penalty: float = 0.0
     human_prior_navigation_recovery_grace: int = 0
     human_prior_intrinsic_clip: float = 10.0
+    spatial_selection_weight: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -419,6 +420,10 @@ class VerifiedNeuralAgent:
             )
         if self.config.human_prior_intrinsic_clip <= 0.0:
             raise ValueError("human-prior intrinsic clip must be positive")
+        if self.config.spatial_selection_weight < 0.0:
+            raise ValueError("spatial selection weight must be non-negative")
+        if self.config.spatial_selection_weight > 0.0 and spatial_shadow is None:
+            raise ValueError("positive spatial selection weight requires a spatial model")
         self.model.freeze()
         self.planner = NeuralRolloutPlanner(model, device, self.config)
         self.novelty = VisualNovelty()
@@ -2577,6 +2582,22 @@ class VerifiedNeuralAgent:
                 [(plan.path, plan.durations) for plan in plans],
             )
         )
+        spatial_mode = (
+            "selection"
+            if self.config.spatial_selection_weight > 0.0
+            else "observational"
+        )
+        shadow_by_plan_id = {
+            id(plan): metrics
+            for plan, metrics in zip(plans, shadow_candidates)
+        }
+
+        def spatial_bonus(plan: NeuralPlan) -> float:
+            metrics = shadow_by_plan_id.get(id(plan), {})
+            return self.config.spatial_selection_weight * float(
+                metrics.get("spatial_shadow_score", 0.0)
+            )
+
         candidate_rows = []
         for rank, (plan, shadow_metrics) in enumerate(
             zip(plans, shadow_candidates), 1
@@ -2597,8 +2618,11 @@ class VerifiedNeuralAgent:
             if shadow_metrics:
                 candidate.update(
                     {
-                        "spatial_shadow_mode": "observational",
-                        "spatial_shadow_selection_weight": 0.0,
+                        "spatial_shadow_mode": spatial_mode,
+                        "spatial_shadow_selection_weight": (
+                            self.config.spatial_selection_weight
+                        ),
+                        "spatial_shadow_selection_bonus": spatial_bonus(plan),
                         **shadow_metrics,
                     }
                 )
@@ -2613,7 +2637,9 @@ class VerifiedNeuralAgent:
             timed_action = (plan.path[0], plan.durations[0])
             if (
                 timed_action not in best_by_action
-                or plan.score > best_by_action[timed_action].score
+                or plan.score + spatial_bonus(plan)
+                > best_by_action[timed_action].score
+                + spatial_bonus(best_by_action[timed_action])
             ):
                 best_by_action[timed_action] = plan
         current_scene = self._scene_signature(self.frame)
@@ -2636,16 +2662,24 @@ class VerifiedNeuralAgent:
         for plan in best_by_action.values():
             action = plan.path[0]
             existing = best_by_button.get(action)
-            adjusted = plan.score - self._action_penalty(action, plan.durations[0])
+            adjusted = (
+                plan.score
+                + spatial_bonus(plan)
+                - self._action_penalty(action, plan.durations[0])
+            )
             if existing is None or adjusted > existing.score - self._action_penalty(
                 existing.path[0], existing.durations[0]
-            ):
+            ) + spatial_bonus(existing):
                 best_by_button[action] = plan
         ranked = sorted(
             best_by_button.values(),
             key=lambda plan: (
                 self.scene_action_probes[(current_scene, plan.path[0])],
-                -(plan.score - self._action_penalty(plan.path[0], plan.durations[0])),
+                -(
+                    plan.score
+                    + spatial_bonus(plan)
+                    - self._action_penalty(plan.path[0], plan.durations[0])
+                ),
                 tuple(
                     (action.value, duration)
                     for action, duration in zip(plan.path, plan.durations)
@@ -2662,6 +2696,7 @@ class VerifiedNeuralAgent:
                 ),
                 key=lambda plan: -(
                     plan.score
+                    + spatial_bonus(plan)
                     - self._action_penalty(plan.path[0], plan.durations[0])
                 ),
             )
@@ -3016,6 +3051,7 @@ class VerifiedNeuralAgent:
                 branch_action_penalties[id(state)] = action_penalty_components
                 intrinsic_score = (
                     plan.score
+                    + spatial_bonus(plan)
                     + self.config.actual_novelty_weight * effective_novelty
                     + self.config.scene_novelty_weight * scene_novelty
                     + self.config.prediction_error_weight * error
@@ -3060,8 +3096,11 @@ class VerifiedNeuralAgent:
                         candidate_rank=candidate_rank,
                         action=plan.path[0],
                         action_frames=duration,
-                        spatial_shadow_mode="observational",
-                        spatial_shadow_selection_weight=0.0,
+                        spatial_shadow_mode=spatial_mode,
+                        spatial_shadow_selection_weight=(
+                            self.config.spatial_selection_weight
+                        ),
+                        spatial_shadow_selection_bonus=spatial_bonus(plan),
                         **self.spatial_shadow.evaluate_transition(
                             source_frame,
                             plan.path[0],
@@ -3083,6 +3122,7 @@ class VerifiedNeuralAgent:
                     durations=plan.durations,
                     model_score=plan.score,
                     model_uncertainty=plan.uncertainty,
+                    spatial_selection_bonus=spatial_bonus(plan),
                     novelty=novelty,
                     effective_novelty=effective_novelty,
                     scene_novelty=scene_novelty,
@@ -4345,6 +4385,9 @@ class VerifiedNeuralAgent:
                 score=score,
                 model_score=plan.score,
                 model_uncertainty=plan.uncertainty,
+                spatial_selection_mode=spatial_mode,
+                spatial_selection_weight=self.config.spatial_selection_weight,
+                spatial_selection_bonus=spatial_bonus(plan),
                 branches_examined=len(verified),
                 restored_archive=False,
                 committed_state_id=self._state_id(state),

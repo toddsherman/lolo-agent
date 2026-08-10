@@ -120,6 +120,7 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
     spatial_shadow_metric_fields = (
         "spatial_shadow_pixel_l1",
         "spatial_shadow_persistence_l1",
+        "spatial_shadow_predicted_pixel_change",
         "spatial_shadow_effect_weighted_pixel_l1",
         "spatial_shadow_effect_weighted_persistence_l1",
         "spatial_shadow_effect_l1",
@@ -146,6 +147,9 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                     "spatial_shadow_mode": event.get("spatial_shadow_mode"),
                     "spatial_shadow_selection_weight": event.get(
                         "spatial_shadow_selection_weight"
+                    ),
+                    "spatial_shadow_selection_bonus": event.get(
+                        "spatial_shadow_selection_bonus", 0.0
                     ),
                     "spatial_shadow_beats_persistence": event.get(
                         "spatial_shadow_beats_persistence", False
@@ -280,6 +284,15 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                     "path": ",".join(event.get("path", [])),
                     "durations": ",".join(str(value) for value in event.get("durations", [])),
                     "score": event.get("score"),
+                    "spatial_selection_mode": event.get(
+                        "spatial_selection_mode"
+                    ),
+                    "spatial_selection_weight": event.get(
+                        "spatial_selection_weight", 0.0
+                    ),
+                    "spatial_selection_bonus": event.get(
+                        "spatial_selection_bonus", 0.0
+                    ),
                     "branches_examined": event.get("branches_examined", 0),
                     "restored_archive": restored,
                     "restore_reason": event.get("restore_reason", ""),
@@ -446,6 +459,9 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "path",
         "durations",
         "score",
+        "spatial_selection_mode",
+        "spatial_selection_weight",
+        "spatial_selection_bonus",
         "branches_examined",
         "restored_archive",
         "restore_reason",
@@ -523,6 +539,7 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "action_frames",
         "spatial_shadow_mode",
         "spatial_shadow_selection_weight",
+        "spatial_shadow_selection_bonus",
         "spatial_shadow_beats_persistence",
         *spatial_shadow_metric_fields,
     ]
@@ -664,6 +681,26 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         ),
         "causal_events_detected": causal_events_detected,
         "spatial_shadow_evaluations": len(spatial_shadow_rows),
+        "spatial_selection_enabled": any(
+            float(row.get("spatial_shadow_selection_weight") or 0.0) > 0.0
+            for row in spatial_shadow_rows
+        ),
+        "spatial_selection_weight": max(
+            (
+                float(row.get("spatial_shadow_selection_weight") or 0.0)
+                for row in spatial_shadow_rows
+            ),
+            default=0.0,
+        ),
+        "spatial_mean_selection_bonus": (
+            sum(
+                float(row.get("spatial_shadow_selection_bonus") or 0.0)
+                for row in spatial_shadow_rows
+            )
+            / len(spatial_shadow_rows)
+            if spatial_shadow_rows
+            else 0.0
+        ),
         "spatial_shadow_beats_persistence": sum(
             bool(row["spatial_shadow_beats_persistence"])
             for row in spatial_shadow_rows

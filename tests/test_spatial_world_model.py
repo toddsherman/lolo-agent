@@ -15,6 +15,7 @@ from lolo_agent.spatial_world_model import (
     load_spatial_checkpoint,
     save_spatial_checkpoint,
     spatial_effect_target,
+    spatial_sequence_loss,
     train_spatial_model,
     validate_spatial_model,
 )
@@ -142,6 +143,44 @@ class SpatialWorldModelTests(unittest.TestCase):
         rendered = model.render_successor(source, tokens, tokens, effect_logits)
         self.assertLess(float((rendered - source).abs().max().detach()), 1e-5)
 
+    def test_changed_patch_renderer_starts_as_exact_persistence(self) -> None:
+        model = SpatialTokenDynamicsModel(
+            token_size=8,
+            action_size=4,
+            ensemble_size=2,
+            grid_size=4,
+            duration_size=4,
+            renderer_kind="changed_patch",
+            residual_scale=1.0,
+        )
+        source = frame_tensor(self.make_frame(4, 4, (255, 255, 255))).unsqueeze(0)
+        tokens = model.encode(source)
+        effect_logits = torch.ones((1, 4, 4)) * 10.0
+        rendered = model.render_successor(source, tokens, tokens, effect_logits)
+        self.assertLess(float((rendered - source).abs().max().detach()), 1e-5)
+
+    def test_anchored_rollout_predicts_each_endpoint_from_the_initial_frame(self) -> None:
+        model = SpatialTokenDynamicsModel(
+            token_size=8,
+            action_size=4,
+            ensemble_size=2,
+            grid_size=4,
+            duration_size=4,
+            renderer_kind="changed_patch",
+            renderer_rollout="anchored",
+            residual_scale=1.0,
+        )
+        source = frame_tensor(self.make_frame(4, 4, (255, 255, 255))).unsqueeze(0)
+        actions = torch.tensor(
+            [[ACTION_TO_INDEX[Action.RIGHT], ACTION_TO_INDEX[Action.RIGHT]]]
+        )
+        durations = torch.tensor([[4, 4]])
+        pixels, _tokens, _uncertainty, _effects = model.rollout(
+            source, actions, durations
+        )
+        self.assertEqual(tuple(pixels.shape), (1, 2, 3, 128, 128))
+        self.assertTrue(torch.isfinite(pixels).all())
+
     def test_shadow_evaluator_reports_plans_and_real_transition_error(self) -> None:
         model = SpatialTokenDynamicsModel(
             token_size=8,
@@ -168,6 +207,7 @@ class SpatialWorldModelTests(unittest.TestCase):
         self.assertIn("spatial_shadow_predicted_change", plans[0])
         self.assertIn("spatial_shadow_effect_f1", transition)
         self.assertIn("spatial_shadow_beats_persistence", transition)
+        self.assertIn("spatial_shadow_predicted_pixel_change", transition)
         self.assertGreaterEqual(transition["spatial_shadow_effect_f1"], 0.0)
 
     def test_legacy_checkpoint_uses_the_original_blend_renderer(self) -> None:
@@ -211,6 +251,8 @@ class SpatialWorldModelTests(unittest.TestCase):
         self.assertNotEqual(before, after)
         self.assertEqual(len(report.horizon_pixel_l1), 1)
         self.assertEqual(len(report.horizon_persistence_pixel_l1), 1)
+        self.assertEqual(len(report.horizon_predicted_pixel_change), 1)
+        self.assertEqual(len(report.horizon_actual_pixel_change), 1)
         self.assertEqual(len(report.horizon_effect_weighted_pixel_l1), 1)
         self.assertEqual(len(report.horizon_effect_weighted_persistence_l1), 1)
         self.assertEqual(len(report.horizon_effect_l1), 1)
@@ -227,6 +269,63 @@ class SpatialWorldModelTests(unittest.TestCase):
         self.assertEqual(digest, loaded.checkpoint_digest)
         self.assertEqual(horizon, 3)
         self.assertTrue(all(not parameter.requires_grad for parameter in loaded.parameters()))
+
+    def test_spatial_loss_weights_are_explicit_and_validated(self) -> None:
+        model = SpatialTokenDynamicsModel(
+            token_size=8,
+            action_size=4,
+            ensemble_size=2,
+            grid_size=4,
+            duration_size=4,
+        )
+        source = frame_tensor(self.make_frame(4, 4, (255, 255, 255)))
+        target = frame_tensor(self.make_frame(10, 4, (255, 255, 255)))
+        frames = torch.stack((source, target)).unsqueeze(0)
+        actions = torch.tensor([[ACTION_TO_INDEX[Action.RIGHT]]])
+        durations = torch.tensor([[4]])
+        pixel_only, metrics = spatial_sequence_loss(
+            model,
+            frames,
+            actions,
+            durations,
+            reconstruction_weight=0.0,
+            pixel_weight=5.0,
+            token_weight=0.0,
+            effect_weight=0.0,
+        )
+        self.assertAlmostEqual(
+            float(pixel_only.detach()),
+            5.0 * metrics.pixel_prediction,
+            places=6,
+        )
+        changed_only, changed_metrics = spatial_sequence_loss(
+            model,
+            frames,
+            actions,
+            durations,
+            reconstruction_weight=0.0,
+            pixel_weight=0.0,
+            changed_region_weight=1.0,
+            token_weight=0.0,
+            effect_weight=0.0,
+        )
+        self.assertGreater(changed_metrics.changed_region_prediction, 0.0)
+        self.assertAlmostEqual(
+            float(changed_only.detach()),
+            changed_metrics.changed_region_prediction,
+            places=6,
+        )
+        with self.assertRaisesRegex(ValueError, "at least one positive"):
+            spatial_sequence_loss(
+                model,
+                frames,
+                actions,
+                durations,
+                reconstruction_weight=0.0,
+                pixel_weight=0.0,
+                token_weight=0.0,
+                effect_weight=0.0,
+            )
 
 
 if __name__ == "__main__":

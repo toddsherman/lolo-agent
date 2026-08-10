@@ -17,6 +17,12 @@ class ExperienceImportTests(unittest.TestCase):
     def test_reward_track_classification_keeps_assistance_explicit(self) -> None:
         self.assertEqual(classify_reward_track({}), "strict")
         self.assertEqual(
+            classify_reward_track(
+                {"metadata": {"reward_track": "strict_rule_free"}}
+            ),
+            "strict",
+        )
+        self.assertEqual(
             classify_reward_track({"metadata": {"reward_track": "human_prior_v2"}}),
             "assisted",
         )

@@ -13,7 +13,7 @@ from .spatial_world_model import SpatialTokenDynamicsModel, spatial_effect_targe
 
 
 class SpatialShadowEvaluator:
-    """Score frozen spatial predictions without participating in action choice."""
+    """Score frozen spatial predictions; the caller controls any selection weight."""
 
     def __init__(
         self,
@@ -125,6 +125,9 @@ class SpatialShadowEvaluator:
         weighted_persistence = float(
             (((source - target).abs() * pixel_weights).sum() / denominator).cpu()
         )
+        predicted_pixel_change = float(
+            (predicted_frame - source).abs().mean().cpu()
+        )
         predicted_active = predicted_effect >= effect_threshold
         actual_active = actual_effect >= effect_threshold
         true_positive = int((predicted_active & actual_active).sum().cpu())
@@ -136,6 +139,7 @@ class SpatialShadowEvaluator:
                 (predicted_frame - target).abs().mean().cpu()
             ),
             "spatial_shadow_persistence_l1": float((source - target).abs().mean().cpu()),
+            "spatial_shadow_predicted_pixel_change": predicted_pixel_change,
             "spatial_shadow_effect_weighted_pixel_l1": weighted_error,
             "spatial_shadow_effect_weighted_persistence_l1": weighted_persistence,
             "spatial_shadow_beats_persistence": weighted_error < weighted_persistence,

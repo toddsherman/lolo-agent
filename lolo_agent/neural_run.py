@@ -120,9 +120,15 @@ def main() -> None:
         "--spatial-shadow-checkpoint",
         type=Path,
         help=(
-            "frozen spatial checkpoint to score candidates and verified branches "
-            "observationally; it never affects selection"
+            "frozen spatial checkpoint to score candidates and verified branches; "
+            "it remains observational unless --spatial-selection-weight is positive"
         ),
+    )
+    parser.add_argument(
+        "--spatial-selection-weight",
+        type=float,
+        default=0.0,
+        help="optional frozen spatial-score tie-break weight; zero is shadow-only",
     )
     parser.add_argument("--decisions", type=int, default=20)
     parser.add_argument("--action-frames", type=int, default=4)
@@ -223,6 +229,15 @@ def main() -> None:
         parser.error("--archive-capacity must be positive")
     if args.archive_max_age <= 0:
         parser.error("--archive-max-age must be positive")
+    if args.spatial_selection_weight < 0.0:
+        parser.error("--spatial-selection-weight must be non-negative")
+    if (
+        args.spatial_selection_weight > 0.0
+        and args.spatial_shadow_checkpoint is None
+    ):
+        parser.error(
+            "--spatial-selection-weight requires --spatial-shadow-checkpoint"
+        )
     if (
         args.consecutive_repeat_penalty_cap is not None
         and args.consecutive_repeat_penalty_cap < 0.0
@@ -326,6 +341,7 @@ def main() -> None:
             else 0
         ),
         human_prior_intrinsic_clip=args.human_prior_intrinsic_clip,
+        spatial_selection_weight=args.spatial_selection_weight,
     )
     rom_sha256 = sha256_file(args.rom)
     resume_metadata = None
@@ -356,8 +372,10 @@ def main() -> None:
             "file_sha256": sha256_file(args.spatial_shadow_checkpoint),
             "parameter_sha256": spatial_shadow_before,
             "planning_horizon": spatial_shadow_horizon,
-            "mode": "observational",
-            "selection_weight": 0.0,
+            "mode": (
+                "selection" if args.spatial_selection_weight > 0.0 else "observational"
+            ),
+            "selection_weight": args.spatial_selection_weight,
         }
     metadata = {
         "mode": "frozen_neural_evaluation",
@@ -484,8 +502,12 @@ def main() -> None:
             logger.log(
                 "spatial_shadow_parameter_audit",
                 status="pass",
-                spatial_shadow_mode="observational",
-                spatial_shadow_selection_weight=0.0,
+                spatial_shadow_mode=(
+                    "selection"
+                    if args.spatial_selection_weight > 0.0
+                    else "observational"
+                ),
+                spatial_shadow_selection_weight=args.spatial_selection_weight,
                 parameter_sha256_before=spatial_shadow_before,
                 parameter_sha256_after=spatial_shadow_after,
             )

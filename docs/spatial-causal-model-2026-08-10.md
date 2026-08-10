@@ -2,13 +2,16 @@
 
 ## Decision
 
-The whole-screen latent model remains the frozen baseline. The next persistent
-model is an action-conditioned spatial-token ensemble trained only from RGB
-frames, controller actions, action durations, and branch grouping. The v2
-local flow/residual renderer passes its offline run-held-out gate by a narrow
-margin. It remains **observational only** because native Room 1 shadow
-evaluation did not reliably beat frame persistence on verified emulator
-branches.
+The whole-screen latent model remains the frozen baseline. The selected
+predictive candidate is now v10: a 16×16 action-conditioned spatial-token
+ensemble with anchored cumulative flow rendering. It is trained only from RGB
+frames, controller actions, action durations, and branch grouping. It beats
+frame persistence on all three held-out horizons and on two consecutive unseen
+native Room 1 continuations.
+
+The spatial model is still **selection-disabled by default**. A 0.25 frozen
+tie-break A/B test changed behavior but did not clearly improve 60-decision
+exploration, so promotion as an action objective is not yet justified.
 
 This is deliberately separate from `human_prior_v1` and `human_prior_v2`.
 Assisted-policy runs cannot be imported into a strict dataset: the sequence
@@ -16,10 +19,11 @@ store is permanently bound to either `strict` or `assisted` provenance.
 
 ## Model slice
 
-`SpatialTokenDynamicsModel` keeps an 8×8 learned feature map rather than
-compressing the whole frame to one vector. Convolutional dynamics share the
-same transition rule across locations. Independent heads receive the hardware
-action and duration and predict:
+`SpatialTokenDynamicsModel` keeps a learned spatial feature map rather than
+compressing the whole frame to one vector. V10 uses 16×16 tokens; the earlier
+8×8 grid could locate affected regions but smeared sub-tile motion.
+Convolutional dynamics share the same transition rule across locations.
+Independent heads receive the hardware action and duration and predict:
 
 - successor spatial tokens;
 - an unlabeled map of where pixels will change;
@@ -28,9 +32,12 @@ action and duration and predict:
 No grid cell is named. The effect target is adaptive pooling over raw pixel
 differences, so the model receives no object, room, player, hazard, reward, or
 completion label. A sparse-change renderer copies pixels predicted to remain
-stable. Its v2 changed-region candidate warps local source pixels with learned
-bounded flow and adds a bounded RGB residual instead of regenerating the whole
-screen. Token prediction uses a scale-invariant cosine objective because
+stable. The selected renderer warps local source pixels with learned bounded
+flow and adds a bounded RGB residual instead of regenerating the whole screen.
+Its auxiliary changed-region objective bypasses the stable background, and its
+anchored rollout predicts each trajectory endpoint from the initial frame plus
+cumulative learned effect masks. This avoids recursive pixel smearing. Token
+prediction uses a scale-invariant cosine objective because
 learned-token magnitude has no fixed semantic meaning.
 
 Complete save-state branch groups are sampled together. This retains exact
@@ -117,14 +124,84 @@ and the manifest records `selection_weight: 0.0`.
 This native result overrides the narrow offline pass for promotion purposes.
 The checkpoint remains a shadow model and cannot affect selected actions.
 
+## Renderer audit and v10 promotion result
+
+The native failures exposed a persistence-collapse problem: the 8×8 effect
+head learned where change occurred while the renderer copied almost every
+pixel. V5 predicted only `0.0000156` mean pixel change on native branches and
+won 0/102 comparisons, despite passing its aggregate offline gate.
+
+Controlled variants isolated the bottleneck:
+
+| Variant | Held-out result | Native result |
+| --- | --- | --- |
+| V6, 8×8 changed-patch redraw | 0.01184 vs 0.00955 persistence; fail | Not run |
+| V7, 8×8 directly supervised flow | 0.01167 vs 0.00955; fail | Not run |
+| V8, 16×16 recursive flow | One-step 0.01002 vs 0.01079; later horizons fail | Not run |
+| V9, 16×16 anchored flow | 0.01399 vs 0.01424; pass | 51/102 wins, but mean 0.00672 vs 0.00638; fail |
+
+V10 warm-started v9 and imported four strict sequential native branch logs.
+Source-run splitting placed three native runs in training while keeping both
+`legacy-segment:cycle-000016` and the complete
+`spatial-v5-shadow-room1-future20` run held out. The 621-sequence validation set
+had no source-run overlap with training.
+
+```text
+experiments/lolo1-spatial-v10/checkpoints/spatial-v10-native-adapt-e5.pt
+experiments/lolo1-spatial-v10/metrics/spatial-v10-native-adapt-e5.json
+```
+
+| V10 held-out horizon | Model | Persistence |
+| --- | ---: | ---: |
+| 1 | 0.009141 | 0.010091 |
+| 2 | 0.013444 | 0.013602 |
+| 3 | 0.015590 | 0.016440 |
+| Mean | 0.012725 | 0.013378 |
+
+The predicted/actual visual-change ratio was 1.160, mean spatial-effect F1 was
+0.617, and uncertainty/effect-error correlation was +0.428. Both the effect
+gate and the stricter planner-integration prediction gate passed.
+
+V10 was then frozen and evaluated with selection weight zero on two later,
+unseen continuations:
+
+| Native run | Branch wins | Model mean | Persistence mean |
+| --- | ---: | ---: | ---: |
+| `spatial-v10-shadow-room1-future20` | 47/108 | 0.005022 | 0.005338 |
+| `spatial-v10-shadow-room1-confirm20` | 60/114 | 0.005555 | 0.006362 |
+| Combined | 107/222 | 0.005295 | 0.005864 |
+
+The combined native improvement is 9.69%. Both the spatial and baseline model
+parameter-hash audits passed in both runs.
+
+## Planner tie-break ablation
+
+The frozen spatial score can now be enabled explicitly with
+`--spatial-selection-weight`; it remains zero by default. Two 60-decision runs
+started from the exact same save-state provenance:
+
+| Measurement | Weight 0 | Weight 0.25 |
+| --- | ---: | ---: |
+| Unique frames | 93 | 84 |
+| Unique scenes | 3 | 3 |
+| Unique causal signatures | 51 | 47 |
+| Maximum persistent-frontier value | 6.956 | 7.184 |
+| Archive restores | 7 | 8 |
+| Delayed-return recoveries | 2 | 3 |
+| Room transition | No | No |
+
+The weighted run reached a slightly higher peak frontier but explored fewer
+states and looped/restored more. This is not a clear win, so weight 0 remains
+the plan of record.
+
 ## Run locally
 
 ```bash
 source .venv/bin/activate
 python -m lolo_agent.spatial_train \
   --dataset experiments/lolo1-medium/dataset \
-  --checkpoint experiments/lolo1-spatial-v2/checkpoints/spatial-v2-runheldout-flow-long250-e15.pt \
-  --metrics experiments/lolo1-spatial-v2/metrics/spatial-v2-runheldout-flow-long250-e15.json \
+  --checkpoint experiments/lolo1-spatial-v9/checkpoints/spatial-v9-grid16-anchored-flow-e15.pt \
+  --metrics experiments/lolo1-spatial-v9/metrics/spatial-v9-grid16-anchored-flow-e15.json \
   --reward-track strict \
   --validation-split run \
   --max-groups 250 \
@@ -134,22 +211,25 @@ python -m lolo_agent.spatial_train \
   --token-size 32 \
   --action-size 8 \
   --ensemble-size 3 \
-  --grid-size 8 \
+  --grid-size 16 \
   --renderer flow_residual \
+  --renderer-rollout anchored \
+  --max-flow-pixels 32 \
+  --effect-mask-power 1 \
+  --pixel-loss-weight 5 \
+  --changed-region-loss-weight 1 \
   --planning-horizon 3 \
   --seed 17
 ```
 
 ## Next gate
 
-1. Repeat run-held-out validation across multiple source-run folds rather than
-   relying on one held-out run and a 0.04% margin.
-2. Improve the native verified-branch persistence win rate materially, with
-   special attention to suppressing false change on visually neutral actions.
-3. Extend zero-weight shadow evaluation across longer Room 1 trajectories and
-   later rooms while preserving frozen parameter hashes.
-4. Give the model nonzero selection weight only after both offline and native
-   promotion gates pass unchanged.
-5. Add learned reachability, reversibility, and reset-risk heads over spatial
+1. Suppress false predicted change for NOOP, A, B, and blocked movement without
+   weakening the large gains on effective directional movement.
+2. Replace raw predicted-effect curiosity as the selection bonus with a
+   calibrated usefulness or reachability objective, then repeat paired runs.
+3. Repeat frozen prediction and planning ablations in later rooms and across
+   multiple source-run folds before any default-on promotion.
+4. Add learned reachability, reversibility, and reset-risk heads over spatial
    tokens. Those outcomes must be derived from visual trajectories rather than
    heart, enemy, life, or room labels.

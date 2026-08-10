@@ -26,7 +26,7 @@ def classify_reward_track(manifest: Dict[str, Any]) -> str:
     """Classify policy provenance without exposing rewards to model training."""
 
     configured = manifest.get("metadata", {}).get("reward_track")
-    if configured is None or configured == "strict":
+    if configured is None or configured in ("strict", "strict_rule_free"):
         return "strict"
     if isinstance(configured, str) and configured.startswith("human_prior"):
         return "assisted"

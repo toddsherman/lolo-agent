@@ -195,6 +195,7 @@ class AdversarialSpatialShadow:
         return {
             "spatial_shadow_pixel_l1": 0.1,
             "spatial_shadow_persistence_l1": 0.2,
+            "spatial_shadow_predicted_pixel_change": 0.1,
             "spatial_shadow_effect_weighted_pixel_l1": 0.1,
             "spatial_shadow_effect_weighted_persistence_l1": 0.2,
             "spatial_shadow_beats_persistence": True,
@@ -330,6 +331,62 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertTrue(
             all(event["spatial_shadow_selection_weight"] == 0.0 for event in shadow_events)
         )
+
+    def test_spatial_selection_weight_is_an_explicit_tie_break_ablation(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            MockPuzzleEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.LEFT, Action.RIGHT),
+                planning_depth=1,
+                beam_width=2,
+                verify_actions=2,
+                action_frames=1,
+                actual_novelty_weight=0.0,
+                scene_novelty_weight=0.0,
+                prediction_error_weight=0.0,
+                actual_change_weight=0.0,
+                action_effect_weight=0.0,
+                causal_spatial_novelty_weight=0.0,
+                frontier_score_weight=0.0,
+                temporal_option_score_weight=0.0,
+                action_coverage_weight=0.0,
+                duration_coverage_weight=0.0,
+                consecutive_repeat_weight=0.0,
+                spatial_selection_weight=1.0,
+            ),
+            event_logger=logger,
+            spatial_shadow=AdversarialSpatialShadow(),
+        )
+        agent.reset()
+        agent.planner.plan = lambda _frame: [
+            NeuralPlan((Action.LEFT,), (1,), 10.0, 0.0),
+            NeuralPlan((Action.RIGHT,), (1,), 0.0, 0.0),
+        ]
+
+        decision = agent.decide()
+
+        self.assertEqual(decision.action, Action.RIGHT)
+        candidates = next(
+            event for event in logger.events if event["event"] == "planner_candidates"
+        )["candidates"]
+        self.assertTrue(
+            all(item["spatial_shadow_mode"] == "selection" for item in candidates)
+        )
+        self.assertTrue(
+            all(item["spatial_shadow_selection_weight"] == 1.0 for item in candidates)
+        )
+        committed = next(
+            event for event in logger.events if event["event"] == "decision_committed"
+        )
+        self.assertEqual(committed["spatial_selection_mode"], "selection")
+        self.assertEqual(committed["spatial_selection_weight"], 1.0)
+        self.assertGreater(committed["spatial_selection_bonus"], 0.0)
 
     def test_checkpoint_round_trip_is_frozen(self) -> None:
         model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)

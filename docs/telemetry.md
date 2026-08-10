@@ -134,12 +134,13 @@ causal-spatial observations, and unique committed causal signatures.
 can map where action-dependent changes occurred without adding semantic object
 labels.
 
-## Frozen spatial shadow telemetry
+## Frozen spatial-model telemetry
 
 Supplying `--spatial-shadow-checkpoint` adds predictions from the spatial model
-without changing the existing planner. Every `planner_candidates` row includes
-the shadow score, predicted change, predicted effect, uncertainty, mode, and a
-selection weight fixed at `0.0`. Each real save-state branch also emits
+without changing the existing planner by default. Every `planner_candidates`
+row includes the score, predicted pixel change, predicted effect, uncertainty,
+mode, selection weight, and weighted selection bonus. Each real save-state
+branch also emits
 `spatial_shadow_branch_evaluated`, linked by decision, branch ID, candidate
 rank, action, and duration. It records:
 
@@ -148,13 +149,22 @@ rank, action, and duration. It records:
 - whether the prediction beat persistence;
 - spatial-effect L1 and F1;
 - predicted versus observed effect mass; and
+- predicted pixel-change magnitude; and
 - ensemble uncertainty.
 
 `spatial_shadow.csv` provides one flat row per verified branch for plotting.
 `summary.json` reports evaluation count, persistence wins, mean metrics, and
-whether the separate spatial parameter-hash audit passed. The run manifest
-stores checkpoint file and parameter hashes plus `mode: observational` and
-`selection_weight: 0.0`.
+whether the separate spatial parameter-hash audit passed. It also records
+whether selection was enabled, the configured weight, and the mean selection
+bonus. The run manifest stores checkpoint file and parameter hashes plus the
+mode and weight.
+
+`--spatial-selection-weight N` enables a controlled frozen-model ablation. The
+spatial score is multiplied by `N` and added to the existing candidate score;
+no model parameters are updated and verified-branch error is never used for
+selection. Candidate, branch, and committed-decision telemetry retain the raw
+score, weight, and bonus separately. Omitting the option, or setting it to
+zero, preserves observational mode exactly.
 
 ## Attempts and level labels
 

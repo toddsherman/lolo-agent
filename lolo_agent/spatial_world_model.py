@@ -20,6 +20,7 @@ class SpatialTrainingMetrics:
     loss: float
     reconstruction: float
     pixel_prediction: float
+    changed_region_prediction: float
     token_prediction: float
     effect_prediction: float
 
@@ -30,6 +31,8 @@ class SpatialValidationReport:
 
     horizon_pixel_l1: Tuple[float, ...]
     horizon_persistence_pixel_l1: Tuple[float, ...]
+    horizon_predicted_pixel_change: Tuple[float, ...]
+    horizon_actual_pixel_change: Tuple[float, ...]
     horizon_effect_weighted_pixel_l1: Tuple[float, ...]
     horizon_effect_weighted_persistence_l1: Tuple[float, ...]
     horizon_effect_l1: Tuple[float, ...]
@@ -175,6 +178,50 @@ class _LocalFlowResidualRenderer(nn.Module):
         return (copied + residual).clamp(0.0, 1.0)
 
 
+class _ChangedPatchRenderer(nn.Module):
+    """Predict local RGB-difference patches without reconstructing the background."""
+
+    def __init__(self, token_size: int, residual_scale: float) -> None:
+        super().__init__()
+        self.residual_scale = residual_scale
+        self.features = nn.Sequential(
+            nn.Conv2d(token_size * 3, 128, 3, padding=1),
+            nn.SiLU(),
+            nn.ConvTranspose2d(128, 96, 4, stride=2, padding=1),
+            nn.SiLU(),
+            nn.ConvTranspose2d(96, 64, 4, stride=2, padding=1),
+            nn.SiLU(),
+            nn.ConvTranspose2d(64, 32, 4, stride=2, padding=1),
+            nn.SiLU(),
+        )
+        self.output = nn.ConvTranspose2d(32, 3, 4, stride=2, padding=1)
+        # Exact persistence is the safe initial prediction. The changed-region
+        # objective below supplies a direct gradient to this otherwise sparse path.
+        nn.init.zeros_(self.output.weight)
+        nn.init.zeros_(self.output.bias)
+
+    def forward(
+        self,
+        previous_pixels: Tensor,
+        source_tokens: Tensor,
+        successor_tokens: Tensor,
+    ) -> Tensor:
+        features = torch.cat(
+            (source_tokens, successor_tokens, successor_tokens - source_tokens),
+            dim=1,
+        )
+        residual = self.output(self.features(features))
+        if residual.shape[-2:] != previous_pixels.shape[-2:]:
+            residual = F.interpolate(
+                residual,
+                size=previous_pixels.shape[-2:],
+                mode="bilinear",
+                align_corners=False,
+            )
+        residual = residual.tanh() * self.residual_scale
+        return (previous_pixels + residual).clamp(0.0, 1.0)
+
+
 class SpatialTokenDynamicsModel(nn.Module):
     """Translation-sharing visual dynamics over an unlabeled spatial token map.
 
@@ -198,6 +245,7 @@ class SpatialTokenDynamicsModel(nn.Module):
         effect_mask_power: float = 4.0,
         token_delta_scale: float = 0.25,
         renderer_kind: str = "flow_residual",
+        renderer_rollout: str = "recursive",
         max_flow_pixels: float = 16.0,
         residual_scale: float = 0.25,
     ) -> None:
@@ -214,8 +262,12 @@ class SpatialTokenDynamicsModel(nn.Module):
             raise ValueError("effect mask power must be positive")
         if token_delta_scale <= 0:
             raise ValueError("token delta scale must be positive")
-        if renderer_kind not in ("blend", "flow_residual"):
-            raise ValueError("renderer kind must be 'blend' or 'flow_residual'")
+        if renderer_kind not in ("blend", "flow_residual", "changed_patch"):
+            raise ValueError(
+                "renderer kind must be 'blend', 'flow_residual', or 'changed_patch'"
+            )
+        if renderer_rollout not in ("recursive", "anchored"):
+            raise ValueError("renderer rollout must be 'recursive' or 'anchored'")
         if max_flow_pixels <= 0 or residual_scale <= 0:
             raise ValueError("renderer flow and residual scales must be positive")
         self.token_size = token_size
@@ -230,6 +282,7 @@ class SpatialTokenDynamicsModel(nn.Module):
         self.effect_mask_power = effect_mask_power
         self.token_delta_scale = token_delta_scale
         self.renderer_kind = renderer_kind
+        self.renderer_rollout = renderer_rollout
         self.max_flow_pixels = max_flow_pixels
         self.residual_scale = residual_scale
         self.encoder = nn.Sequential(
@@ -273,7 +326,11 @@ class SpatialTokenDynamicsModel(nn.Module):
                 residual_scale=residual_scale,
             )
             if renderer_kind == "flow_residual"
-            else None
+            else (
+                _ChangedPatchRenderer(token_size, residual_scale=residual_scale)
+                if renderer_kind == "changed_patch"
+                else None
+            )
         )
 
     def encode(self, frames: Tensor) -> Tensor:
@@ -302,12 +359,8 @@ class SpatialTokenDynamicsModel(nn.Module):
 
         if effect_logits.ndim != 3:
             raise ValueError("effect logits must have shape [batch, row, column]")
-        candidate = (
-            self.decode(successor_tokens)
-            if self.local_renderer is None
-            else self.local_renderer(
-                previous_pixels, source_tokens, successor_tokens
-            )
+        candidate = self.render_candidate(
+            previous_pixels, source_tokens, successor_tokens
         )
         effect_mask = F.interpolate(
             effect_logits.sigmoid().unsqueeze(1),
@@ -316,6 +369,22 @@ class SpatialTokenDynamicsModel(nn.Module):
             align_corners=False,
         ).pow(self.effect_mask_power)
         return previous_pixels * (1.0 - effect_mask) + candidate * effect_mask
+
+    def render_candidate(
+        self,
+        previous_pixels: Tensor,
+        source_tokens: Tensor,
+        successor_tokens: Tensor,
+    ) -> Tensor:
+        """Render the proposed changed pixels before applying the predicted mask."""
+
+        return (
+            self.decode(successor_tokens)
+            if self.local_renderer is None
+            else self.local_renderer(
+                previous_pixels, source_tokens, successor_tokens
+            )
+        )
 
     def _context(self, actions: Tensor, durations: Optional[Tensor]) -> Tensor:
         context = self.action_embedding(actions)
@@ -357,6 +426,10 @@ class SpatialTokenDynamicsModel(nn.Module):
         uncertainty = []
         effects = []
         current_pixels = source
+        initial_mean = tokens.mean(dim=0)
+        cumulative_no_effect = source.new_ones(
+            (source.shape[0], self.grid_size, self.grid_size)
+        )
         for step in range(actions.shape[1]):
             source_mean = tokens.mean(dim=0)
             step_durations = None if durations is None else durations[:, step]
@@ -365,9 +438,19 @@ class SpatialTokenDynamicsModel(nn.Module):
             )
             mean = tokens.mean(dim=0)
             mean_effect_logits = effect_logits.mean(dim=0)
-            current_pixels = self.render_successor(
-                current_pixels, source_mean, mean, mean_effect_logits
-            )
+            if self.renderer_rollout == "anchored":
+                step_effect = mean_effect_logits.sigmoid()
+                cumulative_no_effect = cumulative_no_effect * (1.0 - step_effect)
+                cumulative_effect_logits = torch.logit(
+                    (1.0 - cumulative_no_effect).clamp(1e-6, 1.0 - 1e-6)
+                )
+                current_pixels = self.render_successor(
+                    source, initial_mean, mean, cumulative_effect_logits
+                )
+            else:
+                current_pixels = self.render_successor(
+                    current_pixels, source_mean, mean, mean_effect_logits
+                )
             pixels.append(current_pixels)
             means.append(mean)
             normalized_tokens = F.normalize(tokens, dim=2)
@@ -436,17 +519,36 @@ def spatial_sequence_loss(
     durations: Optional[Tensor] = None,
     discount: float = 0.9,
     bootstrap_mask: Optional[Tensor] = None,
+    reconstruction_weight: float = 0.1,
+    pixel_weight: float = 0.5,
+    changed_region_weight: float = 0.0,
+    token_weight: float = 0.5,
+    effect_weight: float = 0.5,
 ) -> Tuple[Tensor, SpatialTrainingMetrics]:
+    loss_weights = (
+        reconstruction_weight,
+        pixel_weight,
+        changed_region_weight,
+        token_weight,
+        effect_weight,
+    )
+    if any(weight < 0.0 for weight in loss_weights) or not any(loss_weights):
+        raise ValueError("loss weights must be non-negative with at least one positive")
     source = frames[:, 0]
     source_tokens = model.encode(source)
+    initial_source_tokens = source_tokens
     reconstruction_loss = F.l1_loss(model.decode(source_tokens), source)
     tokens = source_tokens.unsqueeze(0).expand(model.ensemble_size, -1, -1, -1, -1).contiguous()
     pixel_loss = source.new_zeros(())
+    changed_region_loss = source.new_zeros(())
     token_loss = source.new_zeros(())
     effect_loss = source.new_zeros(())
     weight_total = 0.0
     previous_target = source
     previous_prediction = source
+    cumulative_no_effect = source.new_ones(
+        (source.shape[0], model.grid_size, model.grid_size)
+    )
     for step in range(actions.shape[1]):
         source_mean_tokens = tokens.mean(dim=0)
         step_durations = None if durations is None else durations[:, step]
@@ -454,20 +556,47 @@ def spatial_sequence_loss(
             tokens, actions[:, step], step_durations
         )
         mean_tokens = tokens.mean(dim=0)
-        predicted_target = model.render_successor(
-            previous_prediction,
-            source_mean_tokens,
-            mean_tokens,
-            effect_logits.mean(dim=0),
-        )
+        mean_effect_logits = effect_logits.mean(dim=0)
+        if model.renderer_rollout == "anchored":
+            step_effect = mean_effect_logits.sigmoid()
+            cumulative_no_effect = cumulative_no_effect * (1.0 - step_effect)
+            cumulative_effect_logits = torch.logit(
+                (1.0 - cumulative_no_effect).clamp(1e-6, 1.0 - 1e-6)
+            )
+            candidate_target = model.render_candidate(
+                source,
+                initial_source_tokens,
+                mean_tokens,
+            )
+            predicted_target = model.render_successor(
+                source,
+                initial_source_tokens,
+                mean_tokens,
+                cumulative_effect_logits,
+            )
+        else:
+            candidate_target = model.render_candidate(
+                previous_prediction,
+                source_mean_tokens,
+                mean_tokens,
+            )
+            predicted_target = model.render_successor(
+                previous_prediction,
+                source_mean_tokens,
+                mean_tokens,
+                mean_effect_logits,
+            )
         target = frames[:, step + 1]
         with torch.no_grad():
             target_tokens = model.encode(target)
             target_effect = spatial_effect_target(
                 previous_target, target, model.grid_size, model.effect_scale
             )
+            cumulative_target_effect = spatial_effect_target(
+                source, target, model.grid_size, model.effect_scale
+            )
         pixel_weights = 1.0 + 4.0 * F.interpolate(
-            target_effect.unsqueeze(1),
+            cumulative_target_effect.unsqueeze(1),
             size=target.shape[-2:],
             mode="bilinear",
             align_corners=False,
@@ -475,6 +604,22 @@ def spatial_sequence_loss(
         step_pixel = (
             (predicted_target - target).abs() * pixel_weights
         ).sum() / (pixel_weights.sum() * target.shape[1])
+        candidate_source = source if model.renderer_rollout == "anchored" else previous_target
+        candidate_previous_prediction = (
+            source if model.renderer_rollout == "anchored" else previous_prediction
+        )
+        pixel_change = (target - candidate_source).abs().mean(dim=1, keepdim=True)
+        changed_mask = (pixel_change / model.effect_scale).clamp(0.0, 1.0)
+        changed_denominator = changed_mask.sum().clamp_min(1.0) * target.shape[1]
+        changed_error = (
+            (candidate_target - target).abs() * changed_mask
+        ).sum() / changed_denominator
+        stable_mask = 1.0 - changed_mask
+        stable_denominator = stable_mask.sum().clamp_min(1.0) * target.shape[1]
+        stable_error = (
+            (candidate_target - candidate_previous_prediction).abs() * stable_mask
+        ).sum() / stable_denominator
+        step_changed_region = changed_error + 0.1 * stable_error
         expanded_target_tokens = target_tokens.unsqueeze(0).expand_as(tokens)
         normalized_predictions = F.normalize(tokens, dim=2)
         normalized_targets = F.normalize(expanded_target_tokens, dim=2)
@@ -490,19 +635,28 @@ def spatial_sequence_loss(
         step_effect = _masked_mean(effect_errors * effect_weights, bootstrap_mask)
         weight = discount**step
         pixel_loss = pixel_loss + weight * step_pixel
+        changed_region_loss = changed_region_loss + weight * step_changed_region
         token_loss = token_loss + weight * step_token
         effect_loss = effect_loss + weight * step_effect
         weight_total += weight
         previous_target = target
         previous_prediction = predicted_target
     pixel_loss = pixel_loss / weight_total
+    changed_region_loss = changed_region_loss / weight_total
     token_loss = token_loss / weight_total
     effect_loss = effect_loss / weight_total
-    loss = 0.1 * reconstruction_loss + 0.5 * pixel_loss + 0.5 * token_loss + 0.5 * effect_loss
+    loss = (
+        reconstruction_weight * reconstruction_loss
+        + pixel_weight * pixel_loss
+        + changed_region_weight * changed_region_loss
+        + token_weight * token_loss
+        + effect_weight * effect_loss
+    )
     return loss, SpatialTrainingMetrics(
         loss=float(loss.detach().cpu()),
         reconstruction=float(reconstruction_loss.detach().cpu()),
         pixel_prediction=float(pixel_loss.detach().cpu()),
+        changed_region_prediction=float(changed_region_loss.detach().cpu()),
         token_prediction=float(token_loss.detach().cpu()),
         effect_prediction=float(effect_loss.detach().cpu()),
     )
@@ -516,11 +670,25 @@ def train_spatial_model(
     batch_size: int = 8,
     learning_rate: float = 3e-4,
     seed: int = 0,
+    reconstruction_weight: float = 0.1,
+    pixel_weight: float = 0.5,
+    changed_region_weight: float = 0.0,
+    token_weight: float = 0.5,
+    effect_weight: float = 0.5,
 ) -> List[SpatialTrainingMetrics]:
     if not sequences:
         raise ValueError("at least one sequence is required")
     if epochs <= 0 or batch_size <= 0:
         raise ValueError("epochs and batch size must be positive")
+    loss_weights = (
+        reconstruction_weight,
+        pixel_weight,
+        changed_region_weight,
+        token_weight,
+        effect_weight,
+    )
+    if any(weight < 0.0 for weight in loss_weights) or not any(loss_weights):
+        raise ValueError("loss weights must be non-negative with at least one positive")
     model.to(device)
     model.unfreeze()
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
@@ -556,6 +724,11 @@ def train_spatial_model(
                 actions,
                 durations if model.duration_conditioned else None,
                 bootstrap_mask=bootstrap_mask.to(device=device, dtype=frames.dtype),
+                reconstruction_weight=reconstruction_weight,
+                pixel_weight=pixel_weight,
+                changed_region_weight=changed_region_weight,
+                token_weight=token_weight,
+                effect_weight=effect_weight,
             )
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 5.0)
@@ -579,6 +752,8 @@ def validate_spatial_model(
     maximum_horizon = max(len(sequence.actions) for sequence in sequences)
     pixel_error_sums = [0.0] * maximum_horizon
     persistence_error_sums = [0.0] * maximum_horizon
+    predicted_change_sums = [0.0] * maximum_horizon
+    actual_change_sums = [0.0] * maximum_horizon
     weighted_pixel_error_sums = [0.0] * maximum_horizon
     weighted_persistence_error_sums = [0.0] * maximum_horizon
     effect_error_sums = [0.0] * maximum_horizon
@@ -614,14 +789,23 @@ def validate_spatial_model(
                 persistence_errors = (frames[:, 0] - frames[:, step + 1]).abs().mean(
                     dim=(1, 2, 3)
                 )
+                predicted_changes = (predictions[:, step] - frames[:, 0]).abs().mean(
+                    dim=(1, 2, 3)
+                )
                 actual_effect = spatial_effect_target(
                     frames[:, step],
                     frames[:, step + 1],
                     model.grid_size,
                     model.effect_scale,
                 )
+                cumulative_actual_effect = spatial_effect_target(
+                    frames[:, 0],
+                    frames[:, step + 1],
+                    model.grid_size,
+                    model.effect_scale,
+                )
                 pixel_weights = 1.0 + 4.0 * F.interpolate(
-                    actual_effect.unsqueeze(1),
+                    cumulative_actual_effect.unsqueeze(1),
                     size=frames.shape[-2:],
                     mode="bilinear",
                     align_corners=False,
@@ -658,6 +842,7 @@ def validate_spatial_model(
                 false_negative[step] += int((~predicted_active & actual_active).sum().cpu())
                 step_pixels = pixel_errors[:, step].detach().cpu().tolist()
                 step_persistence = persistence_errors.detach().cpu().tolist()
+                step_predicted_change = predicted_changes.detach().cpu().tolist()
                 step_weighted_pixels = weighted_pixel_errors.detach().cpu().tolist()
                 step_weighted_persistence = (
                     weighted_persistence_errors.detach().cpu().tolist()
@@ -668,6 +853,8 @@ def validate_spatial_model(
                 step_uncertainty = uncertainty[:, step].detach().cpu().tolist()
                 pixel_error_sums[step] += sum(step_pixels)
                 persistence_error_sums[step] += sum(step_persistence)
+                predicted_change_sums[step] += sum(step_predicted_change)
+                actual_change_sums[step] += sum(step_persistence)
                 weighted_pixel_error_sums[step] += sum(step_weighted_pixels)
                 weighted_persistence_error_sums[step] += sum(step_weighted_persistence)
                 effect_error_sums[step] += sum(step_effects)
@@ -704,6 +891,12 @@ def validate_spatial_model(
         horizon_pixel_l1=tuple(value / count for value, count in zip(pixel_error_sums, counts)),
         horizon_persistence_pixel_l1=tuple(
             value / count for value, count in zip(persistence_error_sums, counts)
+        ),
+        horizon_predicted_pixel_change=tuple(
+            value / count for value, count in zip(predicted_change_sums, counts)
+        ),
+        horizon_actual_pixel_change=tuple(
+            value / count for value, count in zip(actual_change_sums, counts)
         ),
         horizon_effect_weighted_pixel_l1=tuple(
             value / count for value, count in zip(weighted_pixel_error_sums, counts)
@@ -754,7 +947,7 @@ def save_spatial_checkpoint(
     digest = model.checkpoint_digest
     torch.save(
         {
-            "version": 6,
+            "version": 8,
             "architecture": "unlabeled-spatial-token-dynamics",
             "model": {
                 name: value.detach().cpu() for name, value in model.state_dict().items()
@@ -772,6 +965,7 @@ def save_spatial_checkpoint(
             "token_delta_scale": model.token_delta_scale,
             "token_objective": "cosine",
             "renderer_kind": model.renderer_kind,
+            "renderer_rollout": model.renderer_rollout,
             "max_flow_pixels": model.max_flow_pixels,
             "residual_scale": model.residual_scale,
             "planning_horizon": planning_horizon,
@@ -799,7 +993,7 @@ def load_spatial_checkpoint(
     checkpoint: Dict[str, object] = torch.load(
         Path(path), map_location="cpu", weights_only=True
     )
-    if checkpoint.get("version") not in (1, 2, 3, 4, 5, 6):
+    if checkpoint.get("version") not in (1, 2, 3, 4, 5, 6, 7, 8):
         raise ValueError("unsupported spatial checkpoint version")
     if checkpoint.get("architecture") != "unlabeled-spatial-token-dynamics":
         raise ValueError("spatial checkpoint architecture does not match runtime")
@@ -818,6 +1012,7 @@ def load_spatial_checkpoint(
         effect_mask_power=float(checkpoint.get("effect_mask_power", 4.0)),
         token_delta_scale=float(checkpoint.get("token_delta_scale", 1.0)),
         renderer_kind=str(checkpoint.get("renderer_kind", "blend")),
+        renderer_rollout=str(checkpoint.get("renderer_rollout", "recursive")),
         max_flow_pixels=float(checkpoint.get("max_flow_pixels", 16.0)),
         residual_scale=float(checkpoint.get("residual_scale", 0.25)),
     )
