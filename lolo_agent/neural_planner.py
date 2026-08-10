@@ -133,6 +133,7 @@ class _ArchivedBranch:
     goal_remaining_hearts: int = 0
     goal_total_hearts: int = 0
     goal_chest_slot: Optional[Tuple[int, int]] = None
+    goal_player_slot: Optional[Tuple[int, int]] = None
 
 
 @dataclass(frozen=True)
@@ -2012,7 +2013,7 @@ class VerifiedNeuralAgent:
             and branch.goal_chest_slot is not None
         ):
             chest_distance = self.goal_prior._nearest_distance(
-                self.goal_prior.detect_player(branch.frame),
+                branch.goal_player_slot,
                 (branch.goal_chest_slot,),
             )
             if chest_distance is not None:
@@ -3393,6 +3394,11 @@ class VerifiedNeuralAgent:
                                 or committed_goal_analysis.source_chest_slot
                             )
                         ),
+                        (
+                            None
+                            if committed_goal_analysis is None
+                            else committed_goal_analysis.target_player_slot
+                        ),
                     )
                 )
                 added += 1
@@ -3709,6 +3715,11 @@ class VerifiedNeuralAgent:
                                 or alternative_goal_analysis.source_chest_slot
                             )
                         ),
+                        (
+                            None
+                            if alternative_goal_analysis is None
+                            else alternative_goal_analysis.target_player_slot
+                        ),
                     )
                 )
                 added += 1
@@ -3872,6 +3883,11 @@ class VerifiedNeuralAgent:
                                 else self.goal_prior.detect_open_chest(
                                     source_frame
                                 )
+                            ),
+                            (
+                                None
+                                if self.goal_prior is None
+                                else self.goal_prior.current_player_slot
                             ),
                         )
                     )
@@ -4329,7 +4345,11 @@ class VerifiedNeuralAgent:
         self.last_navigation_change_decision = None
         self.pending_life_hazard_choice = None
         if self.goal_prior is not None:
-            self.goal_prior.restore(branch.goal_heart_slots, branch.frame)
+            self.goal_prior.restore(
+                branch.goal_heart_slots,
+                branch.frame,
+                branch.goal_player_slot,
+            )
         self.novelty.observe(self._signature(branch.frame))
         self.scene_visits[branch.scene] += 1
         self.current_scene = branch.scene
@@ -4510,6 +4530,7 @@ class VerifiedNeuralAgent:
             human_prior_remaining_hearts=branch.goal_remaining_hearts,
             human_prior_total_hearts=branch.goal_total_hearts,
             human_prior_target_chest_slot=branch.goal_chest_slot,
+            human_prior_target_player_slot=branch.goal_player_slot,
             human_prior_best_remaining_hearts=(
                 None
                 if self.goal_prior is None
@@ -4584,6 +4605,7 @@ class VerifiedNeuralAgent:
             human_prior_remaining_hearts=branch.goal_remaining_hearts,
             human_prior_total_hearts=branch.goal_total_hearts,
             human_prior_target_chest_slot=branch.goal_chest_slot,
+            human_prior_target_player_slot=branch.goal_player_slot,
             human_prior_best_remaining_hearts=(
                 None
                 if self.goal_prior is None

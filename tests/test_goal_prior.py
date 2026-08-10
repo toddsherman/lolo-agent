@@ -248,6 +248,33 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
 
         self.assertEqual(prior.detect_player(overlapped), (48, 48))
 
+    def test_temporal_player_tracking_rejects_a_distant_blue_teleport(self) -> None:
+        source = room_frame(((80, 48),), player=(48, 48))
+        target = room_frame(((80, 48),))
+        pixels = bytearray(target.pixels)
+        distant_candidate = (
+            [(21, 95, 217)] * 100
+            + [(0, 0, 0)] * 100
+            + [(255, 255, 255)] * 56
+        )
+        for index, value in enumerate(distant_candidate):
+            row, column = divmod(index, 16)
+            offset = ((112 + row) * target.width + 160 + column) * 3
+            pixels[offset : offset + 3] = bytes(value)
+        target = Frame(
+            target.width, target.height, target.channels, bytes(pixels)
+        )
+        prior = PixelHeartGoalPrior()
+        prior.observe_room(source)
+
+        self.assertEqual(prior.detect_player(target), (160, 112))
+
+        analysis = prior.analyze(source, target)
+
+        self.assertEqual(analysis.source_player_slot, (48, 48))
+        self.assertIsNone(analysis.target_player_slot)
+        self.assertEqual(analysis.navigation_reward, 0.0)
+
     def test_open_chest_becomes_the_goal_after_the_last_heart(self) -> None:
         initial = room_frame(((48, 48),), life_glyph=LIFE_FIVE)
         opened = room_frame(

@@ -218,25 +218,35 @@ class PixelHeartGoalPrior:
         self.initialized = False
         self.best_remaining_hearts: Optional[int] = None
         self.current_life_signature: Optional[str] = None
+        self.current_player_slot: Optional[HeartSlot] = None
         self.dark_transition_observed = False
-        self._player_cache: OrderedDict[str, Optional[HeartSlot]] = OrderedDict()
+        self._player_cache: OrderedDict[
+            Tuple[str, Optional[HeartSlot]], Optional[HeartSlot]
+        ] = OrderedDict()
 
     @staticmethod
     def _snap_to_tile(slot: HeartSlot) -> HeartSlot:
         return 16 * round(slot[0] / 16), 16 * round(slot[1] / 16)
 
-    def detect_player(self, frame: Frame) -> Optional[HeartSlot]:
+    def detect_player(
+        self,
+        frame: Frame,
+        reference: Optional[HeartSlot] = None,
+        maximum_reference_distance: float = 1.5,
+    ) -> Optional[HeartSlot]:
         """Locate Lolo from his visible palette, without reading emulator memory.
 
         The scan is deliberately part of the explicitly labelled human-prior
         track. Water uses Lolo's dark blue, so its two animated highlight
-        colours are rejected before candidates are ranked.
+        colours are rejected before candidates are ranked. When a prior player
+        position is available, visual identity is tracked only to a nearby
+        candidate; unrelated blue entities cannot teleport the semantic goal.
         """
 
-        digest = frame.digest
-        if digest in self._player_cache:
-            self._player_cache.move_to_end(digest)
-            return self._player_cache[digest]
+        cache_key = (frame.digest, reference)
+        if cache_key in self._player_cache:
+            self._player_cache.move_to_end(cache_key)
+            return self._player_cache[cache_key]
         if self.mean_intensity(frame) < self.minimum_scene_intensity:
             return None
         blue = (21, 95, 217)
@@ -245,7 +255,7 @@ class PixelHeartGoalPrior:
         magenta = (183, 30, 123)
         pink = (255, 110, 204)
         water_highlights = {(100, 176, 255), (192, 223, 255)}
-        best: Optional[Tuple[Tuple[int, ...], HeartSlot]] = None
+        candidates: Dict[HeartSlot, Tuple[int, ...]] = {}
         for y in range(28, min(frame.height - 15, 205), 4):
             for x in range(28, min(frame.width - 15, 205), 4):
                 counts = {
@@ -287,10 +297,41 @@ class PixelHeartGoalPrior:
                     x,
                     y,
                 )
-                if best is None or rank > best[0]:
-                    best = (rank, (x, y))
-        result = None if best is None else self._snap_to_tile(best[1])
-        self._player_cache[digest] = result
+                slot = self._snap_to_tile((x, y))
+                if slot not in candidates or rank > candidates[slot]:
+                    candidates[slot] = rank
+        if reference is None:
+            result = (
+                None
+                if not candidates
+                else max(candidates.items(), key=lambda item: item[1])[0]
+            )
+        else:
+            nearby = [
+                (slot, rank)
+                for slot, rank in candidates.items()
+                if (
+                    abs(slot[0] - reference[0])
+                    + abs(slot[1] - reference[1])
+                )
+                / 16.0
+                <= maximum_reference_distance
+            ]
+            result = (
+                None
+                if not nearby
+                else max(
+                    nearby,
+                    key=lambda item: (
+                        -(
+                            abs(item[0][0] - reference[0])
+                            + abs(item[0][1] - reference[1])
+                        ),
+                        item[1],
+                    ),
+                )[0]
+            )
+        self._player_cache[cache_key] = result
         if len(self._player_cache) > 2048:
             self._player_cache.popitem(last=False)
         return result
@@ -414,6 +455,8 @@ class PixelHeartGoalPrior:
         life_signature = self._life_signature(frame)
         if life_signature is not None and self.current_life_signature is None:
             self.current_life_signature = life_signature
+        if self.current_player_slot is None:
+            self.current_player_slot = self.detect_player(frame)
         discovered = set(self.discover(frame))
         if discovered and not self.initialized:
             self.known_slots = discovered
@@ -457,12 +500,15 @@ class PixelHeartGoalPrior:
             else 0.0
         )
         source_player = (
-            self.detect_player(source)
+            self.detect_player(source, reference=self.current_player_slot)
             if self.mean_intensity(source) >= self.minimum_scene_intensity
             else None
         )
         target_player = (
-            self.detect_player(target)
+            self.detect_player(
+                target,
+                reference=(source_player or self.current_player_slot),
+            )
             if target_intensity >= self.minimum_scene_intensity
             else None
         )
@@ -582,8 +628,15 @@ class PixelHeartGoalPrior:
             if analysis.life_counter_changed:
                 self.current_life_signature = analysis.target_life_signature
             self.dark_transition_observed = False
+        if analysis.target_player_slot is not None:
+            self.current_player_slot = analysis.target_player_slot
 
-    def restore(self, present: Sequence[HeartSlot], frame: Frame) -> None:
+    def restore(
+        self,
+        present: Sequence[HeartSlot],
+        frame: Frame,
+        player_slot: Optional[HeartSlot] = None,
+    ) -> None:
         discovered = set(self.discover(frame))
         if discovered and not self.initialized:
             self.known_slots = discovered
@@ -591,6 +644,11 @@ class PixelHeartGoalPrior:
         if self.initialized:
             self.current_present = set(present) if present else discovered
         self.current_life_signature = self._life_signature(frame)
+        self.current_player_slot = (
+            player_slot
+            if player_slot is not None
+            else self.detect_player(frame)
+        )
         self.dark_transition_observed = False
 
     def current_slots(self) -> Tuple[HeartSlot, ...]:

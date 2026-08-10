@@ -38,6 +38,10 @@ colours. All detections and rewards are recorded on every verified branch.
 - The treasure prototype is the pink/white object at `(32,112)` in Room 2. The
   green lower-right object was explicitly rejected after inspecting the stored
   frames; it is not treated as the chest.
+- Player localization rejects water and chest colours, then tracks the selected
+  visual candidate continuously across adjacent positions. A distant blue
+  entity cannot create semantic progress by being mistaken for a teleported
+  player; archive states retain the tracked player slot explicitly.
 - A life loss gives `-100` only when a dark transition is followed by a changed
   8×8 life glyph in the visible HUD. The pre-transition pixel context, action,
   duration, and trajectory endpoints are logged and remembered as a hazard.
