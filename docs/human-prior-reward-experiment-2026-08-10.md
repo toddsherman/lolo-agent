@@ -136,6 +136,14 @@ a retained branch, and records stale-handle failures without aborting the
 agent. This changes cleanup robustness only; stale descendants are removed from
 the archive regardless.
 
+The bounded v18 validation completed all 130 decisions normally. Two
+pre-final-heart rollbacks invalidated 63 and 71 descendants (134 total). The
+second cleanup encountered one already-released native handle, recorded it,
+continued restoring, and did not reintroduce a zero-heart descendant. State
+ownership balanced exactly at run close: 1,120 saves and 1,120 releases. The
+agent tried multiple final-heart contexts while retaining the delayed hazards,
+which is the intended behavior for autonomous preparation search.
+
 The resulting direction is deliberately narrower: potential shaping guides
 immediate experiments; causal novelty decides what deserves persistent state;
 heart milestones preserve irreversible semantic progress; and a short temporal
