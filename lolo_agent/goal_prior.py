@@ -323,11 +323,11 @@ class PixelHeartGoalPrior:
                 else max(
                     nearby,
                     key=lambda item: (
+                        item[1],
                         -(
                             abs(item[0][0] - reference[0])
                             + abs(item[0][1] - reference[1])
                         ),
-                        item[1],
                     ),
                 )[0]
             )

@@ -275,6 +275,15 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
         self.assertIsNone(analysis.target_player_slot)
         self.assertEqual(analysis.navigation_reward, 0.0)
 
+    def test_temporal_player_tracking_accepts_a_strong_adjacent_move(self) -> None:
+        moved = room_frame(player=(80, 64))
+        prior = PixelHeartGoalPrior()
+
+        self.assertEqual(
+            prior.detect_player(moved, reference=(64, 64)),
+            (80, 64),
+        )
+
     def test_open_chest_becomes_the_goal_after_the_last_heart(self) -> None:
         initial = room_frame(((48, 48),), life_glyph=LIFE_FIVE)
         opened = room_frame(
