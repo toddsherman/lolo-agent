@@ -406,6 +406,7 @@ class DurableExperiment:
                                 reset_env=not collector_initialized,
                                 group_offset=int(self.state["next_group"]),
                                 event_logger=collection_logger,
+                                source_run_id=collection_logger.run_id,
                             )
                             collector_initialized = True
                             self.dataset.append_segment(segment_id, sequences)

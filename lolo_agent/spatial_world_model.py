@@ -46,16 +46,21 @@ class SpatialValidationReport:
 def causal_dataset_statistics(sequences: Sequence[VisualSequence]) -> Dict[str, int]:
     """Describe counterfactual coverage without interpreting any visual entity."""
 
-    roots: Dict[Tuple[int, str], set[Tuple[Action, int]]] = {}
+    roots: Dict[Tuple[str, int, str], set[Tuple[Action, int]]] = {}
     one_step = 0
     for sequence in sequences:
         if len(sequence.actions) != 1:
             continue
         one_step += 1
         duration = sequence.durations[0] if sequence.durations else 4
-        roots.setdefault((sequence.group, sequence.frames[0].digest), set()).add(
-            (sequence.actions[0], duration)
-        )
+        roots.setdefault(
+            (
+                sequence.source_run_id,
+                sequence.group,
+                sequence.frames[0].digest,
+            ),
+            set(),
+        ).add((sequence.actions[0], duration))
     counterfactual_roots = sum(len(options) >= 2 for options in roots.values())
     noop_control_roots = sum(
         any(action == Action.NOOP for action, _ in options)
@@ -64,7 +69,10 @@ def causal_dataset_statistics(sequences: Sequence[VisualSequence]) -> Dict[str, 
     )
     return {
         "sequences": len(sequences),
-        "groups": len({sequence.group for sequence in sequences}),
+        "groups": len(
+            {(sequence.source_run_id, sequence.group) for sequence in sequences}
+        ),
+        "source_runs": len({sequence.source_run_id for sequence in sequences}),
         "one_step_sequences": one_step,
         "multi_step_sequences": len(sequences) - one_step,
         "causal_roots": len(roots),
@@ -97,6 +105,76 @@ class _SpatialDynamicsHead(nn.Module):
         )
 
 
+class _LocalFlowResidualRenderer(nn.Module):
+    """Render local motion by copying source pixels plus a bounded residual."""
+
+    def __init__(
+        self,
+        token_size: int,
+        max_flow_pixels: float,
+        residual_scale: float,
+    ) -> None:
+        super().__init__()
+        self.max_flow_pixels = max_flow_pixels
+        self.residual_scale = residual_scale
+        self.features = nn.Sequential(
+            nn.Conv2d(token_size * 3, 128, 3, padding=1),
+            nn.SiLU(),
+            nn.ConvTranspose2d(128, 96, 4, stride=2, padding=1),
+            nn.SiLU(),
+            nn.ConvTranspose2d(96, 64, 4, stride=2, padding=1),
+            nn.SiLU(),
+            nn.ConvTranspose2d(64, 32, 4, stride=2, padding=1),
+            nn.SiLU(),
+        )
+        self.output = nn.ConvTranspose2d(32, 5, 4, stride=2, padding=1)
+        nn.init.zeros_(self.output.weight)
+        nn.init.zeros_(self.output.bias)
+
+    def forward(
+        self,
+        previous_pixels: Tensor,
+        source_tokens: Tensor,
+        successor_tokens: Tensor,
+    ) -> Tensor:
+        features = torch.cat(
+            (source_tokens, successor_tokens, successor_tokens - source_tokens),
+            dim=1,
+        )
+        parameters = self.output(self.features(features))
+        if parameters.shape[-2:] != previous_pixels.shape[-2:]:
+            parameters = F.interpolate(
+                parameters,
+                size=previous_pixels.shape[-2:],
+                mode="bilinear",
+                align_corners=False,
+            )
+        flow = parameters[:, :2].tanh() * self.max_flow_pixels
+        residual = parameters[:, 2:].tanh() * self.residual_scale
+        height, width = previous_pixels.shape[-2:]
+        y, x = torch.meshgrid(
+            torch.linspace(-1.0, 1.0, height, device=previous_pixels.device),
+            torch.linspace(-1.0, 1.0, width, device=previous_pixels.device),
+            indexing="ij",
+        )
+        base_grid = torch.stack((x, y), dim=-1).unsqueeze(0)
+        normalized_flow = torch.stack(
+            (
+                2.0 * flow[:, 0] / max(1, width - 1),
+                2.0 * flow[:, 1] / max(1, height - 1),
+            ),
+            dim=-1,
+        )
+        copied = F.grid_sample(
+            previous_pixels,
+            base_grid + normalized_flow,
+            mode="bilinear",
+            padding_mode="border",
+            align_corners=True,
+        )
+        return (copied + residual).clamp(0.0, 1.0)
+
+
 class SpatialTokenDynamicsModel(nn.Module):
     """Translation-sharing visual dynamics over an unlabeled spatial token map.
 
@@ -119,6 +197,9 @@ class SpatialTokenDynamicsModel(nn.Module):
         effect_scale: float = 0.05,
         effect_mask_power: float = 4.0,
         token_delta_scale: float = 0.25,
+        renderer_kind: str = "flow_residual",
+        max_flow_pixels: float = 16.0,
+        residual_scale: float = 0.25,
     ) -> None:
         super().__init__()
         if token_size <= 0 or action_size <= 0 or grid_size <= 0:
@@ -133,6 +214,10 @@ class SpatialTokenDynamicsModel(nn.Module):
             raise ValueError("effect mask power must be positive")
         if token_delta_scale <= 0:
             raise ValueError("token delta scale must be positive")
+        if renderer_kind not in ("blend", "flow_residual"):
+            raise ValueError("renderer kind must be 'blend' or 'flow_residual'")
+        if max_flow_pixels <= 0 or residual_scale <= 0:
+            raise ValueError("renderer flow and residual scales must be positive")
         self.token_size = token_size
         self.action_size = action_size
         self.ensemble_size = ensemble_size
@@ -144,6 +229,9 @@ class SpatialTokenDynamicsModel(nn.Module):
         self.effect_scale = effect_scale
         self.effect_mask_power = effect_mask_power
         self.token_delta_scale = token_delta_scale
+        self.renderer_kind = renderer_kind
+        self.max_flow_pixels = max_flow_pixels
+        self.residual_scale = residual_scale
         self.encoder = nn.Sequential(
             nn.Conv2d(3, 32, 5, stride=2, padding=2),
             nn.SiLU(),
@@ -178,6 +266,15 @@ class SpatialTokenDynamicsModel(nn.Module):
                 for _ in range(ensemble_size)
             ]
         )
+        self.local_renderer = (
+            _LocalFlowResidualRenderer(
+                token_size,
+                max_flow_pixels=max_flow_pixels,
+                residual_scale=residual_scale,
+            )
+            if renderer_kind == "flow_residual"
+            else None
+        )
 
     def encode(self, frames: Tensor) -> Tensor:
         return self.encoder(frames)
@@ -195,13 +292,23 @@ class SpatialTokenDynamicsModel(nn.Module):
         return tokens.unsqueeze(0).expand(self.ensemble_size, -1, -1, -1, -1).contiguous()
 
     def render_successor(
-        self, previous_pixels: Tensor, tokens: Tensor, effect_logits: Tensor
+        self,
+        previous_pixels: Tensor,
+        source_tokens: Tensor,
+        successor_tokens: Tensor,
+        effect_logits: Tensor,
     ) -> Tensor:
         """Copy stable pixels and render only the learned action-dependent region."""
 
         if effect_logits.ndim != 3:
             raise ValueError("effect logits must have shape [batch, row, column]")
-        candidate = self.decode(tokens)
+        candidate = (
+            self.decode(successor_tokens)
+            if self.local_renderer is None
+            else self.local_renderer(
+                previous_pixels, source_tokens, successor_tokens
+            )
+        )
         effect_mask = F.interpolate(
             effect_logits.sigmoid().unsqueeze(1),
             size=previous_pixels.shape[-2:],
@@ -251,6 +358,7 @@ class SpatialTokenDynamicsModel(nn.Module):
         effects = []
         current_pixels = source
         for step in range(actions.shape[1]):
+            source_mean = tokens.mean(dim=0)
             step_durations = None if durations is None else durations[:, step]
             tokens, effect_logits = self.transition_ensemble(
                 tokens, actions[:, step], step_durations
@@ -258,7 +366,7 @@ class SpatialTokenDynamicsModel(nn.Module):
             mean = tokens.mean(dim=0)
             mean_effect_logits = effect_logits.mean(dim=0)
             current_pixels = self.render_successor(
-                current_pixels, mean, mean_effect_logits
+                current_pixels, source_mean, mean, mean_effect_logits
             )
             pixels.append(current_pixels)
             means.append(mean)
@@ -340,13 +448,17 @@ def spatial_sequence_loss(
     previous_target = source
     previous_prediction = source
     for step in range(actions.shape[1]):
+        source_mean_tokens = tokens.mean(dim=0)
         step_durations = None if durations is None else durations[:, step]
         tokens, effect_logits = model.transition_ensemble(
             tokens, actions[:, step], step_durations
         )
         mean_tokens = tokens.mean(dim=0)
         predicted_target = model.render_successor(
-            previous_prediction, mean_tokens, effect_logits.mean(dim=0)
+            previous_prediction,
+            source_mean_tokens,
+            mean_tokens,
+            effect_logits.mean(dim=0),
         )
         target = frames[:, step + 1]
         with torch.no_grad():
@@ -642,7 +754,7 @@ def save_spatial_checkpoint(
     digest = model.checkpoint_digest
     torch.save(
         {
-            "version": 5,
+            "version": 6,
             "architecture": "unlabeled-spatial-token-dynamics",
             "model": {
                 name: value.detach().cpu() for name, value in model.state_dict().items()
@@ -659,6 +771,9 @@ def save_spatial_checkpoint(
             "effect_mask_power": model.effect_mask_power,
             "token_delta_scale": model.token_delta_scale,
             "token_objective": "cosine",
+            "renderer_kind": model.renderer_kind,
+            "max_flow_pixels": model.max_flow_pixels,
+            "residual_scale": model.residual_scale,
             "planning_horizon": planning_horizon,
             "persistent_inputs": ["pixels", "actions", "action_durations"],
             "excluded_inputs": [
@@ -684,7 +799,7 @@ def load_spatial_checkpoint(
     checkpoint: Dict[str, object] = torch.load(
         Path(path), map_location="cpu", weights_only=True
     )
-    if checkpoint.get("version") not in (1, 2, 3, 4, 5):
+    if checkpoint.get("version") not in (1, 2, 3, 4, 5, 6):
         raise ValueError("unsupported spatial checkpoint version")
     if checkpoint.get("architecture") != "unlabeled-spatial-token-dynamics":
         raise ValueError("spatial checkpoint architecture does not match runtime")
@@ -702,6 +817,9 @@ def load_spatial_checkpoint(
         effect_scale=float(checkpoint["effect_scale"]),
         effect_mask_power=float(checkpoint.get("effect_mask_power", 4.0)),
         token_delta_scale=float(checkpoint.get("token_delta_scale", 1.0)),
+        renderer_kind=str(checkpoint.get("renderer_kind", "blend")),
+        max_flow_pixels=float(checkpoint.get("max_flow_pixels", 16.0)),
+        residual_scale=float(checkpoint.get("residual_scale", 0.25)),
     )
     model.load_state_dict(checkpoint["model"])  # type: ignore[arg-type]
     if model.checkpoint_digest != checkpoint.get("digest"):

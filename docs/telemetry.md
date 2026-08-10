@@ -134,6 +134,28 @@ causal-spatial observations, and unique committed causal signatures.
 can map where action-dependent changes occurred without adding semantic object
 labels.
 
+## Frozen spatial shadow telemetry
+
+Supplying `--spatial-shadow-checkpoint` adds predictions from the spatial model
+without changing the existing planner. Every `planner_candidates` row includes
+the shadow score, predicted change, predicted effect, uncertainty, mode, and a
+selection weight fixed at `0.0`. Each real save-state branch also emits
+`spatial_shadow_branch_evaluated`, linked by decision, branch ID, candidate
+rank, action, and duration. It records:
+
+- pixel and effect-weighted prediction error;
+- the corresponding frame-persistence baselines;
+- whether the prediction beat persistence;
+- spatial-effect L1 and F1;
+- predicted versus observed effect mass; and
+- ensemble uncertainty.
+
+`spatial_shadow.csv` provides one flat row per verified branch for plotting.
+`summary.json` reports evaluation count, persistence wins, mean metrics, and
+whether the separate spatial parameter-hash audit passed. The run manifest
+stores checkpoint file and parameter hashes plus `mode: observational` and
+`selection_weight: 0.0`.
+
 ## Attempts and level labels
 
 An attempt begins whenever the environment is reset. Because room number,

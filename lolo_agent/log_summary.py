@@ -116,10 +116,46 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
     committed_causal_spatial_signatures: set[str] = set()
     causal_events_detected = 0
     archive_rejections_by_reason: Counter[str] = Counter()
+    spatial_shadow_rows: List[Dict[str, Any]] = []
+    spatial_shadow_metric_fields = (
+        "spatial_shadow_pixel_l1",
+        "spatial_shadow_persistence_l1",
+        "spatial_shadow_effect_weighted_pixel_l1",
+        "spatial_shadow_effect_weighted_persistence_l1",
+        "spatial_shadow_effect_l1",
+        "spatial_shadow_effect_f1",
+        "spatial_shadow_predicted_effect",
+        "spatial_shadow_actual_effect",
+        "spatial_shadow_uncertainty",
+    )
 
     edge_counts: Counter[Tuple[str, str, str, int]] = Counter()
     node_details: Dict[str, Dict[str, Any]] = {}
     for event in events:
+        if event["event"] == "spatial_shadow_branch_evaluated":
+            spatial_shadow_rows.append(
+                {
+                    "seq": event["seq"],
+                    "elapsed_ms": event["elapsed_ms"],
+                    "attempt": event.get("attempt", 0),
+                    "decision": event.get("decision"),
+                    "branch_id": event.get("branch_id"),
+                    "candidate_rank": event.get("candidate_rank"),
+                    "action": event.get("action"),
+                    "action_frames": event.get("action_frames"),
+                    "spatial_shadow_mode": event.get("spatial_shadow_mode"),
+                    "spatial_shadow_selection_weight": event.get(
+                        "spatial_shadow_selection_weight"
+                    ),
+                    "spatial_shadow_beats_persistence": event.get(
+                        "spatial_shadow_beats_persistence", False
+                    ),
+                    **{
+                        field: event.get(field)
+                        for field in spatial_shadow_metric_fields
+                    },
+                }
+            )
         if event["event"] == "archive_branch_rejected":
             archive_rejections_by_reason[
                 str(event.get("reason", "unspecified"))
@@ -476,6 +512,27 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         writer.writeheader()
         writer.writerows(decision_rows)
 
+    spatial_shadow_columns = [
+        "seq",
+        "elapsed_ms",
+        "attempt",
+        "decision",
+        "branch_id",
+        "candidate_rank",
+        "action",
+        "action_frames",
+        "spatial_shadow_mode",
+        "spatial_shadow_selection_weight",
+        "spatial_shadow_beats_persistence",
+        *spatial_shadow_metric_fields,
+    ]
+    with (run_dir / "spatial_shadow.csv").open(
+        "w", encoding="utf-8", newline=""
+    ) as handle:
+        writer = csv.DictWriter(handle, fieldnames=spatial_shadow_columns)
+        writer.writeheader()
+        writer.writerows(spatial_shadow_rows)
+
     graph = {
         "schema_version": SCHEMA_VERSION,
         "run_id": manifest["run_id"],
@@ -606,6 +663,27 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             committed_causal_spatial_signatures
         ),
         "causal_events_detected": causal_events_detected,
+        "spatial_shadow_evaluations": len(spatial_shadow_rows),
+        "spatial_shadow_beats_persistence": sum(
+            bool(row["spatial_shadow_beats_persistence"])
+            for row in spatial_shadow_rows
+        ),
+        "spatial_shadow_parameter_audit_passed": any(
+            event["event"] == "spatial_shadow_parameter_audit"
+            and event.get("status") == "pass"
+            and event.get("parameter_sha256_before")
+            == event.get("parameter_sha256_after")
+            for event in events
+        ),
+        "spatial_shadow_mean_metrics": {
+            field: (
+                sum(float(row[field]) for row in spatial_shadow_rows)
+                / len(spatial_shadow_rows)
+                if spatial_shadow_rows
+                else 0.0
+            )
+            for field in spatial_shadow_metric_fields
+        },
         "temporal_options_started": event_counts.get(
             "temporal_option_started", 0
         ),
@@ -686,6 +764,7 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             "events": "events.jsonl",
             "frames": "frames/",
             "transitions": "transitions.json",
+            "spatial_shadow": "spatial_shadow.csv",
         },
     }
     (run_dir / "summary.json").write_text(

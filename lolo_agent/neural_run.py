@@ -19,6 +19,8 @@ from .neural_world_model import ACTION_ORDER, choose_torch_device
 from .pixels import Frame, signature_key
 from .replay import restore_logged_decision, validate_replay_inputs
 from .run_logging import LoggedEnvironment, RunLogger, sha256_file
+from .spatial_shadow import SpatialShadowEvaluator
+from .spatial_world_model import load_spatial_checkpoint
 
 
 @dataclass
@@ -114,6 +116,14 @@ def main() -> None:
     parser.add_argument("--core", type=Path, required=True)
     parser.add_argument("--rom", type=Path, required=True)
     parser.add_argument("--checkpoint", type=Path, required=True)
+    parser.add_argument(
+        "--spatial-shadow-checkpoint",
+        type=Path,
+        help=(
+            "frozen spatial checkpoint to score candidates and verified branches "
+            "observationally; it never affects selection"
+        ),
+    )
     parser.add_argument("--decisions", type=int, default=20)
     parser.add_argument("--action-frames", type=int, default=4)
     parser.add_argument(
@@ -248,6 +258,31 @@ def main() -> None:
         if args.action_durations
         else ()
     )
+    selected_durations = action_durations or (args.action_frames,)
+    spatial_shadow = None
+    spatial_shadow_before = None
+    spatial_shadow_horizon = None
+    if args.spatial_shadow_checkpoint is not None:
+        shadow_model, spatial_shadow_horizon = load_spatial_checkpoint(
+            args.spatial_shadow_checkpoint,
+            device=device,
+            frozen=True,
+        )
+        if shadow_model.duration_conditioned:
+            if max(selected_durations) > shadow_model.max_action_frames:
+                parser.error(
+                    "planner action duration exceeds spatial shadow checkpoint limit"
+                )
+        elif any(
+            duration != shadow_model.fixed_action_frames
+            for duration in selected_durations
+        ):
+            parser.error(
+                "planner action durations do not match the fixed-duration spatial "
+                "shadow checkpoint"
+            )
+        spatial_shadow = SpatialShadowEvaluator(shadow_model, device)
+        spatial_shadow_before = spatial_shadow.checkpoint_digest
     bootstrap_fixture = (
         None if args.bootstrap == "none" else get_bootstrap_fixture(args.bootstrap)
     )
@@ -305,6 +340,25 @@ def main() -> None:
             "source_decision": args.resume_decision,
             "source_events_sha256": sha256_file(source_events),
         }
+    inputs = {
+        "rom": {"name": args.rom.name, "sha256": rom_sha256},
+        "core": {"name": args.core.name, "sha256": sha256_file(args.core)},
+        "host": {"name": args.host.name, "sha256": sha256_file(args.host)},
+        "checkpoint": {
+            "name": args.checkpoint.name,
+            "file_sha256": sha256_file(args.checkpoint),
+            "parameter_sha256": before,
+        },
+    }
+    if args.spatial_shadow_checkpoint is not None:
+        inputs["spatial_shadow_checkpoint"] = {
+            "name": args.spatial_shadow_checkpoint.name,
+            "file_sha256": sha256_file(args.spatial_shadow_checkpoint),
+            "parameter_sha256": spatial_shadow_before,
+            "planning_horizon": spatial_shadow_horizon,
+            "mode": "observational",
+            "selection_weight": 0.0,
+        }
     metadata = {
         "mode": "frozen_neural_evaluation",
         "reward_track": (
@@ -313,16 +367,7 @@ def main() -> None:
         "requested_decisions": args.decisions,
         "device": str(device),
         "planning_config": asdict(config),
-        "inputs": {
-            "rom": {"name": args.rom.name, "sha256": rom_sha256},
-            "core": {"name": args.core.name, "sha256": sha256_file(args.core)},
-            "host": {"name": args.host.name, "sha256": sha256_file(args.host)},
-            "checkpoint": {
-                "name": args.checkpoint.name,
-                "file_sha256": sha256_file(args.checkpoint),
-                "parameter_sha256": before,
-            },
-        },
+        "inputs": inputs,
         "bootstrap": bootstrap_metadata(bootstrap_fixture),
         "episodic_resume": resume_metadata,
         "evaluator_stop": {
@@ -361,7 +406,14 @@ def main() -> None:
                 )
             )
             env = LoggedEnvironment(native_env, logger)
-            agent = VerifiedNeuralAgent(env, model, device, config, event_logger=logger)
+            agent = VerifiedNeuralAgent(
+                env,
+                model,
+                device,
+                config,
+                event_logger=logger,
+                spatial_shadow=spatial_shadow,
+            )
             if restored is not None:
                 initial_frame = env.start_attempt_from_current(
                     restored.frame,
@@ -423,6 +475,20 @@ def main() -> None:
             parameter_sha256_before=before,
             parameter_sha256_after=after,
         )
+        if spatial_shadow is not None:
+            spatial_shadow_after = spatial_shadow.checkpoint_digest
+            if spatial_shadow_before != spatial_shadow_after:
+                raise RuntimeError(
+                    "frozen spatial shadow evaluation changed persistent parameters"
+                )
+            logger.log(
+                "spatial_shadow_parameter_audit",
+                status="pass",
+                spatial_shadow_mode="observational",
+                spatial_shadow_selection_weight=0.0,
+                parameter_sha256_before=spatial_shadow_before,
+                parameter_sha256_after=spatial_shadow_after,
+            )
         logger.close("complete")
     except Exception as exc:
         if agent is not None:

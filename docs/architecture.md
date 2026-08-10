@@ -47,14 +47,16 @@ action-localized pixel effects with an uncertainty ensemble, and uses sparse
 rendering so unchanged pixels are copied rather than regenerated. Strict and
 assisted telemetry are now bound to separate dataset tracks.
 
-Its held-out causal-effect gate passes, but planner integration remains gated
-because changed-region rendering has not yet beaten persistence. See
+Its local flow/residual renderer passes a trajectory-balanced run-held-out
+offline gate by a narrow margin. Planner integration remains gated because a
+native zero-weight shadow run beat persistence on only 3/30 verified branches.
+See
 `spatial-causal-model-2026-08-10.md` for the reproducible MPS result.
 
 The remaining successor milestones are:
 
-1. changed-region rendering that beats persistence on held-out causal roots;
-2. run- and room-held-out validation without semantic inputs;
+1. changed-region rendering that reliably beats persistence on native branches;
+2. multi-fold run- and room-held-out validation without semantic inputs;
 3. object-centric slots or sparse entity tokens discovered without labels;
 4. terminal/reversibility estimates learned from long-horizon reachability,
    not hand-authored death or object rules.

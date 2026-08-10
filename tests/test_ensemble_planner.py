@@ -169,6 +169,43 @@ class UniqueStateEnv(ActionEffectEnv):
         self.active_states.remove(state)
 
 
+class RecordingLogger:
+    def __init__(self) -> None:
+        self.events = []
+
+    def log(self, event_type: str, **fields) -> None:
+        self.events.append({"event": event_type, **fields})
+
+
+class AdversarialSpatialShadow:
+    """A shadow that strongly prefers the action the real planner ranks last."""
+
+    def score_plans(self, _frame, plans):
+        return [
+            {
+                "spatial_shadow_score": float(index * 1_000_000),
+                "spatial_shadow_predicted_effect": float(index),
+                "spatial_shadow_predicted_change": float(index),
+                "spatial_shadow_uncertainty": 0.0,
+            }
+            for index, _plan in enumerate(plans)
+        ]
+
+    def evaluate_transition(self, _source, _action, _duration, _target):
+        return {
+            "spatial_shadow_pixel_l1": 0.1,
+            "spatial_shadow_persistence_l1": 0.2,
+            "spatial_shadow_effect_weighted_pixel_l1": 0.1,
+            "spatial_shadow_effect_weighted_persistence_l1": 0.2,
+            "spatial_shadow_beats_persistence": True,
+            "spatial_shadow_effect_l1": 0.1,
+            "spatial_shadow_effect_f1": 0.5,
+            "spatial_shadow_predicted_effect": 0.2,
+            "spatial_shadow_actual_effect": 0.3,
+            "spatial_shadow_uncertainty": 0.0,
+        }
+
+
 class EnsemblePlannerTests(unittest.TestCase):
     def frame(self, offset: int) -> Frame:
         return Frame(32, 32, 3, bytes((index + offset) % 256 for index in range(32 * 32 * 3)))
@@ -237,6 +274,62 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertIn(decision.action, (Action.LEFT, Action.RIGHT))
         self.assertEqual(decision.branches_examined, 2)
         self.assertEqual(before, model.checkpoint_digest)
+
+    def test_spatial_shadow_is_logged_but_cannot_change_selection(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            MockPuzzleEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.LEFT, Action.RIGHT),
+                planning_depth=1,
+                beam_width=2,
+                verify_actions=2,
+                action_frames=1,
+                actual_novelty_weight=0.0,
+                scene_novelty_weight=0.0,
+                prediction_error_weight=0.0,
+                actual_change_weight=0.0,
+                action_effect_weight=0.0,
+                causal_spatial_novelty_weight=0.0,
+                frontier_score_weight=0.0,
+                temporal_option_score_weight=0.0,
+                action_coverage_weight=0.0,
+                duration_coverage_weight=0.0,
+                consecutive_repeat_weight=0.0,
+            ),
+            event_logger=logger,
+            spatial_shadow=AdversarialSpatialShadow(),
+        )
+        agent.reset()
+        agent.planner.plan = lambda _frame: [
+            NeuralPlan((Action.LEFT,), (1,), 10.0, 0.0),
+            NeuralPlan((Action.RIGHT,), (1,), 0.0, 0.0),
+        ]
+
+        decision = agent.decide()
+
+        self.assertEqual(decision.action, Action.LEFT)
+        candidates = next(
+            event for event in logger.events if event["event"] == "planner_candidates"
+        )["candidates"]
+        self.assertEqual(candidates[1]["spatial_shadow_score"], 1_000_000.0)
+        self.assertTrue(
+            all(item["spatial_shadow_selection_weight"] == 0.0 for item in candidates)
+        )
+        shadow_events = [
+            event
+            for event in logger.events
+            if event["event"] == "spatial_shadow_branch_evaluated"
+        ]
+        self.assertEqual(len(shadow_events), 2)
+        self.assertTrue(
+            all(event["spatial_shadow_selection_weight"] == 0.0 for event in shadow_events)
+        )
 
     def test_checkpoint_round_trip_is_frozen(self) -> None:
         model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)

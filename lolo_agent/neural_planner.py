@@ -15,6 +15,7 @@ from .goal_prior import HeartGoalAnalysis, PixelHeartGoalPrior
 from .memory import VisualNovelty
 from .neural_world_model import ACTION_TO_INDEX, frame_tensor
 from .pixels import Frame, signature_key
+from .spatial_shadow import SpatialShadowEvaluator
 
 
 @dataclass(frozen=True)
@@ -372,6 +373,7 @@ class VerifiedNeuralAgent:
         device: Union[torch.device, str],
         config: Optional[NeuralPlanningConfig] = None,
         event_logger: Optional[Any] = None,
+        spatial_shadow: Optional[SpatialShadowEvaluator] = None,
     ) -> None:
         self.env = env
         self.model = model
@@ -474,6 +476,7 @@ class VerifiedNeuralAgent:
         self.archive: List[_ArchivedBranch] = []
         self.decision_index = 0
         self.event_logger = event_logger
+        self.spatial_shadow = spatial_shadow
         self.goal_prior: Optional[PixelHeartGoalPrior] = None
         self.last_navigation_change_decision: Optional[int] = None
         self.pending_life_hazard_choice: Optional[
@@ -2566,25 +2569,44 @@ class VerifiedNeuralAgent:
             )
             self.autonomous_intervention_pending = False
         plans = self.planner.plan(self.frame)
+        shadow_candidates = (
+            [{} for _ in plans]
+            if self.spatial_shadow is None
+            else self.spatial_shadow.score_plans(
+                self.frame,
+                [(plan.path, plan.durations) for plan in plans],
+            )
+        )
+        candidate_rows = []
+        for rank, (plan, shadow_metrics) in enumerate(
+            zip(plans, shadow_candidates), 1
+        ):
+            candidate = {
+                "rank": rank,
+                "path": plan.path,
+                "durations": plan.durations,
+                "model_score": plan.score,
+                "uncertainty": plan.uncertainty,
+                "first_action_penalty": self._action_penalty(
+                    plan.path[0], plan.durations[0]
+                ),
+                "first_action_penalty_components": self._action_penalty_components(
+                    plan.path[0], plan.durations[0]
+                ),
+            }
+            if shadow_metrics:
+                candidate.update(
+                    {
+                        "spatial_shadow_mode": "observational",
+                        "spatial_shadow_selection_weight": 0.0,
+                        **shadow_metrics,
+                    }
+                )
+            candidate_rows.append(candidate)
         self._emit(
             "planner_candidates",
             decision=self.decision_index + 1,
-            candidates=[
-                {
-                    "rank": rank,
-                    "path": plan.path,
-                    "durations": plan.durations,
-                    "model_score": plan.score,
-                    "uncertainty": plan.uncertainty,
-                    "first_action_penalty": self._action_penalty(
-                        plan.path[0], plan.durations[0]
-                    ),
-                    "first_action_penalty_components": self._action_penalty_components(
-                        plan.path[0], plan.durations[0]
-                    ),
-                }
-                for rank, plan in enumerate(plans, 1)
-            ],
+            candidates=candidate_rows,
         )
         best_by_action: Dict[Tuple[Action, int], NeuralPlan] = {}
         for plan in plans:
@@ -3026,10 +3048,31 @@ class VerifiedNeuralAgent:
                         target_frontier_signature,
                     )
                 )
+                branch_id = (
+                    f"decision-{self.decision_index + 1:08d}-"
+                    f"branch-{candidate_rank:02d}"
+                )
+                if self.spatial_shadow is not None:
+                    self._emit(
+                        "spatial_shadow_branch_evaluated",
+                        decision=self.decision_index + 1,
+                        branch_id=branch_id,
+                        candidate_rank=candidate_rank,
+                        action=plan.path[0],
+                        action_frames=duration,
+                        spatial_shadow_mode="observational",
+                        spatial_shadow_selection_weight=0.0,
+                        **self.spatial_shadow.evaluate_transition(
+                            source_frame,
+                            plan.path[0],
+                            duration,
+                            target,
+                        ),
+                    )
                 self._emit(
                     "branch_verified",
                     decision=self.decision_index + 1,
-                    branch_id=f"decision-{self.decision_index + 1:08d}-branch-{candidate_rank:02d}",
+                    branch_id=branch_id,
                     candidate_rank=candidate_rank,
                     scene_action_probe_count=scene_action_probe_count,
                     env_step_seq=env_step_seq,

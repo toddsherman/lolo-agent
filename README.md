@@ -89,13 +89,17 @@ lolo-spatial-train \
   --dataset experiments/lolo1-medium/dataset \
   --checkpoint experiments/lolo1-spatial-smoke/checkpoints/spatial.pt \
   --reward-track strict \
-  --max-groups 250
+  --validation-split run \
+  --max-groups 250 \
+  --minimum-multistep-groups 250 \
+  --renderer flow_residual
 ```
 
 This model predicts spatial effects and uncertainty without object labels. Its
 metrics distinguish the effect-learning gate from the stricter planner-
-integration gate, which must beat frame persistence before imagined rollouts
-are allowed to steer the agent.
+integration gate. A spatial checkpoint can also be measured against live
+save-state branches with `--spatial-shadow-checkpoint`; its scores are logged
+with selection weight zero and cannot steer the agent.
 
 Run the saved model in frozen evaluation mode:
 
@@ -105,6 +109,7 @@ lolo-neural-run \
   --rom "Adventures of Lolo.nes" \
   --core "$HOME/Library/Application Support/RetroArch/cores/nestopia_libretro.dylib" \
   --checkpoint checkpoints/ensemble-smoke.pt \
+  --spatial-shadow-checkpoint experiments/lolo1-spatial-v2/checkpoints/spatial-v2-runheldout-flow-long250-e15.pt \
   --decisions 20 \
   --log-root runs
 ```

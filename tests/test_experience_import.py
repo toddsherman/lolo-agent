@@ -74,6 +74,7 @@ class ExperienceImportTests(unittest.TestCase):
         self.assertEqual(len(sequences), 1)
         self.assertEqual(sequences[0].group, 10)
         self.assertEqual(sequences[0].durations, (8,))
+        self.assertEqual(sequences[0].source_run_id, "test-run")
         self.assertEqual(metadata["verified_transitions"], 1)
         self.assertEqual(metadata["reward_track"], "strict")
         self.assertNotIn("combined_score", metadata)

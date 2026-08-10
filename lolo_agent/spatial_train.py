@@ -9,7 +9,7 @@ from typing import Any, Dict
 
 import torch
 
-from .ensemble_world_model import split_sequence_groups
+from .ensemble_world_model import split_sequence_groups, split_sequence_runs
 from .neural_world_model import choose_torch_device
 from .sequence_store import SequenceStore
 from .spatial_world_model import (
@@ -39,7 +39,22 @@ def main() -> None:
     parser.add_argument("--metrics", type=Path)
     parser.add_argument("--reward-track", choices=("strict", "assisted"), default="strict")
     parser.add_argument("--max-groups", type=int, default=1000)
+    parser.add_argument(
+        "--minimum-multistep-groups",
+        type=int,
+        default=0,
+        help=(
+            "minimum sampled causal groups containing a trajectory longer than "
+            "one action; all branches in each selected group remain together"
+        ),
+    )
     parser.add_argument("--validation-modulus", type=int, default=5)
+    parser.add_argument(
+        "--validation-split",
+        choices=("run", "group"),
+        default="run",
+        help="hold out complete source runs by default; group is a weaker development split",
+    )
     parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
@@ -51,6 +66,13 @@ def main() -> None:
     parser.add_argument("--max-action-frames", type=int, default=32)
     parser.add_argument("--effect-mask-power", type=float, default=4.0)
     parser.add_argument("--token-delta-scale", type=float, default=0.25)
+    parser.add_argument(
+        "--renderer",
+        choices=("flow_residual", "blend"),
+        default="flow_residual",
+    )
+    parser.add_argument("--max-flow-pixels", type=float, default=16.0)
+    parser.add_argument("--residual-scale", type=float, default=0.25)
     parser.add_argument("--planning-horizon", type=int, default=3)
     parser.add_argument("--seed", type=int, default=17)
     args = parser.parse_args()
@@ -67,17 +89,32 @@ def main() -> None:
         args.planning_horizon,
         args.effect_mask_power,
         args.token_delta_scale,
+        args.max_flow_pixels,
+        args.residual_scale,
     ) <= 0:
         parser.error("model and training sizes must be positive")
     if args.validation_modulus < 2:
         parser.error("--validation-modulus must be at least two")
+    if args.minimum_multistep_groups < 0:
+        parser.error("--minimum-multistep-groups must be non-negative")
+    if args.minimum_multistep_groups > args.max_groups:
+        parser.error("--minimum-multistep-groups cannot exceed --max-groups")
 
     torch.manual_seed(args.seed)
     device = choose_torch_device()
     store = SequenceStore(args.dataset)
     store.bind_reward_track(args.reward_track)
-    sequences = store.load_group_sample(args.max_groups, seed=args.seed)
-    training, validation = split_sequence_groups(
+    sequences = store.load_group_sample(
+        args.max_groups,
+        seed=args.seed,
+        minimum_multistep_groups=args.minimum_multistep_groups,
+    )
+    splitter = (
+        split_sequence_runs
+        if args.validation_split == "run"
+        else split_sequence_groups
+    )
+    training, validation = splitter(
         sequences, validation_modulus=args.validation_modulus
     )
     model = SpatialTokenDynamicsModel(
@@ -90,6 +127,9 @@ def main() -> None:
         max_action_frames=args.max_action_frames,
         effect_mask_power=args.effect_mask_power,
         token_delta_scale=args.token_delta_scale,
+        renderer_kind=args.renderer,
+        max_flow_pixels=args.max_flow_pixels,
+        residual_scale=args.residual_scale,
     )
     before = validate_spatial_model(model, validation, device, args.batch_size)
     history = train_spatial_model(
@@ -138,6 +178,7 @@ def main() -> None:
     metrics = {
         "version": 1,
         "architecture": "unlabeled-spatial-token-dynamics",
+        "renderer": args.renderer,
         "reward_track": args.reward_track,
         "persistent_inputs": ["pixels", "actions", "action_durations"],
         "excluded_inputs": [
@@ -149,6 +190,10 @@ def main() -> None:
         ],
         "device": str(device),
         "seed": args.seed,
+        "minimum_multistep_groups": args.minimum_multistep_groups,
+        "validation_split": args.validation_split,
+        "training_source_runs": sorted({item.source_run_id for item in training}),
+        "validation_source_runs": sorted({item.source_run_id for item in validation}),
         "dataset": str(store.root),
         "dataset_statistics": store.statistics(),
         "sample_statistics": causal_dataset_statistics(sequences),

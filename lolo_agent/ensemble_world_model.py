@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import math
 import random
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, List, Optional, Sequence, Tuple, Union
@@ -22,6 +23,7 @@ class VisualSequence:
     frames: Tuple[Frame, ...]
     actions: Tuple[Action, ...]
     durations: Tuple[int, ...] = ()
+    source_run_id: str = ""
 
     def __post_init__(self) -> None:
         if not self.actions or len(self.frames) != len(self.actions) + 1:
@@ -384,6 +386,7 @@ def collect_branched_sequences(
     reset_env: bool = True,
     group_offset: int = 0,
     event_logger: Optional[Any] = None,
+    source_run_id: str = "",
 ) -> List[VisualSequence]:
     if min(roots, branches_per_root, horizon, action_frames) <= 0:
         raise ValueError("collector sizes must be positive")
@@ -412,7 +415,13 @@ def collect_branched_sequences(
                 durations.append(duration)
                 frames.append(env.step(action, duration))
             child = env.save_state()
-            sequence = VisualSequence(group, tuple(frames), tuple(actions), tuple(durations))
+            sequence = VisualSequence(
+                group,
+                tuple(frames),
+                tuple(actions),
+                tuple(durations),
+                source_run_id,
+            )
             sequences.append(sequence)
             if event_logger is not None:
                 event_logger.log(
@@ -442,6 +451,57 @@ def split_sequence_groups(
     validation = [item for item in sequences if item.group % validation_modulus == 0]
     if not training or not validation:
         raise ValueError("sequence split produced an empty partition")
+    return training, validation
+
+
+def split_sequence_runs(
+    sequences: Sequence[VisualSequence], validation_modulus: int = 5
+) -> Tuple[List[VisualSequence], List[VisualSequence]]:
+    """Hold out complete runs while approximating the requested sample fraction."""
+
+    if validation_modulus < 2:
+        raise ValueError("validation modulus must be at least two")
+    source_runs = sorted({item.source_run_id for item in sequences})
+    if "" in source_runs:
+        raise ValueError("run-held-out splitting requires source-run provenance")
+    if len(source_runs) < 2:
+        raise ValueError("run-held-out splitting requires at least two source runs")
+    run_counts = Counter(item.source_run_id for item in sequences)
+    target_sequences = len(sequences) / validation_modulus
+    stable_rank = {
+        run_id: int(hashlib.sha256(run_id.encode()).hexdigest(), 16)
+        for run_id in source_runs
+    }
+    validation_runs = set()
+    validation_sequences = 0
+    remaining = set(source_runs)
+    while remaining and len(validation_runs) < len(source_runs) - 1:
+        candidate = min(
+            remaining,
+            key=lambda run_id: (
+                abs(
+                    target_sequences
+                    - validation_sequences
+                    - run_counts[run_id]
+                ),
+                stable_rank[run_id],
+            ),
+        )
+        candidate_error = abs(
+            target_sequences
+            - validation_sequences
+            - run_counts[candidate]
+        )
+        current_error = abs(target_sequences - validation_sequences)
+        if validation_runs and candidate_error >= current_error:
+            break
+        validation_runs.add(candidate)
+        remaining.remove(candidate)
+        validation_sequences += run_counts[candidate]
+    training = [item for item in sequences if item.source_run_id not in validation_runs]
+    validation = [item for item in sequences if item.source_run_id in validation_runs]
+    if not training or not validation:
+        raise ValueError("run split produced an empty partition")
     return training, validation
 
 

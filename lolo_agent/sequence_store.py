@@ -5,7 +5,7 @@ import os
 import random
 import zlib
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from .ensemble_world_model import VisualSequence
 from .environment import Action
@@ -90,11 +90,12 @@ class SequenceStore:
                 )
             records.append(
                 {
-                    "version": 1,
+                    "version": 2,
                     "group": sequence.group,
                     "frames": frame_records,
                     "actions": [action.value for action in sequence.actions],
                     "durations": list(sequence.durations),
+                    "source_run_id": sequence.source_run_id,
                 }
             )
         temporary = self.segments_dir / f".{segment_id}.tmp"
@@ -111,10 +112,11 @@ class SequenceStore:
             with segment.open(encoding="utf-8") as handle:
                 for line_number, line in enumerate(handle, 1):
                     record = json.loads(line)
-                    if record.get("version") != 1:
+                    if record.get("version") not in (1, 2):
                         raise ValueError(
                             f"unsupported sequence record in {segment}:{line_number}"
                         )
+                    record["_segment_id"] = segment.stem
                     yield record
 
     def _decode_records(self, records: Iterable[Dict[str, Any]]) -> List[VisualSequence]:
@@ -144,9 +146,25 @@ class SequenceStore:
                     tuple(frames),
                     tuple(Action(value) for value in record["actions"]),
                     tuple(int(value) for value in record.get("durations", [])),
+                    self._record_source_run_id(record),
                 )
             )
         return sequences
+
+    @staticmethod
+    def _record_source_run_id(record: Dict[str, Any]) -> str:
+        source_run_id = (
+            str(record.get("source_run_id", ""))
+            if record.get("version") == 2
+            else ""
+        )
+        return source_run_id or f"legacy-segment:{record['_segment_id']}"
+
+    @classmethod
+    def _record_group_key(cls, record: Dict[str, Any]) -> Tuple[str, int]:
+        """Disambiguate group counters that may restart in another source run."""
+
+        return cls._record_source_run_id(record), int(record["group"])
 
     def load(self) -> List[VisualSequence]:
         return self._decode_records(self._records())
@@ -167,29 +185,57 @@ class SequenceStore:
                 sample[replacement] = record
         return self._decode_records(sample)
 
-    def load_group_sample(self, maximum_groups: int, seed: int = 0) -> List[VisualSequence]:
+    def load_group_sample(
+        self,
+        maximum_groups: int,
+        seed: int = 0,
+        minimum_multistep_groups: int = 0,
+    ) -> List[VisualSequence]:
         """Sample complete causal branch groups while decoding only selected RGB data."""
 
         if maximum_groups <= 0:
             raise ValueError("maximum group count must be positive")
+        if minimum_multistep_groups < 0:
+            raise ValueError("minimum multistep group count must be non-negative")
+        if minimum_multistep_groups > maximum_groups:
+            raise ValueError("minimum multistep groups cannot exceed maximum groups")
         randomizer = random.Random(seed)
-        sampled_groups: List[int] = []
+        sampled_groups: List[Tuple[str, int]] = []
         seen_groups = set()
+        if minimum_multistep_groups:
+            multistep_groups = sorted(
+                {
+                    self._record_group_key(record)
+                    for record in self._records()
+                    if len(record["actions"]) > 1
+                }
+            )
+            selected_multistep = randomizer.sample(
+                multistep_groups,
+                min(minimum_multistep_groups, len(multistep_groups)),
+            )
+            sampled_groups.extend(selected_multistep)
+            seen_groups.update(selected_multistep)
+        reserved_count = len(sampled_groups)
+        replaceable_seen = 0
         for record in self._records():
-            group = int(record["group"])
+            group = self._record_group_key(record)
             if group in seen_groups:
                 continue
             seen_groups.add(group)
-            seen = len(seen_groups)
+            replaceable_seen += 1
             if len(sampled_groups) < maximum_groups:
                 sampled_groups.append(group)
                 continue
-            replacement = randomizer.randrange(seen)
-            if replacement < maximum_groups:
-                sampled_groups[replacement] = group
+            replaceable_groups = maximum_groups - reserved_count
+            replacement = randomizer.randrange(replaceable_seen)
+            if replacement < replaceable_groups:
+                sampled_groups[reserved_count + replacement] = group
         selected = set(sampled_groups)
         return self._decode_records(
-            record for record in self._records() if int(record["group"]) in selected
+            record
+            for record in self._records()
+            if self._record_group_key(record) in selected
         )
 
     def statistics(self) -> Dict[str, int]:

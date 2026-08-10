@@ -144,6 +144,7 @@ def extract_experience(
                 ),
                 (Action(step["action"]),),
                 (int(step["action_frames"]),),
+                str(manifest.get("run_id") or run_dir.name),
             )
             sequences.append(sequence)
             state_id = event.get("state_id")
@@ -176,6 +177,7 @@ def extract_experience(
                         tuple(frames),
                         tuple(Action(item["action"]) for item in committed_chain),
                         tuple(int(item["action_frames"]) for item in committed_chain),
+                        str(manifest.get("run_id") or run_dir.name),
                     )
                 )
                 committed_windows += 1

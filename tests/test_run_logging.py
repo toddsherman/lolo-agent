@@ -109,6 +109,10 @@ class RunLoggingTests(unittest.TestCase):
             self.assertIn("causal_spatial_observations", summary)
             self.assertIn("unique_causal_spatial_signatures", summary)
             self.assertIn("committed_causal_spatial_signatures", summary)
+            self.assertEqual(summary["spatial_shadow_evaluations"], 0)
+            self.assertEqual(summary["spatial_shadow_beats_persistence"], 0)
+            self.assertIn("spatial_shadow_mean_metrics", summary)
+            self.assertTrue((logger.run_dir / "spatial_shadow.csv").is_file())
             self.assertIn("temporal_option_counterfactuals_armed", summary)
             self.assertIn("temporal_option_eligible_initiations", summary)
             self.assertEqual(

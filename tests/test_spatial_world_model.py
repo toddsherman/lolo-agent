@@ -4,10 +4,11 @@ from pathlib import Path
 
 import torch
 
-from lolo_agent.ensemble_world_model import VisualSequence
+from lolo_agent.ensemble_world_model import VisualSequence, split_sequence_runs
 from lolo_agent.environment import Action
 from lolo_agent.neural_world_model import ACTION_TO_INDEX, frame_tensor
 from lolo_agent.pixels import Frame
+from lolo_agent.spatial_shadow import SpatialShadowEvaluator
 from lolo_agent.spatial_world_model import (
     SpatialTokenDynamicsModel,
     causal_dataset_statistics,
@@ -20,6 +21,49 @@ from lolo_agent.spatial_world_model import (
 
 
 class SpatialWorldModelTests(unittest.TestCase):
+    def test_run_split_never_leaks_source_provenance(self) -> None:
+        frame = self.make_frame(0, 0, (255, 255, 255))
+        sequences = [
+            VisualSequence(
+                group,
+                (frame, frame),
+                (Action.NOOP,),
+                (1,),
+                f"run-{group % 4}",
+            )
+            for group in range(20)
+        ]
+        training, validation = split_sequence_runs(sequences, validation_modulus=3)
+        training_runs = {item.source_run_id for item in training}
+        validation_runs = {item.source_run_id for item in validation}
+        self.assertTrue(training_runs)
+        self.assertTrue(validation_runs)
+        self.assertFalse(training_runs & validation_runs)
+
+    def test_run_split_balances_uneven_source_run_sizes(self) -> None:
+        frame = self.make_frame(0, 0, (255, 255, 255))
+        sequences = []
+        for run_id, count in (("large", 60), ("medium", 25), ("small", 10), ("tiny", 5)):
+            sequences.extend(
+                VisualSequence(
+                    group,
+                    (frame, frame),
+                    (Action.NOOP,),
+                    (1,),
+                    run_id,
+                )
+                for group in range(count)
+            )
+        training, validation = split_sequence_runs(
+            sequences, validation_modulus=5
+        )
+        self.assertGreaterEqual(len(validation), 15)
+        self.assertLessEqual(len(validation), 30)
+        self.assertFalse(
+            {item.source_run_id for item in training}
+            & {item.source_run_id for item in validation}
+        )
+
     def make_frame(self, x: int, y: int, color: tuple[int, int, int]) -> Frame:
         width = 32
         height = 32
@@ -82,6 +126,70 @@ class SpatialWorldModelTests(unittest.TestCase):
         self.assertEqual(tuple(tokens.shape), (1, 2, 8, 4, 4))
         self.assertEqual(tuple(uncertainty.shape), (1, 2))
         self.assertEqual(tuple(effects.shape), (1, 2, 4, 4))
+
+    def test_flow_residual_renderer_starts_as_exact_persistence(self) -> None:
+        model = SpatialTokenDynamicsModel(
+            token_size=8,
+            action_size=4,
+            ensemble_size=2,
+            grid_size=4,
+            duration_size=4,
+            renderer_kind="flow_residual",
+        )
+        source = frame_tensor(self.make_frame(4, 4, (255, 255, 255))).unsqueeze(0)
+        tokens = model.encode(source)
+        effect_logits = torch.ones((1, 4, 4)) * 10.0
+        rendered = model.render_successor(source, tokens, tokens, effect_logits)
+        self.assertLess(float((rendered - source).abs().max().detach()), 1e-5)
+
+    def test_shadow_evaluator_reports_plans_and_real_transition_error(self) -> None:
+        model = SpatialTokenDynamicsModel(
+            token_size=8,
+            action_size=4,
+            ensemble_size=2,
+            grid_size=4,
+            duration_size=4,
+        )
+        evaluator = SpatialShadowEvaluator(model, "cpu")
+        source = self.make_frame(4, 4, (255, 255, 255))
+        target = self.make_frame(10, 4, (255, 255, 255))
+        plans = evaluator.score_plans(
+            source,
+            [
+                ((Action.RIGHT,), (4,)),
+                ((Action.NOOP,), (4,)),
+            ],
+        )
+        transition = evaluator.evaluate_transition(
+            source, Action.RIGHT, 4, target
+        )
+        self.assertEqual(len(plans), 2)
+        self.assertIn("spatial_shadow_score", plans[0])
+        self.assertIn("spatial_shadow_predicted_change", plans[0])
+        self.assertIn("spatial_shadow_effect_f1", transition)
+        self.assertIn("spatial_shadow_beats_persistence", transition)
+        self.assertGreaterEqual(transition["spatial_shadow_effect_f1"], 0.0)
+
+    def test_legacy_checkpoint_uses_the_original_blend_renderer(self) -> None:
+        model = SpatialTokenDynamicsModel(
+            token_size=8,
+            action_size=4,
+            ensemble_size=2,
+            grid_size=4,
+            duration_size=4,
+            renderer_kind="blend",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "legacy-spatial.pt"
+            save_spatial_checkpoint(model, path, planning_horizon=2)
+            checkpoint = torch.load(path, map_location="cpu", weights_only=True)
+            checkpoint["version"] = 5
+            checkpoint.pop("renderer_kind")
+            checkpoint.pop("max_flow_pixels")
+            checkpoint.pop("residual_scale")
+            torch.save(checkpoint, path)
+            loaded, _horizon = load_spatial_checkpoint(path, frozen=True)
+        self.assertEqual(loaded.renderer_kind, "blend")
 
     def test_training_validation_and_checkpoint_round_trip(self) -> None:
         torch.manual_seed(3)
