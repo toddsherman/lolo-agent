@@ -128,7 +128,10 @@ def main() -> None:
         "--spatial-selection-weight",
         type=float,
         default=0.0,
-        help="optional frozen spatial-score tie-break weight; zero is shadow-only",
+        help=(
+            "optional frozen spatial score for prioritizing save-state branch "
+            "verification; verified commit scoring remains outcome-based"
+        ),
     )
     parser.add_argument("--decisions", type=int, default=20)
     parser.add_argument("--action-frames", type=int, default=4)
@@ -373,7 +376,9 @@ def main() -> None:
             "parameter_sha256": spatial_shadow_before,
             "planning_horizon": spatial_shadow_horizon,
             "mode": (
-                "selection" if args.spatial_selection_weight > 0.0 else "observational"
+                "verification_priority"
+                if args.spatial_selection_weight > 0.0
+                else "observational"
             ),
             "selection_weight": args.spatial_selection_weight,
         }
@@ -503,7 +508,7 @@ def main() -> None:
                 "spatial_shadow_parameter_audit",
                 status="pass",
                 spatial_shadow_mode=(
-                    "selection"
+                    "verification_priority"
                     if args.spatial_selection_weight > 0.0
                     else "observational"
                 ),

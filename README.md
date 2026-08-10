@@ -103,8 +103,10 @@ metrics distinguish the effect-learning gate from the stricter planner-
 integration gate. A spatial checkpoint can also be measured against live
 save-state branches with `--spatial-shadow-checkpoint`; selection weight is
 zero by default. A promoted checkpoint can be tested as an explicit, logged
-tie-break ablation with `--spatial-selection-weight`, while zero remains the
-safe default.
+branch-verification-priority ablation with `--spatial-selection-weight`. The
+score compares each predicted action with a duration-matched predicted NOOP;
+real verified outcomes alone decide which branch is committed. Zero remains
+the safe default.
 
 Run the saved model in frozen evaluation mode:
 

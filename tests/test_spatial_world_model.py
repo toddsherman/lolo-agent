@@ -204,10 +204,16 @@ class SpatialWorldModelTests(unittest.TestCase):
         )
         self.assertEqual(len(plans), 2)
         self.assertIn("spatial_shadow_score", plans[0])
+        self.assertIn("spatial_shadow_usefulness_score", plans[0])
+        self.assertIn("spatial_shadow_raw_activity_score", plans[0])
+        self.assertIn("spatial_shadow_predicted_causal_change", plans[0])
+        self.assertIn("spatial_shadow_predicted_causal_effect", plans[0])
         self.assertIn("spatial_shadow_predicted_change", plans[0])
         self.assertIn("spatial_shadow_effect_f1", transition)
         self.assertIn("spatial_shadow_beats_persistence", transition)
         self.assertIn("spatial_shadow_predicted_pixel_change", transition)
+        self.assertIn("spatial_shadow_usefulness_score", transition)
+        self.assertAlmostEqual(plans[1]["spatial_shadow_score"], 0.0, places=6)
         self.assertGreaterEqual(transition["spatial_shadow_effect_f1"], 0.0)
 
     def test_legacy_checkpoint_uses_the_original_blend_renderer(self) -> None:

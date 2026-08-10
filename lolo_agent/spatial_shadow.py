@@ -29,6 +29,22 @@ class SpatialShadowEvaluator:
     def checkpoint_digest(self) -> str:
         return self.model.checkpoint_digest
 
+    def _counterfactual_metrics(
+        self,
+        predicted: Tensor,
+        predicted_effect: Tensor,
+        noop_predicted: Tensor,
+        noop_effect: Tensor,
+    ) -> Dict[str, Tensor]:
+        causal_change = (predicted - noop_predicted).abs().mean(dim=(1, 2, 3))
+        causal_effect = (predicted_effect - noop_effect).abs().mean(dim=(1, 2))
+        usefulness = causal_effect + causal_change / self.model.effect_scale
+        return {
+            "causal_change": causal_change,
+            "causal_effect": causal_effect,
+            "usefulness": usefulness,
+        }
+
     @torch.no_grad()
     def score_plans(
         self,
@@ -72,10 +88,43 @@ class SpatialShadowEvaluator:
         ).sum(dim=1)
         uncertainty_mass = (uncertainty * horizon_weights.unsqueeze(0)).sum(dim=1)
         final_change = (predicted[:, -1] - source_batch).abs().mean(dim=(1, 2, 3))
-        shadow_score = effect_mass + uncertainty_mass
+        noop_actions = torch.full(
+            (len(plans), 1),
+            ACTION_TO_INDEX[Action.NOOP],
+            dtype=torch.long,
+            device=self.device,
+        )
+        noop_predicted, _noop_tokens, _noop_uncertainty, noop_effects = (
+            self.model.rollout(
+                source_batch,
+                noop_actions,
+                durations[:, :1] if self.model.duration_conditioned else None,
+            )
+        )
+        counterfactual = self._counterfactual_metrics(
+            predicted[:, 0],
+            effects[:, 0],
+            noop_predicted[:, 0],
+            noop_effects[:, 0],
+        )
+        raw_activity_score = effect_mass + uncertainty_mass
         return [
             {
-                "spatial_shadow_score": float(shadow_score[index].cpu()),
+                "spatial_shadow_score": float(
+                    counterfactual["usefulness"][index].cpu()
+                ),
+                "spatial_shadow_usefulness_score": float(
+                    counterfactual["usefulness"][index].cpu()
+                ),
+                "spatial_shadow_raw_activity_score": float(
+                    raw_activity_score[index].cpu()
+                ),
+                "spatial_shadow_predicted_causal_change": float(
+                    counterfactual["causal_change"][index].cpu()
+                ),
+                "spatial_shadow_predicted_causal_effect": float(
+                    counterfactual["causal_effect"][index].cpu()
+                ),
                 "spatial_shadow_predicted_effect": float(effect_mass[index].cpu()),
                 "spatial_shadow_predicted_change": float(final_change[index].cpu()),
                 "spatial_shadow_uncertainty": float(uncertainty_mass[index].cpu()),
@@ -95,16 +144,29 @@ class SpatialShadowEvaluator:
         source = frame_tensor(source_frame, self.device).unsqueeze(0)
         target = frame_tensor(target_frame, self.device).unsqueeze(0)
         actions = torch.tensor(
-            [[ACTION_TO_INDEX[action]]], dtype=torch.long, device=self.device
+            [
+                [ACTION_TO_INDEX[action]],
+                [ACTION_TO_INDEX[Action.NOOP]],
+            ],
+            dtype=torch.long,
+            device=self.device,
         )
-        durations = torch.tensor([[duration]], dtype=torch.long, device=self.device)
+        durations = torch.tensor(
+            [[duration], [duration]], dtype=torch.long, device=self.device
+        )
         predicted, _tokens, uncertainty, effects = self.model.rollout(
-            source,
+            source.expand(2, -1, -1, -1).contiguous(),
             actions,
             durations if self.model.duration_conditioned else None,
         )
-        predicted_frame = predicted[:, 0]
-        predicted_effect = effects[:, 0]
+        predicted_frame = predicted[:1, 0]
+        predicted_effect = effects[:1, 0]
+        counterfactual = self._counterfactual_metrics(
+            predicted[:1, 0],
+            effects[:1, 0],
+            predicted[1:, 0],
+            effects[1:, 0],
+        )
         actual_effect = spatial_effect_target(
             source,
             target,
@@ -140,6 +202,19 @@ class SpatialShadowEvaluator:
             ),
             "spatial_shadow_persistence_l1": float((source - target).abs().mean().cpu()),
             "spatial_shadow_predicted_pixel_change": predicted_pixel_change,
+            "spatial_shadow_score": float(counterfactual["usefulness"][0].cpu()),
+            "spatial_shadow_usefulness_score": float(
+                counterfactual["usefulness"][0].cpu()
+            ),
+            "spatial_shadow_raw_activity_score": float(
+                (predicted_effect.mean() + uncertainty[0, 0]).cpu()
+            ),
+            "spatial_shadow_predicted_causal_change": float(
+                counterfactual["causal_change"][0].cpu()
+            ),
+            "spatial_shadow_predicted_causal_effect": float(
+                counterfactual["causal_effect"][0].cpu()
+            ),
             "spatial_shadow_effect_weighted_pixel_l1": weighted_error,
             "spatial_shadow_effect_weighted_persistence_l1": weighted_persistence,
             "spatial_shadow_beats_persistence": weighted_error < weighted_persistence,

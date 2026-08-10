@@ -9,9 +9,11 @@ frames, controller actions, action durations, and branch grouping. It beats
 frame persistence on all three held-out horizons and on two consecutive unseen
 native Room 1 continuations.
 
-The spatial model is still **selection-disabled by default**. A 0.25 frozen
-tie-break A/B test changed behavior but did not clearly improve 60-decision
-exploration, so promotion as an action objective is not yet justified.
+The spatial model is still **selection-disabled by default**. Raw predicted
+activity was anti-correlated with real action-dependent change. Replacing it
+with action-versus-NOOP counterfactual usefulness fixed that diagnostic, but
+two paired 60-decision priority ablations produced mixed exploration results.
+Promotion as an action objective is therefore not yet justified.
 
 This is deliberately separate from `human_prior_v1` and `human_prior_v2`.
 Assisted-policy runs cannot be imported into a strict dataset: the sequence
@@ -174,25 +176,49 @@ unseen continuations:
 The combined native improvement is 9.69%. Both the spatial and baseline model
 parameter-hash audits passed in both runs.
 
-## Planner tie-break ablation
+## Counterfactual usefulness and planner ablations
 
-The frozen spatial score can now be enabled explicitly with
-`--spatial-selection-weight`; it remains zero by default. Two 60-decision runs
-started from the exact same save-state provenance:
+An audit of all 450 verified branches available at this point compared the old
+score with actual action-dependent change measured against matched verified
+NOOP outcomes. Raw predicted activity had Pearson correlation -0.393 with the
+real contrast. It was especially misleading for A and B, whose verified
+contrast was zero in these samples.
 
-| Measurement | Weight 0 | Weight 0.25 |
-| --- | ---: | ---: |
-| Unique frames | 93 | 84 |
-| Unique scenes | 3 | 3 |
-| Unique causal signatures | 51 | 47 |
-| Maximum persistent-frontier value | 6.956 | 7.184 |
-| Archive restores | 7 | 8 |
-| Delayed-return recoveries | 2 | 3 |
-| Room transition | No | No |
+The replacement score predicts both the proposed action and a duration-matched
+NOOP from the same pixels, then measures their pixel and spatial-effect-map
+difference. This unlabeled counterfactual usefulness correlated +0.562 with
+the real contrast; its pixel-only component correlated +0.573 and its
+effect-map component +0.500. These verified outcomes were used only for the
+offline audit, never as planner input.
 
-The weighted run reached a slightly higher peak frontier but explored fewer
-states and looped/restored more. This is not a clear win, so weight 0 remains
-the plan of record.
+The first integration added the prediction bonus to the final branch score.
+That was conceptually wrong: after save-state verification, it could override
+better real outcomes. Two paired runs were correspondingly contradictory, so
+that integration was rejected. The corrected implementation uses the frozen
+score only to prioritize which candidates are verified. Real outcome scoring
+alone chooses the committed branch.
+
+`--spatial-selection-weight` enables this verification-priority ablation and
+remains zero by default. Two corrected 60-decision pairs started from the same
+save-state provenance within each pair:
+
+| Measurement | Pair 1 control | Pair 1 priority | Pair 2 control | Pair 2 priority |
+| --- | ---: | ---: | ---: | ---: |
+| Weight | 0 | 0.75 | 0 | 0.75 |
+| Unique frames | 93 | 101 | 89 | 79 |
+| Unique scenes | 3 | 4 | 4 | 4 |
+| Unique causal signatures | 51 | 57 | 47 | 43 |
+| Maximum persistent-frontier value | 6.956 | 6.956 | 7.961 | 7.961 |
+| Archive restores | 7 | 7 | 8 | 8 |
+| Persistent-frontier returns | 3 | 1 | 3 | 2 |
+| Delayed-return recoveries | 2 | 1 | 3 | 2 |
+| Room transition | No | No | No | No |
+
+Both weighted arms reduced wasteful returns and preserved peak frontier value.
+Pair 1 expanded exploration, while pair 2 contracted it. That is useful but
+insufficient evidence for default-on control, so weight 0 remains the plan of
+record. The counterfactual score is retained as telemetry and an opt-in
+research ablation.
 
 ## Run locally
 
@@ -224,12 +250,13 @@ python -m lolo_agent.spatial_train \
 
 ## Next gate
 
-1. Suppress false predicted change for NOOP, A, B, and blocked movement without
-   weakening the large gains on effective directional movement.
-2. Replace raw predicted-effect curiosity as the selection bonus with a
-   calibrated usefulness or reachability objective, then repeat paired runs.
-3. Repeat frozen prediction and planning ablations in later rooms and across
-   multiple source-run folds before any default-on promotion.
-4. Add learned reachability, reversibility, and reset-risk heads over spatial
+1. Evaluate counterfactual usefulness in later rooms and across multiple
+   source-run folds, where hazards and longer causal chains provide a stronger
+   test than Room 1 movement.
+2. Add learned reachability, reversibility, and reset-risk heads over spatial
    tokens. Those outcomes must be derived from visual trajectories rather than
    heart, enemy, life, or room labels.
+3. Suppress residual false predicted change for NOOP, A, B, and blocked
+   movement without weakening the gains on effective directional movement.
+4. Require a multi-seed improvement in task-level exploration or completion
+   before enabling any learned spatial priority by default.

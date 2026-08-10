@@ -138,9 +138,10 @@ labels.
 
 Supplying `--spatial-shadow-checkpoint` adds predictions from the spatial model
 without changing the existing planner by default. Every `planner_candidates`
-row includes the score, predicted pixel change, predicted effect, uncertainty,
-mode, selection weight, and weighted selection bonus. Each real save-state
-branch also emits
+row includes the counterfactual-usefulness score, raw predicted-activity score,
+predicted action-versus-NOOP pixel and effect differences, predicted pixel
+change, predicted effect, uncertainty, mode, selection weight, and weighted
+priority bonus. Each real save-state branch also emits
 `spatial_shadow_branch_evaluated`, linked by decision, branch ID, candidate
 rank, action, and duration. It records:
 
@@ -149,7 +150,10 @@ rank, action, and duration. It records:
 - whether the prediction beat persistence;
 - spatial-effect L1 and F1;
 - predicted versus observed effect mass; and
-- predicted pixel-change magnitude; and
+- predicted pixel-change magnitude;
+- predicted action-versus-duration-matched-NOOP pixel and effect differences;
+- the raw activity and counterfactual-usefulness scores;
+- actual action-effect contrast against the matched verified NOOP branch; and
 - ensemble uncertainty.
 
 `spatial_shadow.csv` provides one flat row per verified branch for plotting.
@@ -160,11 +164,15 @@ bonus. The run manifest stores checkpoint file and parameter hashes plus the
 mode and weight.
 
 `--spatial-selection-weight N` enables a controlled frozen-model ablation. The
-spatial score is multiplied by `N` and added to the existing candidate score;
-no model parameters are updated and verified-branch error is never used for
-selection. Candidate, branch, and committed-decision telemetry retain the raw
-score, weight, and bonus separately. Omitting the option, or setting it to
-zero, preserves observational mode exactly.
+counterfactual-usefulness score is multiplied by `N` to prioritize which
+save-state candidates are verified first. It is not added to the final
+verified-branch commit score: once real outcomes are available, the existing
+outcome-based objective decides which branch is committed. No model parameters
+are updated, and verified-branch error is never fed back into the current
+decision. Candidate, branch, and committed-decision telemetry retain the raw
+score, weight, bonus, mode, and `spatial_selection_applied_to_commit` flag.
+Omitting the option, or setting it to zero, preserves observational mode
+exactly.
 
 ## Attempts and level labels
 

@@ -121,6 +121,12 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "spatial_shadow_pixel_l1",
         "spatial_shadow_persistence_l1",
         "spatial_shadow_predicted_pixel_change",
+        "spatial_shadow_score",
+        "spatial_shadow_usefulness_score",
+        "spatial_shadow_raw_activity_score",
+        "spatial_shadow_predicted_causal_change",
+        "spatial_shadow_predicted_causal_effect",
+        "spatial_shadow_actual_causal_contrast",
         "spatial_shadow_effect_weighted_pixel_l1",
         "spatial_shadow_effect_weighted_persistence_l1",
         "spatial_shadow_effect_l1",
@@ -150,6 +156,9 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                     ),
                     "spatial_shadow_selection_bonus": event.get(
                         "spatial_shadow_selection_bonus", 0.0
+                    ),
+                    "spatial_shadow_actual_causal_contrast": event.get(
+                        "spatial_shadow_actual_causal_contrast"
                     ),
                     "spatial_shadow_beats_persistence": event.get(
                         "spatial_shadow_beats_persistence", False
@@ -292,6 +301,9 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                     ),
                     "spatial_selection_bonus": event.get(
                         "spatial_selection_bonus", 0.0
+                    ),
+                    "spatial_selection_applied_to_commit": event.get(
+                        "spatial_selection_applied_to_commit", False
                     ),
                     "branches_examined": event.get("branches_examined", 0),
                     "restored_archive": restored,
@@ -462,6 +474,7 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "spatial_selection_mode",
         "spatial_selection_weight",
         "spatial_selection_bonus",
+        "spatial_selection_applied_to_commit",
         "branches_examined",
         "restored_archive",
         "restore_reason",
@@ -581,6 +594,15 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                 str(key): value for key, value in sorted(values["durations"].items())
             },
         }
+
+    def spatial_mean(field: str) -> float:
+        values = [
+            float(row[field])
+            for row in spatial_shadow_rows
+            if row.get(field) is not None
+        ]
+        return sum(values) / len(values) if values else 0.0
+
     summary = {
         "schema_version": SCHEMA_VERSION,
         "run_id": manifest["run_id"],
@@ -713,12 +735,7 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             for event in events
         ),
         "spatial_shadow_mean_metrics": {
-            field: (
-                sum(float(row[field]) for row in spatial_shadow_rows)
-                / len(spatial_shadow_rows)
-                if spatial_shadow_rows
-                else 0.0
-            )
+            field: spatial_mean(field)
             for field in spatial_shadow_metric_fields
         },
         "temporal_options_started": event_counts.get(

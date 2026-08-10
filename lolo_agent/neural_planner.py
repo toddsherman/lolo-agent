@@ -2583,7 +2583,7 @@ class VerifiedNeuralAgent:
             )
         )
         spatial_mode = (
-            "selection"
+            "verification_priority"
             if self.config.spatial_selection_weight > 0.0
             else "observational"
         )
@@ -3051,7 +3051,6 @@ class VerifiedNeuralAgent:
                 branch_action_penalties[id(state)] = action_penalty_components
                 intrinsic_score = (
                     plan.score
-                    + spatial_bonus(plan)
                     + self.config.actual_novelty_weight * effective_novelty
                     + self.config.scene_novelty_weight * scene_novelty
                     + self.config.prediction_error_weight * error
@@ -3101,6 +3100,9 @@ class VerifiedNeuralAgent:
                             self.config.spatial_selection_weight
                         ),
                         spatial_shadow_selection_bonus=spatial_bonus(plan),
+                        spatial_shadow_actual_causal_contrast=(
+                            action_effect_contrast
+                        ),
                         **self.spatial_shadow.evaluate_transition(
                             source_frame,
                             plan.path[0],
@@ -4388,6 +4390,7 @@ class VerifiedNeuralAgent:
                 spatial_selection_mode=spatial_mode,
                 spatial_selection_weight=self.config.spatial_selection_weight,
                 spatial_selection_bonus=spatial_bonus(plan),
+                spatial_selection_applied_to_commit=False,
                 branches_examined=len(verified),
                 restored_archive=False,
                 committed_state_id=self._state_id(state),

@@ -332,7 +332,7 @@ class EnsemblePlannerTests(unittest.TestCase):
             all(event["spatial_shadow_selection_weight"] == 0.0 for event in shadow_events)
         )
 
-    def test_spatial_selection_weight_is_an_explicit_tie_break_ablation(self) -> None:
+    def test_spatial_weight_prioritizes_verification_not_verified_commit(self) -> None:
         model = EnsembleVisualDynamicsModel(
             latent_size=32, action_size=8, ensemble_size=2
         )
@@ -371,22 +371,34 @@ class EnsemblePlannerTests(unittest.TestCase):
 
         decision = agent.decide()
 
-        self.assertEqual(decision.action, Action.RIGHT)
+        self.assertEqual(decision.action, Action.LEFT)
         candidates = next(
             event for event in logger.events if event["event"] == "planner_candidates"
         )["candidates"]
         self.assertTrue(
-            all(item["spatial_shadow_mode"] == "selection" for item in candidates)
+            all(
+                item["spatial_shadow_mode"] == "verification_priority"
+                for item in candidates
+            )
         )
         self.assertTrue(
             all(item["spatial_shadow_selection_weight"] == 1.0 for item in candidates)
         )
+        shadow_branches = [
+            event
+            for event in logger.events
+            if event["event"] == "spatial_shadow_branch_evaluated"
+        ]
+        self.assertEqual(shadow_branches[0]["action"], Action.RIGHT)
         committed = next(
             event for event in logger.events if event["event"] == "decision_committed"
         )
-        self.assertEqual(committed["spatial_selection_mode"], "selection")
+        self.assertEqual(
+            committed["spatial_selection_mode"], "verification_priority"
+        )
         self.assertEqual(committed["spatial_selection_weight"], 1.0)
-        self.assertGreater(committed["spatial_selection_bonus"], 0.0)
+        self.assertEqual(committed["spatial_selection_bonus"], 0.0)
+        self.assertFalse(committed["spatial_selection_applied_to_commit"])
 
     def test_checkpoint_round_trip_is_frozen(self) -> None:
         model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
