@@ -144,3 +144,7 @@ attempt counts, and replayable solution traces.
   `experiments/lolo1-spatial-v14/persistence_evaluations/spatial-v14-room2-persistent-drop4-s3-coverage-w4-d250`
 
 All native runs reported `frozen_evaluation_audit=pass`.
+
+Subsequent behavioral best-first, control-collapse, duration-refinement, and
+dark-transition results are documented in
+[`control-preserving-search-2026-08-10.md`](control-preserving-search-2026-08-10.md).

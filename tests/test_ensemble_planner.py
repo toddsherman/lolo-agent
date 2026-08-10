@@ -20,6 +20,7 @@ from lolo_agent.neural_planner import (
     VerifiedNeuralAgent,
     _ArchivedBranch,
     _BehaviorProbeSelection,
+    _LifeHazardCheckpoint,
     _OptionCounterfactual,
     _TemporalOptionTrace,
 )
@@ -139,6 +140,40 @@ class ActionEffectEnv:
         pixels = bytearray(64)
         pixels[self.position] = 255
         return Frame(8, 8, 1, bytes(pixels))
+
+
+class DynamicActionEffectEnv:
+    def __init__(self) -> None:
+        self.value = 0
+        self.collapsed = False
+
+    def reset(self) -> Frame:
+        self.value = 0
+        self.collapsed = False
+        return self._frame()
+
+    def step(self, action: Action, frames: int = 1) -> Frame:
+        if self.collapsed:
+            self.value = 64
+        elif action == Action.SELECT:
+            self.value = 128
+        elif action == Action.RIGHT:
+            self.value = min(255, self.value + 16)
+            self.collapsed = True
+        else:
+            self.value = min(255, self.value + frames)
+            self.collapsed = True
+        return self._frame()
+
+    def save_state(self) -> tuple[int, bool]:
+        return self.value, self.collapsed
+
+    def load_state(self, state: tuple[int, bool]) -> Frame:
+        self.value, self.collapsed = state
+        return self._frame()
+
+    def _frame(self) -> Frame:
+        return Frame(8, 8, 1, bytes([self.value]) * 64)
 
 
 class UniqueStateEnv(ActionEffectEnv):
@@ -670,6 +705,404 @@ class EnsemblePlannerTests(unittest.TestCase):
                 ),
             )
 
+    def test_behavioral_edge_coverage_counts_only_committed_interventions(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        agent = VerifiedNeuralAgent(
+            ActionEffectEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                behavioral_edge_coverage_weight=4.0,
+            ),
+        )
+        agent.reset()
+
+        self.assertEqual(
+            agent._behavioral_edge_coverage("behavior-1", Action.RIGHT, 4),
+            (0, True, 4.0),
+        )
+        self.assertEqual(
+            agent._behavioral_edge_coverage("behavior-1", Action.NOOP, 4),
+            (0, False, 0.0),
+        )
+        self.assertEqual(
+            agent._record_behavioral_edge("behavior-1", Action.RIGHT, 4),
+            0,
+        )
+        visits, unexpanded, bonus = agent._behavioral_edge_coverage(
+            "behavior-1", Action.RIGHT, 4
+        )
+        self.assertEqual((visits, unexpanded), (1, False))
+        self.assertAlmostEqual(bonus, 4.0 / (2.0**0.5))
+
+        agent._migrate_frontier_signature("behavior-1", "behavior-2")
+        self.assertEqual(
+            agent.behavioral_edge_visits[
+                ("behavior-1", Action.RIGHT, 4)
+            ],
+            0,
+        )
+        self.assertEqual(
+            agent.behavioral_edge_visits[
+                ("behavior-2", Action.RIGHT, 4)
+            ],
+            1,
+        )
+
+    def test_behavioral_edge_coverage_weight_must_be_non_negative(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        with self.assertRaisesRegex(ValueError, "behavioral edge coverage"):
+            VerifiedNeuralAgent(
+                ActionEffectEnv(),
+                model,
+                "cpu",
+                NeuralPlanningConfig(
+                    actions=(Action.RIGHT,),
+                    planning_depth=1,
+                    behavioral_edge_coverage_weight=-1.0,
+                ),
+            )
+
+    def test_causal_cell_recovery_grace_must_be_non_negative(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        with self.assertRaisesRegex(ValueError, "recovery grace"):
+            VerifiedNeuralAgent(
+                ActionEffectEnv(),
+                model,
+                "cpu",
+                NeuralPlanningConfig(
+                    actions=(Action.RIGHT,),
+                    planning_depth=1,
+                    causal_cell_recovery_grace_decisions=-1,
+                ),
+            )
+
+    def test_causal_cell_progress_temporarily_suppresses_recovery(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = UniqueStateEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                causal_cell_recovery_grace_decisions=4,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.delayed_return_recovery = True
+        agent.delayed_return_loop_start = 0
+        agent.last_causal_cell_progress_decision = 0
+
+        restored = agent._restore_if_stagnant()
+
+        self.assertIsNone(restored)
+        self.assertFalse(agent.delayed_return_recovery)
+        suppressions = [
+            event
+            for event in logger.events
+            if event["event"] == "causal_cell_recovery_suppressed"
+        ]
+        self.assertEqual(len(suppressions), 1)
+        self.assertEqual(suppressions[0]["grace_decisions"], 4)
+
+    def test_causal_cell_progress_suppresses_visual_stagnation_recovery(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = UniqueStateEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                visual_stagnation_visits=1,
+                causal_cell_recovery_grace_decisions=4,
+            ),
+            event_logger=logger,
+        )
+        frame = agent.reset()
+        agent.archive = [
+            _ArchivedBranch(
+                env.save_state(),
+                frame,
+                NeuralPlan((Action.RIGHT,), (1,), 1.0, 0.0),
+                1.0,
+                "other-scene",
+                0,
+            )
+        ]
+        agent.visual_stagnation_streak = 1
+        agent.last_causal_cell_progress_decision = 0
+
+        restored = agent._restore_if_stagnant()
+
+        self.assertIsNone(restored)
+        self.assertEqual(len(agent.archive), 1)
+        suppression = next(
+            event
+            for event in logger.events
+            if event["event"] == "causal_cell_recovery_suppressed"
+        )
+        self.assertEqual(suppression["recovery_reason"], "visual_stagnation")
+
+    def test_archive_recovery_never_restores_an_all_hazard_frontier(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = UniqueStateEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                behavioral_best_first_archive=True,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        root = env.save_state()
+        target = env.step(Action.RIGHT)
+        target_state = env.save_state()
+        env.load_state(root)
+        choice = ("source", Action.RIGHT, 1)
+        agent.archive = [
+            _ArchivedBranch(
+                target_state,
+                target,
+                NeuralPlan((Action.RIGHT,), (1,), 1.0, 0.0),
+                1.0,
+                "target-scene",
+                0,
+                origin_signature="source",
+            )
+        ]
+        agent.temporal_option_values[choice] = -2.0
+        agent.temporal_option_samples[choice] = 1
+        agent.delayed_return_recovery = True
+        agent.delayed_return_loop_start = 0
+
+        restored = agent._restore_if_stagnant()
+
+        self.assertIsNone(restored)
+        self.assertEqual(len(agent.archive), 1)
+        self.assertFalse(agent.delayed_return_recovery)
+        exhausted = next(
+            event
+            for event in logger.events
+            if event["event"]
+            == "archive_recovery_exhausted_by_learned_hazards"
+        )
+        self.assertEqual(exhausted["filtered"], 1)
+
+    def test_dark_transition_return_to_known_scene_restores_archive(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = ActionEffectEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,), planning_depth=1
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        constant = lambda value: Frame(
+            32, 32, 3, bytes([value]) * (32 * 32 * 3)
+        )
+        known = constant(128)
+        returned = constant(129)
+        dark = constant(0)
+        safe = constant(200)
+        agent.frame = returned
+        agent.bright_scene_memory = [
+            agent._persistent_cell_values(known)
+        ]
+        agent.archive = [
+            _ArchivedBranch(
+                env.save_state(),
+                safe,
+                NeuralPlan((Action.RIGHT,), (1,), 1.0, 0.0),
+                1.0,
+                "safe-scene",
+                0,
+                origin_signature="safe",
+            )
+        ]
+        agent.decision_index = 2
+
+        agent._observe_dark_transition(dark)
+        agent._observe_dark_transition(returned)
+        restored = agent._restore_if_stagnant()
+
+        self.assertTrue(restored.restored_archive)
+        self.assertEqual(restored.frame.digest, safe.digest)
+        resolved = next(
+            event
+            for event in logger.events
+            if event["event"] == "generic_dark_transition_resolved"
+        )
+        self.assertTrue(resolved["returned_to_known_scene"])
+        committed = [
+            event
+            for event in logger.events
+            if event["event"] == "decision_committed"
+        ][-1]
+        self.assertEqual(
+            committed["restore_reason"],
+            "known_scene_return_after_dark_transition",
+        )
+
+    def test_dark_transition_to_novel_scene_does_not_restore(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        agent = VerifiedNeuralAgent(
+            ActionEffectEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,), planning_depth=1
+            ),
+        )
+        agent.reset()
+        constant = lambda value: Frame(
+            32, 32, 3, bytes([value]) * (32 * 32 * 3)
+        )
+        known = constant(128)
+        novel = constant(224)
+        agent.bright_scene_memory = [
+            agent._persistent_cell_values(known)
+        ]
+
+        agent._observe_dark_transition(constant(0))
+        agent._observe_dark_transition(novel)
+
+        self.assertFalse(agent.known_scene_return_recovery_pending)
+        self.assertEqual(len(agent.bright_scene_memory), 2)
+
+    def test_behavioral_best_first_restore_prefers_unexpanded_edge(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = UniqueStateEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.LEFT),
+                planning_depth=1,
+                visual_stagnation_visits=1,
+                behavioral_best_first_archive=True,
+            ),
+            event_logger=logger,
+        )
+        current = agent.reset()
+        scene = agent._scene_signature(current)
+        repeated_frame = Frame(8, 8, 1, bytes([10]) + bytes(63))
+        unexpanded_frame = Frame(8, 8, 1, bytes([20]) + bytes(63))
+        repeated = _ArchivedBranch(
+            state=env.save_state(),
+            frame=repeated_frame,
+            plan=NeuralPlan((Action.RIGHT,), (4,), 0.0, 0.0),
+            score=100.0,
+            scene=scene,
+            created=10,
+            origin_signature="behavior-1",
+            causal_spatial_signature="01",
+            causal_context_signature="causal-context-root",
+            causal_event_outcome=True,
+        )
+        unexpanded = _ArchivedBranch(
+            state=env.save_state(),
+            frame=unexpanded_frame,
+            plan=NeuralPlan((Action.LEFT,), (4,), 0.0, 0.0),
+            score=0.0,
+            scene=scene,
+            created=1,
+            origin_signature="behavior-1",
+            causal_spatial_signature="02",
+            causal_context_signature="causal-context-root",
+            parent_state_id="state-parent",
+            parent_frame_digest="frame-parent",
+            parent_decision=7,
+            search_depth=3,
+        )
+        agent.archive = [repeated, unexpanded]
+        agent.behavioral_edge_visits[
+            ("behavior-1", Action.RIGHT, 4)
+        ] = 3
+        agent.delayed_return_recovery = True
+        agent.delayed_return_loop_start = 10
+
+        restored = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(restored)
+        self.assertEqual(restored.frame.digest, unexpanded_frame.digest)
+        self.assertEqual(
+            agent.behavioral_edge_visits[
+                ("behavior-1", Action.LEFT, 4)
+            ],
+            1,
+        )
+        filtered = [
+            event
+            for event in logger.events
+            if event["event"]
+            == "behavioral_best_first_archives_filtered"
+        ]
+        self.assertEqual(len(filtered), 1)
+        global_frontier = [
+            event
+            for event in logger.events
+            if event["event"] == "behavioral_best_first_global_archive"
+        ]
+        self.assertEqual(len(global_frontier), 1)
+        committed = [
+            event
+            for event in logger.events
+            if event["event"] == "decision_committed"
+        ][-1]
+        self.assertTrue(committed["behavioral_edge_unexpanded"])
+        self.assertTrue(committed["behavioral_best_first_applied"])
+        self.assertEqual(committed["parent_state_id"], "state-parent")
+        self.assertEqual(committed["parent_frame"], "frame-parent")
+        self.assertEqual(committed["parent_decision"], 7)
+        self.assertEqual(committed["search_depth"], 3)
+
     def test_persistent_change_filters_regressive_archives_when_alternatives_exist(
         self,
     ) -> None:
@@ -750,6 +1183,82 @@ class EnsemblePlannerTests(unittest.TestCase):
         agent._observe_persistent_changes(baseline)
         agent._observe_persistent_changes(baseline)
         self.assertEqual(agent.persistent_change_cells, {})
+
+    def test_speculative_persistent_change_preserves_candidate_on_restore(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = UniqueStateEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                visual_stagnation_visits=1,
+                causal_spatial_columns=2,
+                causal_spatial_rows=2,
+                persistent_change_stability_decisions=3,
+                persistent_change_minimum_value_drop=4,
+                persistent_change_speculative_recovery=True,
+            ),
+            event_logger=logger,
+        )
+        baseline = Frame(8, 8, 1, bytes([255]) * 64)
+        agent.reset(baseline)
+        changed_pixels = bytearray([255] * 64)
+        for row in range(4):
+            changed_pixels[row * 8 : row * 8 + 4] = bytes(4)
+        changed = Frame(8, 8, 1, bytes(changed_pixels))
+        current_pixels = bytearray(changed_pixels)
+        current_pixels[-1] = 254
+        current = Frame(8, 8, 1, bytes(current_pixels))
+
+        agent._observe_persistent_changes(changed)
+        self.assertEqual(agent.persistent_change_cells, {})
+        self.assertEqual(agent.persistent_change_candidates, {0: (0, 1)})
+        scene = agent._scene_signature(current)
+        plan = NeuralPlan((Action.RIGHT,), (1,), 0.0, 0.0)
+        agent.frame = current
+        agent.archive = [
+            _ArchivedBranch(
+                env.save_state(),
+                baseline,
+                plan,
+                100.0,
+                scene,
+                1,
+                causal_spatial_signature="01",
+                causal_context_signature="causal-context-root",
+            ),
+            _ArchivedBranch(
+                env.save_state(),
+                changed,
+                plan,
+                0.0,
+                scene,
+                2,
+                causal_spatial_signature="02",
+                causal_context_signature="causal-context-root",
+            ),
+        ]
+        agent.visual_stagnation_streak = 1
+
+        restored = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(restored)
+        self.assertEqual(restored.frame.digest, changed.digest)
+        self.assertEqual(agent.persistent_change_candidates, {0: (0, 1)})
+        committed = [
+            event
+            for event in logger.events
+            if event["event"] == "decision_committed"
+        ][-1]
+        self.assertTrue(committed["speculative_persistence_applied"])
 
     def test_learned_hazard_is_verified_but_not_committed_when_safe(self) -> None:
         model = EnsembleVisualDynamicsModel(latent_size=32, action_size=9, ensemble_size=2)
@@ -885,10 +1394,41 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(len(agent.archive), 1)
 
         agent.active_temporal_option.passive_decisions = 4
+        agent.autonomous_grace_remaining = 1
         restored = agent._restore_if_stagnant()
 
         self.assertIsNotNone(restored)
         self.assertTrue(restored.restored_archive)
+
+    def test_passive_transition_cannot_create_persistent_progress(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        agent = VerifiedNeuralAgent(
+            MockPuzzleEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.NOOP,),
+                planning_depth=1,
+                causal_spatial_columns=2,
+                causal_spatial_rows=2,
+                persistent_change_stability_decisions=2,
+                persistent_change_minimum_value_drop=4,
+            ),
+        )
+        baseline = Frame(8, 8, 1, bytes([255]) * 64)
+        agent.reset(baseline)
+        changed_pixels = bytearray([255] * 64)
+        for row in range(4):
+            changed_pixels[row * 8 : row * 8 + 4] = bytes(4)
+        changed = Frame(8, 8, 1, bytes(changed_pixels))
+
+        agent._observe_persistent_changes(changed, action_dependent=False)
+        agent._observe_persistent_changes(changed, action_dependent=False)
+
+        self.assertEqual(agent.persistent_change_candidates, {})
+        self.assertEqual(agent.persistent_change_cells, {})
 
     def test_autonomous_grace_reserves_an_intervention_before_recovery(self) -> None:
         model = EnsembleVisualDynamicsModel(
@@ -958,6 +1498,264 @@ class EnsemblePlannerTests(unittest.TestCase):
 
         self.assertEqual(decision.action, Action.A)
         self.assertFalse(agent.autonomous_intervention_pending)
+
+    def test_active_autonomous_grace_is_not_reset_by_fresh_detection(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32,
+            action_size=8,
+            ensemble_size=2,
+            duration_conditioned=True,
+            duration_size=4,
+            max_action_frames=4,
+        )
+        agent = VerifiedNeuralAgent(
+            AutonomousAnimationEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.A, Action.NOOP),
+                action_durations=(1, 4),
+                planning_depth=1,
+                beam_width=4,
+                verify_actions=4,
+                autonomous_grace_decisions=4,
+            ),
+        )
+        agent.reset()
+        agent.autonomous_grace_remaining = 1
+
+        decision = agent.decide()
+
+        self.assertEqual(decision.action, Action.NOOP)
+        self.assertEqual(agent.autonomous_grace_remaining, 0)
+        self.assertTrue(agent.autonomous_intervention_pending)
+
+    def test_autonomous_intervention_prefers_action_dependent_control(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        agent = VerifiedNeuralAgent(
+            ActionEffectEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.A, Action.RIGHT, Action.NOOP),
+                planning_depth=1,
+                beam_width=3,
+                verify_actions=3,
+            ),
+        )
+        agent.reset()
+        agent.autonomous_intervention_pending = True
+
+        decision = agent.decide()
+
+        self.assertEqual(decision.action, Action.RIGHT)
+
+    def test_dynamic_control_selects_a_future_viable_escape(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            DynamicActionEffectEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.SELECT, Action.NOOP),
+                planning_depth=1,
+                beam_width=3,
+                verify_actions=3,
+                action_frames=1,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.planner.plan = lambda _frame: [
+            NeuralPlan((Action.RIGHT,), (1,), 100.0, 0.0),
+            NeuralPlan((Action.SELECT,), (1,), 0.0, 0.0),
+            NeuralPlan((Action.NOOP,), (1,), -100.0, 0.0),
+        ]
+        agent.pending_option_choice = ("source", Action.RIGHT, 1)
+        agent.pending_option_decision = 0
+        agent.pending_option_causal_evidence = True
+
+        decision = agent.decide()
+
+        self.assertEqual(decision.action, Action.SELECT)
+        selected = [
+            event
+            for event in logger.events
+            if event["event"] == "dynamic_control_selected"
+        ]
+        self.assertEqual(len(selected), 1)
+        probes = [
+            event
+            for event in logger.events
+            if event["event"] == "counterfactual_control_probe"
+        ]
+        self.assertEqual(len(probes), 1)
+        self.assertTrue(probes[0]["control_collapsed"])
+        escape = next(
+            event
+            for event in logger.events
+            if event["event"] == "counterfactual_control_escape_probe"
+        )
+        self.assertEqual(escape["viable_alternatives"], 1)
+        self.assertEqual(escape["selected_action"], Action.SELECT)
+
+    def test_causal_observation_matches_a_short_initiating_press(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32,
+            action_size=8,
+            ensemble_size=2,
+            duration_conditioned=True,
+            duration_size=4,
+            max_action_frames=8,
+        )
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            ActionEffectEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.NOOP),
+                action_durations=(1, 8),
+                planning_depth=1,
+                beam_width=4,
+                verify_actions=3,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.planner.plan = lambda _frame: [
+            NeuralPlan((Action.RIGHT,), (8,), 3.0, 0.0),
+            NeuralPlan((Action.NOOP,), (8,), 2.0, 0.0),
+            NeuralPlan((Action.RIGHT,), (1,), 1.0, 0.0),
+            NeuralPlan((Action.NOOP,), (1,), 0.0, 0.0),
+        ]
+        agent.pending_option_choice = ("source", Action.RIGHT, 1)
+        agent.pending_option_decision = 0
+        agent.pending_option_causal_evidence = True
+
+        decision = agent.decide()
+
+        self.assertEqual(decision.action, Action.NOOP)
+        self.assertEqual(decision.action_frames, 1)
+        wait = next(
+            event
+            for event in logger.events
+            if event["event"] == "causal_observation_wait"
+        )
+        self.assertEqual(wait["initiation_duration"], 1)
+        self.assertTrue(wait["duration_matched"])
+        probes = next(
+            event["probes"]
+            for event in logger.events
+            if event["event"] == "behavior_probe_selected"
+        )
+        matched = [
+            probe for probe in probes if probe["matched_causal_observation"]
+        ]
+        self.assertEqual(len(matched), 1)
+        self.assertEqual(matched[0]["action"], Action.NOOP)
+        self.assertEqual(matched[0]["action_frames"], 1)
+
+    def test_control_collapse_restores_the_causal_checkpoint(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        logger = RecordingLogger()
+        env = DynamicActionEffectEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.NOOP),
+                planning_depth=1,
+                beam_width=2,
+                verify_actions=2,
+                action_frames=1,
+            ),
+            event_logger=logger,
+        )
+        root_frame = agent.reset()
+        agent.planner.plan = lambda _frame: [
+            NeuralPlan((Action.RIGHT,), (1,), 100.0, 0.0),
+            NeuralPlan((Action.NOOP,), (1,), -100.0, 0.0),
+        ]
+        choice = ("source", Action.RIGHT, 1)
+        agent.pending_option_choice = choice
+        agent.pending_option_decision = 0
+        agent.pending_option_causal_evidence = True
+        agent.pending_option_recovery_checkpoint = _LifeHazardCheckpoint(
+            state=env.save_state(),
+            frame=root_frame,
+            choice=choice,
+            decision=0,
+            frontier_signature="source",
+            causal_context_signature="causal-context-root",
+            scene=agent.current_scene,
+            pose_action=None,
+            last_action=None,
+            last_duration=None,
+            action_streak=0,
+            goal_heart_slots=(),
+            goal_player_slot=None,
+        )
+
+        first = agent.decide()
+        agent.archive.extend(
+            [
+                _ArchivedBranch(
+                    env.save_state(),
+                    first.frame,
+                    NeuralPlan((Action.SELECT,), (1,), 0.0, 0.0),
+                    0.0,
+                    "sibling",
+                    0,
+                ),
+                _ArchivedBranch(
+                    env.save_state(),
+                    first.frame,
+                    NeuralPlan((Action.SELECT,), (1,), 0.0, 0.0),
+                    0.0,
+                    "descendant",
+                    1,
+                ),
+            ]
+        )
+        restored = agent.decide()
+
+        self.assertEqual(first.action, Action.NOOP)
+        self.assertTrue(restored.restored_archive)
+        self.assertEqual(restored.frame.digest, root_frame.digest)
+        self.assertLess(agent.temporal_option_values[choice], 0.0)
+        self.assertTrue(agent.archive)
+        self.assertTrue(all(branch.created <= 0 for branch in agent.archive))
+        learned = next(
+            event
+            for event in logger.events
+            if event["event"]
+            == "counterfactual_control_collapse_learned"
+        )
+        self.assertTrue(learned["recovery_checkpoint_available"])
+        restored_event = next(
+            event
+            for event in logger.events
+            if event["event"] == "control_collapse_state_restored"
+        )
+        self.assertEqual(restored_event["recovery_cause"], "control_collapse")
+        removed = [
+            event
+            for event in logger.events
+            if event["event"] == "archive_branch_removed"
+            and event["reason"] == "control_collapse_rollback_descendant"
+        ]
+        self.assertTrue(removed)
 
     def test_duration_conditioned_planner_selects_a_press_length(self) -> None:
         model = EnsembleVisualDynamicsModel(
@@ -1671,6 +2469,76 @@ class EnsemblePlannerTests(unittest.TestCase):
 
         self.assertIn((Action.LEFT, 8), {(p.path[0], p.durations[0]) for p in probed})
         self.assertIn((Action.RIGHT, 8), {(p.path[0], p.durations[0]) for p in probed})
+
+    def test_control_collapse_reserves_a_shorter_duration_probe(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32,
+            action_size=8,
+            ensemble_size=2,
+            duration_conditioned=True,
+            duration_size=4,
+            max_action_frames=8,
+        )
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            MockPuzzleEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.NOOP),
+                action_durations=(1, 8),
+                planning_depth=1,
+                verify_actions=3,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.current_frontier_signature = "source"
+        agent.temporal_option_values[("source", Action.RIGHT, 8)] = -2.0
+        agent.temporal_option_samples[("source", Action.RIGHT, 8)] = 1
+        plans = {
+            (action, duration): NeuralPlan(
+                (action,), (duration,), 0.0, 0.0
+            )
+            for action in agent.config.actions
+            for duration in agent.planner.duration_choices
+        }
+        ranked = [
+            plans[(Action.NOOP, 8)],
+            plans[(Action.RIGHT, 8)],
+            plans[(Action.NOOP, 1)],
+        ]
+
+        probed = agent._add_control_probes(ranked, plans)
+
+        keys = {(plan.path[0], plan.durations[0]) for plan in probed}
+        self.assertIn((Action.RIGHT, 8), keys)
+        self.assertIn((Action.RIGHT, 1), keys)
+        event = next(
+            event
+            for event in logger.events
+            if event["event"] == "behavior_probe_selected"
+        )
+        recovery = [
+            probe
+            for probe in event["probes"]
+            if probe["control_collapse_recovery_probe"]
+        ]
+        self.assertEqual(
+            recovery,
+            [
+                {
+                    "action": Action.RIGHT,
+                    "action_frames": 1,
+                    "prior_observations": 0,
+                    "causal_continuation": False,
+                    "long_press_control": False,
+                    "short_press_control": False,
+                    "control_collapse_recovery_probe": True,
+                    "matched_causal_observation": False,
+                }
+            ],
+        )
 
     def test_matched_control_probes_reserve_canonical_behavior_slots(self) -> None:
         model = EnsembleVisualDynamicsModel(

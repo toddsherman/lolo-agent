@@ -115,6 +115,7 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
     causal_spatial_signatures: set[str] = set()
     committed_causal_spatial_signatures: set[str] = set()
     causal_events_detected = 0
+    committed_behavioral_edges: set[Tuple[str, str, int]] = set()
     archive_rejections_by_reason: Counter[str] = Counter()
     spatial_shadow_rows: List[Dict[str, Any]] = []
     returnability_probe_rows: List[Dict[str, Any]] = []
@@ -313,6 +314,11 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             attempts[attempt]["actions"][action] += 1
             attempts[attempt]["durations"][action_frames] += 1
             restored = bool(event.get("restored_archive"))
+            behavioral_source = event.get("source_behavioral_signature")
+            if action.lower() != "noop" and behavioral_source:
+                committed_behavioral_edges.add(
+                    (str(behavioral_source), action, action_frames)
+                )
             if restored:
                 attempts[attempt]["restores"] += 1
             frontier_value = event.get("persistent_frontier_value")
@@ -343,6 +349,10 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                         "spatial_selection_applied_to_commit", False
                     ),
                     "branches_examined": event.get("branches_examined", 0),
+                    "parent_state_id": event.get("parent_state_id"),
+                    "parent_frame": event.get("parent_frame"),
+                    "parent_decision": event.get("parent_decision"),
+                    "search_depth": event.get("search_depth", 0),
                     "restored_archive": restored,
                     "restore_reason": event.get("restore_reason", ""),
                     "delayed_return_recovery_pending": event.get(
@@ -415,6 +425,27 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                     "causal_cell_coverage_bonus": event.get(
                         "causal_cell_coverage_bonus"
                     ),
+                    "causal_cell_recovery_grace_decisions": event.get(
+                        "causal_cell_recovery_grace_decisions", 0
+                    ),
+                    "last_causal_cell_progress_decision": event.get(
+                        "last_causal_cell_progress_decision"
+                    ),
+                    "behavioral_edge_visits_before": event.get(
+                        "behavioral_edge_visits_before", 0
+                    ),
+                    "behavioral_edge_unexpanded": event.get(
+                        "behavioral_edge_unexpanded", False
+                    ),
+                    "behavioral_edge_coverage_bonus": event.get(
+                        "behavioral_edge_coverage_bonus", 0.0
+                    ),
+                    "behavioral_best_first_archive_enabled": event.get(
+                        "behavioral_best_first_archive_enabled", False
+                    ),
+                    "behavioral_best_first_applied": event.get(
+                        "behavioral_best_first_applied", False
+                    ),
                     "persistent_change_enabled": event.get(
                         "persistent_change_enabled", False
                     ),
@@ -423,6 +454,15 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                     ),
                     "persistent_change_minimum_value_drop": event.get(
                         "persistent_change_minimum_value_drop", 0
+                    ),
+                    "persistent_change_speculative_recovery": event.get(
+                        "persistent_change_speculative_recovery", False
+                    ),
+                    "persistent_change_candidate_count": event.get(
+                        "persistent_change_candidate_count", 0
+                    ),
+                    "speculative_persistence_applied": event.get(
+                        "speculative_persistence_applied", False
                     ),
                     "persistent_change_active_count": event.get(
                         "persistent_change_active_count", 0
@@ -541,6 +581,10 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "spatial_selection_bonus",
         "spatial_selection_applied_to_commit",
         "branches_examined",
+        "parent_state_id",
+        "parent_frame",
+        "parent_decision",
+        "search_depth",
         "restored_archive",
         "restore_reason",
         "delayed_return_recovery_pending",
@@ -570,9 +614,19 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "causal_cell_unvisited",
         "causal_cell_count",
         "causal_cell_coverage_bonus",
+        "causal_cell_recovery_grace_decisions",
+        "last_causal_cell_progress_decision",
+        "behavioral_edge_visits_before",
+        "behavioral_edge_unexpanded",
+        "behavioral_edge_coverage_bonus",
+        "behavioral_best_first_archive_enabled",
+        "behavioral_best_first_applied",
         "persistent_change_enabled",
         "persistent_change_stability_decisions",
         "persistent_change_minimum_value_drop",
+        "persistent_change_speculative_recovery",
+        "persistent_change_candidate_count",
+        "speculative_persistence_applied",
         "persistent_change_active_count",
         "persistent_change_active_cells",
         "temporal_option_value",
@@ -745,6 +799,69 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             "autonomous_dynamics_detected", 0
         ),
         "autonomous_grace_waits": event_counts.get("autonomous_grace_wait", 0),
+        "counterfactual_control_probes": event_counts.get(
+            "counterfactual_control_probe", 0
+        ),
+        "counterfactual_control_escape_probes": event_counts.get(
+            "counterfactual_control_escape_probe", 0
+        ),
+        "counterfactual_control_collapses_learned": event_counts.get(
+            "counterfactual_control_collapse_learned", 0
+        ),
+        "control_collapse_checkpoint_restores": event_counts.get(
+            "control_collapse_state_restored", 0
+        ),
+        "control_collapse_descendant_invalidations": sum(
+            event["event"] == "archive_branch_removed"
+            and event.get("reason")
+            == "control_collapse_rollback_descendant"
+            for event in events
+        ),
+        "control_collapse_recovery_duration_probes": sum(
+            bool(probe.get("control_collapse_recovery_probe"))
+            for event in events
+            if event["event"] == "behavior_probe_selected"
+            for probe in event.get("probes", [])
+        ),
+        "matched_causal_observation_probes": sum(
+            bool(probe.get("matched_causal_observation"))
+            for event in events
+            if event["event"] == "behavior_probe_selected"
+            for probe in event.get("probes", [])
+        ),
+        "matched_causal_observation_waits": sum(
+            event["event"] == "causal_observation_wait"
+            and bool(event.get("duration_matched"))
+            for event in events
+        ),
+        "generic_dark_transitions_started": event_counts.get(
+            "generic_dark_transition_started", 0
+        ),
+        "generic_dark_transitions_resolved": event_counts.get(
+            "generic_dark_transition_resolved", 0
+        ),
+        "generic_dark_returns_to_known_scene": sum(
+            event["event"] == "generic_dark_transition_resolved"
+            and bool(event.get("returned_to_known_scene"))
+            for event in events
+        ),
+        "known_scene_return_archive_restores": sum(
+            event["event"] == "archive_branch_restored"
+            and event.get("reason")
+            == "known_scene_return_after_dark_transition"
+            for event in events
+        ),
+        "known_scene_root_checkpoint_restores": event_counts.get(
+            "known_scene_recovery_checkpoint_restored", 0
+        ),
+        "post_dark_archive_branches_filtered": sum(
+            int(event.get("filtered_branches", 0))
+            for event in events
+            if event["event"] == "post_dark_archive_branches_filtered"
+        ),
+        "episodic_scene_memory_seeds": event_counts.get(
+            "episodic_scene_memory_seeded", 0
+        ),
         "human_prior_chest_completions": event_counts.get(
             "human_prior_chest_completed", 0
         ),
@@ -1003,6 +1120,26 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         ),
         "behavior_probe_selected_controls": dict(
             sorted(behavior_probe_controls.items())
+        ),
+        "unique_committed_behavioral_edges": len(
+            committed_behavioral_edges
+        ),
+        "behavioral_best_first_filter_events": event_counts.get(
+            "behavioral_best_first_archives_filtered", 0
+        ),
+        "behavioral_best_first_frontier_exhaustions": event_counts.get(
+            "behavioral_best_first_frontier_exhausted", 0
+        ),
+        "persistent_change_candidate_filter_events": event_counts.get(
+            "persistent_change_candidate_archives_filtered", 0
+        ),
+        "persistent_change_candidate_preservation_unavailable": (
+            event_counts.get(
+                "persistent_change_candidate_preservation_unavailable", 0
+            )
+        ),
+        "causal_cell_recovery_suppressions": event_counts.get(
+            "causal_cell_recovery_suppressed", 0
         ),
         "verified_branches": event_counts.get("branch_verified", 0),
         "unique_frames": len(frames),

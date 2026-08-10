@@ -46,8 +46,12 @@ class NeuralPlanningConfig:
     action_effect_weight: float = 0.75
     causal_spatial_novelty_weight: float = 2.0
     causal_cell_coverage_weight: float = 0.0
+    causal_cell_recovery_grace_decisions: int = 0
+    behavioral_edge_coverage_weight: float = 0.0
+    behavioral_best_first_archive: bool = False
     persistent_change_stability_decisions: int = 0
     persistent_change_minimum_value_drop: int = 0
+    persistent_change_speculative_recovery: bool = False
     causal_affordance_weight: float = 3.0
     causal_event_archive_weight: float = 4.0
     causal_change_pixel_threshold: int = 12
@@ -64,6 +68,8 @@ class NeuralPlanningConfig:
     autonomous_change_threshold: float = 0.00025
     action_equivalence_threshold: float = 0.0001
     autonomous_grace_decisions: int = 4
+    dark_transition_intensity_threshold: float = 0.05
+    known_scene_return_distance_threshold: float = 0.01
     delayed_return_min_length: int = 4
     delayed_return_credit_horizon: int = 48
     delayed_return_weight: float = 0.75
@@ -143,6 +149,10 @@ class _ArchivedBranch:
     goal_total_hearts: int = 0
     goal_chest_slot: Optional[Tuple[int, int]] = None
     goal_player_slot: Optional[Tuple[int, int]] = None
+    parent_state_id: Optional[str] = None
+    parent_frame_digest: Optional[str] = None
+    parent_decision: int = 0
+    search_depth: int = 0
 
 
 @dataclass(frozen=True)
@@ -406,6 +416,12 @@ class VerifiedNeuralAgent:
             raise ValueError("causal pixel threshold must be non-negative")
         if self.config.causal_cell_coverage_weight < 0.0:
             raise ValueError("causal cell coverage weight must be non-negative")
+        if self.config.causal_cell_recovery_grace_decisions < 0:
+            raise ValueError(
+                "causal cell recovery grace decisions must be non-negative"
+            )
+        if self.config.behavioral_edge_coverage_weight < 0.0:
+            raise ValueError("behavioral edge coverage weight must be non-negative")
         if self.config.persistent_change_stability_decisions < 0:
             raise ValueError(
                 "persistent change stability decisions must be non-negative"
@@ -447,6 +463,10 @@ class VerifiedNeuralAgent:
             raise ValueError("returnability probe beam width must be positive")
         if self.config.returnability_probe_pixel_l1_threshold < 0.0:
             raise ValueError("returnability probe threshold must be non-negative")
+        if not 0.0 <= self.config.dark_transition_intensity_threshold <= 1.0:
+            raise ValueError("dark transition threshold must be between zero and one")
+        if not 0.0 <= self.config.known_scene_return_distance_threshold <= 1.0:
+            raise ValueError("known-scene return threshold must be between zero and one")
         self.model.freeze()
         self.planner = NeuralRolloutPlanner(model, device, self.config)
         self.novelty = VisualNovelty()
@@ -457,6 +477,10 @@ class VerifiedNeuralAgent:
         self.action_effect_values: Dict[Tuple[str, Action], float] = {}
         self.action_effect_samples: CounterType[Tuple[str, Action]] = Counter()
         self.causal_spatial_visits: CounterType[str] = Counter()
+        self.last_causal_cell_progress_decision: Optional[int] = None
+        self.behavioral_edge_visits: CounterType[
+            Tuple[str, Action, int]
+        ] = Counter()
         self.persistent_change_baseline: List[int] = []
         self.persistent_change_value_counts: List[
             CounterType[int]
@@ -477,6 +501,13 @@ class VerifiedNeuralAgent:
         self.delayed_return_loop_start: Optional[int] = None
         self.autonomous_grace_remaining = 0
         self.autonomous_intervention_pending = False
+        self.dark_transition_active = False
+        self.dark_transition_start_decision: Optional[int] = None
+        self.known_scene_return_recovery_pending = False
+        self.bright_scene_memory: List[Tuple[int, ...]] = []
+        self.known_scene_recovery_checkpoint: Optional[
+            _LifeHazardCheckpoint
+        ] = None
         self.frontier_values: Dict[str, float] = {}
         self.frontier_samples: CounterType[str] = Counter()
         self.frontier_traces: List[_FrontierTrace] = []
@@ -510,6 +541,7 @@ class VerifiedNeuralAgent:
         self.visual_stagnation_streak = 0
         self.archive: List[_ArchivedBranch] = []
         self.decision_index = 0
+        self.current_search_depth = 0
         self.event_logger = event_logger
         self.spatial_shadow = spatial_shadow
         self.returnability_probe = (
@@ -534,6 +566,7 @@ class VerifiedNeuralAgent:
             Tuple[int, str, Action, int, str]
         ] = None
         self.pending_life_recovery: Optional[_LifeHazardCheckpoint] = None
+        self.pending_recovery_cause: Optional[str] = None
         self.pending_goal_milestone_checkpoint: Optional[
             _LifeHazardCheckpoint
         ] = None
@@ -763,6 +796,7 @@ class VerifiedNeuralAgent:
                         "superseded_by_new_life_loss",
                     )
                 self.pending_life_recovery = recovery
+                self.pending_recovery_cause = "life_loss"
             self._emit(
                 "human_prior_life_loss_confirmed",
                 decision=self.decision_index + 1,
@@ -867,6 +901,8 @@ class VerifiedNeuralAgent:
         self.action_effect_values = {}
         self.action_effect_samples = Counter()
         self.causal_spatial_visits = Counter()
+        self.last_causal_cell_progress_decision = None
+        self.behavioral_edge_visits = Counter()
         self.causal_spatial_cell_visits: CounterType[Tuple[int, int]] = Counter()
         persistent_values = self._persistent_cell_values(self.frame)
         self.persistent_change_baseline = list(persistent_values)
@@ -900,6 +936,15 @@ class VerifiedNeuralAgent:
         self.delayed_return_loop_start = None
         self.autonomous_grace_remaining = 0
         self.autonomous_intervention_pending = False
+        self.dark_transition_active = False
+        self.dark_transition_start_decision = None
+        self.known_scene_return_recovery_pending = False
+        self.bright_scene_memory = (
+            [self._persistent_cell_values(self.frame)]
+            if self._mean_frame_intensity(self.frame)
+            > self.config.dark_transition_intensity_threshold
+            else []
+        )
         self.visual_clusters = []
         self.frame_clusters = {}
         self.frame_latents = {}
@@ -934,12 +979,46 @@ class VerifiedNeuralAgent:
         self.visual_stagnation_streak = 0
         self.archive = []
         self.decision_index = 0
+        self.current_search_depth = 0
         self.last_navigation_change_decision = None
         self.pending_life_hazard_choice = None
         self.pending_life_recovery = None
+        self.pending_recovery_cause = None
         self.pending_goal_milestone_checkpoint = None
         self._reset_goal_prior()
         self._calibrate_goal_prior(self.frame)
+        known_scene_state = self.env.save_state()
+        self.known_scene_recovery_checkpoint = _LifeHazardCheckpoint(
+            state=known_scene_state,
+            frame=self.frame,
+            choice=(initial_signature, Action.NOOP, 0),
+            decision=0,
+            frontier_signature=initial_signature,
+            causal_context_signature=self.current_causal_context_signature,
+            scene=self.current_scene,
+            pose_action=self.current_pose_action,
+            last_action=None,
+            last_duration=None,
+            action_streak=0,
+            goal_heart_slots=(
+                ()
+                if self.goal_prior is None
+                else tuple(sorted(self.goal_prior.current_present))
+            ),
+            goal_player_slot=(
+                None
+                if self.goal_prior is None
+                else self.goal_prior.current_player_slot
+            ),
+            kind="known_scene_root",
+            state_id=self._state_id(known_scene_state),
+        )
+        self._emit(
+            "known_scene_recovery_checkpoint_created",
+            decision=0,
+            state_id=self._state_id(known_scene_state),
+            **self._frame_fields(self.frame),
+        )
         self._emit(
             "agent_reset",
             decision=0,
@@ -958,6 +1037,7 @@ class VerifiedNeuralAgent:
                 life_recovery, "agent_reset_or_close"
             )
             self.pending_life_recovery = None
+            self.pending_recovery_cause = None
         milestone_recovery = getattr(
             self, "pending_goal_milestone_checkpoint", None
         )
@@ -966,6 +1046,14 @@ class VerifiedNeuralAgent:
                 milestone_recovery, "agent_reset_or_close"
             )
             self.pending_goal_milestone_checkpoint = None
+        known_scene_recovery = getattr(
+            self, "known_scene_recovery_checkpoint", None
+        )
+        if known_scene_recovery is not None:
+            self._release_life_hazard_checkpoint(
+                known_scene_recovery, "agent_reset_or_close"
+            )
+            self.known_scene_recovery_checkpoint = None
         release_state = getattr(self.env, "release_state", None)
         if release_state is not None:
             for branch in getattr(self, "archive", []):
@@ -1146,10 +1234,162 @@ class VerifiedNeuralAgent:
             len(cells),
         )
 
+    @staticmethod
+    def _behavioral_edge_key(
+        source_signature: str, action: Action, duration: int
+    ) -> Tuple[str, Action, int]:
+        return source_signature, action, duration
+
+    def _behavioral_edge_coverage(
+        self, source_signature: str, action: Action, duration: int
+    ) -> Tuple[int, bool, float]:
+        """Return visits, unseen status, and a decaying intervention bonus."""
+        if action == Action.NOOP or not source_signature:
+            return 0, False, 0.0
+        visits = self.behavioral_edge_visits[
+            self._behavioral_edge_key(source_signature, action, duration)
+        ]
+        return (
+            visits,
+            visits == 0,
+            self.config.behavioral_edge_coverage_weight
+            / math.sqrt(visits + 1),
+        )
+
+    def _record_behavioral_edge(
+        self, source_signature: str, action: Action, duration: int
+    ) -> int:
+        if action == Action.NOOP or not source_signature:
+            return 0
+        key = self._behavioral_edge_key(source_signature, action, duration)
+        visits_before = self.behavioral_edge_visits[key]
+        self.behavioral_edge_visits[key] += 1
+        return visits_before
+
     def _persistent_cell_values(self, frame: Frame) -> Tuple[int, ...]:
         return frame.coarse_signature(
             columns=self.config.causal_spatial_columns,
             rows=self.config.causal_spatial_rows,
+        )
+
+    @staticmethod
+    def _mean_frame_intensity(frame: Frame) -> float:
+        return sum(frame.pixels) / (255.0 * max(1, len(frame.pixels)))
+
+    @staticmethod
+    def _coarse_scene_distance(
+        left: Sequence[int], right: Sequence[int]
+    ) -> float:
+        if len(left) != len(right) or not left:
+            return 1.0
+        return sum(abs(a - b) for a, b in zip(left, right)) / (
+            15.0 * len(left)
+        )
+
+    def _observe_dark_transition(self, frame: Frame) -> None:
+        intensity = self._mean_frame_intensity(frame)
+        if intensity <= self.config.dark_transition_intensity_threshold:
+            if not self.bright_scene_memory:
+                return
+            if not self.dark_transition_active:
+                self.dark_transition_active = True
+                self.dark_transition_start_decision = self.decision_index
+                self._emit(
+                    "generic_dark_transition_started",
+                    decision=self.decision_index,
+                    scene_intensity=intensity,
+                    dark_transition_intensity_threshold=(
+                        self.config.dark_transition_intensity_threshold
+                    ),
+                    remembered_bright_scenes=len(self.bright_scene_memory),
+                    **self._frame_fields(frame),
+                )
+            return
+
+        signature = self._persistent_cell_values(frame)
+        if self.dark_transition_active:
+            minimum_distance = min(
+                (
+                    self._coarse_scene_distance(signature, remembered)
+                    for remembered in self.bright_scene_memory
+                ),
+                default=1.0,
+            )
+            returned_to_known_scene = (
+                minimum_distance
+                <= self.config.known_scene_return_distance_threshold
+            )
+            self.known_scene_return_recovery_pending = returned_to_known_scene
+            self.dark_transition_active = False
+            if not returned_to_known_scene:
+                self.dark_transition_start_decision = None
+            self._emit(
+                "generic_dark_transition_resolved",
+                decision=self.decision_index,
+                scene_intensity=intensity,
+                minimum_known_scene_distance=minimum_distance,
+                known_scene_return_distance_threshold=(
+                    self.config.known_scene_return_distance_threshold
+                ),
+                returned_to_known_scene=returned_to_known_scene,
+                recovery_pending=self.known_scene_return_recovery_pending,
+                remembered_bright_scenes=len(self.bright_scene_memory),
+                **self._frame_fields(frame),
+            )
+            if returned_to_known_scene:
+                return
+        minimum_existing_distance = min(
+            (
+                self._coarse_scene_distance(signature, remembered)
+                for remembered in self.bright_scene_memory
+            ),
+            default=1.0,
+        )
+        if minimum_existing_distance > (
+            self.config.known_scene_return_distance_threshold / 2.0
+        ):
+            self.bright_scene_memory.append(signature)
+            if len(self.bright_scene_memory) > self.config.archive_capacity:
+                self.bright_scene_memory.pop()
+
+    def seed_bright_scene_memory(self, frames: Sequence[Frame]) -> None:
+        remembered_before = len(self.bright_scene_memory)
+        accepted = 0
+        skipped_dark = 0
+        for frame in frames:
+            if (
+                self._mean_frame_intensity(frame)
+                <= self.config.dark_transition_intensity_threshold
+            ):
+                skipped_dark += 1
+                continue
+            signature = self._persistent_cell_values(frame)
+            minimum_distance = min(
+                (
+                    self._coarse_scene_distance(signature, remembered)
+                    for remembered in self.bright_scene_memory
+                ),
+                default=1.0,
+            )
+            if minimum_distance <= (
+                self.config.known_scene_return_distance_threshold / 2.0
+            ):
+                continue
+            if len(self.bright_scene_memory) >= self.config.archive_capacity:
+                break
+            self.bright_scene_memory.append(signature)
+            accepted += 1
+        self._emit(
+            "episodic_scene_memory_seeded",
+            decision=self.decision_index,
+            source_frames=len(frames),
+            accepted_scene_signatures=accepted,
+            skipped_dark_frames=skipped_dark,
+            remembered_scenes_before=remembered_before,
+            remembered_scenes_after=len(self.bright_scene_memory),
+            known_scene_return_distance_threshold=(
+                self.config.known_scene_return_distance_threshold
+            ),
         )
 
     def _persistent_change_fields(self) -> Dict[str, Any]:
@@ -1163,6 +1403,12 @@ class VerifiedNeuralAgent:
             ),
             "persistent_change_minimum_value_drop": (
                 self.config.persistent_change_minimum_value_drop
+            ),
+            "persistent_change_speculative_recovery": (
+                self.config.persistent_change_speculative_recovery
+            ),
+            "persistent_change_candidate_count": len(
+                self.persistent_change_candidates
             ),
             "persistent_change_active_count": len(
                 self.persistent_change_cells
@@ -1188,9 +1434,34 @@ class VerifiedNeuralAgent:
             for index, value in self.persistent_change_cells.items()
         )
 
-    def _observe_persistent_changes(self, frame: Frame) -> None:
+    def _matches_persistent_change_candidates(self, frame: Frame) -> bool:
+        if not self.persistent_change_candidates:
+            return True
+        values = self._persistent_cell_values(frame)
+        return all(
+            index < len(values) and values[index] == candidate_value
+            for index, (candidate_value, _count) in (
+                self.persistent_change_candidates.items()
+            )
+        )
+
+    def _observe_persistent_changes(
+        self,
+        frame: Frame,
+        *,
+        action_dependent: bool = True,
+    ) -> None:
         stability = self.config.persistent_change_stability_decisions
         if stability <= 0:
+            return
+        if not action_dependent:
+            self._emit(
+                "persistent_change_observation_skipped",
+                decision=self.decision_index,
+                reason="action_equivalent_or_passive_transition",
+                **self._persistent_change_fields(),
+                **self._frame_fields(frame),
+            )
             return
         values = self._persistent_cell_values(frame)
         activated = []
@@ -1302,22 +1573,25 @@ class VerifiedNeuralAgent:
             )
 
     def _reset_persistent_change_observation_window(
-        self, reason: str
+        self, reason: str, preserve_candidates: bool = False
     ) -> None:
         if self.config.persistent_change_stability_decisions <= 0:
             return
         candidate_count = len(self.persistent_change_candidates)
-        self.persistent_change_candidates = {}
+        if not preserve_candidates:
+            self.persistent_change_candidates = {}
         self.persistent_change_mismatches = Counter()
-        self.persistent_change_value_counts = [
-            Counter({value: 1})
-            for value in self.persistent_change_baseline
-        ]
+        if not preserve_candidates:
+            self.persistent_change_value_counts = [
+                Counter({value: 1})
+                for value in self.persistent_change_baseline
+            ]
         self._emit(
             "persistent_change_observation_window_reset",
             decision=self.decision_index,
             reason=reason,
-            discarded_candidates=candidate_count,
+            discarded_candidates=(0 if preserve_candidates else candidate_count),
+            preserved_candidates=(candidate_count if preserve_candidates else 0),
             **self._persistent_change_fields(),
         )
 
@@ -1594,6 +1868,15 @@ class VerifiedNeuralAgent:
             if branch.origin_signature == source:
                 branch.origin_signature = target
                 migrated_origins += 1
+        migrated_behavioral_edges = 0
+        for edge in list(self.behavioral_edge_visits):
+            signature, action, duration = edge
+            if signature != source:
+                continue
+            target_edge = (target, action, duration)
+            visits = self.behavioral_edge_visits.pop(edge)
+            self.behavioral_edge_visits[target_edge] += visits
+            migrated_behavioral_edges += 1
         migrated_temporal_choices = 0
         for choice in list(self.temporal_option_samples):
             signature, action, duration = choice
@@ -1638,6 +1921,7 @@ class VerifiedNeuralAgent:
             migrated_choice_values=migrated_choices,
             migrated_traces=migrated_traces,
             migrated_archive_origins=migrated_origins,
+            migrated_behavioral_edges=migrated_behavioral_edges,
             migrated_temporal_choice_values=migrated_temporal_choices,
         )
 
@@ -2402,6 +2686,15 @@ class VerifiedNeuralAgent:
         )
         return self.config.causal_cell_coverage_weight * coverage
 
+    def _archive_behavioral_edge_coverage_bonus(
+        self, branch: _ArchivedBranch
+    ) -> float:
+        return self._behavioral_edge_coverage(
+            branch.origin_signature,
+            branch.plan.path[0],
+            branch.plan.durations[0],
+        )[2]
+
     def _archive_frontier_score(self, branch: _ArchivedBranch) -> float:
         own_value = self._frontier_estimate(
             branch.frontier_signature
@@ -2426,6 +2719,9 @@ class VerifiedNeuralAgent:
         causal_spatial_bonus = self._archive_causal_spatial_bonus(branch)
         causal_cell_coverage_bonus = (
             self._archive_causal_cell_coverage_bonus(branch)
+        )
+        behavioral_edge_coverage_bonus = (
+            self._archive_behavioral_edge_coverage_bonus(branch)
         )
         affordance_bonus = (
             self.config.causal_affordance_weight
@@ -2482,6 +2778,7 @@ class VerifiedNeuralAgent:
                 + option_bonus
                 + causal_spatial_bonus
                 + causal_cell_coverage_bonus
+                + behavioral_edge_coverage_bonus
                 + affordance_bonus
                 + causal_event_bonus
                 + goal_navigation_bonus
@@ -2492,6 +2789,7 @@ class VerifiedNeuralAgent:
             + option_bonus
             + causal_spatial_bonus
             + causal_cell_coverage_bonus
+            + behavioral_edge_coverage_bonus
             + affordance_bonus
             + causal_event_bonus
             + goal_navigation_bonus
@@ -2623,6 +2921,48 @@ class VerifiedNeuralAgent:
             if candidate in best_by_action and candidate not in probe_keys:
                 continuation_key = candidate
                 probe_keys.append(candidate)
+        matched_observation_key = None
+        if self.pending_option_choice is not None:
+            pending_duration = self.pending_option_choice[2]
+            candidate = (Action.NOOP, pending_duration)
+            if (
+                Action.NOOP in self.config.actions
+                and pending_duration != maximum_duration
+                and candidate in best_by_action
+                and candidate not in probe_keys
+                and len(probe_keys) < self.config.verify_actions
+            ):
+                matched_observation_key = candidate
+                probe_keys.append(candidate)
+        collapse_recovery_keys = []
+        hazardous_durations: Dict[Action, set[int]] = {}
+        for (signature, action, duration), value in (
+            self.temporal_option_values.items()
+        ):
+            if signature != self.current_frontier_signature or value >= 0.0:
+                continue
+            hazardous_durations.setdefault(action, set()).add(duration)
+        remaining_probe_slots = max(
+            0, self.config.verify_actions - len(probe_keys)
+        )
+        for duration in sorted(self.planner.duration_choices, reverse=True):
+            if remaining_probe_slots <= 0:
+                break
+            for action in self.config.actions:
+                if remaining_probe_slots <= 0:
+                    break
+                if action not in hazardous_durations:
+                    continue
+                candidate = (action, duration)
+                if (
+                    duration in hazardous_durations[action]
+                    or candidate not in best_by_action
+                    or candidate in probe_keys
+                ):
+                    continue
+                probe_keys.append(candidate)
+                collapse_recovery_keys.append(candidate)
+                remaining_probe_slots -= 1
         self._emit(
             "behavior_probe_selected",
             decision=self.decision_index + 1,
@@ -2646,6 +2986,12 @@ class VerifiedNeuralAgent:
                     "short_press_control": (
                         (action, duration) in short_press_keys
                     ),
+                    "control_collapse_recovery_probe": (
+                        (action, duration) in collapse_recovery_keys
+                    ),
+                    "matched_causal_observation": (
+                        (action, duration) == matched_observation_key
+                    ),
                 }
                 for action, duration in probe_keys
             ],
@@ -2661,17 +3007,36 @@ class VerifiedNeuralAgent:
         if self.config.verify_actions < len(probe_keys):
             return ranked
         probes = [best_by_action[key] for key in probe_keys if key in best_by_action]
-        required_actions = {probe.path[0] for probe in probes}
+        required_keys = {
+            (probe.path[0], probe.durations[0]) for probe in probes
+        }
+        required_action_counts = Counter(
+            probe.path[0] for probe in probes
+        )
         result = list(ranked)
         for probe in probes:
             matching_index = next(
                 (
                     index
                     for index, item in enumerate(result)
-                    if item.path[0] == probe.path[0]
+                    if (
+                        item.path[0], item.durations[0]
+                    ) == (probe.path[0], probe.durations[0])
                 ),
                 None,
             )
+            if (
+                matching_index is None
+                and required_action_counts[probe.path[0]] == 1
+            ):
+                matching_index = next(
+                    (
+                        index
+                        for index, item in enumerate(result)
+                        if item.path[0] == probe.path[0]
+                    ),
+                    None,
+                )
             if matching_index is not None:
                 result[matching_index] = probe
                 continue
@@ -2680,7 +3045,11 @@ class VerifiedNeuralAgent:
                     (
                         index
                         for index in range(len(result) - 1, -1, -1)
-                        if result[index].path[0] not in required_actions
+                        if (
+                            result[index].path[0],
+                            result[index].durations[0],
+                        )
+                        not in required_keys
                     ),
                     len(result) - 1,
                 )
@@ -2814,6 +3183,7 @@ class VerifiedNeuralAgent:
             frontier_signature=self.current_frontier_signature,
             scene_visits=self.scene_visits,
             archive_size=len(self.archive),
+            search_depth=self.current_search_depth,
             **self._frame_fields(self.frame),
         )
         life_recovery = self._restore_after_life_loss()
@@ -2909,6 +3279,7 @@ class VerifiedNeuralAgent:
         source_last_action = self.last_action
         source_last_duration = self.last_duration
         source_action_streak = self.action_streak
+        source_search_depth = self.current_search_depth
         source_goal_heart_slots = (
             () if self.goal_prior is None else self.goal_prior.current_slots()
         )
@@ -3328,6 +3699,15 @@ class VerifiedNeuralAgent:
                     if temporal_option_value >= 0.0
                     else 0.0
                 )
+                (
+                    behavioral_edge_visits_before,
+                    behavioral_edge_unexpanded,
+                    behavioral_edge_coverage_bonus,
+                ) = self._behavioral_edge_coverage(
+                    source_signature, plan.path[0], duration
+                )
+                if temporal_option_value < 0.0:
+                    behavioral_edge_coverage_bonus = 0.0
                 if choice_frontier_is_known:
                     persistent_frontier_value = choice_frontier_value
                 action_penalty_components = self._action_penalty_components(
@@ -3343,6 +3723,7 @@ class VerifiedNeuralAgent:
                     + action_effect_bonus
                     + causal_spatial_bonus
                     + causal_cell_coverage_bonus
+                    + behavioral_edge_coverage_bonus
                     + self.config.frontier_score_weight * persistent_frontier_value
                     + self.config.temporal_option_score_weight
                     * temporal_option_value
@@ -3416,6 +3797,10 @@ class VerifiedNeuralAgent:
                     scene_action_probe_count=scene_action_probe_count,
                     env_step_seq=env_step_seq,
                     state_save_seq=state_save_seq,
+                    source_state_id=self._state_id(root),
+                    source_frame=source_frame.digest,
+                    parent_decision=self.decision_index,
+                    search_depth=source_search_depth + 1,
                     action=plan.path[0],
                     action_frames=duration,
                     path=plan.path,
@@ -3455,6 +3840,18 @@ class VerifiedNeuralAgent:
                     causal_cell_unvisited=causal_cell_unvisited,
                     causal_cell_count=causal_cell_count,
                     causal_cell_coverage_bonus=causal_cell_coverage_bonus,
+                    behavioral_edge_visits_before=(
+                        behavioral_edge_visits_before
+                    ),
+                    behavioral_edge_unexpanded=(
+                        behavioral_edge_unexpanded
+                    ),
+                    behavioral_edge_coverage_bonus=(
+                        behavioral_edge_coverage_bonus
+                    ),
+                    behavioral_best_first_archive_enabled=(
+                        self.config.behavioral_best_first_archive
+                    ),
                     persistent_frontier_value=persistent_frontier_value,
                     choice_frontier_value=choice_frontier_value,
                     choice_frontier_is_known=choice_frontier_is_known,
@@ -3537,9 +3934,20 @@ class VerifiedNeuralAgent:
                     if item[1].path[0] == Action.NOOP
                 ]
                 if neutral:
+                    pending_duration = self.pending_option_choice[2]
+                    matched_neutral = [
+                        item
+                        for item in neutral
+                        if item[1].durations[0] == pending_duration
+                    ]
                     causal_observation_wait = max(
-                        neutral,
-                        key=lambda item: (item[1].durations[0], item[0]),
+                        matched_neutral or neutral,
+                        key=lambda item: (
+                            -abs(
+                                item[1].durations[0] - pending_duration
+                            ),
+                            item[0],
+                        ),
                     )
             human_prior_goal_choice = (
                 max(
@@ -3552,6 +3960,185 @@ class VerifiedNeuralAgent:
                 if positive_goal_branches
                 else None
             )
+            dynamic_control_choice = None
+            control_probe_spread = None
+            control_probe_actions: Tuple[Action, ...] = ()
+            if (
+                causal_observation_wait is not None
+            ):
+                passive_visual_change = causal_observation_wait[6]
+                action_dependent_controls = [
+                    item
+                    for item in selection_verified
+                    if (
+                        item[1].path[0] != Action.NOOP
+                        and observed_action_effects.get(
+                            (
+                                item[1].path[0],
+                                item[1].durations[0],
+                            )
+                        )
+                        is not None
+                        and observed_action_effects[
+                            (
+                                item[1].path[0],
+                                item[1].durations[0],
+                            )
+                        ]["contrast"]
+                        > self.config.action_equivalence_threshold
+                    )
+                ]
+                control_probe_actions = tuple(
+                    dict.fromkeys((*self.config.actions, Action.NOOP))
+                )
+                probe_duration = causal_observation_wait[1].durations[0]
+
+                def future_control_spread(state: object) -> float:
+                    endpoints = []
+                    for probe_action in control_probe_actions:
+                        self.env.load_state(state)
+                        endpoints.append(
+                            self.env.step(probe_action, probe_duration)
+                        )
+                    return max(
+                        (
+                            first.mean_absolute_difference(second)
+                            for index, first in enumerate(endpoints)
+                            for second in endpoints[index + 1 :]
+                        ),
+                        default=0.0,
+                    )
+
+                try:
+                    control_probe_spread = future_control_spread(
+                        causal_observation_wait[2]
+                    )
+                finally:
+                    self.env.load_state(root)
+                control_collapsed = (
+                    control_probe_spread
+                    <= self.config.action_equivalence_threshold
+                )
+                self._emit(
+                    "counterfactual_control_probe",
+                    decision=self.decision_index + 1,
+                    passive_action=causal_observation_wait[1].path[0],
+                    passive_action_frames=probe_duration,
+                    passive_visual_change=passive_visual_change,
+                    probe_actions=control_probe_actions,
+                    future_outcome_spread=control_probe_spread,
+                    control_collapsed=control_collapsed,
+                    action_dependent_controls=len(
+                        action_dependent_controls
+                    ),
+                    **self._frame_fields(causal_observation_wait[3]),
+                )
+                if control_collapsed:
+                    control_escape_rows = []
+                    try:
+                        for candidate in action_dependent_controls:
+                            candidate_spread = future_control_spread(
+                                candidate[2]
+                            )
+                            control_escape_rows.append(
+                                (candidate, candidate_spread)
+                            )
+                    finally:
+                        self.env.load_state(root)
+                    viable_controls = [
+                        row
+                        for row in control_escape_rows
+                        if row[1]
+                        > self.config.action_equivalence_threshold
+                    ]
+                    ranked_controls = (
+                        viable_controls
+                        if viable_controls
+                        else control_escape_rows
+                    )
+                    if viable_controls:
+                        dynamic_control_choice = max(
+                            ranked_controls,
+                            key=lambda row: (
+                                row[0][0],
+                                row[1],
+                                observed_action_effects[
+                                    (
+                                        row[0][1].path[0],
+                                        row[0][1].durations[0],
+                                    )
+                                ]["contrast"],
+                            ),
+                        )[0]
+                    self._emit(
+                        "counterfactual_control_escape_probe",
+                        decision=self.decision_index + 1,
+                        passive_future_outcome_spread=(
+                            control_probe_spread
+                        ),
+                        alternatives=[
+                            {
+                                "action": candidate[1].path[0],
+                                "action_frames": candidate[1].durations[0],
+                                "score": candidate[0],
+                                "future_outcome_spread": candidate_spread,
+                                "control_viable": (
+                                    candidate_spread
+                                    > self.config.action_equivalence_threshold
+                                ),
+                            }
+                            for candidate, candidate_spread in (
+                                control_escape_rows
+                            )
+                        ],
+                        viable_alternatives=len(viable_controls),
+                        selected_action=(
+                            None
+                            if dynamic_control_choice is None
+                            else dynamic_control_choice[1].path[0]
+                        ),
+                        selected_action_frames=(
+                            None
+                            if dynamic_control_choice is None
+                            else dynamic_control_choice[1].durations[0]
+                        ),
+                    )
+                    if not viable_controls:
+                        recovery = self.pending_option_recovery_checkpoint
+                        learned_choice = self.pending_option_choice
+                        learned_value = None
+                        learned_samples = 0
+                        if learned_choice is not None:
+                            learned_value = self._record_temporal_option_sample(
+                                learned_choice,
+                                -self.config.temporal_option_return_penalty,
+                            )
+                            learned_samples = self.temporal_option_samples[
+                                learned_choice
+                            ]
+                        if recovery is not None:
+                            self.pending_option_recovery_checkpoint = None
+                            if self.pending_life_recovery is not None:
+                                self._release_life_hazard_checkpoint(
+                                    self.pending_life_recovery,
+                                    "superseded_by_control_collapse",
+                                )
+                            self.pending_life_recovery = recovery
+                            self.pending_recovery_cause = "control_collapse"
+                        self._penalize_frontier_loop(self.decision_index)
+                        self._emit(
+                            "counterfactual_control_collapse_learned",
+                            decision=self.decision_index + 1,
+                            choice=learned_choice,
+                            learned_hazard_value=learned_value,
+                            learned_hazard_samples=learned_samples,
+                            recovery_checkpoint_available=recovery is not None,
+                            recovery_state_id=(
+                                None if recovery is None else recovery.state_id
+                            ),
+                            passive_future_outcome_spread=control_probe_spread,
+                            viable_alternatives=0,
+                        )
             autonomous_intervention_choice = None
             if autonomous_intervention_due:
                 intervention_choices = [
@@ -3560,9 +4147,42 @@ class VerifiedNeuralAgent:
                     if item[1].path[0] != Action.NOOP
                 ]
                 if intervention_choices:
+                    action_dependent_interventions = [
+                        item
+                        for item in intervention_choices
+                        if (
+                            observed_action_effects.get(
+                                (
+                                    item[1].path[0],
+                                    item[1].durations[0],
+                                )
+                            )
+                            is not None
+                            and observed_action_effects[
+                                (
+                                    item[1].path[0],
+                                    item[1].durations[0],
+                                )
+                            ]["contrast"]
+                            > self.config.action_equivalence_threshold
+                        )
+                    ]
+                    if action_dependent_interventions:
+                        intervention_choices = (
+                            action_dependent_interventions
+                        )
                     autonomous_intervention_choice = max(
                         intervention_choices,
                         key=lambda item: (
+                            (
+                                observed_action_effects.get(
+                                    (
+                                        item[1].path[0],
+                                        item[1].durations[0],
+                                    ),
+                                    {},
+                                ).get("contrast", 0.0)
+                            ),
                             item[0],
                             tuple(
                                 (action.value, duration)
@@ -3598,6 +4218,25 @@ class VerifiedNeuralAgent:
                     action_frames=chosen[1].durations[0],
                     **self._human_prior_fields(selected_analysis),
                 )
+            elif dynamic_control_choice is not None:
+                chosen = dynamic_control_choice
+                selected_effect = observed_action_effects[
+                    (
+                        chosen[1].path[0],
+                        chosen[1].durations[0],
+                    )
+                ]
+                self._emit(
+                    "dynamic_control_selected",
+                    decision=self.decision_index + 1,
+                    action=chosen[1].path[0],
+                    action_frames=chosen[1].durations[0],
+                    action_effect_contrast=selected_effect["contrast"],
+                    passive_visual_change=causal_observation_wait[6],
+                    future_outcome_spread=control_probe_spread,
+                    control_probe_actions=control_probe_actions,
+                    reason="counterfactual_future_control_collapse",
+                )
             elif autonomous_intervention_choice is not None:
                 chosen = autonomous_intervention_choice
                 self._emit(
@@ -3615,9 +4254,22 @@ class VerifiedNeuralAgent:
                     decision=self.decision_index + 1,
                     choice=self.pending_option_choice,
                     selected_duration=chosen[1].durations[0],
+                    initiation_duration=(
+                        None
+                        if self.pending_option_choice is None
+                        else self.pending_option_choice[2]
+                    ),
+                    duration_matched=(
+                        self.pending_option_choice is not None
+                        and chosen[1].durations[0]
+                        == self.pending_option_choice[2]
+                    ),
                     counterfactual_active=causal_counterfactual_active,
                 )
-            elif autonomous is not None:
+            elif (
+                autonomous is not None
+                and self.autonomous_grace_remaining <= 0
+            ):
                 chosen, outcome_spread, autonomous_change = autonomous
                 self.autonomous_grace_remaining = self.config.autonomous_grace_decisions
                 self.autonomous_intervention_pending = False
@@ -3768,6 +4420,7 @@ class VerifiedNeuralAgent:
             )
             self.env.load_state(state)
             self.frame = target
+            self.current_search_depth = source_search_depth + 1
             if self.goal_prior is not None and committed_goal_analysis is not None:
                 committed_goal_analysis = self._commit_goal_prior(
                     committed_goal_analysis, target
@@ -3821,6 +4474,16 @@ class VerifiedNeuralAgent:
                 self.causal_outcome_contexts.add(
                     committed_target_causal_context_signature
                 )
+            (
+                committed_behavioral_edge_visits_before,
+                committed_behavioral_edge_unexpanded,
+                committed_behavioral_edge_coverage_bonus,
+            ) = self._behavioral_edge_coverage(
+                source_signature, action, duration
+            )
+            self._record_behavioral_edge(
+                source_signature, action, duration
+            )
             self.action_counts[action] += 1
             self.duration_counts[duration] += 1
             self.action_duration_counts[(action, duration)] += 1
@@ -3838,7 +4501,16 @@ class VerifiedNeuralAgent:
                 committed_causal_spatial_signature is not None
             )
             self.decision_index += 1
-            self._observe_persistent_changes(target)
+            self._observe_persistent_changes(
+                target,
+                action_dependent=(
+                    action != Action.NOOP
+                    and committed_spatial_effect is not None
+                    and committed_spatial_effect["contrast"]
+                    > self.config.action_equivalence_threshold
+                ),
+            )
+            self._observe_dark_transition(target)
             if (
                 committed_goal_analysis is not None
                 and committed_goal_analysis.navigation_reward != 0.0
@@ -3908,7 +4580,6 @@ class VerifiedNeuralAgent:
                 if (
                     self.pending_option_choice is not None
                     and option_initiation_eligible
-                    and self.config.human_prior_life_loss_penalty > 0.0
                     and not positive_goal_milestone
                 ):
                     self.pending_option_recovery_checkpoint = (
@@ -4118,6 +4789,10 @@ class VerifiedNeuralAgent:
                             if committed_goal_analysis is None
                             else committed_goal_analysis.target_player_slot
                         ),
+                        parent_state_id=self._state_id(root),
+                        parent_frame_digest=source_frame.digest,
+                        parent_decision=self.decision_index - 1,
+                        search_depth=source_search_depth + 1,
                     )
                 )
                 added += 1
@@ -4125,6 +4800,10 @@ class VerifiedNeuralAgent:
                     "archive_causal_outcome_added",
                     decision=self.decision_index,
                     state_id=self._state_id(state),
+                    parent_state_id=self._state_id(root),
+                    parent_frame=source_frame.digest,
+                    parent_decision=self.decision_index - 1,
+                    search_depth=source_search_depth + 1,
                     action=action,
                     action_frames=duration,
                     causal_context_signature=(
@@ -4144,6 +4823,25 @@ class VerifiedNeuralAgent:
                     ),
                     persistent_frontier_value=(
                         self._archive_frontier_score(self.archive[-1])
+                    ),
+                    behavioral_edge_visits_before=(
+                        self._behavioral_edge_coverage(
+                            self.archive[-1].origin_signature,
+                            self.archive[-1].plan.path[0],
+                            self.archive[-1].plan.durations[0],
+                        )[0]
+                    ),
+                    behavioral_edge_unexpanded=(
+                        self._behavioral_edge_coverage(
+                            self.archive[-1].origin_signature,
+                            self.archive[-1].plan.path[0],
+                            self.archive[-1].plan.durations[0],
+                        )[1]
+                    ),
+                    behavioral_edge_coverage_bonus=(
+                        self._archive_behavioral_edge_coverage_bonus(
+                            self.archive[-1]
+                        )
                     ),
                     **self._frame_fields(target),
                 )
@@ -4439,6 +5137,10 @@ class VerifiedNeuralAgent:
                             if alternative_goal_analysis is None
                             else alternative_goal_analysis.target_player_slot
                         ),
+                        parent_state_id=self._state_id(root),
+                        parent_frame_digest=source_frame.digest,
+                        parent_decision=self.decision_index - 1,
+                        search_depth=source_search_depth + 1,
                     )
                 )
                 added += 1
@@ -4450,6 +5152,10 @@ class VerifiedNeuralAgent:
                     "archive_branch_added",
                     decision=self.decision_index,
                     state_id=self._state_id(alternative_state),
+                    parent_state_id=self._state_id(root),
+                    parent_frame=source_frame.digest,
+                    parent_decision=self.decision_index - 1,
+                    search_depth=source_search_depth + 1,
                     action=alternative_plan.path[0],
                     action_frames=alternative_plan.durations[0],
                     path=alternative_plan.path,
@@ -4461,6 +5167,25 @@ class VerifiedNeuralAgent:
                     persistent_frontier_value=archive_frontier_value,
                     causal_spatial_archive_bonus=(
                         archive_causal_spatial_bonus
+                    ),
+                    behavioral_edge_visits_before=(
+                        self._behavioral_edge_coverage(
+                            source_signature,
+                            alternative_plan.path[0],
+                            alternative_plan.durations[0],
+                        )[0]
+                    ),
+                    behavioral_edge_unexpanded=(
+                        self._behavioral_edge_coverage(
+                            source_signature,
+                            alternative_plan.path[0],
+                            alternative_plan.durations[0],
+                        )[1]
+                    ),
+                    behavioral_edge_coverage_bonus=(
+                        self._archive_behavioral_edge_coverage_bonus(
+                            self.archive[-1]
+                        )
                     ),
                     temporal_option_initiation_eligible=(
                         alternative_option_eligible
@@ -4608,6 +5333,10 @@ class VerifiedNeuralAgent:
                                 if self.goal_prior is None
                                 else self.goal_prior.current_player_slot
                             ),
+                            parent_state_id=self._state_id(root),
+                            parent_frame_digest=source_frame.digest,
+                            parent_decision=self.decision_index - 1,
+                            search_depth=source_search_depth,
                         )
                     )
                     added += 1
@@ -4615,6 +5344,10 @@ class VerifiedNeuralAgent:
                         "archive_affordance_checkpoint_added",
                         decision=self.decision_index,
                         state_id=self._state_id(root),
+                        parent_state_id=self._state_id(root),
+                        parent_frame=source_frame.digest,
+                        parent_decision=self.decision_index - 1,
+                        search_depth=source_search_depth,
                         causal_context_signature=(
                             source_causal_context_signature
                         ),
@@ -4697,6 +5430,10 @@ class VerifiedNeuralAgent:
                 if committed_temporal_option_value >= 0.0
                 else 0.0
             )
+            if committed_causal_cell_unvisited > 0:
+                self.last_causal_cell_progress_decision = (
+                    self.decision_index
+                )
             committed_action_penalty_components = branch_action_penalties[id(state)]
             self._emit(
                 "decision_committed",
@@ -4715,6 +5452,10 @@ class VerifiedNeuralAgent:
                 branches_examined=len(verified),
                 restored_archive=False,
                 committed_state_id=self._state_id(state),
+                parent_state_id=self._state_id(root),
+                parent_frame=source_frame.digest,
+                parent_decision=self.decision_index - 1,
+                search_depth=self.current_search_depth,
                 archive_branches_added=added,
                 archive_size=len(self.archive),
                 autonomous_dynamics=autonomous is not None,
@@ -4768,6 +5509,26 @@ class VerifiedNeuralAgent:
                 causal_cell_count=committed_causal_cell_count,
                 causal_cell_coverage_bonus=(
                     committed_causal_cell_coverage_bonus
+                ),
+                causal_cell_recovery_grace_decisions=(
+                    self.config.causal_cell_recovery_grace_decisions
+                ),
+                last_causal_cell_progress_decision=(
+                    self.last_causal_cell_progress_decision
+                ),
+                behavioral_edge_visits_before=(
+                    committed_behavioral_edge_visits_before
+                ),
+                behavioral_edge_unexpanded=(
+                    committed_behavioral_edge_unexpanded
+                ),
+                behavioral_edge_coverage_bonus=(
+                    committed_behavioral_edge_coverage_bonus
+                    if committed_temporal_option_value >= 0.0
+                    else 0.0
+                ),
+                behavioral_best_first_archive_enabled=(
+                    self.config.behavioral_best_first_archive
                 ),
                 temporal_option_value=committed_temporal_option_value,
                 temporal_option_is_known=self._temporal_option_estimate(
@@ -4854,14 +5615,25 @@ class VerifiedNeuralAgent:
         checkpoint = self.pending_life_recovery
         if checkpoint is None:
             return None
+        recovery_cause = self.pending_recovery_cause or "life_loss"
         state_id = checkpoint.state_id
         self.env.load_state(checkpoint.state)
         self.pending_life_recovery = None
+        self.pending_recovery_cause = None
         release_state = getattr(self.env, "release_state", None)
         if release_state is not None:
             release_state(checkpoint.state)
         invalidated_archive_branches = []
-        if checkpoint.kind == "goal_milestone":
+        rollback_descendants = bool(
+            checkpoint.kind == "goal_milestone"
+            or recovery_cause == "control_collapse"
+        )
+        rollback_reason = (
+            "control_collapse_rollback_descendant"
+            if recovery_cause == "control_collapse"
+            else "goal_milestone_rollback_descendant"
+        )
+        if rollback_descendants:
             invalidated_archive_branches = [
                 branch
                 for branch in self.archive
@@ -4883,10 +5655,15 @@ class VerifiedNeuralAgent:
                 self._emit(
                     "archive_branch_removed",
                     decision=self.decision_index + 1,
-                    reason="goal_milestone_rollback_descendant",
+                    reason=rollback_reason,
                     state_id=branch_state_id,
                     created_decision=branch.created,
-                    milestone_decision=checkpoint.decision,
+                    rollback_decision=checkpoint.decision,
+                    milestone_decision=(
+                        checkpoint.decision
+                        if checkpoint.kind == "goal_milestone"
+                        else None
+                    ),
                     **self._frame_fields(branch.frame),
                 )
                 release_key = (
@@ -4907,20 +5684,37 @@ class VerifiedNeuralAgent:
                     self._emit(
                         "archive_branch_release_failed",
                         decision=self.decision_index + 1,
-                        reason="goal_milestone_rollback_descendant",
+                        reason=rollback_reason,
                         state_id=branch_state_id,
                         created_decision=branch.created,
                         error_type=type(error).__name__,
                         error=str(error),
                     )
-            self.transition_history = [
-                transition
-                for transition in self.transition_history
-                if transition.decision <= checkpoint.decision
-            ]
-        self._discard_temporal_option("life_loss_checkpoint_restore")
+            if recovery_cause == "control_collapse":
+                self.transition_history = [
+                    transition
+                    for transition in self.transition_history
+                    if transition.decision < checkpoint.decision
+                ]
+                self.visual_last_visit = {
+                    signature: decision
+                    for signature, decision in self.visual_last_visit.items()
+                    if decision < checkpoint.decision
+                }
+            else:
+                self.transition_history = [
+                    transition
+                    for transition in self.transition_history
+                    if transition.decision <= checkpoint.decision
+                ]
+        checkpoint_restore_cleanup_reason = (
+            "control_collapse_checkpoint_restore"
+            if recovery_cause == "control_collapse"
+            else "life_loss_checkpoint_restore"
+        )
+        self._discard_temporal_option(checkpoint_restore_cleanup_reason)
         self._discard_pending_temporal_option(
-            "life_loss_checkpoint_restore"
+            checkpoint_restore_cleanup_reason
         )
         self.frame = checkpoint.frame
         self.current_frontier_signature = checkpoint.frontier_signature
@@ -4953,18 +5747,29 @@ class VerifiedNeuralAgent:
         self.visual_last_visit[
             self._signature(checkpoint.frame)
         ] = self.decision_index
-        if checkpoint.kind == "goal_milestone":
+        if (
+            checkpoint.kind == "goal_milestone"
+            or recovery_cause == "control_collapse"
+        ):
             self._restart_frontier_trace(
                 checkpoint.frontier_signature,
-                "goal_milestone_rollback",
+                (
+                    "control_collapse_rollback"
+                    if recovery_cause == "control_collapse"
+                    else "goal_milestone_rollback"
+                ),
             )
         learned_value, learned = self._temporal_option_estimate(
             *checkpoint.choice
         )
         restore_reason = (
-            "life_loss_goal_milestone"
-            if checkpoint.kind == "goal_milestone"
-            else "life_loss_checkpoint"
+            "control_collapse_checkpoint"
+            if recovery_cause == "control_collapse"
+            else (
+                "life_loss_goal_milestone"
+                if checkpoint.kind == "goal_milestone"
+                else "life_loss_checkpoint"
+            )
         )
         goal_analysis = (
             None
@@ -4972,8 +5777,13 @@ class VerifiedNeuralAgent:
             else self.goal_prior.analyze(checkpoint.frame, checkpoint.frame)
         )
         self._emit(
-            "life_hazard_state_restored",
+            (
+                "control_collapse_state_restored"
+                if recovery_cause == "control_collapse"
+                else "life_hazard_state_restored"
+            ),
             decision=self.decision_index,
+            recovery_cause=recovery_cause,
             causal_decision=checkpoint.decision,
             choice=checkpoint.choice,
             checkpoint_kind=checkpoint.kind,
@@ -5028,12 +5838,108 @@ class VerifiedNeuralAgent:
             planned_durations=(checkpoint.choice[2],),
         )
 
+    def _restore_known_scene_checkpoint(self) -> Optional[Decision]:
+        checkpoint = self.known_scene_recovery_checkpoint
+        if checkpoint is None:
+            return None
+        self.env.load_state(checkpoint.state)
+        self._discard_temporal_option("known_scene_return_checkpoint_restore")
+        self._discard_pending_temporal_option(
+            "known_scene_return_checkpoint_restore"
+        )
+        self.frame = checkpoint.frame
+        self.current_frontier_signature = checkpoint.frontier_signature
+        self.current_causal_context_signature = (
+            checkpoint.causal_context_signature
+        )
+        self.current_pose_action = checkpoint.pose_action
+        self.last_action = checkpoint.last_action
+        self.last_duration = checkpoint.last_duration
+        self.action_streak = checkpoint.action_streak
+        self.last_action_was_causal_spatial = False
+        self.current_scene = checkpoint.scene
+        self.scene_visits[checkpoint.scene] += 1
+        self.scene_streak = 1
+        self.visual_stagnation_streak = 0
+        self.delayed_return_recovery = False
+        self.delayed_return_loop_start = None
+        self.known_scene_return_recovery_pending = False
+        self.dark_transition_active = False
+        self.dark_transition_start_decision = None
+        self.autonomous_grace_remaining = 0
+        self.autonomous_intervention_pending = False
+        self.last_navigation_change_decision = None
+        self.pending_life_hazard_choice = None
+        if self.goal_prior is not None:
+            self.goal_prior.restore(
+                checkpoint.goal_heart_slots,
+                checkpoint.frame,
+                checkpoint.goal_player_slot,
+            )
+        self.novelty.observe(self._signature(checkpoint.frame))
+        self.decision_index += 1
+        self.visual_last_visit = {
+            self._signature(checkpoint.frame): self.decision_index
+        }
+        self.transition_history = []
+        self._restart_frontier_trace(
+            checkpoint.frontier_signature,
+            "known_scene_return_checkpoint_restore",
+        )
+        self._reset_persistent_change_observation_window(
+            "known_scene_return_checkpoint_restore"
+        )
+        self._emit(
+            "known_scene_recovery_checkpoint_restored",
+            decision=self.decision_index,
+            state_id=checkpoint.state_id,
+            remembered_bright_scenes=len(self.bright_scene_memory),
+            **self._frame_fields(checkpoint.frame),
+        )
+        self._emit(
+            "decision_committed",
+            decision=self.decision_index,
+            action=Action.NOOP,
+            action_frames=0,
+            path=(Action.NOOP,),
+            durations=(0,),
+            score=0.0,
+            branches_examined=0,
+            restored_archive=True,
+            restore_reason="known_scene_return_checkpoint",
+            committed_state_id=checkpoint.state_id,
+            archive_branches_added=0,
+            archive_size=len(self.archive),
+            active_temporal_option=False,
+            source_behavioral_signature=checkpoint.frontier_signature,
+            target_frontier_signature=checkpoint.frontier_signature,
+            action_counts=self.action_counts,
+            duration_counts=self.duration_counts,
+            action_duration_counts=self._action_duration_count_rows(),
+            scene_streak=self.scene_streak,
+            visual_stagnation_streak=self.visual_stagnation_streak,
+            **self._persistent_change_fields(),
+            **self._frame_fields(checkpoint.frame),
+        )
+        return Decision(
+            Action.NOOP,
+            checkpoint.frame,
+            (Action.NOOP,),
+            0.0,
+            0,
+            restored_archive=True,
+            action_frames=0,
+            planned_durations=(0,),
+        )
+
     def _restore_if_stagnant(self) -> Optional[Decision]:
         assert self.frame is not None
         current_scene = self._scene_signature(self.frame)
         delayed_return = self.delayed_return_recovery
+        known_scene_return = self.known_scene_return_recovery_pending
         if (
             not delayed_return
+            and not known_scene_return
             and self.visual_stagnation_streak
             < self.config.visual_stagnation_visits
         ):
@@ -5043,17 +5949,22 @@ class VerifiedNeuralAgent:
             self.config.autonomous_grace_decisions
             + self.config.visual_stagnation_visits
         )
-        if (
-            not delayed_return
+        passive_window_open = bool(
+            active_trace is not None
+            and active_trace.passive_decisions
+            <= maximum_passive_observations
+        )
+        autonomous_window_open = bool(
+            active_trace is None
             and (
                 self.autonomous_grace_remaining > 0
                 or self.autonomous_intervention_pending
-                or (
-                    active_trace is not None
-                    and active_trace.passive_decisions
-                    <= maximum_passive_observations
-                )
             )
+        )
+        if (
+            not delayed_return
+            and not known_scene_return
+            and (passive_window_open or autonomous_window_open)
         ):
             self._emit(
                 "temporal_option_recovery_suppressed",
@@ -5074,8 +5985,41 @@ class VerifiedNeuralAgent:
             )
             return None
         recovery_reason = (
-            "delayed_visual_return" if delayed_return else "visual_stagnation"
+            "known_scene_return_after_dark_transition"
+            if known_scene_return
+            else (
+                "delayed_visual_return"
+                if delayed_return
+                else "visual_stagnation"
+            )
         )
+        causal_cell_grace = self.config.causal_cell_recovery_grace_decisions
+        if (
+            causal_cell_grace > 0
+            and not known_scene_return
+            and self.last_causal_cell_progress_decision is not None
+            and self.decision_index
+            - self.last_causal_cell_progress_decision
+            < causal_cell_grace
+        ):
+            self._emit(
+                "causal_cell_recovery_suppressed",
+                decision=self.decision_index + 1,
+                causal_cell_progress_decision=(
+                    self.last_causal_cell_progress_decision
+                ),
+                decisions_since_causal_cell_progress=(
+                    self.decision_index
+                    - self.last_causal_cell_progress_decision
+                ),
+                grace_decisions=causal_cell_grace,
+                loop_start=self.delayed_return_loop_start,
+                recovery_reason=recovery_reason,
+            )
+            if delayed_return:
+                self.delayed_return_recovery = False
+                self.delayed_return_loop_start = None
+            return None
         if (
             delayed_return
             and self.last_navigation_change_decision is not None
@@ -5097,21 +6041,34 @@ class VerifiedNeuralAgent:
             self.delayed_return_recovery = False
             self.delayed_return_loop_start = None
             return None
-        if delayed_return:
+        if delayed_return or known_scene_return:
             loop_start = self.delayed_return_loop_start or 0
             current_signature = self._signature(self.frame)
-            eligible = [
-                branch
-                for branch in self.archive
-                if branch.created >= loop_start
-                and self._signature(branch.frame) != current_signature
-            ]
-            if not eligible:
+            if self.config.behavioral_best_first_archive:
                 eligible = [
                     branch
                     for branch in self.archive
                     if self._signature(branch.frame) != current_signature
                 ]
+                self._emit(
+                    "behavioral_best_first_global_archive",
+                    decision=self.decision_index + 1,
+                    loop_start=loop_start,
+                    alternatives_examined=len(eligible),
+                )
+            else:
+                eligible = [
+                    branch
+                    for branch in self.archive
+                    if branch.created >= loop_start
+                    and self._signature(branch.frame) != current_signature
+                ]
+                if not eligible:
+                    eligible = [
+                        branch
+                        for branch in self.archive
+                        if self._signature(branch.frame) != current_signature
+                    ]
         else:
             minimum_created = max(0, self.decision_index - self.config.archive_max_age)
             eligible = [
@@ -5126,6 +6083,25 @@ class VerifiedNeuralAgent:
                     )
                 )
             ]
+        if known_scene_return and self.dark_transition_start_decision is not None:
+            alternatives_before_dark_filter = len(eligible)
+            eligible = [
+                branch
+                for branch in eligible
+                if branch.created < self.dark_transition_start_decision
+            ]
+            self._emit(
+                "post_dark_archive_branches_filtered",
+                decision=self.decision_index + 1,
+                dark_transition_start_decision=(
+                    self.dark_transition_start_decision
+                ),
+                alternatives_before=alternatives_before_dark_filter,
+                filtered_branches=(
+                    alternatives_before_dark_filter - len(eligible)
+                ),
+                alternatives_remaining=len(eligible),
+            )
         if (
             self.goal_prior is not None
             and self.goal_prior.best_remaining_hearts is not None
@@ -5174,6 +6150,37 @@ class VerifiedNeuralAgent:
                     alternatives_examined=len(eligible),
                     **self._persistent_change_fields(),
                 )
+        speculative_persistence_applied = False
+        if (
+            self.config.persistent_change_speculative_recovery
+            and self.persistent_change_candidates
+        ):
+            speculative_persistence_eligible = [
+                branch
+                for branch in eligible
+                if self._matches_persistent_change_candidates(branch.frame)
+            ]
+            if speculative_persistence_eligible:
+                removed = len(eligible) - len(
+                    speculative_persistence_eligible
+                )
+                eligible = speculative_persistence_eligible
+                speculative_persistence_applied = True
+                self._emit(
+                    "persistent_change_candidate_archives_filtered",
+                    decision=self.decision_index + 1,
+                    filtered_branches=removed,
+                    alternatives_remaining=len(eligible),
+                    **self._persistent_change_fields(),
+                )
+            else:
+                self._emit(
+                    "persistent_change_candidate_preservation_unavailable",
+                    decision=self.decision_index + 1,
+                    alternatives_examined=len(eligible),
+                    **self._persistent_change_fields(),
+                )
+        behavioral_frontier_candidates = list(eligible)
         global_goal_eligible = [
             branch for branch in eligible if branch.goal_progress_reward > 0.0
         ]
@@ -5208,9 +6215,17 @@ class VerifiedNeuralAgent:
                     + ancestor_affordance_eligible
                 )
         if not eligible:
-            if delayed_return:
+            if known_scene_return:
+                checkpoint_restored = self._restore_known_scene_checkpoint()
+                if checkpoint_restored is not None:
+                    return checkpoint_restored
+            if delayed_return or known_scene_return:
                 self._emit(
-                    "delayed_return_recovery_unavailable",
+                    (
+                        "known_scene_return_recovery_unavailable"
+                        if known_scene_return
+                        else "delayed_return_recovery_unavailable"
+                    ),
                     decision=self.decision_index,
                     loop_start=self.delayed_return_loop_start,
                     archive_size=len(self.archive),
@@ -5218,6 +6233,7 @@ class VerifiedNeuralAgent:
                 )
                 self.delayed_return_recovery = False
                 self.delayed_return_loop_start = None
+                self.known_scene_return_recovery_pending = False
             return None
         safe_eligible = []
         hazardous_eligible = []
@@ -5248,7 +6264,7 @@ class VerifiedNeuralAgent:
                 )
             else:
                 safe_eligible.append(candidate)
-        if safe_eligible and hazardous_eligible:
+        if hazardous_eligible:
             eligible = safe_eligible
             self._emit(
                 "learned_hazards_filtered",
@@ -5257,6 +6273,83 @@ class VerifiedNeuralAgent:
                 filtered=hazardous_eligible,
                 alternatives_remaining=len(eligible),
             )
+        behavioral_best_first_applied = False
+        behavioral_frontier_safe = []
+        for candidate in behavioral_frontier_candidates:
+            if candidate.goal_progress_reward > 0.0:
+                behavioral_frontier_safe.append(candidate)
+                continue
+            value, known = self._temporal_option_estimate(
+                candidate.origin_signature,
+                candidate.plan.path[0],
+                candidate.plan.durations[0],
+            )
+            if not known or value >= 0.0:
+                behavioral_frontier_safe.append(candidate)
+        if behavioral_frontier_safe or hazardous_eligible:
+            behavioral_frontier_candidates = behavioral_frontier_safe
+        if not eligible:
+            if known_scene_return:
+                checkpoint_restored = self._restore_known_scene_checkpoint()
+                if checkpoint_restored is not None:
+                    return checkpoint_restored
+            self._emit(
+                "archive_recovery_exhausted_by_learned_hazards",
+                decision=self.decision_index + 1,
+                recovery_reason=recovery_reason,
+                filtered=len(hazardous_eligible),
+                archive_size=len(self.archive),
+                **self._frame_fields(self.frame),
+            )
+            if delayed_return:
+                self.delayed_return_recovery = False
+                self.delayed_return_loop_start = None
+            if known_scene_return:
+                self.known_scene_return_recovery_pending = False
+            return None
+        behavioral_intervention_eligible = [
+            candidate
+            for candidate in behavioral_frontier_candidates
+            if candidate.plan.path[0] != Action.NOOP
+            and candidate.origin_signature
+        ]
+        if (
+            self.config.behavioral_best_first_archive
+            and behavioral_intervention_eligible
+        ):
+            behavioral_unexpanded_eligible = [
+                candidate
+                for candidate in behavioral_intervention_eligible
+                if self._behavioral_edge_coverage(
+                    candidate.origin_signature,
+                    candidate.plan.path[0],
+                    candidate.plan.durations[0],
+                )[1]
+            ]
+            if behavioral_unexpanded_eligible:
+                alternatives_before = len(behavioral_frontier_candidates)
+                eligible = behavioral_unexpanded_eligible
+                behavioral_best_first_applied = True
+                self._emit(
+                    "behavioral_best_first_archives_filtered",
+                    decision=self.decision_index + 1,
+                    alternatives_before=alternatives_before,
+                    filtered_branches=(
+                        alternatives_before - len(eligible)
+                    ),
+                    alternatives_remaining=len(eligible),
+                    unexpanded_behavioral_edges=len(eligible),
+                    recovery_reason=recovery_reason,
+                )
+            else:
+                self._emit(
+                    "behavioral_best_first_frontier_exhausted",
+                    decision=self.decision_index + 1,
+                    intervention_alternatives=len(
+                        behavioral_intervention_eligible
+                    ),
+                    recovery_reason=recovery_reason,
+                )
         goal_eligible = [
             candidate
             for candidate in eligible
@@ -5272,11 +6365,15 @@ class VerifiedNeuralAgent:
                 item.score,
             )
         else:
-            causal_event_eligible = [
-                candidate
-                for candidate in eligible
-                if candidate.causal_event_outcome
-            ]
+            causal_event_eligible = (
+                []
+                if behavioral_best_first_applied
+                else [
+                    candidate
+                    for candidate in eligible
+                    if candidate.causal_event_outcome
+                ]
+            )
         causal_event_outcome_preferred = bool(causal_event_eligible)
         semantic_navigation_enabled = bool(
             self.goal_prior is not None
@@ -5284,6 +6381,14 @@ class VerifiedNeuralAgent:
         )
         if goal_eligible:
             pass
+        elif behavioral_best_first_applied:
+            affordance_breadth_first = False
+            restore_key = lambda item: (
+                -item.created,
+                self._archive_frontier_score(item),
+                self.novelty.score(self._signature(item.frame)),
+                item.score,
+            )
         elif causal_event_eligible:
             eligible = causal_event_eligible
             affordance_breadth_first = False
@@ -5310,7 +6415,9 @@ class VerifiedNeuralAgent:
             affordance_breadth_first = bool(affordance_eligible)
             if affordance_eligible:
                 eligible = affordance_eligible
-        if not goal_eligible and not causal_event_eligible and affordance_breadth_first:
+        if behavioral_best_first_applied:
+            pass
+        elif not goal_eligible and not causal_event_eligible and affordance_breadth_first:
             eligible = affordance_eligible
             if semantic_navigation_enabled:
                 restore_key = lambda item: (
@@ -5347,6 +6454,7 @@ class VerifiedNeuralAgent:
         if release_state is not None:
             release_state(branch.state)
         self.frame = branch.frame
+        self.current_search_depth = branch.search_depth
         self.last_navigation_change_decision = None
         self.pending_life_hazard_choice = None
         self.autonomous_intervention_pending = False
@@ -5363,7 +6471,10 @@ class VerifiedNeuralAgent:
         self.visual_stagnation_streak = 0
         self.autonomous_grace_remaining = 0
         self.decision_index += 1
-        self._reset_persistent_change_observation_window("archive_restore")
+        self._reset_persistent_change_observation_window(
+            "archive_restore",
+            preserve_candidates=speculative_persistence_applied,
+        )
         self.visual_last_visit[self._signature(branch.frame)] = self.decision_index
         selected_frontier_value = self._archive_frontier_score(branch)
         selected_causal_spatial_archive_bonus = (
@@ -5371,6 +6482,20 @@ class VerifiedNeuralAgent:
         )
         selected_causal_cell_coverage_archive_bonus = (
             self._archive_causal_cell_coverage_bonus(branch)
+        )
+        (
+            restored_behavioral_edge_visits_before,
+            restored_behavioral_edge_unexpanded,
+            restored_behavioral_edge_coverage_bonus,
+        ) = self._behavioral_edge_coverage(
+            branch.origin_signature,
+            branch.plan.path[0],
+            branch.plan.durations[0],
+        )
+        self._record_behavioral_edge(
+            branch.origin_signature,
+            branch.plan.path[0],
+            branch.plan.durations[0],
         )
         restored_visual_cluster = self._abstract_signature(branch.frame)
         restored_frontier_signature = (
@@ -5411,6 +6536,8 @@ class VerifiedNeuralAgent:
         )
         self.delayed_return_recovery = False
         self.delayed_return_loop_start = None
+        self.known_scene_return_recovery_pending = False
+        self.dark_transition_start_decision = None
         self.pending_option_choice = (
             (
                 branch.origin_signature,
@@ -5467,6 +6594,8 @@ class VerifiedNeuralAgent:
             restored_causal_cell_unvisited,
             restored_causal_cell_count,
         ) = self._causal_cell_coverage(branch.causal_spatial_signature)
+        if restored_causal_cell_unvisited > 0:
+            self.last_causal_cell_progress_decision = self.decision_index
         if branch.causal_spatial_signature:
             self.causal_spatial_visits[
                 self._causal_frontier_key(
@@ -5508,6 +6637,10 @@ class VerifiedNeuralAgent:
             ),
             affordance_breadth_first=affordance_breadth_first,
             state_id=restored_state_id,
+            parent_state_id=branch.parent_state_id,
+            parent_frame=branch.parent_frame_digest,
+            parent_decision=branch.parent_decision,
+            search_depth=branch.search_depth,
             created_decision=branch.created,
             age=self.decision_index - branch.created,
             action=branch.plan.path[0],
@@ -5521,6 +6654,22 @@ class VerifiedNeuralAgent:
             ),
             causal_cell_coverage_archive_bonus=(
                 selected_causal_cell_coverage_archive_bonus
+            ),
+            behavioral_edge_visits_before=(
+                restored_behavioral_edge_visits_before
+            ),
+            behavioral_edge_unexpanded=(
+                restored_behavioral_edge_unexpanded
+            ),
+            behavioral_edge_coverage_bonus=(
+                restored_behavioral_edge_coverage_bonus
+            ),
+            behavioral_best_first_archive_enabled=(
+                self.config.behavioral_best_first_archive
+            ),
+            behavioral_best_first_applied=behavioral_best_first_applied,
+            speculative_persistence_applied=(
+                speculative_persistence_applied
             ),
             action_effect_contrast=None,
             action_effect_value=restored_action_effect_value,
@@ -5550,6 +6699,12 @@ class VerifiedNeuralAgent:
             causal_cell_unvisited=restored_causal_cell_unvisited,
             causal_cell_count=restored_causal_cell_count,
             causal_cell_coverage_bonus=restored_causal_cell_coverage_bonus,
+            causal_cell_recovery_grace_decisions=(
+                self.config.causal_cell_recovery_grace_decisions
+            ),
+            last_causal_cell_progress_decision=(
+                self.last_causal_cell_progress_decision
+            ),
             human_prior_enabled=self.goal_prior is not None,
             human_prior_reward_track=(
                 "human_prior_v2" if self.goal_prior is not None else None
@@ -5594,11 +6749,31 @@ class VerifiedNeuralAgent:
             branches_examined=0,
             restored_archive=True,
             restore_reason=recovery_reason,
+            behavioral_edge_visits_before=(
+                restored_behavioral_edge_visits_before
+            ),
+            behavioral_edge_unexpanded=(
+                restored_behavioral_edge_unexpanded
+            ),
+            behavioral_edge_coverage_bonus=(
+                restored_behavioral_edge_coverage_bonus
+            ),
+            behavioral_best_first_archive_enabled=(
+                self.config.behavioral_best_first_archive
+            ),
+            behavioral_best_first_applied=behavioral_best_first_applied,
+            speculative_persistence_applied=(
+                speculative_persistence_applied
+            ),
             causal_event_outcome_preferred=(
                 causal_event_outcome_preferred
             ),
             affordance_breadth_first=affordance_breadth_first,
             committed_state_id=restored_state_id,
+            parent_state_id=branch.parent_state_id,
+            parent_frame=branch.parent_frame_digest,
+            parent_decision=branch.parent_decision,
+            search_depth=branch.search_depth,
             archive_branches_added=0,
             archive_size=len(self.archive),
             persistent_frontier_value=selected_frontier_value,

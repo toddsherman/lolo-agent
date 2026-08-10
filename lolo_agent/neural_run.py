@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -12,14 +13,14 @@ from .bootstrap import (
     get_bootstrap_fixture,
 )
 from .ensemble_world_model import load_ensemble_checkpoint
-from .experience_import import classify_reward_track
+from .experience_import import classify_reward_track, decode_logged_png
 from .log_summary import build_run_summary
 from .native_env import NativeLibretroEnv
 from .neural_planner import NeuralPlanningConfig, VerifiedNeuralAgent
 from .neural_world_model import ACTION_ORDER, choose_torch_device
 from .pixels import Frame, signature_key
 from .replay import restore_logged_decision, validate_replay_inputs
-from .run_logging import LoggedEnvironment, RunLogger, sha256_file
+from .run_logging import LoggedEnvironment, RunLogger, read_events, sha256_file
 from .spatial_returnability import load_returnability_checkpoint
 from .spatial_shadow import SpatialShadowEvaluator
 from .spatial_world_model import load_spatial_checkpoint
@@ -112,6 +113,49 @@ class StableSceneChangeDetector:
         }
 
 
+def load_episodic_scene_frames(
+    run_dir: Path,
+    through_decision: int,
+    visited: Optional[set[Path]] = None,
+) -> list[Frame]:
+    """Load prior pixel observations for temporary scene-return memory."""
+
+    run_dir = Path(run_dir).expanduser().resolve()
+    visited = set() if visited is None else visited
+    if run_dir in visited:
+        raise RuntimeError(f"episodic resume cycle detected at {run_dir}")
+    visited.add(run_dir)
+    manifest = json.loads(
+        (run_dir / "manifest.json").read_text(encoding="utf-8")
+    )
+    frames: list[Frame] = []
+    resume = manifest.get("metadata", {}).get("episodic_resume")
+    if resume:
+        frames.extend(
+            load_episodic_scene_frames(
+                Path(resume["source_run"]),
+                int(resume["source_decision"]),
+                visited,
+            )
+        )
+    seen_digests = {frame.digest for frame in frames}
+    for event in read_events(run_dir):
+        if event.get("event") != "decision_committed":
+            continue
+        if int(event.get("decision", 0)) > through_decision:
+            continue
+        digest = event.get("frame")
+        if not digest or digest in seen_digests:
+            continue
+        frame_path = run_dir / "frames" / f"{digest}.png"
+        if not frame_path.exists():
+            continue
+        frame = decode_logged_png(frame_path)
+        seen_digests.add(frame.digest)
+        frames.append(frame)
+    return frames
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run a frozen neural rollout planner")
     parser.add_argument("--host", type=Path, required=True)
@@ -183,6 +227,41 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--causal-cell-recovery-grace-decisions",
+        type=int,
+        default=0,
+        help=(
+            "local decisions allowed after reaching a globally unvisited "
+            "controlled cell before delayed-return archive recovery"
+        ),
+    )
+    parser.add_argument(
+        "--autonomous-grace-decisions",
+        type=int,
+        default=NeuralPlanningConfig().autonomous_grace_decisions,
+        help=(
+            "passive counterfactual observations allowed after detecting "
+            "action-independent dynamics before forcing an intervention"
+        ),
+    )
+    parser.add_argument(
+        "--behavioral-edge-coverage-weight",
+        type=float,
+        default=0.0,
+        help=(
+            "reward controller action/duration edges that have been committed "
+            "less often from a learned behavioral state; zero disables it"
+        ),
+    )
+    parser.add_argument(
+        "--behavioral-best-first-archive",
+        action="store_true",
+        help=(
+            "when recovering from a loop, prefer uncommitted intervention "
+            "edges within the already eligible archive frontier"
+        ),
+    )
+    parser.add_argument(
         "--persistent-change-stability-decisions",
         type=int,
         default=0,
@@ -198,6 +277,14 @@ def main() -> None:
         help=(
             "optional minimum 4-bit coarse-intensity decrease for persistent "
             "change evidence; zero accepts changes in either direction"
+        ),
+    )
+    parser.add_argument(
+        "--persistent-change-speculative-recovery",
+        action="store_true",
+        help=(
+            "during archive recovery, provisionally preserve newly observed "
+            "coarse intensity drops until normal stability evidence resolves them"
         ),
     )
     parser.add_argument(
@@ -292,6 +379,16 @@ def main() -> None:
         parser.error("--archive-max-age must be positive")
     if args.causal_cell_coverage_weight < 0.0:
         parser.error("--causal-cell-coverage-weight must be non-negative")
+    if args.causal_cell_recovery_grace_decisions < 0:
+        parser.error(
+            "--causal-cell-recovery-grace-decisions must be non-negative"
+        )
+    if args.autonomous_grace_decisions < 0:
+        parser.error("--autonomous-grace-decisions must be non-negative")
+    if args.behavioral_edge_coverage_weight < 0.0:
+        parser.error(
+            "--behavioral-edge-coverage-weight must be non-negative"
+        )
     if args.persistent_change_stability_decisions < 0:
         parser.error(
             "--persistent-change-stability-decisions must be non-negative"
@@ -426,11 +523,24 @@ def main() -> None:
         archive_capacity=args.archive_capacity,
         archive_max_age=args.archive_max_age,
         causal_cell_coverage_weight=args.causal_cell_coverage_weight,
+        causal_cell_recovery_grace_decisions=(
+            args.causal_cell_recovery_grace_decisions
+        ),
+        autonomous_grace_decisions=args.autonomous_grace_decisions,
+        behavioral_edge_coverage_weight=(
+            args.behavioral_edge_coverage_weight
+        ),
+        behavioral_best_first_archive=(
+            args.behavioral_best_first_archive
+        ),
         persistent_change_stability_decisions=(
             args.persistent_change_stability_decisions
         ),
         persistent_change_minimum_value_drop=(
             args.persistent_change_minimum_value_drop
+        ),
+        persistent_change_speculative_recovery=(
+            args.persistent_change_speculative_recovery
         ),
         consecutive_repeat_penalty_cap=args.consecutive_repeat_penalty_cap,
         delayed_return_penalty_cap=args.delayed_return_penalty_cap,
@@ -590,6 +700,11 @@ def main() -> None:
                     **logger.frame_fields(initial_frame),
                 )
                 agent.reset(initial_frame=initial_frame)
+                agent.seed_bright_scene_memory(
+                    load_episodic_scene_frames(
+                        args.resume_run, args.resume_decision
+                    )
+                )
             elif bootstrap_fixture is None:
                 initial_frame = agent.reset()
             else:
