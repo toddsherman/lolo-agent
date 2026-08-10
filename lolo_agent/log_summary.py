@@ -857,6 +857,32 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             and bool(event.get("duration_matched"))
             for event in events
         ),
+        "causal_observation_recovery_suppressions": event_counts.get(
+            "causal_observation_recovery_suppressed", 0
+        ),
+        "causal_observation_interventions_started": event_counts.get(
+            "causal_observation_intervention_started", 0
+        ),
+        "causal_observation_interventions_selected": event_counts.get(
+            "causal_observation_intervention_selected", 0
+        ),
+        "delayed_transition_probes": event_counts.get(
+            "delayed_transition_probe", 0
+        ),
+        "delayed_transition_novel_scenes": sum(
+            event["event"] == "delayed_transition_probe"
+            and bool(event.get("novel_scene_observed"))
+            for event in events
+        ),
+        "delayed_transition_branches_selected": event_counts.get(
+            "delayed_transition_branch_selected", 0
+        ),
+        "anticipated_transition_observations": event_counts.get(
+            "anticipated_transition_observation", 0
+        ),
+        "anticipated_transition_recovery_suppressions": event_counts.get(
+            "anticipated_transition_recovery_suppressed", 0
+        ),
         "generic_dark_transitions_started": event_counts.get(
             "generic_dark_transition_started", 0
         ),

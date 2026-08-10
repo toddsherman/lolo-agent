@@ -1724,6 +1724,62 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(matched[0]["action"], Action.NOOP)
         self.assertEqual(matched[0]["action_frames"], 1)
 
+    def test_causal_observation_gets_an_intervention_before_recovery(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            ActionEffectEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.NOOP),
+                planning_depth=1,
+                beam_width=2,
+                verify_actions=2,
+                action_frames=1,
+                visual_stagnation_visits=1,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.planner.plan = lambda _frame: [
+            NeuralPlan((Action.RIGHT,), (1,), 1.0, 0.0),
+            NeuralPlan((Action.NOOP,), (1,), 0.0, 0.0),
+        ]
+        agent.pending_option_choice = ("source", Action.RIGHT, 1)
+        agent.pending_option_decision = 0
+        agent.pending_option_causal_evidence = True
+
+        observation = agent.decide()
+        agent.delayed_return_recovery = True
+        agent.delayed_return_loop_start = 0
+        agent.visual_stagnation_streak = 1
+        intervention = agent.decide()
+
+        self.assertEqual(observation.action, Action.NOOP)
+        self.assertEqual(intervention.action, Action.RIGHT)
+        self.assertFalse(intervention.restored_archive)
+        self.assertFalse(agent.causal_observation_intervention_pending)
+        self.assertFalse(agent.delayed_return_recovery)
+        self.assertTrue(
+            any(
+                event["event"]
+                == "causal_observation_recovery_suppressed"
+                for event in logger.events
+            )
+        )
+        selected = next(
+            event
+            for event in logger.events
+            if event["event"]
+            == "causal_observation_intervention_selected"
+        )
+        self.assertEqual(selected["action"], Action.RIGHT)
+
     def test_control_collapse_restores_the_causal_checkpoint(self) -> None:
         model = EnsembleVisualDynamicsModel(
             latent_size=32, action_size=8, ensemble_size=2
@@ -1913,6 +1969,70 @@ class EnsemblePlannerTests(unittest.TestCase):
                 for event in logger.events
             )
         )
+
+    def test_delayed_transition_probe_selects_and_observes_novel_scene(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            NovelSceneTransitionEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.NOOP),
+                planning_depth=1,
+                beam_width=2,
+                verify_actions=2,
+                action_frames=1,
+                delayed_transition_probe_steps=3,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.planner.plan = lambda _frame: [
+            NeuralPlan((Action.NOOP,), (1,), 100.0, 0.0),
+            NeuralPlan((Action.RIGHT,), (1,), 0.0, 0.0),
+        ]
+
+        trigger = agent.decide()
+        first_observation = agent.decide()
+        resolved = agent.decide()
+
+        self.assertEqual(trigger.action, Action.RIGHT)
+        self.assertEqual(first_observation.action, Action.NOOP)
+        self.assertEqual(resolved.action, Action.NOOP)
+        self.assertEqual(
+            agent.anticipated_transition_observations_remaining, 0
+        )
+        probe = next(
+            event
+            for event in logger.events
+            if event["event"] == "delayed_transition_probe"
+        )
+        self.assertTrue(probe["novel_scene_observed"])
+        self.assertEqual(probe["resolution_step"], 2)
+        selected = next(
+            event
+            for event in logger.events
+            if event["event"] == "delayed_transition_branch_selected"
+        )
+        self.assertEqual(selected["action"], Action.RIGHT)
+        self.assertEqual(selected["observations_scheduled"], 2)
+        observations = [
+            event
+            for event in logger.events
+            if event["event"] == "anticipated_transition_observation"
+        ]
+        self.assertEqual(len(observations), 2)
+        transition = next(
+            event
+            for event in logger.events
+            if event["event"] == "generic_dark_transition_resolved"
+        )
+        self.assertFalse(transition["returned_to_known_scene"])
 
     def test_duration_conditioned_planner_selects_a_press_length(self) -> None:
         model = EnsembleVisualDynamicsModel(

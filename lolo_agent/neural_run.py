@@ -254,6 +254,30 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--delayed-transition-probe-steps",
+        type=int,
+        default=NeuralPlanningConfig().delayed_transition_probe_steps,
+        help=(
+            "counterfactual matched-NOOP steps used to discover delayed dark "
+            "transitions into visually novel scenes; zero disables probing"
+        ),
+    )
+    parser.add_argument(
+        "--dark-transition-intensity-threshold",
+        type=float,
+        default=NeuralPlanningConfig().dark_transition_intensity_threshold,
+        help="mean pixel intensity at or below which a scene is considered dark",
+    )
+    parser.add_argument(
+        "--known-scene-return-distance-threshold",
+        type=float,
+        default=NeuralPlanningConfig().known_scene_return_distance_threshold,
+        help=(
+            "maximum coarse pixel distance for treating a post-dark layout "
+            "as a return to temporary scene memory"
+        ),
+    )
+    parser.add_argument(
         "--behavioral-edge-coverage-weight",
         type=float,
         default=0.0,
@@ -397,6 +421,16 @@ def main() -> None:
     if args.control_collapse_confirmation_steps <= 0:
         parser.error(
             "--control-collapse-confirmation-steps must be positive"
+        )
+    if args.delayed_transition_probe_steps < 0:
+        parser.error("--delayed-transition-probe-steps must be non-negative")
+    if not 0.0 <= args.dark_transition_intensity_threshold <= 1.0:
+        parser.error(
+            "--dark-transition-intensity-threshold must be between zero and one"
+        )
+    if not 0.0 <= args.known_scene_return_distance_threshold <= 1.0:
+        parser.error(
+            "--known-scene-return-distance-threshold must be between zero and one"
         )
     if args.behavioral_edge_coverage_weight < 0.0:
         parser.error(
@@ -542,6 +576,13 @@ def main() -> None:
         autonomous_grace_decisions=args.autonomous_grace_decisions,
         control_collapse_confirmation_steps=(
             args.control_collapse_confirmation_steps
+        ),
+        delayed_transition_probe_steps=args.delayed_transition_probe_steps,
+        dark_transition_intensity_threshold=(
+            args.dark_transition_intensity_threshold
+        ),
+        known_scene_return_distance_threshold=(
+            args.known_scene_return_distance_threshold
         ),
         behavioral_edge_coverage_weight=(
             args.behavioral_edge_coverage_weight

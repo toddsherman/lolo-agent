@@ -69,8 +69,9 @@ class NeuralPlanningConfig:
     action_equivalence_threshold: float = 0.0001
     autonomous_grace_decisions: int = 4
     control_collapse_confirmation_steps: int = 4
+    delayed_transition_probe_steps: int = 0
     dark_transition_intensity_threshold: float = 0.05
-    known_scene_return_distance_threshold: float = 0.01
+    known_scene_return_distance_threshold: float = 0.04
     delayed_return_min_length: int = 4
     delayed_return_credit_horizon: int = 48
     delayed_return_weight: float = 0.75
@@ -466,6 +467,8 @@ class VerifiedNeuralAgent:
             raise ValueError("returnability probe threshold must be non-negative")
         if self.config.control_collapse_confirmation_steps <= 0:
             raise ValueError("control-collapse confirmation steps must be positive")
+        if self.config.delayed_transition_probe_steps < 0:
+            raise ValueError("delayed-transition probe steps must be non-negative")
         if not 0.0 <= self.config.dark_transition_intensity_threshold <= 1.0:
             raise ValueError("dark transition threshold must be between zero and one")
         if not 0.0 <= self.config.known_scene_return_distance_threshold <= 1.0:
@@ -504,6 +507,11 @@ class VerifiedNeuralAgent:
         self.delayed_return_loop_start: Optional[int] = None
         self.autonomous_grace_remaining = 0
         self.autonomous_intervention_pending = False
+        self.causal_observation_intervention_pending = False
+        self.anticipated_transition_observations_remaining = 0
+        self.anticipated_transition_observation_duration = (
+            self.config.action_frames
+        )
         self.dark_transition_active = False
         self.dark_transition_start_decision: Optional[int] = None
         self.known_scene_return_recovery_pending = False
@@ -939,6 +947,11 @@ class VerifiedNeuralAgent:
         self.delayed_return_loop_start = None
         self.autonomous_grace_remaining = 0
         self.autonomous_intervention_pending = False
+        self.causal_observation_intervention_pending = False
+        self.anticipated_transition_observations_remaining = 0
+        self.anticipated_transition_observation_duration = (
+            self.config.action_frames
+        )
         self.dark_transition_active = False
         self.dark_transition_start_decision = None
         self.known_scene_return_recovery_pending = False
@@ -1324,6 +1337,7 @@ class VerifiedNeuralAgent:
             )
             self.known_scene_return_recovery_pending = returned_to_known_scene
             self.dark_transition_active = False
+            self.anticipated_transition_observations_remaining = 0
             if not returned_to_known_scene:
                 self.dark_transition_start_decision = None
             self._emit(
@@ -3237,6 +3251,73 @@ class VerifiedNeuralAgent:
             "observations": observations,
         }
 
+    def _probe_delayed_scene_transition(
+        self,
+        state: object,
+        frame: Frame,
+        observation_duration: int,
+    ) -> Dict[str, Any]:
+        """Passively inspect a verified branch for a delayed scene outcome."""
+
+        dark_encountered = False
+        returned_to_known_scene = False
+        novel_scene_observed = False
+        resolution_step: Optional[int] = None
+        maximum_visual_change = 0.0
+        observations: List[Dict[str, Any]] = []
+        self.env.load_state(state)
+        for step in range(1, self.config.delayed_transition_probe_steps + 1):
+            observed = self.env.step(Action.NOOP, observation_duration)
+            intensity = self._mean_frame_intensity(observed)
+            visual_change = frame.mean_absolute_difference(observed)
+            maximum_visual_change = max(
+                maximum_visual_change, visual_change
+            )
+            is_dark = (
+                intensity
+                <= self.config.dark_transition_intensity_threshold
+            )
+            dark_encountered = dark_encountered or is_dark
+            minimum_known_distance: Optional[float] = None
+            if not is_dark and self.bright_scene_memory:
+                signature = self._persistent_cell_values(observed)
+                minimum_known_distance = min(
+                    self._coarse_scene_distance(signature, remembered)
+                    for remembered in self.bright_scene_memory
+                )
+            observations.append(
+                {
+                    "step": step,
+                    "scene_intensity": intensity,
+                    "dark": is_dark,
+                    "visual_change_from_endpoint": visual_change,
+                    "minimum_known_scene_distance": (
+                        minimum_known_distance
+                    ),
+                }
+            )
+            if (
+                dark_encountered
+                and not is_dark
+                and minimum_known_distance is not None
+            ):
+                returned_to_known_scene = (
+                    minimum_known_distance
+                    <= self.config.known_scene_return_distance_threshold
+                )
+                novel_scene_observed = not returned_to_known_scene
+                resolution_step = step
+                break
+        return {
+            "dark_encountered": dark_encountered,
+            "returned_to_known_scene": returned_to_known_scene,
+            "novel_scene_observed": novel_scene_observed,
+            "resolution_step": resolution_step,
+            "observation_duration": observation_duration,
+            "maximum_visual_change": maximum_visual_change,
+            "observations": observations,
+        }
+
     def _option_initiation_evidence(
         self,
         candidate: Tuple[Any, ...],
@@ -3323,16 +3404,36 @@ class VerifiedNeuralAgent:
         restored = self._restore_if_stagnant()
         if restored is not None:
             return restored
+        anticipated_transition_observation_due = (
+            self.anticipated_transition_observations_remaining > 0
+        )
         autonomous_intervention_due = self.autonomous_intervention_pending
-        if autonomous_intervention_due:
+        causal_observation_intervention_due = (
+            self.causal_observation_intervention_pending
+        )
+        control_intervention_due = (
+            autonomous_intervention_due
+            or causal_observation_intervention_due
+        )
+        if control_intervention_due:
             self._emit(
-                "autonomous_intervention_started",
+                (
+                    "autonomous_intervention_started"
+                    if autonomous_intervention_due
+                    else "causal_observation_intervention_started"
+                ),
                 decision=self.decision_index + 1,
+                reason=(
+                    "autonomous_dynamics"
+                    if autonomous_intervention_due
+                    else "matched_causal_observation_completed"
+                ),
                 visual_stagnation_streak=self.visual_stagnation_streak,
                 archive_size=len(self.archive),
                 **self._frame_fields(self.frame),
             )
             self.autonomous_intervention_pending = False
+            self.causal_observation_intervention_pending = False
         plans = self.planner.plan(self.frame)
         shadow_candidates = (
             [{} for _ in plans]
@@ -4029,6 +4130,66 @@ class VerifiedNeuralAgent:
                     filtered=filtered_hazards,
                     alternatives_remaining=len(selection_verified),
                 )
+            delayed_transition_candidates: List[
+                Tuple[Tuple[Any, ...], Dict[str, Any]]
+            ] = []
+            if (
+                self.config.delayed_transition_probe_steps > 0
+                and not anticipated_transition_observation_due
+            ):
+                observation_duration = max(
+                    self.planner.duration_choices
+                )
+                for candidate in selection_verified:
+                    action = candidate[1].path[0]
+                    duration = candidate[1].durations[0]
+                    effect = observed_action_effects.get(
+                        (action, duration)
+                    )
+                    if (
+                        action == Action.NOOP
+                        or effect is None
+                        or effect["contrast"]
+                        <= self.config.action_equivalence_threshold
+                    ):
+                        continue
+                    try:
+                        delayed_probe = (
+                            self._probe_delayed_scene_transition(
+                                candidate[2],
+                                candidate[3],
+                                observation_duration,
+                            )
+                        )
+                    finally:
+                        self.env.load_state(root)
+                    self._emit(
+                        "delayed_transition_probe",
+                        decision=self.decision_index + 1,
+                        action=action,
+                        action_frames=duration,
+                        probe_steps=(
+                            self.config.delayed_transition_probe_steps
+                        ),
+                        state_id=self._state_id(candidate[2]),
+                        **delayed_probe,
+                        **self._frame_fields(candidate[3]),
+                    )
+                    if delayed_probe["novel_scene_observed"]:
+                        delayed_transition_candidates.append(
+                            (candidate, delayed_probe)
+                        )
+            delayed_transition_choice = (
+                None
+                if not delayed_transition_candidates
+                else max(
+                    delayed_transition_candidates,
+                    key=lambda row: (
+                        -int(row[1]["resolution_step"]),
+                        row[0][0],
+                    ),
+                )
+            )
             autonomous = self._autonomous_choice(
                 self.frame, selection_verified
             )
@@ -4096,6 +4257,7 @@ class VerifiedNeuralAgent:
             control_probe_actions: Tuple[Action, ...] = ()
             if (
                 causal_observation_wait is not None
+                and not anticipated_transition_observation_due
             ):
                 passive_visual_change = causal_observation_wait[6]
                 action_dependent_controls = [
@@ -4302,8 +4464,8 @@ class VerifiedNeuralAgent:
                             passive_future_outcome_spread=control_probe_spread,
                             viable_alternatives=0,
                         )
-            autonomous_intervention_choice = None
-            if autonomous_intervention_due:
+            control_intervention_choice = None
+            if control_intervention_due:
                 intervention_choices = [
                     item
                     for item in selection_verified
@@ -4334,7 +4496,7 @@ class VerifiedNeuralAgent:
                         intervention_choices = (
                             action_dependent_interventions
                         )
-                    autonomous_intervention_choice = max(
+                    control_intervention_choice = max(
                         intervention_choices,
                         key=lambda item: (
                             (
@@ -4369,9 +4531,68 @@ class VerifiedNeuralAgent:
                     proposed_autonomous_change=autonomous[2],
                 )
                 autonomous = None
+            anticipated_observation_choice = None
+            if anticipated_transition_observation_due:
+                neutral = [
+                    item
+                    for item in selection_verified
+                    if item[1].path[0] == Action.NOOP
+                ]
+                if neutral:
+                    matched = [
+                        item
+                        for item in neutral
+                        if item[1].durations[0]
+                        == self.anticipated_transition_observation_duration
+                    ]
+                    anticipated_observation_choice = max(
+                        matched or neutral,
+                        key=lambda item: (
+                            -abs(
+                                item[1].durations[0]
+                                - self.anticipated_transition_observation_duration
+                            ),
+                            item[0],
+                        ),
+                    )
             passive_transition = False
             grace_continuation = False
-            if human_prior_goal_choice is not None:
+            if anticipated_observation_choice is not None:
+                chosen = anticipated_observation_choice
+                passive_transition = True
+                self.anticipated_transition_observations_remaining -= 1
+                self._emit(
+                    "anticipated_transition_observation",
+                    decision=self.decision_index + 1,
+                    action=chosen[1].path[0],
+                    action_frames=chosen[1].durations[0],
+                    observations_remaining=(
+                        self.anticipated_transition_observations_remaining
+                    ),
+                )
+            elif delayed_transition_choice is not None:
+                chosen, delayed_probe = delayed_transition_choice
+                self.anticipated_transition_observations_remaining = int(
+                    delayed_probe["resolution_step"]
+                )
+                self.anticipated_transition_observation_duration = int(
+                    delayed_probe["observation_duration"]
+                )
+                self._emit(
+                    "delayed_transition_branch_selected",
+                    decision=self.decision_index + 1,
+                    action=chosen[1].path[0],
+                    action_frames=chosen[1].durations[0],
+                    observations_scheduled=(
+                        self.anticipated_transition_observations_remaining
+                    ),
+                    observation_duration=(
+                        self.anticipated_transition_observation_duration
+                    ),
+                    state_id=self._state_id(chosen[2]),
+                    **self._frame_fields(chosen[3]),
+                )
+            elif human_prior_goal_choice is not None:
                 chosen = human_prior_goal_choice
                 selected_analysis = branch_goal_analyses[id(chosen[2])]
                 self._emit(
@@ -4400,18 +4621,28 @@ class VerifiedNeuralAgent:
                     control_probe_actions=control_probe_actions,
                     reason="counterfactual_future_control_collapse",
                 )
-            elif autonomous_intervention_choice is not None:
-                chosen = autonomous_intervention_choice
+            elif control_intervention_choice is not None:
+                chosen = control_intervention_choice
                 self._emit(
-                    "autonomous_intervention_selected",
+                    (
+                        "autonomous_intervention_selected"
+                        if autonomous_intervention_due
+                        else "causal_observation_intervention_selected"
+                    ),
                     decision=self.decision_index + 1,
                     action=chosen[1].path[0],
                     action_frames=chosen[1].durations[0],
+                    reason=(
+                        "autonomous_dynamics"
+                        if autonomous_intervention_due
+                        else "matched_causal_observation_completed"
+                    ),
                     autonomous_dynamics_detected=autonomous is not None,
                 )
             elif causal_observation_wait is not None:
                 chosen = causal_observation_wait
                 passive_transition = True
+                self.causal_observation_intervention_pending = True
                 self._emit(
                     "causal_observation_wait",
                     decision=self.decision_index + 1,
@@ -5897,6 +6128,8 @@ class VerifiedNeuralAgent:
         self.delayed_return_loop_start = None
         self.autonomous_grace_remaining = 0
         self.autonomous_intervention_pending = False
+        self.causal_observation_intervention_pending = False
+        self.anticipated_transition_observations_remaining = 0
         self.last_navigation_change_decision = None
         self.pending_life_hazard_choice = None
         if self.goal_prior is not None:
@@ -6031,6 +6264,8 @@ class VerifiedNeuralAgent:
         self.dark_transition_start_decision = None
         self.autonomous_grace_remaining = 0
         self.autonomous_intervention_pending = False
+        self.causal_observation_intervention_pending = False
+        self.anticipated_transition_observations_remaining = 0
         self.last_navigation_change_decision = None
         self.pending_life_hazard_choice = None
         if self.goal_prior is not None:
@@ -6106,6 +6341,44 @@ class VerifiedNeuralAgent:
             and self.visual_stagnation_streak
             < self.config.visual_stagnation_visits
         ):
+            return None
+        if (
+            self.anticipated_transition_observations_remaining > 0
+            and not known_scene_return
+        ):
+            self._emit(
+                "anticipated_transition_recovery_suppressed",
+                decision=self.decision_index + 1,
+                observations_remaining=(
+                    self.anticipated_transition_observations_remaining
+                ),
+                observation_duration=(
+                    self.anticipated_transition_observation_duration
+                ),
+                delayed_return_recovery=delayed_return,
+                visual_stagnation_streak=self.visual_stagnation_streak,
+                archive_size=len(self.archive),
+                **self._frame_fields(self.frame),
+            )
+            if delayed_return:
+                self.delayed_return_recovery = False
+                self.delayed_return_loop_start = None
+            return None
+        if (
+            self.causal_observation_intervention_pending
+            and not known_scene_return
+        ):
+            self._emit(
+                "causal_observation_recovery_suppressed",
+                decision=self.decision_index + 1,
+                delayed_return_recovery=delayed_return,
+                visual_stagnation_streak=self.visual_stagnation_streak,
+                archive_size=len(self.archive),
+                **self._frame_fields(self.frame),
+            )
+            if delayed_return:
+                self.delayed_return_recovery = False
+                self.delayed_return_loop_start = None
             return None
         active_trace = self.active_temporal_option
         maximum_passive_observations = (
@@ -6621,6 +6894,8 @@ class VerifiedNeuralAgent:
         self.last_navigation_change_decision = None
         self.pending_life_hazard_choice = None
         self.autonomous_intervention_pending = False
+        self.causal_observation_intervention_pending = False
+        self.anticipated_transition_observations_remaining = 0
         if self.goal_prior is not None:
             self.goal_prior.restore(
                 branch.goal_heart_slots,

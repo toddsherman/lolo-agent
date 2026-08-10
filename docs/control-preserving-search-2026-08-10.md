@@ -153,6 +153,45 @@ and lost no life, but did not reach a stable scene transition. This establishes
 that the current bottleneck is multi-action reachability after the persistent
 frontier, rather than collecting or retaining that frontier.
 
+## Behavioral breadth and delayed-outcome audit
+
+The 200-decision strict A/B run
+`spatial-v14-room2-behavioral-edge-w4-from-d100-d200` enabled behavioral-edge
+coverage at weight 4.0. It committed 91 unique behavioral edges, verified 1,323
+branches, and produced 565 unique frames without a life loss during the live
+trajectory. This was a modest breadth improvement over the zero-weight run,
+not a room-clear result.
+
+Pixel-only post-run localization found that the agent repeatedly reached the
+lower-right region and also verified branches near the lower central flashing
+element. The trace exposed a recovery-order bug: a matched causal NOOP could
+set delayed-return recovery, causing a global archive restore before any
+outgoing intervention from the observed endpoint. The agent now guarantees one
+non-NOOP intervention after a matched causal observation and logs recovery
+suppression and intervention selection explicitly.
+
+A direct non-training diagnostic from committed decision 194 applied one
+verified action and then passive NOOPs. The sequence became dark at passive
+step 10, black at step 11, and returned to a dim Room 2 layout with life 4 at
+step 12. This corrected an initial visual interpretation: the branch was a
+death/reset, not Room 3.
+
+The planner can now perform an optional, rule-free delayed-transition probe on
+verified save-state branches. It passively rolls a branch forward, selects it
+only when darkness resolves to a visually novel bright layout, and schedules
+the same passive observations on the live trajectory. The known-scene coarse
+distance threshold was widened from 0.01 to 0.04 after the dim reset measured
+0.0276 from remembered Room 2; the evaluator's distinct-room threshold remains
+0.05.
+
+The ten-decision native validation
+`spatial-v14-room2-delayed-transition-known-reset-from-d194-d10` recorded 14
+delayed probes that reached a dim known-scene return, zero novel-scene probes,
+and zero delayed-transition branch selections. The frozen-parameter audit
+passed. A known return under passive waiting is not treated as proof that the
+first action is fatal, because continued intervention can still be required to
+escape a dynamic threat.
+
 ## Telemetry
 
 New events preserve every diagnostic and recovery decision:
@@ -162,6 +201,11 @@ New events preserve every diagnostic and recovery decision:
 - `counterfactual_control_escape_probe`
 - `counterfactual_control_collapse_learned`
 - `control_collapse_state_restored`
+- `causal_observation_recovery_suppressed`
+- `causal_observation_intervention_selected`
+- `delayed_transition_probe`
+- `delayed_transition_branch_selected`
+- `anticipated_transition_observation`
 - `post_dark_archive_branches_filtered`
 - `generic_dark_transition_started`
 - `generic_dark_transition_resolved`
@@ -201,5 +245,5 @@ address the demonstrated timing and lineage failures.
 
 ## Verification
 
-The complete test suite passes: 163 tests, with 3 expected skips. Every native
+The complete test suite passes: 165 tests, with 3 expected skips. Every native
 run reported `frozen_evaluation_audit=pass`.
