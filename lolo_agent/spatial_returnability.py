@@ -6,7 +6,7 @@ import random
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import torch
 from torch import Tensor, nn
@@ -37,6 +37,7 @@ class ReturnabilityExample:
     duration: int
     source_run_id: str
     label: int
+    target: Optional[Frame] = None
 
 
 @dataclass(frozen=True)
@@ -364,6 +365,25 @@ def _predicted_relation_tokens(
     return source_tokens, predicted_tokens[:, 0]
 
 
+@torch.no_grad()
+def _observed_relation_tokens(
+    spatial_model: SpatialTokenDynamicsModel,
+    examples: Sequence[ReturnabilityExample],
+    frames: Tensor,
+    device: Union[torch.device, str],
+) -> Tuple[Tensor, Tensor]:
+    if any(example.target is None for example in examples):
+        raise ValueError("observed relation training requires target pixel frames")
+    targets = torch.stack(
+        [
+            frame_tensor(example.target)
+            for example in examples
+            if example.target is not None
+        ]
+    ).to(device)
+    return spatial_model.encode(frames), spatial_model.encode(targets)
+
+
 def train_returnability_model(
     model: SpatialReturnabilityModel,
     spatial_model: SpatialTokenDynamicsModel,
@@ -373,6 +393,7 @@ def train_returnability_model(
     batch_size: int = 64,
     learning_rate: float = 3e-4,
     seed: int = 0,
+    use_observed_targets: bool = False,
 ) -> List[ReturnabilityTrainingMetrics]:
     if not examples:
         raise ValueError("at least one returnability example is required")
@@ -390,9 +411,14 @@ def train_returnability_model(
         for start in range(0, len(order), batch_size):
             batch = [examples[index] for index in order[start : start + batch_size]]
             frames, actions, durations, labels = _example_batch(batch, device)
-            source_tokens, target_tokens = _predicted_relation_tokens(
-                spatial_model, frames, actions, durations
-            )
+            if use_observed_targets:
+                source_tokens, target_tokens = _observed_relation_tokens(
+                    spatial_model, batch, frames, device
+                )
+            else:
+                source_tokens, target_tokens = _predicted_relation_tokens(
+                    spatial_model, frames, actions, durations
+                )
             logits = model(source_tokens, target_tokens)
             mask = (
                 torch.rand(
@@ -468,6 +494,7 @@ def validate_returnability_model(
     examples: Sequence[ReturnabilityExample],
     device: Union[torch.device, str],
     batch_size: int = 64,
+    use_observed_targets: bool = False,
 ) -> ReturnabilityValidationReport:
     if not examples:
         raise ValueError("at least one validation example is required")
@@ -482,9 +509,14 @@ def validate_returnability_model(
     for start in range(0, len(examples), batch_size):
         batch = examples[start : start + batch_size]
         frames, actions, durations, batch_labels = _example_batch(batch, device)
-        source_tokens, target_tokens = _predicted_relation_tokens(
-            spatial_model, frames, actions, durations
-        )
+        if use_observed_targets:
+            source_tokens, target_tokens = _observed_relation_tokens(
+                spatial_model, batch, frames, device
+            )
+        else:
+            source_tokens, target_tokens = _predicted_relation_tokens(
+                spatial_model, frames, actions, durations
+            )
         mean, uncertainty = model.predict(source_tokens, target_tokens)
         losses.extend(
             F.binary_cross_entropy(mean, batch_labels, reduction="none")
@@ -542,6 +574,10 @@ def save_returnability_checkpoint(
     spatial_checkpoint_digest: str,
     maximum_return_steps: int,
     minimum_endpoint_actions: int,
+    *,
+    target: str = "observed visual-state return path",
+    persistent_inputs: Optional[Sequence[str]] = None,
+    target_metadata: Optional[Dict[str, Any]] = None,
 ) -> str:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -561,13 +597,17 @@ def save_returnability_checkpoint(
             "spatial_checkpoint_digest": spatial_checkpoint_digest,
             "maximum_return_steps": maximum_return_steps,
             "minimum_endpoint_actions": minimum_endpoint_actions,
-            "target": "observed visual-state return path",
-            "persistent_inputs": [
-                "pixels",
-                "actions",
-                "action_durations",
-                "observed_transition_graph",
-            ],
+            "target": target,
+            "target_metadata": target_metadata or {},
+            "persistent_inputs": list(
+                persistent_inputs
+                or (
+                    "pixels",
+                    "actions",
+                    "action_durations",
+                    "observed_transition_graph",
+                )
+            ),
             "excluded_inputs": [
                 "RAM",
                 "object_labels",
@@ -587,7 +627,7 @@ def load_returnability_checkpoint(
     spatial_checkpoint_digest: str,
     device: Union[torch.device, str] = "cpu",
     frozen: bool = True,
-) -> Tuple[SpatialReturnabilityModel, Dict[str, int]]:
+) -> Tuple[SpatialReturnabilityModel, Dict[str, Any]]:
     checkpoint = torch.load(Path(path), map_location="cpu", weights_only=True)
     if checkpoint.get("version") != 1:
         raise ValueError("unsupported returnability checkpoint version")
@@ -610,4 +650,6 @@ def load_returnability_checkpoint(
     return model, {
         "maximum_return_steps": int(checkpoint["maximum_return_steps"]),
         "minimum_endpoint_actions": int(checkpoint["minimum_endpoint_actions"]),
+        "target": str(checkpoint.get("target", "observed visual-state return path")),
+        "target_metadata": dict(checkpoint.get("target_metadata", {})),
     }

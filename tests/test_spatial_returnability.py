@@ -126,6 +126,71 @@ class SpatialReturnabilityTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "another spatial model"):
                 load_returnability_checkpoint(checkpoint, "wrong-digest")
 
+    def test_explicit_probe_training_uses_observed_endpoint_pixels(self) -> None:
+        torch.manual_seed(7)
+        spatial = SpatialTokenDynamicsModel(
+            token_size=8,
+            action_size=4,
+            ensemble_size=2,
+            grid_size=4,
+            duration_size=2,
+            renderer_kind="changed_patch",
+        )
+        relation = SpatialReturnabilityModel(8, hidden_size=8, ensemble_size=2)
+
+        def frame(value: int) -> Frame:
+            return Frame(32, 32, 3, bytes([value]) * (32 * 32 * 3))
+
+        examples = []
+        for index in range(4):
+            source = frame(20 + index * 10)
+            target = frame(25 + index * 10)
+            examples.append(
+                ReturnabilityExample(
+                    source,
+                    target.digest,
+                    Action.RIGHT,
+                    4,
+                    "probe-run",
+                    index % 2,
+                    target,
+                )
+            )
+        history = train_returnability_model(
+            relation,
+            spatial,
+            examples,
+            "cpu",
+            epochs=1,
+            batch_size=2,
+            seed=8,
+            use_observed_targets=True,
+        )
+        report = validate_returnability_model(
+            relation,
+            spatial,
+            examples,
+            "cpu",
+            batch_size=2,
+            use_observed_targets=True,
+        )
+
+        self.assertEqual(len(history), 2)
+        self.assertEqual(report.examples, 4)
+        missing_target = [
+            ReturnabilityExample(
+                frame(1), "missing", Action.LEFT, 4, "probe-run", 0
+            )
+        ]
+        with self.assertRaisesRegex(ValueError, "target pixel frames"):
+            validate_returnability_model(
+                relation,
+                spatial,
+                missing_target,
+                "cpu",
+                use_observed_targets=True,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

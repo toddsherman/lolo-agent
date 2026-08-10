@@ -25,6 +25,7 @@ lolo-import-experience = "lolo_agent.experience_import:main"
 lolo-reward-audit = "lolo_agent.reward_audit:main"
 lolo-spatial-train = "lolo_agent.spatial_train:main"
 lolo-spatial-returnability-train = "lolo_agent.spatial_returnability_train:main"
+lolo-spatial-probe-returnability-train = "lolo_agent.spatial_probe_returnability_train:main"
 
 [tool.setuptools.packages.find]
 include = ["lolo_agent*"]

@@ -144,6 +144,25 @@ number of emulator frames. Probe actions are logged under a separate phase,
 excluded from normal experience import, and cannot affect planning. Results are
 flattened to `returnability_probes.csv`.
 
+Train an observational relation head only after assigning complete strict runs
+to disjoint training and validation partitions:
+
+```bash
+lolo-spatial-probe-returnability-train \
+  --training-run runs/strict-train-a \
+  --training-run runs/strict-train-b \
+  --validation-run runs/strict-heldout \
+  --spatial-checkpoint experiments/lolo1-spatial/checkpoints/spatial.pt \
+  --checkpoint experiments/lolo1-spatial/checkpoints/probe-returnability.pt
+```
+
+The importer verifies probe/branch lifecycles and stored pixel digests, rejects
+reward-track or probe-configuration mixing, removes exact transition overlap
+and training-source pixel overlap from validation, and requires both labels in
+each partition. Training is class balanced; held-out evaluation preserves its
+natural prevalence. Probe-trained checkpoints remain telemetry-only until they
+pass broader native calibration.
+
 Run the saved model in frozen evaluation mode:
 
 ```bash

@@ -222,6 +222,24 @@ When a probe run resumes from assisted-policy telemetry, its manifest inherits
 assisted provenance as `human_prior_resume_observational`. Such a run can be
 used for evaluator validation but cannot enter the strict dataset.
 
+### Explicit-probe import
+
+`lolo-spatial-probe-returnability-train` takes separate repeated
+`--training-run` and `--validation-run` arguments. Before decoding examples it
+requires a complete manifest, content-addressed pixel frames, the requested
+reward track, matching probe settings, one start/completion/verified-branch
+lifecycle per label, internally consistent return evidence, and valid source
+and endpoint digests. Conflicting labels abort the import.
+
+Transitions are deduplicated within each partition. Exact source, endpoint,
+action, and duration overlap is removed from validation first; any remaining
+example whose source pixels occur in training is removed as well. Both counts
+are reported in the metrics provenance. Both remaining partitions must contain
+positive and budget-scoped negative labels. Training is balanced by label;
+validation keeps the natural prevalence so ROC AUC, Brier error, majority
+accuracy, and calibration are not distorted by a tiny balanced sample.
+Manifests and event logs are hashed into the resulting metrics file.
+
 ## Attempts and level labels
 
 An attempt begins whenever the environment is reset. Because room number,

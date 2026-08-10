@@ -305,6 +305,62 @@ experiments/lolo1-spatial-v13/shadow_evaluations/spatial-v13-room2-strict-bidire
 experiments/lolo1-spatial-v13/shadow_evaluations/spatial-v13-assisted-preheart-d5-bidirectional-d2-b4-d1
 ```
 
+### Strict corpus expansion and explicit importer
+
+The strict cycle-16 trajectory was extended for another 24 decisions from its
+twelfth state. It produced 171 branches, 1,365 probe paths, and six new unique
+non-return pairs, with 1,555 saves and releases. A cycle-15 frozen policy was
+then started from the same Room 2 entry state. Its action sequence diverged on
+the first decision and produced 189 branches, 1,491 paths, and four held-out
+non-return pairs, with 1,701 saves and releases. Exact transition identity—not
+run name—is used to prevent the common entry state from leaking across the
+split.
+
+Two saturation extensions followed. The later cycle-15 segment added 171 valid
+branches but no negative examples. The later cycle-16 segment added 171
+branches and ten unique negatives, balancing 1,667 saves and releases. The
+final strict corpus therefore contains 450 unique training transitions (432
+returns, 18 budget-scoped non-returns) and 324 source-disjoint held-out
+transitions (321 returns, three non-returns). Five exact transitions and eleven
+additional records from training source images were removed from validation.
+Every source used depth 2, beam 4, seven actions, and the `0.002` matched-NOOP
+threshold.
+
+The new importer rejects incomplete lifecycles, missing or mismatched frame
+digests, reward-track mixing, probe-setting drift, conflicting labels, empty
+classes, and train/validation transition overlap. It hashes every source
+manifest and event log. Training uses balanced classes, while validation keeps
+the observed prevalence.
+
+The first, preliminary relation attempt used world-model-predicted endpoints
+and failed even before the stricter source-overlap audit: AUC `0.510` and Brier
+`0.327`. This exposed a representation mismatch: explicit labels describe
+verified endpoints, but the target pixels were discarded. The corrected head
+trains on frozen spatial encodings of both observed source and verified
+endpoint. It fits the 36 balanced training examples perfectly but still fails
+to generalize on the source-disjoint split: held-out AUC `0.502`, Brier `0.237`
+versus the `0.00917` prevalence baseline, and accuracy `0.580` versus majority
+accuracy `0.991`. The negative mean probability is higher than the positive
+mean. This is overfitting, not a control signal.
+
+A one-decision native runtime audit on the alternate policy path loaded the
+corrected checkpoint successfully, passed both frozen-parameter audits, and
+balanced 101 saves with 101 releases. Its one explicit non-return received
+probability `0.404`, below all eight return branches (`0.416` to `0.426`). The
+source-overlap audit later removed this state from held-out evaluation, so this
+is an integration check rather than generalization evidence and does not
+override the failed aggregate gate.
+
+```text
+experiments/lolo1-spatial-v13/shadow_evaluations/spatial-v13-room2-strict-bidirectional-d2-b4-from12-d24
+experiments/lolo1-spatial-v13/shadow_evaluations/spatial-v13-room2-strict-cycle15-alt-d24
+experiments/lolo1-spatial-v13/shadow_evaluations/spatial-v13-room2-strict-cycle15-alt-from24-d24
+experiments/lolo1-spatial-v13/shadow_evaluations/spatial-v13-room2-strict-cycle16-from36-d24
+experiments/lolo1-spatial-v13/shadow_evaluations/spatial-v13-probe-returnability-observed-native-audit-d1
+experiments/lolo1-spatial-v13/checkpoints/spatial-v13-probe-returnability-observed-source-disjoint-grid4-e25.pt
+experiments/lolo1-spatial-v13/metrics/spatial-v13-probe-returnability-observed-source-disjoint-grid4-e25.json
+```
+
 ## Run locally
 
 ```bash
@@ -335,11 +391,11 @@ python -m lolo_agent.spatial_train \
 
 ## Next gate
 
-1. Collect more unique strict-provenance non-returns across later Room 2 states
-   and seeds; two negative examples are not enough to retrain, and the assisted
-   negative must not be imported.
-2. Add an explicit-probe dataset importer, then train the next relation head
-   only after a run-held-out split contains both labels on each side.
+1. Move explicit probe collection to later rooms with enemies and more varied
+   transformations; Room 2 leaves only three source-disjoint held-out negatives.
+2. Add action/duration conditioning or a contrastive relation objective only
+   after the broader corpus exists; the observed-endpoint head currently
+   memorizes its 18 training negatives.
 3. Suppress residual false predicted change for NOOP, A, B, and blocked
    movement without weakening the gains on effective directional movement.
 4. Add reset-risk only after returnability is calibrated, then require a

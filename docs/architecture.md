@@ -67,6 +67,16 @@ collector has a separate logging phase and no reference to planner scores,
 objects, rewards, or evaluator labels. Its output is intended to replace the
 policy-dependent graph negatives used by the first returnability sidecar.
 
+`probe_returnability_import.py` converts those explicit outcomes into a
+provenance-audited relation corpus. Complete training and validation runs are
+named separately; strict and assisted telemetry cannot mix, exact transition
+and source-image overlap are removed from validation, and both partitions must
+retain return and budget-scoped non-return examples. The relation head is
+trained from frozen spatial encodings of the observed source and verified
+endpoint. During live planning it can inspect only predicted endpoints; after
+branch execution its telemetry uses the observed endpoint. Neither path
+currently affects control.
+
 The remaining successor milestones are:
 
 1. changed-region rendering that reliably beats persistence on native branches;

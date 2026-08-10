@@ -21,12 +21,16 @@ class SpatialShadowEvaluator:
         model: SpatialTokenDynamicsModel,
         device: Union[torch.device, str],
         returnability_model: Optional[SpatialReturnabilityModel] = None,
+        returnability_observed_endpoints: bool = False,
     ) -> None:
         self.model = model
         self.device = torch.device(device)
         self.model.to(self.device)
         self.model.freeze()
         self.returnability_model = returnability_model
+        self.returnability_observed_endpoints = returnability_observed_endpoints
+        if returnability_observed_endpoints and returnability_model is None:
+            raise ValueError("observed returnability endpoints require a relation model")
         if self.returnability_model is not None:
             self.returnability_model.to(self.device)
             self.returnability_model.freeze()
@@ -209,8 +213,13 @@ class SpatialShadowEvaluator:
             predicted[1:, 0],
             effects[1:, 0],
         )
+        returnability_target = (
+            self.model.encode(target)
+            if self.returnability_observed_endpoints
+            else tokens[:1, 0]
+        )
         returnability = self._returnability_metrics(
-            self.model.encode(source), tokens[:1, 0]
+            self.model.encode(source), returnability_target
         )
         actual_effect = spatial_effect_target(
             source,

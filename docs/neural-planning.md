@@ -307,8 +307,13 @@ ordinary movement remains usable.
   it fails native calibration; spatial causal signatures remain temporary
   attempt memory.
 - Optional bidirectional probes can now produce explicit short-horizon return
-  evidence, but this evidence is isolated from the live planner and is not yet
-  part of persistent strict training.
+  evidence. This evidence is isolated from the live planner and reaches
+  persistent training only through the strict provenance-audited importer.
+- Explicit probe outcomes can now train a persistent observational relation
+  head from actual source/endpoint pixels. Candidate-plan telemetry applies the
+  head to predicted endpoints, while verified-branch telemetry applies it to
+  observed endpoints. The current native held-out gate fails, so both remain
+  excluded from selection and reward.
 - Room completion remains evaluator-only and is not available to the planner;
   the first-room completion was found through causal-outcome exploration rather
   than a completion reward.

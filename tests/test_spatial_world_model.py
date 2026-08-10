@@ -196,6 +196,12 @@ class SpatialWorldModelTests(unittest.TestCase):
         evaluator = SpatialShadowEvaluator(
             model, "cpu", returnability_model=returnability
         )
+        observed_evaluator = SpatialShadowEvaluator(
+            model,
+            "cpu",
+            returnability_model=returnability,
+            returnability_observed_endpoints=True,
+        )
         source = self.make_frame(4, 4, (255, 255, 255))
         target = self.make_frame(10, 4, (255, 255, 255))
         plans = evaluator.score_plans(
@@ -206,6 +212,9 @@ class SpatialWorldModelTests(unittest.TestCase):
             ],
         )
         transition = evaluator.evaluate_transition(
+            source, Action.RIGHT, 4, target
+        )
+        observed_transition = observed_evaluator.evaluate_transition(
             source, Action.RIGHT, 4, target
         )
         self.assertEqual(len(plans), 2)
@@ -222,8 +231,15 @@ class SpatialWorldModelTests(unittest.TestCase):
         self.assertIn("spatial_shadow_predicted_pixel_change", transition)
         self.assertIn("spatial_shadow_usefulness_score", transition)
         self.assertIn("spatial_shadow_predicted_returnability", transition)
+        self.assertIn(
+            "spatial_shadow_predicted_returnability", observed_transition
+        )
         self.assertAlmostEqual(plans[1]["spatial_shadow_score"], 0.0, places=6)
         self.assertGreaterEqual(transition["spatial_shadow_effect_f1"], 0.0)
+        with self.assertRaisesRegex(ValueError, "relation model"):
+            SpatialShadowEvaluator(
+                model, "cpu", returnability_observed_endpoints=True
+            )
 
     def test_legacy_checkpoint_uses_the_original_blend_renderer(self) -> None:
         model = SpatialTokenDynamicsModel(

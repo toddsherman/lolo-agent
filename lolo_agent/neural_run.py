@@ -359,8 +359,17 @@ def main() -> None:
                 frozen=True,
             )
             spatial_returnability_before = returnability_model.checkpoint_digest
+        target_metadata = (spatial_returnability_configuration or {}).get(
+            "target_metadata", {}
+        )
         spatial_shadow = SpatialShadowEvaluator(
-            shadow_model, device, returnability_model=returnability_model
+            shadow_model,
+            device,
+            returnability_model=returnability_model,
+            returnability_observed_endpoints=(
+                target_metadata.get("relation_tokens")
+                == "observed source and verified endpoint pixels"
+            ),
         )
         spatial_shadow_before = spatial_shadow.checkpoint_digest
     bootstrap_fixture = (
