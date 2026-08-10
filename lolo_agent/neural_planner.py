@@ -199,6 +199,7 @@ class _TemporalOptionTrace:
     start_decision: int
     entry_signature: str
     entry_scene: str
+    initiation_frame_digest: Optional[str] = None
     causal_evidence: bool = False
     counterfactual: Optional[_OptionCounterfactual] = None
     passive_decisions: int = 0
@@ -436,6 +437,7 @@ class VerifiedNeuralAgent:
         self.behavior_visits: CounterType[str] = Counter()
         self.pending_option_choice: Optional[Tuple[str, Action, int]] = None
         self.pending_option_decision: Optional[int] = None
+        self.pending_option_frame_digest: Optional[str] = None
         self.pending_option_causal_evidence = False
         self.pending_option_counterfactual: Optional[_OptionCounterfactual] = None
         self.active_temporal_option: Optional[_TemporalOptionTrace] = None
@@ -536,7 +538,6 @@ class VerifiedNeuralAgent:
                 agent_visible=True,
                 **self._frame_fields(frame),
             )
-            return self.goal_prior.analyze(frame, frame)
         return analysis
 
     def _human_prior_fields(
@@ -578,13 +579,35 @@ class VerifiedNeuralAgent:
                 **self._frame_fields(target_frame),
             )
         if analysis.dark_transition_started:
+            causal_decision = self.decision_index + 1
+            causal_signature = source_signature
+            causal_action = action
+            causal_duration = duration
+            causal_frame = source_frame.digest
+            trace = self.active_temporal_option
+            delayed_cause = bool(
+                trace is not None
+                and trace.choice is not None
+                and trace.causal_evidence
+            )
+            if delayed_cause:
+                assert trace is not None and trace.choice is not None
+                causal_signature, causal_action, causal_duration = trace.choice
+                causal_decision = (
+                    trace.initiation_decision
+                    if trace.initiation_decision is not None
+                    else trace.start_decision
+                )
+                causal_frame = (
+                    trace.initiation_frame_digest or source_frame.digest
+                )
             if self.pending_life_hazard_choice is None:
                 self.pending_life_hazard_choice = (
-                    self.decision_index + 1,
-                    source_signature,
-                    action,
-                    duration,
-                    source_frame.digest,
+                    causal_decision,
+                    causal_signature,
+                    causal_action,
+                    causal_duration,
+                    causal_frame,
                 )
             self._emit(
                 "human_prior_dark_transition_observed",
@@ -594,6 +617,16 @@ class VerifiedNeuralAgent:
                 source_behavioral_signature=source_signature,
                 source_frame=source_frame.digest,
                 target_frame=target_frame.digest,
+                causal_decision=causal_decision,
+                causal_action=causal_action,
+                causal_action_frames=causal_duration,
+                causal_behavioral_signature=causal_signature,
+                causal_frame=causal_frame,
+                causal_source=(
+                    "active_temporal_option"
+                    if delayed_cause
+                    else "dark_transition_action"
+                ),
                 agent_visible=True,
             )
             return
@@ -747,6 +780,7 @@ class VerifiedNeuralAgent:
         self.behavior_visits = Counter()
         self.pending_option_choice = None
         self.pending_option_decision = None
+        self.pending_option_frame_digest = None
         self.pending_option_causal_evidence = False
         self.pending_option_counterfactual = None
         self.active_temporal_option = None
@@ -1547,6 +1581,7 @@ class VerifiedNeuralAgent:
             self._release_option_counterfactual(counterfactual, reason)
         self.pending_option_choice = None
         self.pending_option_decision = None
+        self.pending_option_frame_digest = None
         self.pending_option_causal_evidence = False
         self.pending_option_counterfactual = None
 
@@ -1559,6 +1594,7 @@ class VerifiedNeuralAgent:
                 reason=reason,
                 choice=trace.choice,
                 initiation_decision=trace.initiation_decision,
+                initiation_frame=trace.initiation_frame_digest,
                 start_decision=trace.start_decision,
                 passive_decisions=trace.passive_decisions,
                 unique_signatures=len(trace.signatures),
@@ -1667,12 +1703,16 @@ class VerifiedNeuralAgent:
                     start_decision=self.decision_index + 1,
                     entry_signature=signature,
                     entry_scene=scene,
+                    initiation_frame_digest=(
+                        self.pending_option_frame_digest
+                    ),
                     causal_evidence=self.pending_option_causal_evidence,
                     counterfactual=self.pending_option_counterfactual,
                 )
                 self.active_temporal_option = trace
                 self.pending_option_choice = None
                 self.pending_option_decision = None
+                self.pending_option_frame_digest = None
                 self.pending_option_causal_evidence = False
                 self.pending_option_counterfactual = None
                 self._emit(
@@ -1680,6 +1720,7 @@ class VerifiedNeuralAgent:
                     decision=self.decision_index + 1,
                     choice=trace.choice,
                     initiation_decision=trace.initiation_decision,
+                    initiation_frame=trace.initiation_frame_digest,
                     credited=trace.choice is not None and trace.causal_evidence,
                     causal_evidence=trace.causal_evidence,
                     counterfactual_state_id=(
@@ -1776,6 +1817,7 @@ class VerifiedNeuralAgent:
             decision=self.decision_index + 1,
             choice=trace.choice,
             initiation_decision=trace.initiation_decision,
+            initiation_frame=trace.initiation_frame_digest,
             start_decision=trace.start_decision,
             endpoint_signature=signature,
             endpoint_scene=scene,
@@ -3325,6 +3367,11 @@ class VerifiedNeuralAgent:
                     if self.pending_option_choice is not None
                     else None
                 )
+                self.pending_option_frame_digest = (
+                    source_frame.digest
+                    if self.pending_option_choice is not None
+                    else None
+                )
                 self.pending_option_causal_evidence = option_initiation_eligible
                 self.pending_option_counterfactual = delayed_counterfactual
                 if delayed_counterfactual is not None:
@@ -4495,6 +4542,7 @@ class VerifiedNeuralAgent:
         self.pending_option_decision = (
             self.decision_index if branch.option_initiation_eligible else None
         )
+        self.pending_option_frame_digest = None
         self.pending_option_causal_evidence = branch.option_initiation_eligible
         self.pending_option_counterfactual = None
         restored_choice = (

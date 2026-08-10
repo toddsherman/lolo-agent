@@ -85,6 +85,17 @@ Manhattan local minima absorbing even though the action planner itself may
 choose a `-1` detour. Creating an archive for every `+1` step is also harmful:
 it expands the restore pool faster than it adds useful causal alternatives.
 
+The first completed autonomous-animation trace also exposed a real death
+sequence in Room 2: an active `RIGHT` option at decision 29 was followed by an
+enemy attack, a black frame at decision 40, and a same-room reset whose visible
+life glyph changed from 5 to 4 at decision 41. The pixel detector recognized
+both frames, but simultaneous four-heart re-calibration initially replaced the
+confirmed loss with a neutral re-analysis. That result is preserved as the v13
+ablation. Re-calibration now preserves the original `-100` outcome, and the
+hazard is credited to the causally supported active temporal option rather than
+the final passive `NOOP`. Exact initiation decision and frame are retained for
+telemetry.
+
 The resulting direction is deliberately narrower: potential shaping guides
 immediate experiments; causal novelty decides what deserves persistent state;
 heart milestones preserve irreversible semantic progress; and a short temporal
@@ -128,7 +139,9 @@ not replace the strict evaluation track. It demonstrated a repeatable order of
 magnitude improvement on a nontrivial Room 2 milestone and ultimately collected
 all hearts while preserving the need for learned obstacle detours. The next
 focused gate is returning to the now pixel-detected open chest and completing
-Room 2. The life-loss detector is in place before moving into later enemy rooms.
+Room 2 without repeating the now learned enemy hazard. The life-loss detector
+has been validated against the first real 5→4 death sequence rather than only
+synthetic frames.
 After this assisted positive control, the same fixed configuration must be
 tested without room-specific tuning, and the strict track still needs a learned
 object-centric substitute for these semantic prototypes.

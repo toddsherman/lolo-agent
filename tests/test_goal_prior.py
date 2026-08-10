@@ -13,6 +13,7 @@ from lolo_agent.neural_planner import (
     NeuralPlanningConfig,
     VerifiedNeuralAgent,
     _ArchivedBranch,
+    _TemporalOptionTrace,
 )
 from lolo_agent.pixels import Frame
 
@@ -444,6 +445,58 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
         self.assertEqual(agent.temporal_option_values[choice], -100.0)
         self.assertEqual(agent.temporal_option_samples[choice], 1)
         self.assertIsNone(agent.pending_life_hazard_choice)
+
+    def test_death_during_room_calibration_preserves_and_attributes_loss(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        source = room_frame(
+            open_chest=(32, 112),
+            life_glyph=LIFE_FIVE,
+        )
+        dark = Frame(256, 240, 3, bytes(256 * 240 * 3))
+        reset = room_frame(((48, 48),), life_glyph=LIFE_FOUR)
+        agent = VerifiedNeuralAgent(
+            HeartRewardEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(human_prior_life_loss_penalty=100.0),
+        )
+        agent.reset(initial_frame=source)
+        assert agent.goal_prior is not None
+        agent.active_temporal_option = _TemporalOptionTrace(
+            choice=("danger-context", Action.RIGHT, 16),
+            initiation_decision=7,
+            start_decision=8,
+            entry_signature="animation",
+            entry_scene="room",
+            initiation_frame_digest=source.digest,
+            causal_evidence=True,
+        )
+
+        transition = agent.goal_prior.analyze(source, dark)
+        agent._record_human_prior_outcome(
+            transition, "animation-context", Action.NOOP, 16, source, dark
+        )
+        agent.goal_prior.commit(transition, dark)
+        confirmed = agent.goal_prior.analyze(dark, reset)
+        committed = agent._commit_goal_prior(confirmed, reset)
+
+        self.assertTrue(committed.life_loss_confirmed)
+        self.assertEqual(committed.life_loss_penalty, -100.0)
+        self.assertEqual(agent.goal_prior.known_slots, {(48, 48)})
+
+        agent._record_human_prior_outcome(
+            committed, "reset-context", Action.NOOP, 16, dark, reset
+        )
+
+        choice = ("danger-context", Action.RIGHT, 16)
+        self.assertEqual(agent.temporal_option_values[choice], -100.0)
+        self.assertEqual(agent.temporal_option_samples[choice], 1)
+        self.assertNotIn(
+            ("animation-context", Action.NOOP, 16),
+            agent.temporal_option_values,
+        )
 
     def test_verified_planner_uses_navigation_without_clipping_intrinsic(self) -> None:
         model = EnsembleVisualDynamicsModel(
