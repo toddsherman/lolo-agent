@@ -85,6 +85,16 @@ cells. Persistent preservation filtered 829 archive branches across 17
 recovery events, with zero unavailable fallbacks. It reached player row 112
 but did not collect either upper heart, open the chest, or transition rooms.
 
+An evaluator-only scan of all 1,611 verified endpoints found 151 with four
+hearts, 351 with three, and 1,109 with two. No endpoint had fewer than two.
+Therefore the planner did not merely score or retain a third-heart branch
+incorrectly; its one-step branch set never reached one. The intervention trace
+contained 49 behavioral source abstractions and 90 distinct
+state/action/duration edges, with 35 repeated edge commits. Raw frame identity
+showed only six repeats because animation fragments equivalent states, while
+scene identity over-collapsed the trace. Behavioral abstraction is therefore
+the supported key for the next search frontier.
+
 One marker retired at decision 247 because Lolo temporarily overlaid a cleared
 cell. The implementation was corrected after this run so only repeated return
 to the learned baseline retires evidence. This did not change the run's game
@@ -114,10 +124,11 @@ one-step verified policy and stagnation-triggered archive recovery cycle among
 middle/lower states instead of systematically expanding multi-action routes to
 the upper corridor. The next change should turn the save-state archive into an
 explicit best-first frontier: expand each pixel-distinct state/action/duration
-edge once, retain parent links, and rank unexpanded endpoints by global causal
-coverage plus preserved-change compatibility. This is preferable to adding
-more reward weight because it directly addresses repeated expansion and should
-produce auditable paths, attempt counts, and replayable solution traces.
+edge once using the behavioral abstraction key, retain parent links, and rank
+unexpanded endpoints by global causal coverage plus preserved-change
+compatibility. This is preferable to adding more reward weight because it
+directly addresses repeated expansion and should produce auditable paths,
+attempt counts, and replayable solution traces.
 
 ## Artifacts
 
