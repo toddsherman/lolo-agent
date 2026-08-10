@@ -4,6 +4,7 @@ from lolo_agent.ensemble_world_model import EnsembleVisualDynamicsModel
 from lolo_agent.environment import Action
 from lolo_agent.goal_prior import (
     HEART_PROTOTYPE,
+    OPEN_CHEST_EMPTY_PROTOTYPE,
     OPEN_CHEST_PROTOTYPE,
     PixelHeartGoalPrior,
 )
@@ -270,6 +271,19 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
         self.assertFalse(prior.initialized)
         self.assertEqual(analysis.target_chest_slot, (32, 112))
         self.assertEqual(analysis.navigation_reward, 1.0)
+
+    def test_detects_the_empty_animation_frame_of_the_open_chest(self) -> None:
+        pixels = bytearray((86, 29, 0) * (256 * 240))
+        for row in range(16):
+            for column in range(16):
+                source = OPEN_CHEST_EMPTY_PROTOTYPE[row * 16 + column]
+                offset = ((112 + row) * 256 + 32 + column) * 3
+                pixels[offset : offset + 3] = bytes(source)
+        frame = Frame(256, 240, 3, bytes(pixels))
+
+        prior = PixelHeartGoalPrior()
+
+        self.assertEqual(prior.detect_open_chest(frame), (32, 112))
 
     def test_chest_contact_before_a_transition_is_a_milestone(self) -> None:
         source = room_frame(

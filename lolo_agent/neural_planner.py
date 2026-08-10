@@ -489,7 +489,7 @@ class VerifiedNeuralAgent:
                 current_heart_slots=self.goal_prior.current_slots(),
                 prototypes=(
                     "lolo-heart-16x16-v1",
-                    "lolo-open-chest-16x16-v1",
+                    "lolo-open-chest-16x16-v2-animated",
                     "lolo-life-hud-8x8-v1",
                 ),
                 agent_visible=True,
@@ -528,7 +528,7 @@ class VerifiedNeuralAgent:
                 current_heart_slots=self.goal_prior.current_slots(),
                 prototypes=(
                     "lolo-heart-16x16-v1",
-                    "lolo-open-chest-16x16-v1",
+                    "lolo-open-chest-16x16-v2-animated",
                     "lolo-life-hud-8x8-v1",
                 ),
                 agent_visible=True,

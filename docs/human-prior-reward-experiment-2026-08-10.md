@@ -31,9 +31,10 @@ colours. All detections and rewards are recorded on every verified branch.
   causal archives. It does not create an archive by itself.
 - A distance-changing action receives a two-decision grace window before
   delayed-return recovery may abandon that new frontier.
-- After the final heart, a pixel-observed open treasure becomes the navigation
-  target using the same symmetric `+1`/`-1` potential. Contact followed by a
-  dark or room-changing frame gives `+100`.
+- After the final heart, either of the two pixel-observed open-treasure
+  animation frames becomes the navigation target using the same symmetric
+  `+1`/`-1` potential. Contact followed by a dark or room-changing frame gives
+  `+100`.
 - The treasure prototype is the pink/white object at `(32,112)` in Room 2. The
   green lower-right object was explicitly rejected after inspecting the stored
   frames; it is not treated as the chest.

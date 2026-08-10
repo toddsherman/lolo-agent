@@ -63,6 +63,31 @@ _OPEN_CHEST_ROWS = (
 OPEN_CHEST_PROTOTYPE: Tuple[Tuple[int, int, int], ...] = tuple(
     _PALETTE[value] for row in _OPEN_CHEST_ROWS for value in row
 )
+_OPEN_CHEST_EMPTY_ROWS = (
+    "................",
+    "................",
+    "................",
+    "WWWWWWWWWWWWWWW.",
+    "W.............W.",
+    "W.............W.",
+    "WB...........BW.",
+    "WB...........BW.",
+    "WBBBBBBBBBBBBBW.",
+    "WBBBBBBBBBBBBBW.",
+    "WBBBBBBBBBBBBBW.",
+    "WWWWWW...WWWWWW.",
+    "W.MMMWWWWW.MMMW.",
+    "BW.MMMW.W.MMMW..",
+    "BWWWWWWWWWWWWW..",
+    "BB..............",
+)
+OPEN_CHEST_EMPTY_PROTOTYPE: Tuple[Tuple[int, int, int], ...] = tuple(
+    _PALETTE[value] for row in _OPEN_CHEST_EMPTY_ROWS for value in row
+)
+OPEN_CHEST_PROTOTYPES = (
+    OPEN_CHEST_PROTOTYPE,
+    OPEN_CHEST_EMPTY_PROTOTYPE,
+)
 
 
 @dataclass(frozen=True)
@@ -322,7 +347,10 @@ class PixelHeartGoalPrior:
         return matches / len(prototype)
 
     def open_chest_similarity(self, frame: Frame, slot: HeartSlot) -> float:
-        return self._prototype_similarity(frame, slot, OPEN_CHEST_PROTOTYPE)
+        return max(
+            self._prototype_similarity(frame, slot, prototype)
+            for prototype in OPEN_CHEST_PROTOTYPES
+        )
 
     def detect_open_chest(self, frame: Frame) -> Optional[HeartSlot]:
         if self.mean_intensity(frame) < self.minimum_scene_intensity:
