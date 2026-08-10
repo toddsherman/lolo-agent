@@ -13,6 +13,7 @@ _PALETTE = {
     ".": (0, 0, 0),
     "B": (86, 29, 0),
     "M": (183, 30, 123),
+    "P": (255, 110, 204),
     "W": (255, 255, 255),
 }
 _HEART_ROWS = (
@@ -37,6 +38,32 @@ HEART_PROTOTYPE: Tuple[Tuple[int, int, int], ...] = tuple(
     _PALETTE[value] for row in _HEART_ROWS for value in row
 )
 
+# Pixel-observed open treasure from Lolo 1 room 2. Like the heart sprite, this
+# is an explicitly labelled human prior and is never enabled in the strict
+# rule-free track. The closed sprite changes into this form after all hearts
+# disappear; the prior therefore does not need a room-specific coordinate.
+_OPEN_CHEST_ROWS = (
+    "W..P.P.P.P.P.PW.",
+    "WWWWWWWWWWWWWWWW",
+    "................",
+    "WWWWWWWWWWWWWWWW",
+    "W.............W.",
+    "W.....PPP.....W.",
+    "WB...PWWPP...BW.",
+    "WB...PWWPP...BW.",
+    "WBBB.PPPWP.BBBW.",
+    "WBBB..PPP..BBBW.",
+    "WBBBB.....BBBBW.",
+    "WWWWWW...WWWWWW.",
+    "W.MMMWWWWW.MMMW.",
+    "BW.MMMW.W.MMMW..",
+    "BWWWWWWWWWWWWW..",
+    "BB..............",
+)
+OPEN_CHEST_PROTOTYPE: Tuple[Tuple[int, int, int], ...] = tuple(
+    _PALETTE[value] for row in _OPEN_CHEST_ROWS for value in row
+)
+
 
 @dataclass(frozen=True)
 class HeartGoalAnalysis:
@@ -48,7 +75,9 @@ class HeartGoalAnalysis:
     target_similarities: Tuple[Tuple[int, int, float], ...]
     heart_reward: float
     all_hearts_reward: float
+    chest_reward: float
     navigation_reward: float
+    life_loss_penalty: float
     total_reward: float
     global_visual_change: float
     target_intensity: float
@@ -56,6 +85,16 @@ class HeartGoalAnalysis:
     target_player_slot: Optional[HeartSlot]
     source_heart_distance: Optional[float]
     target_heart_distance: Optional[float]
+    source_chest_slot: Optional[HeartSlot]
+    target_chest_slot: Optional[HeartSlot]
+    source_chest_distance: Optional[float]
+    target_chest_distance: Optional[float]
+    chest_completed: bool
+    source_life_signature: Optional[str]
+    target_life_signature: Optional[str]
+    life_counter_changed: bool
+    dark_transition_started: bool
+    life_loss_confirmed: bool
 
     @property
     def remaining_hearts(self) -> int:
@@ -63,7 +102,23 @@ class HeartGoalAnalysis:
 
     @property
     def milestone_reward(self) -> float:
-        return self.heart_reward + self.all_hearts_reward
+        return self.heart_reward + self.all_hearts_reward + self.chest_reward
+
+    @property
+    def outcome_reward(self) -> float:
+        return self.milestone_reward + self.life_loss_penalty
+
+    @property
+    def goal_phase(self) -> str:
+        if self.target_present:
+            return "hearts"
+        if self.chest_completed:
+            return "chest_completed"
+        if self.source_chest_slot is not None or self.target_chest_slot is not None:
+            return "open_chest"
+        if self.known_slots:
+            return "awaiting_open_chest"
+        return "uncalibrated"
 
     def telemetry(self) -> Dict[str, object]:
         return {
@@ -80,13 +135,26 @@ class HeartGoalAnalysis:
             ],
             "human_prior_heart_reward": self.heart_reward,
             "human_prior_all_hearts_reward": self.all_hearts_reward,
+            "human_prior_chest_reward": self.chest_reward,
             "human_prior_navigation_reward": self.navigation_reward,
+            "human_prior_life_loss_penalty": self.life_loss_penalty,
             "human_prior_milestone_reward": self.milestone_reward,
             "human_prior_goal_reward": self.total_reward,
+            "human_prior_goal_phase": self.goal_phase,
             "human_prior_source_player_slot": self.source_player_slot,
             "human_prior_target_player_slot": self.target_player_slot,
             "human_prior_source_heart_distance": self.source_heart_distance,
             "human_prior_target_heart_distance": self.target_heart_distance,
+            "human_prior_source_chest_slot": self.source_chest_slot,
+            "human_prior_target_chest_slot": self.target_chest_slot,
+            "human_prior_source_chest_distance": self.source_chest_distance,
+            "human_prior_target_chest_distance": self.target_chest_distance,
+            "human_prior_chest_completed": self.chest_completed,
+            "human_prior_source_life_signature": self.source_life_signature,
+            "human_prior_target_life_signature": self.target_life_signature,
+            "human_prior_life_counter_changed": self.life_counter_changed,
+            "human_prior_dark_transition_started": self.dark_transition_started,
+            "human_prior_life_loss_confirmed": self.life_loss_confirmed,
             "human_prior_global_visual_change": self.global_visual_change,
             "human_prior_target_intensity": self.target_intensity,
         }
@@ -103,7 +171,9 @@ class PixelHeartGoalPrior:
         self,
         heart_reward: float = 25.0,
         all_hearts_reward: float = 75.0,
+        chest_reward: float = 100.0,
         navigation_reward: float = 0.0,
+        life_loss_penalty: float = 100.0,
         discovery_similarity: float = 0.98,
         presence_similarity: float = 0.55,
         maximum_event_visual_change: float = 0.08,
@@ -111,7 +181,9 @@ class PixelHeartGoalPrior:
     ) -> None:
         self.heart_reward = float(heart_reward)
         self.all_hearts_reward = float(all_hearts_reward)
+        self.chest_reward = float(chest_reward)
         self.navigation_reward = float(navigation_reward)
+        self.life_loss_penalty = float(life_loss_penalty)
         self.discovery_similarity = float(discovery_similarity)
         self.presence_similarity = float(presence_similarity)
         self.maximum_event_visual_change = float(maximum_event_visual_change)
@@ -120,6 +192,8 @@ class PixelHeartGoalPrior:
         self.current_present: set[HeartSlot] = set()
         self.initialized = False
         self.best_remaining_hearts: Optional[int] = None
+        self.current_life_signature: Optional[str] = None
+        self.dark_transition_observed = False
         self._player_cache: OrderedDict[str, Optional[HeartSlot]] = OrderedDict()
 
     @staticmethod
@@ -228,6 +302,14 @@ class PixelHeartGoalPrior:
         return values[0], values[1], values[2]
 
     def similarity(self, frame: Frame, slot: HeartSlot) -> float:
+        return self._prototype_similarity(frame, slot, HEART_PROTOTYPE)
+
+    def _prototype_similarity(
+        self,
+        frame: Frame,
+        slot: HeartSlot,
+        prototype: Sequence[Tuple[int, int, int]],
+    ) -> float:
         x, y = slot
         if x < 0 or y < 0 or x + 16 > frame.width or y + 16 > frame.height:
             return 0.0
@@ -235,9 +317,54 @@ class PixelHeartGoalPrior:
         index = 0
         for row in range(y, y + 16):
             for column in range(x, x + 16):
-                matches += self._pixel(frame, column, row) == HEART_PROTOTYPE[index]
+                matches += self._pixel(frame, column, row) == prototype[index]
                 index += 1
-        return matches / len(HEART_PROTOTYPE)
+        return matches / len(prototype)
+
+    def open_chest_similarity(self, frame: Frame, slot: HeartSlot) -> float:
+        return self._prototype_similarity(frame, slot, OPEN_CHEST_PROTOTYPE)
+
+    def detect_open_chest(self, frame: Frame) -> Optional[HeartSlot]:
+        if self.mean_intensity(frame) < self.minimum_scene_intensity:
+            return None
+        best: Optional[Tuple[float, HeartSlot]] = None
+        for y in range(32, min(frame.height - 15, 208), 16):
+            for x in range(32, min(frame.width - 15, 208), 16):
+                slot = (x, y)
+                similarity = self.open_chest_similarity(frame, slot)
+                if similarity < self.discovery_similarity:
+                    continue
+                if best is None or similarity > best[0]:
+                    best = similarity, slot
+        return None if best is None else best[1]
+
+    def _life_signature(self, frame: Frame) -> Optional[str]:
+        """Return the visible 8x8 HUD life glyph, never emulator memory.
+
+        The signature records only white and magenta glyph pixels. Requiring
+        both colours rejects dark transitions and partially drawn HUD frames.
+        """
+
+        if frame.width != 256 or frame.height != 240 or frame.channels < 3:
+            return None
+        values = []
+        white_pixels = 0
+        magenta_pixels = 0
+        for y in range(48, 56):
+            for x in range(232, 240):
+                pixel = self._pixel(frame, x, y)
+                if pixel == (255, 255, 255):
+                    value = 1
+                    white_pixels += 1
+                elif pixel == (183, 30, 123):
+                    value = 2
+                    magenta_pixels += 1
+                else:
+                    value = 0
+                values.append(value)
+        if white_pixels < 10 or magenta_pixels < 2:
+            return None
+        return bytes(values).hex()
 
     def discover(self, frame: Frame) -> Tuple[HeartSlot, ...]:
         if self.mean_intensity(frame) < self.minimum_scene_intensity:
@@ -251,6 +378,9 @@ class PixelHeartGoalPrior:
         return tuple(slots)
 
     def observe_room(self, frame: Frame) -> Tuple[HeartSlot, ...]:
+        life_signature = self._life_signature(frame)
+        if life_signature is not None and self.current_life_signature is None:
+            self.current_life_signature = life_signature
         discovered = set(self.discover(frame))
         if discovered and not self.initialized:
             self.known_slots = discovered
@@ -264,14 +394,18 @@ class PixelHeartGoalPrior:
             self.observe_room(source)
         target_intensity = self.mean_intensity(target)
         visual_change = source.mean_absolute_difference(target)
+        target_dark = target_intensity <= 0.02
+        visual_reliable = bool(
+            target_intensity >= self.minimum_scene_intensity
+            and visual_change <= self.maximum_event_visual_change
+        )
         similarities = tuple(
             (x, y, self.similarity(target, (x, y)))
             for x, y in sorted(self.known_slots)
         )
         reliable = bool(
             self.initialized
-            and target_intensity >= self.minimum_scene_intensity
-            and visual_change <= self.maximum_event_visual_change
+            and visual_reliable
         )
         target_present = (
             {
@@ -289,14 +423,44 @@ class PixelHeartGoalPrior:
             if collected and not target_present
             else 0.0
         )
-        source_player = self.detect_player(source) if reliable else None
-        target_player = self.detect_player(target) if reliable else None
+        source_player = (
+            self.detect_player(source)
+            if self.mean_intensity(source) >= self.minimum_scene_intensity
+            else None
+        )
+        target_player = (
+            self.detect_player(target)
+            if target_intensity >= self.minimum_scene_intensity
+            else None
+        )
         source_distance = self._nearest_distance(
             source_player, target_present
         )
         target_distance = self._nearest_distance(
             target_player, target_present
         )
+        source_chest = None
+        target_chest = None
+        source_chest_distance = None
+        target_chest_distance = None
+        chest_completed = False
+        if not target_present:
+            source_chest = self.detect_open_chest(source)
+            target_chest = self.detect_open_chest(target)
+            source_chest_distance = self._nearest_distance(
+                source_player, () if source_chest is None else (source_chest,)
+            )
+            target_chest_distance = self._nearest_distance(
+                target_player, () if target_chest is None else (target_chest,)
+            )
+            chest_completed = bool(
+                source_chest is not None
+                and target_chest is None
+                and source_chest_distance is not None
+                and source_chest_distance <= 1.0
+                and (target_dark or visual_change > self.maximum_event_visual_change)
+            )
+        awarded_chest_reward = self.chest_reward if chest_completed else 0.0
         navigation_reward = 0.0
         if (
             reliable
@@ -307,6 +471,30 @@ class PixelHeartGoalPrior:
             navigation_reward = self.navigation_reward * (
                 source_distance - target_distance
             )
+        elif (
+            visual_reliable
+            and not collected
+            and source_chest is not None
+            and target_chest is not None
+            and source_chest_distance is not None
+            and target_chest_distance is not None
+        ):
+            navigation_reward = self.navigation_reward * (
+                source_chest_distance - target_chest_distance
+            )
+        source_life_signature = self._life_signature(source)
+        target_life_signature = self._life_signature(target)
+        life_counter_changed = bool(
+            target_life_signature is not None
+            and self.current_life_signature is not None
+            and target_life_signature != self.current_life_signature
+        )
+        life_loss_confirmed = bool(
+            life_counter_changed and self.dark_transition_observed
+        )
+        awarded_life_loss_penalty = (
+            -self.life_loss_penalty if life_loss_confirmed else 0.0
+        )
         return HeartGoalAnalysis(
             reliable=reliable,
             known_slots=tuple(sorted(self.known_slots)),
@@ -316,9 +504,15 @@ class PixelHeartGoalPrior:
             target_similarities=similarities,
             heart_reward=heart_reward,
             all_hearts_reward=all_hearts_reward,
+            chest_reward=awarded_chest_reward,
             navigation_reward=navigation_reward,
+            life_loss_penalty=awarded_life_loss_penalty,
             total_reward=(
-                heart_reward + all_hearts_reward + navigation_reward
+                heart_reward
+                + all_hearts_reward
+                + awarded_chest_reward
+                + navigation_reward
+                + awarded_life_loss_penalty
             ),
             global_visual_change=visual_change,
             target_intensity=target_intensity,
@@ -326,13 +520,22 @@ class PixelHeartGoalPrior:
             target_player_slot=target_player,
             source_heart_distance=source_distance,
             target_heart_distance=target_distance,
+            source_chest_slot=source_chest,
+            target_chest_slot=target_chest,
+            source_chest_distance=source_chest_distance,
+            target_chest_distance=target_chest_distance,
+            chest_completed=chest_completed,
+            source_life_signature=source_life_signature,
+            target_life_signature=target_life_signature,
+            life_counter_changed=life_counter_changed,
+            dark_transition_started=target_dark,
+            life_loss_confirmed=life_loss_confirmed,
         )
 
     def commit(self, analysis: HeartGoalAnalysis, frame: Frame) -> None:
         if not self.initialized:
             self.observe_room(frame)
-            return
-        if analysis.reliable:
+        if self.initialized and analysis.reliable:
             self.current_present = set(analysis.target_present)
             remaining = len(self.current_present)
             self.best_remaining_hearts = (
@@ -340,6 +543,12 @@ class PixelHeartGoalPrior:
                 if self.best_remaining_hearts is None
                 else min(self.best_remaining_hearts, remaining)
             )
+        if analysis.dark_transition_started:
+            self.dark_transition_observed = True
+        elif analysis.target_life_signature is not None:
+            if analysis.life_counter_changed:
+                self.current_life_signature = analysis.target_life_signature
+            self.dark_transition_observed = False
 
     def restore(self, present: Sequence[HeartSlot], frame: Frame) -> None:
         discovered = set(self.discover(frame))
@@ -348,6 +557,8 @@ class PixelHeartGoalPrior:
             self.initialized = True
         if self.initialized:
             self.current_present = set(present) if present else discovered
+        self.current_life_signature = self._life_signature(frame)
+        self.dark_transition_observed = False
 
     def current_slots(self) -> Tuple[HeartSlot, ...]:
         return tuple(sorted(self.current_present))

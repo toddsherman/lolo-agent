@@ -142,6 +142,7 @@ def main() -> None:
     parser.add_argument(
         "--human-prior-all-hearts-reward", type=float, default=75.0
     )
+    parser.add_argument("--human-prior-chest-reward", type=float, default=100.0)
     parser.add_argument(
         "--human-prior-navigation-reward",
         type=float,
@@ -153,6 +154,12 @@ def main() -> None:
         type=int,
         default=2,
         help="decisions before delayed-return recovery may abandon a closer heart frontier",
+    )
+    parser.add_argument(
+        "--human-prior-life-loss-penalty",
+        type=float,
+        default=100.0,
+        help="penalty for a pixel-confirmed HUD life change after a dark transition",
     )
     parser.add_argument("--human-prior-intrinsic-clip", type=float, default=10.0)
     parser.add_argument("--log-root", type=Path, default=Path("runs"))
@@ -220,8 +227,12 @@ def main() -> None:
         parser.error("--human-prior-heart-reward must be non-negative")
     if args.human_prior_all_hearts_reward < 0.0:
         parser.error("--human-prior-all-hearts-reward must be non-negative")
+    if args.human_prior_chest_reward < 0.0:
+        parser.error("--human-prior-chest-reward must be non-negative")
     if args.human_prior_navigation_reward < 0.0:
         parser.error("--human-prior-navigation-reward must be non-negative")
+    if args.human_prior_life_loss_penalty < 0.0:
+        parser.error("--human-prior-life-loss-penalty must be non-negative")
     if args.human_prior_navigation_recovery_grace < 0:
         parser.error(
             "--human-prior-navigation-recovery-grace must be non-negative"
@@ -263,10 +274,16 @@ def main() -> None:
             if args.human_prior_hearts
             else 0.0
         ),
+        human_prior_chest_reward=(
+            args.human_prior_chest_reward if args.human_prior_hearts else 0.0
+        ),
         human_prior_navigation_reward=(
             args.human_prior_navigation_reward
             if args.human_prior_hearts
             else 0.0
+        ),
+        human_prior_life_loss_penalty=(
+            args.human_prior_life_loss_penalty if args.human_prior_hearts else 0.0
         ),
         human_prior_navigation_recovery_grace=(
             args.human_prior_navigation_recovery_grace
@@ -291,7 +308,7 @@ def main() -> None:
     metadata = {
         "mode": "frozen_neural_evaluation",
         "reward_track": (
-            "human_prior_v1" if args.human_prior_hearts else "strict_rule_free"
+            "human_prior_v2" if args.human_prior_hearts else "strict_rule_free"
         ),
         "requested_decisions": args.decisions,
         "device": str(device),

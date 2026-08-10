@@ -82,7 +82,9 @@ class NeuralPlanningConfig:
     temporal_option_action_prior_weight: float = 1.0
     human_prior_heart_reward: float = 0.0
     human_prior_all_hearts_reward: float = 0.0
+    human_prior_chest_reward: float = 0.0
     human_prior_navigation_reward: float = 0.0
+    human_prior_life_loss_penalty: float = 0.0
     human_prior_navigation_recovery_grace: int = 0
     human_prior_intrinsic_clip: float = 10.0
 
@@ -130,6 +132,7 @@ class _ArchivedBranch:
     goal_progress_reward: float = 0.0
     goal_remaining_hearts: int = 0
     goal_total_hearts: int = 0
+    goal_chest_slot: Optional[Tuple[int, int]] = None
 
 
 @dataclass(frozen=True)
@@ -380,8 +383,12 @@ class VerifiedNeuralAgent:
             raise ValueError("human-prior heart reward must be non-negative")
         if self.config.human_prior_all_hearts_reward < 0.0:
             raise ValueError("human-prior all-hearts reward must be non-negative")
+        if self.config.human_prior_chest_reward < 0.0:
+            raise ValueError("human-prior chest reward must be non-negative")
         if self.config.human_prior_navigation_reward < 0.0:
             raise ValueError("human-prior navigation reward must be non-negative")
+        if self.config.human_prior_life_loss_penalty < 0.0:
+            raise ValueError("human-prior life-loss penalty must be non-negative")
         if self.config.human_prior_navigation_recovery_grace < 0:
             raise ValueError(
                 "human-prior navigation recovery grace must be non-negative"
@@ -442,18 +449,25 @@ class VerifiedNeuralAgent:
         self.event_logger = event_logger
         self.goal_prior: Optional[PixelHeartGoalPrior] = None
         self.last_navigation_change_decision: Optional[int] = None
+        self.pending_life_hazard_choice: Optional[
+            Tuple[int, str, Action, int, str]
+        ] = None
 
     def _reset_goal_prior(self) -> None:
         enabled = bool(
             self.config.human_prior_heart_reward
             or self.config.human_prior_all_hearts_reward
+            or self.config.human_prior_chest_reward
             or self.config.human_prior_navigation_reward
+            or self.config.human_prior_life_loss_penalty
         )
         self.goal_prior = (
             PixelHeartGoalPrior(
                 heart_reward=self.config.human_prior_heart_reward,
                 all_hearts_reward=self.config.human_prior_all_hearts_reward,
+                chest_reward=self.config.human_prior_chest_reward,
                 navigation_reward=self.config.human_prior_navigation_reward,
+                life_loss_penalty=self.config.human_prior_life_loss_penalty,
             )
             if enabled
             else None
@@ -469,11 +483,15 @@ class VerifiedNeuralAgent:
             self._emit(
                 "human_prior_calibrated",
                 decision=self.decision_index,
-                reward_track="human_prior_v1",
+                reward_track="human_prior_v2",
                 discovered_heart_slots=discovered,
                 known_heart_slots=after,
                 current_heart_slots=self.goal_prior.current_slots(),
-                prototype="lolo-heart-16x16-v1",
+                prototypes=(
+                    "lolo-heart-16x16-v1",
+                    "lolo-open-chest-16x16-v1",
+                    "lolo-life-hud-8x8-v1",
+                ),
                 agent_visible=True,
                 **self._frame_fields(frame),
             )
@@ -483,7 +501,7 @@ class VerifiedNeuralAgent:
     ) -> Tuple[float, float]:
         if analysis is None:
             return intrinsic_score, intrinsic_score
-        if analysis.milestone_reward <= 0.0:
+        if analysis.outcome_reward == 0.0:
             return (
                 intrinsic_score + analysis.navigation_reward,
                 intrinsic_score,
@@ -504,11 +522,15 @@ class VerifiedNeuralAgent:
             self._emit(
                 "human_prior_calibrated",
                 decision=self.decision_index + 1,
-                reward_track="human_prior_v1",
+                reward_track="human_prior_v2",
                 discovered_heart_slots=after,
                 known_heart_slots=after,
                 current_heart_slots=self.goal_prior.current_slots(),
-                prototype="lolo-heart-16x16-v1",
+                prototypes=(
+                    "lolo-heart-16x16-v1",
+                    "lolo-open-chest-16x16-v1",
+                    "lolo-life-hud-8x8-v1",
+                ),
                 agent_visible=True,
                 **self._frame_fields(frame),
             )
@@ -525,7 +547,7 @@ class VerifiedNeuralAgent:
             }
         return {
             "human_prior_enabled": True,
-            "human_prior_reward_track": "human_prior_v1",
+            "human_prior_reward_track": "human_prior_v2",
             "human_prior_best_remaining_hearts": (
                 None
                 if self.goal_prior is None
@@ -533,6 +555,96 @@ class VerifiedNeuralAgent:
             ),
             **analysis.telemetry(),
         }
+
+    def _record_human_prior_outcome(
+        self,
+        analysis: HeartGoalAnalysis,
+        source_signature: str,
+        action: Action,
+        duration: int,
+        source_frame: Frame,
+        target_frame: Frame,
+    ) -> None:
+        if analysis.chest_completed:
+            self._emit(
+                "human_prior_chest_completed",
+                decision=self.decision_index + 1,
+                action=action,
+                action_frames=duration,
+                agent_visible=True,
+                **analysis.telemetry(),
+                **self._frame_fields(target_frame),
+            )
+        if analysis.dark_transition_started:
+            if self.pending_life_hazard_choice is None:
+                self.pending_life_hazard_choice = (
+                    self.decision_index + 1,
+                    source_signature,
+                    action,
+                    duration,
+                    source_frame.digest,
+                )
+            self._emit(
+                "human_prior_dark_transition_observed",
+                decision=self.decision_index + 1,
+                action=action,
+                action_frames=duration,
+                source_behavioral_signature=source_signature,
+                source_frame=source_frame.digest,
+                target_frame=target_frame.digest,
+                agent_visible=True,
+            )
+            return
+        if analysis.life_loss_confirmed:
+            pending = self.pending_life_hazard_choice
+            causal_decision = self.decision_index + 1
+            causal_signature = source_signature
+            causal_action = action
+            causal_duration = duration
+            causal_frame = source_frame.digest
+            if pending is not None:
+                (
+                    causal_decision,
+                    causal_signature,
+                    causal_action,
+                    causal_duration,
+                    causal_frame,
+                ) = pending
+            choice = (causal_signature, causal_action, causal_duration)
+            learned_value = self._record_temporal_option_sample(
+                choice, -self.config.human_prior_life_loss_penalty
+            )
+            self._emit(
+                "human_prior_life_loss_confirmed",
+                decision=self.decision_index + 1,
+                confirmation_action=action,
+                confirmation_action_frames=duration,
+                causal_decision=causal_decision,
+                causal_action=causal_action,
+                causal_action_frames=causal_duration,
+                causal_behavioral_signature=causal_signature,
+                causal_frame=causal_frame,
+                target_frame=target_frame.digest,
+                learned_hazard_value=learned_value,
+                learned_hazard_samples=self.temporal_option_samples[choice],
+                agent_visible=True,
+                **analysis.telemetry(),
+            )
+            self.pending_life_hazard_choice = None
+            return
+        if (
+            analysis.target_life_signature is not None
+            and self.pending_life_hazard_choice is not None
+        ):
+            self._emit(
+                "human_prior_dark_transition_cleared",
+                decision=self.decision_index + 1,
+                reason="life_counter_unchanged",
+                pending_causal_decision=self.pending_life_hazard_choice[0],
+                agent_visible=True,
+                **self._frame_fields(target_frame),
+            )
+            self.pending_life_hazard_choice = None
 
     def _emit(self, event_type: str, **fields: Any) -> None:
         if self.event_logger is not None:
@@ -651,6 +763,7 @@ class VerifiedNeuralAgent:
         self.archive = []
         self.decision_index = 0
         self.last_navigation_change_decision = None
+        self.pending_life_hazard_choice = None
         self._reset_goal_prior()
         self._calibrate_goal_prior(self.frame)
         self._emit(
@@ -1893,6 +2006,19 @@ class VerifiedNeuralAgent:
                 goal_navigation_bonus = -(
                     self.goal_prior.navigation_reward * goal_distance
                 )
+        elif (
+            self.goal_prior is not None
+            and self.goal_prior.navigation_reward > 0.0
+            and branch.goal_chest_slot is not None
+        ):
+            chest_distance = self.goal_prior._nearest_distance(
+                self.goal_prior.detect_player(branch.frame),
+                (branch.goal_chest_slot,),
+            )
+            if chest_distance is not None:
+                goal_navigation_bonus = -(
+                    self.goal_prior.navigation_reward * chest_distance
+                )
         goal_progress_bonus = branch.goal_progress_reward
         if branch.goal_total_hearts > 0:
             collected_hearts = max(
@@ -3030,6 +3156,14 @@ class VerifiedNeuralAgent:
                 committed_goal_analysis = self._commit_goal_prior(
                     committed_goal_analysis, target
                 )
+                self._record_human_prior_outcome(
+                    committed_goal_analysis,
+                    source_signature,
+                    plan.path[0],
+                    plan.durations[0],
+                    source_frame,
+                    target,
+                )
             target_signature = self._signature(target)
             target_visual_cluster = self._abstract_signature(target)
             self.current_frontier_signature = target_frontier_signature
@@ -3250,6 +3384,14 @@ class VerifiedNeuralAgent:
                             0
                             if committed_goal_analysis is None
                             else len(committed_goal_analysis.known_slots)
+                        ),
+                        (
+                            None
+                            if committed_goal_analysis is None
+                            else (
+                                committed_goal_analysis.target_chest_slot
+                                or committed_goal_analysis.source_chest_slot
+                            )
                         ),
                     )
                 )
@@ -3559,6 +3701,14 @@ class VerifiedNeuralAgent:
                             if alternative_goal_analysis is None
                             else len(alternative_goal_analysis.known_slots)
                         ),
+                        (
+                            None
+                            if alternative_goal_analysis is None
+                            else (
+                                alternative_goal_analysis.target_chest_slot
+                                or alternative_goal_analysis.source_chest_slot
+                            )
+                        ),
                     )
                 )
                 added += 1
@@ -3715,6 +3865,13 @@ class VerifiedNeuralAgent:
                                 0
                                 if self.goal_prior is None
                                 else len(self.goal_prior.known_slots)
+                            ),
+                            (
+                                None
+                                if self.goal_prior is None
+                                else self.goal_prior.detect_open_chest(
+                                    source_frame
+                                )
                             ),
                         )
                     )
@@ -4170,6 +4327,7 @@ class VerifiedNeuralAgent:
             release_state(branch.state)
         self.frame = branch.frame
         self.last_navigation_change_decision = None
+        self.pending_life_hazard_choice = None
         if self.goal_prior is not None:
             self.goal_prior.restore(branch.goal_heart_slots, branch.frame)
         self.novelty.observe(self._signature(branch.frame))
@@ -4345,12 +4503,13 @@ class VerifiedNeuralAgent:
             causal_spatial_bonus=restored_causal_spatial_bonus,
             human_prior_enabled=self.goal_prior is not None,
             human_prior_reward_track=(
-                "human_prior_v1" if self.goal_prior is not None else None
+                "human_prior_v2" if self.goal_prior is not None else None
             ),
             human_prior_goal_reward=branch.goal_progress_reward,
             human_prior_target_hearts=branch.goal_heart_slots,
             human_prior_remaining_hearts=branch.goal_remaining_hearts,
             human_prior_total_hearts=branch.goal_total_hearts,
+            human_prior_target_chest_slot=branch.goal_chest_slot,
             human_prior_best_remaining_hearts=(
                 None
                 if self.goal_prior is None
@@ -4418,12 +4577,13 @@ class VerifiedNeuralAgent:
             causal_spatial_bonus=restored_causal_spatial_bonus,
             human_prior_enabled=self.goal_prior is not None,
             human_prior_reward_track=(
-                "human_prior_v1" if self.goal_prior is not None else None
+                "human_prior_v2" if self.goal_prior is not None else None
             ),
             human_prior_goal_reward=branch.goal_progress_reward,
             human_prior_target_hearts=branch.goal_heart_slots,
             human_prior_remaining_hearts=branch.goal_remaining_hearts,
             human_prior_total_hearts=branch.goal_total_hearts,
+            human_prior_target_chest_slot=branch.goal_chest_slot,
             human_prior_best_remaining_hearts=(
                 None
                 if self.goal_prior is None

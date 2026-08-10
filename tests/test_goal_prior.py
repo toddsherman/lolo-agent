@@ -2,7 +2,11 @@ import unittest
 
 from lolo_agent.ensemble_world_model import EnsembleVisualDynamicsModel
 from lolo_agent.environment import Action
-from lolo_agent.goal_prior import HEART_PROTOTYPE, PixelHeartGoalPrior
+from lolo_agent.goal_prior import (
+    HEART_PROTOTYPE,
+    OPEN_CHEST_PROTOTYPE,
+    PixelHeartGoalPrior,
+)
 from lolo_agent.neural_planner import (
     NeuralPlan,
     NeuralPlanningConfig,
@@ -12,13 +16,26 @@ from lolo_agent.neural_planner import (
 from lolo_agent.pixels import Frame
 
 
-def room_frame(hearts=(), fill=(86, 29, 0), player=None) -> Frame:
+def room_frame(
+    hearts=(),
+    fill=(86, 29, 0),
+    player=None,
+    open_chest=None,
+    life_glyph=None,
+) -> Frame:
     width, height = 256, 240
     pixels = bytearray(fill * (width * height))
     for x, y in hearts:
         for row in range(16):
             for column in range(16):
                 source = HEART_PROTOTYPE[row * 16 + column]
+                offset = ((y + row) * width + x + column) * 3
+                pixels[offset : offset + 3] = bytes(source)
+    if open_chest is not None:
+        x, y = open_chest
+        for row in range(16):
+            for column in range(16):
+                source = OPEN_CHEST_PROTOTYPE[row * 16 + column]
                 offset = ((y + row) * width + x + column) * 3
                 pixels[offset : offset + 3] = bytes(source)
     if player is not None:
@@ -33,7 +50,39 @@ def room_frame(hearts=(), fill=(86, 29, 0), player=None) -> Frame:
             row, column = divmod(index, 16)
             offset = ((y + row) * width + x + column) * 3
             pixels[offset : offset + 3] = bytes(value)
+    if life_glyph is not None:
+        for row, values in enumerate(life_glyph):
+            for column, value in enumerate(values):
+                colour = {
+                    ".": (0, 0, 0),
+                    "W": (255, 255, 255),
+                    "M": (183, 30, 123),
+                }[value]
+                offset = ((48 + row) * width + 232 + column) * 3
+                pixels[offset : offset + 3] = bytes(colour)
     return Frame(width, height, 3, bytes(pixels))
+
+
+LIFE_FIVE = (
+    "WWWWWWM.",
+    "WWM.....",
+    "WWWWWWM.",
+    ".....WWM",
+    ".....WWM",
+    "WWM..WWM",
+    ".WWWWWM.",
+    "........",
+)
+LIFE_FOUR = (
+    "WW...WWM",
+    "WW...WWM",
+    "WW...WWM",
+    "WWWWWWWM",
+    ".....WWM",
+    ".....WWM",
+    ".....WWM",
+    "........",
+)
 
 
 class HeartRewardEnv:
@@ -86,6 +135,37 @@ class HeartNavigationEnv:
 
     def _frame(self) -> Frame:
         return room_frame(((80, 48),), player=self.player)
+
+
+class ChestNavigationEnv:
+    def __init__(self) -> None:
+        self.player = (80, 112)
+
+    def reset(self) -> Frame:
+        self.player = (80, 112)
+        return self._frame()
+
+    def step(self, action: Action, frames: int = 1) -> Frame:
+        del frames
+        if action == Action.LEFT:
+            self.player = (64, 112)
+        elif action == Action.RIGHT:
+            self.player = (96, 112)
+        return self._frame()
+
+    def save_state(self):
+        return self.player
+
+    def load_state(self, state) -> Frame:
+        self.player = state
+        return self._frame()
+
+    def _frame(self) -> Frame:
+        return room_frame(
+            player=self.player,
+            open_chest=(32, 112),
+            life_glyph=LIFE_FIVE,
+        )
 
 
 class PixelHeartGoalPriorTests(unittest.TestCase):
@@ -145,6 +225,154 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
         self.assertEqual(closer_analysis.milestone_reward, 0.0)
         self.assertEqual(prior.distance_to_hearts(source), 11.0)
         self.assertEqual(prior.distance_to_hearts(closer), 10.0)
+
+    def test_open_chest_becomes_the_goal_after_the_last_heart(self) -> None:
+        initial = room_frame(((48, 48),), life_glyph=LIFE_FIVE)
+        opened = room_frame(
+            player=(80, 112),
+            open_chest=(32, 112),
+            life_glyph=LIFE_FIVE,
+        )
+        closer = room_frame(
+            player=(64, 112),
+            open_chest=(32, 112),
+            life_glyph=LIFE_FIVE,
+        )
+        prior = PixelHeartGoalPrior(navigation_reward=1.0)
+        prior.observe_room(initial)
+        collected = prior.analyze(initial, opened)
+        prior.commit(collected, opened)
+
+        analysis = prior.analyze(opened, closer)
+
+        self.assertEqual(analysis.goal_phase, "open_chest")
+        self.assertEqual(analysis.target_chest_slot, (32, 112))
+        self.assertEqual(analysis.source_chest_distance, 3.0)
+        self.assertEqual(analysis.target_chest_distance, 2.0)
+        self.assertEqual(analysis.navigation_reward, 1.0)
+
+    def test_open_chest_navigation_works_when_resuming_after_all_hearts(self) -> None:
+        source = room_frame(
+            player=(80, 112),
+            open_chest=(32, 112),
+            life_glyph=LIFE_FIVE,
+        )
+        target = room_frame(
+            player=(64, 112),
+            open_chest=(32, 112),
+            life_glyph=LIFE_FIVE,
+        )
+        prior = PixelHeartGoalPrior(navigation_reward=1.0)
+        prior.observe_room(source)
+
+        analysis = prior.analyze(source, target)
+
+        self.assertFalse(prior.initialized)
+        self.assertEqual(analysis.target_chest_slot, (32, 112))
+        self.assertEqual(analysis.navigation_reward, 1.0)
+
+    def test_chest_contact_before_a_transition_is_a_milestone(self) -> None:
+        source = room_frame(
+            player=(48, 112),
+            open_chest=(32, 112),
+            life_glyph=LIFE_FIVE,
+        )
+        target = Frame(256, 240, 3, bytes(256 * 240 * 3))
+        prior = PixelHeartGoalPrior(chest_reward=100.0)
+        prior.observe_room(source)
+
+        analysis = prior.analyze(source, target)
+
+        self.assertTrue(analysis.chest_completed)
+        self.assertEqual(analysis.goal_phase, "chest_completed")
+        self.assertEqual(analysis.chest_reward, 100.0)
+        self.assertEqual(analysis.total_reward, 100.0)
+
+    def test_life_change_requires_a_dark_transition_and_penalizes_loss(self) -> None:
+        source = room_frame(((48, 48),), life_glyph=LIFE_FIVE)
+        dark = Frame(256, 240, 3, bytes(256 * 240 * 3))
+        reset = room_frame(((48, 48),), life_glyph=LIFE_FOUR)
+        prior = PixelHeartGoalPrior(life_loss_penalty=100.0)
+        prior.observe_room(source)
+
+        unconfirmed = prior.analyze(source, reset)
+        self.assertTrue(unconfirmed.life_counter_changed)
+        self.assertFalse(unconfirmed.life_loss_confirmed)
+        self.assertEqual(unconfirmed.life_loss_penalty, 0.0)
+
+        transition = prior.analyze(source, dark)
+        prior.commit(transition, dark)
+        confirmed = prior.analyze(dark, reset)
+
+        self.assertTrue(confirmed.life_loss_confirmed)
+        self.assertEqual(confirmed.life_loss_penalty, -100.0)
+        self.assertEqual(confirmed.total_reward, -100.0)
+
+    def test_verified_planner_uses_open_chest_navigation_after_resume(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        agent = VerifiedNeuralAgent(
+            ChestNavigationEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.NOOP, Action.LEFT, Action.RIGHT),
+                planning_depth=1,
+                beam_width=3,
+                verify_actions=3,
+                action_frames=1,
+                actual_novelty_weight=0.0,
+                scene_novelty_weight=0.0,
+                prediction_error_weight=0.0,
+                actual_change_weight=0.0,
+                action_effect_weight=0.0,
+                causal_spatial_novelty_weight=0.0,
+                action_coverage_weight=0.0,
+                duration_coverage_weight=0.0,
+                consecutive_repeat_weight=0.0,
+                delayed_return_weight=0.0,
+                human_prior_chest_reward=100.0,
+                human_prior_navigation_reward=2.0,
+            ),
+        )
+
+        agent.reset()
+        decision = agent.decide()
+
+        self.assertEqual(decision.action, Action.LEFT)
+        self.assertGreaterEqual(decision.score, 2.0)
+
+    def test_confirmed_life_loss_marks_the_pre_transition_choice_hazardous(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        agent = VerifiedNeuralAgent(
+            HeartRewardEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(human_prior_life_loss_penalty=100.0),
+        )
+        agent.reset()
+        source = room_frame(((48, 48),), life_glyph=LIFE_FIVE)
+        dark = Frame(256, 240, 3, bytes(256 * 240 * 3))
+        reset = room_frame(((48, 48),), life_glyph=LIFE_FOUR)
+        prior = PixelHeartGoalPrior(life_loss_penalty=100.0)
+        prior.observe_room(source)
+        transition = prior.analyze(source, dark)
+        agent._record_human_prior_outcome(
+            transition, "danger-context", Action.RIGHT, 16, source, dark
+        )
+        prior.commit(transition, dark)
+        confirmed = prior.analyze(dark, reset)
+        agent._record_human_prior_outcome(
+            confirmed, "reset-context", Action.NOOP, 16, dark, reset
+        )
+
+        choice = ("danger-context", Action.RIGHT, 16)
+        self.assertEqual(agent.temporal_option_values[choice], -100.0)
+        self.assertEqual(agent.temporal_option_samples[choice], 1)
+        self.assertIsNone(agent.pending_life_hazard_choice)
 
     def test_verified_planner_uses_navigation_without_clipping_intrinsic(self) -> None:
         model = EnsembleVisualDynamicsModel(
