@@ -35,6 +35,11 @@ colours. All detections and rewards are recorded on every verified branch.
   visual-stagnation recovery. This prevents archive restoration from cutting
   off a delayed animation before the configured passive observations and the
   subsequent intervention can occur.
+- When autonomous-animation grace expires, recovery is held for one additional
+  decision and the planner must commit a non-NOOP controller probe. This keeps
+  a repeated passive-animation classification from preempting the intervention
+  that tests whether control has returned. Both the reserved turn and selected
+  probe are recorded in telemetry.
 - After the final heart, either of the two pixel-observed open-treasure
   animation frames becomes the navigation target using the same symmetric
   `+1`/`-1` potential. Contact followed by a dark or room-changing frame gives
@@ -110,7 +115,9 @@ Dedicated events include `human_prior_calibrated`,
 `human_prior_navigation_recovery_suppressed`. Version 2 adds
 `human_prior_chest_completed`, `human_prior_dark_transition_observed`,
 `human_prior_dark_transition_cleared`, and
-`human_prior_life_loss_confirmed`. Every committed and rejected
+`human_prior_life_loss_confirmed`. Temporal control handoff is visible through
+`temporal_option_recovery_suppressed`, `autonomous_intervention_started`, and
+`autonomous_intervention_selected`. Every committed and rejected
 branch still retains its action, duration, source/target frames, intrinsic
 components, archive state IDs, and replay ordering.
 

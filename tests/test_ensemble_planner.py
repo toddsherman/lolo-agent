@@ -563,6 +563,75 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertIsNotNone(restored)
         self.assertTrue(restored.restored_archive)
 
+    def test_autonomous_grace_reserves_an_intervention_before_recovery(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = MockPuzzleEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                visual_stagnation_visits=1,
+            ),
+        )
+        frame = agent.reset()
+        state = env.save_state()
+        agent.archive = [
+            _ArchivedBranch(
+                state,
+                frame,
+                NeuralPlan((Action.RIGHT,), (1,), 1.0, 0.0),
+                1.0,
+                "other-scene",
+                0,
+            )
+        ]
+        agent.visual_stagnation_streak = 1
+        agent.autonomous_grace_remaining = 1
+
+        self.assertIsNone(agent._restore_if_stagnant())
+
+        agent.autonomous_grace_remaining = 0
+        agent.autonomous_intervention_pending = True
+        self.assertIsNone(agent._restore_if_stagnant())
+
+        agent.autonomous_intervention_pending = False
+        restored = agent._restore_if_stagnant()
+        self.assertIsNotNone(restored)
+
+    def test_reserved_autonomous_intervention_forces_a_non_noop_probe(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32,
+            action_size=8,
+            ensemble_size=2,
+            duration_conditioned=True,
+            duration_size=4,
+            max_action_frames=4,
+        )
+        agent = VerifiedNeuralAgent(
+            AutonomousAnimationEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.A, Action.NOOP),
+                action_durations=(1, 4),
+                planning_depth=1,
+                beam_width=4,
+                verify_actions=4,
+            ),
+        )
+        agent.reset()
+        agent.autonomous_intervention_pending = True
+
+        decision = agent.decide()
+
+        self.assertEqual(decision.action, Action.A)
+        self.assertFalse(agent.autonomous_intervention_pending)
+
     def test_duration_conditioned_planner_selects_a_press_length(self) -> None:
         model = EnsembleVisualDynamicsModel(
             latent_size=32,

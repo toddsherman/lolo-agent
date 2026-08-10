@@ -418,6 +418,7 @@ class VerifiedNeuralAgent:
         self.delayed_return_recovery = False
         self.delayed_return_loop_start: Optional[int] = None
         self.autonomous_grace_remaining = 0
+        self.autonomous_intervention_pending = False
         self.frontier_values: Dict[str, float] = {}
         self.frontier_samples: CounterType[str] = Counter()
         self.frontier_traces: List[_FrontierTrace] = []
@@ -731,6 +732,7 @@ class VerifiedNeuralAgent:
         self.delayed_return_recovery = False
         self.delayed_return_loop_start = None
         self.autonomous_grace_remaining = 0
+        self.autonomous_intervention_pending = False
         self.visual_clusters = []
         self.frame_clusters = {}
         self.frame_latents = {}
@@ -2375,6 +2377,16 @@ class VerifiedNeuralAgent:
         restored = self._restore_if_stagnant()
         if restored is not None:
             return restored
+        autonomous_intervention_due = self.autonomous_intervention_pending
+        if autonomous_intervention_due:
+            self._emit(
+                "autonomous_intervention_started",
+                decision=self.decision_index + 1,
+                visual_stagnation_streak=self.visual_stagnation_streak,
+                archive_size=len(self.archive),
+                **self._frame_fields(self.frame),
+            )
+            self.autonomous_intervention_pending = False
         plans = self.planner.plan(self.frame)
         self._emit(
             "planner_candidates",
@@ -2971,6 +2983,26 @@ class VerifiedNeuralAgent:
                 if positive_goal_branches
                 else None
             )
+            autonomous_intervention_choice = None
+            if autonomous_intervention_due:
+                intervention_choices = [
+                    item
+                    for item in selection_verified
+                    if item[1].path[0] != Action.NOOP
+                ]
+                if intervention_choices:
+                    autonomous_intervention_choice = max(
+                        intervention_choices,
+                        key=lambda item: (
+                            item[0],
+                            tuple(
+                                (action.value, duration)
+                                for action, duration in zip(
+                                    item[1].path, item[1].durations
+                                )
+                            ),
+                        ),
+                    )
             if (
                 autonomous is not None
                 and learned_control_actions
@@ -2997,6 +3029,15 @@ class VerifiedNeuralAgent:
                     action_frames=chosen[1].durations[0],
                     **self._human_prior_fields(selected_analysis),
                 )
+            elif autonomous_intervention_choice is not None:
+                chosen = autonomous_intervention_choice
+                self._emit(
+                    "autonomous_intervention_selected",
+                    decision=self.decision_index + 1,
+                    action=chosen[1].path[0],
+                    action_frames=chosen[1].durations[0],
+                    autonomous_dynamics_detected=autonomous is not None,
+                )
             elif causal_observation_wait is not None:
                 chosen = causal_observation_wait
                 passive_transition = True
@@ -3010,6 +3051,7 @@ class VerifiedNeuralAgent:
             elif autonomous is not None:
                 chosen, outcome_spread, autonomous_change = autonomous
                 self.autonomous_grace_remaining = self.config.autonomous_grace_decisions
+                self.autonomous_intervention_pending = False
                 passive_transition = True
                 self._emit(
                     "autonomous_dynamics_detected",
@@ -3029,6 +3071,7 @@ class VerifiedNeuralAgent:
                 )
                 if control_returned:
                     self.autonomous_grace_remaining = 0
+                    self.autonomous_intervention_pending = False
                     chosen = max(
                         selection_verified,
                         key=lambda item: (
@@ -3062,6 +3105,8 @@ class VerifiedNeuralAgent:
                         passive_transition = True
                         grace_continuation = True
                         self.autonomous_grace_remaining -= 1
+                        if self.autonomous_grace_remaining == 0:
+                            self.autonomous_intervention_pending = True
                         self._emit(
                             "autonomous_grace_wait",
                             decision=self.decision_index + 1,
@@ -3074,6 +3119,7 @@ class VerifiedNeuralAgent:
                         )
                     else:
                         self.autonomous_grace_remaining = 0
+                        self.autonomous_intervention_pending = False
                         chosen = max(
                             selection_verified,
                             key=lambda item: (
@@ -4099,16 +4145,29 @@ class VerifiedNeuralAgent:
         )
         if (
             not delayed_return
-            and active_trace is not None
-            and active_trace.passive_decisions
-            <= maximum_passive_observations
+            and (
+                self.autonomous_grace_remaining > 0
+                or self.autonomous_intervention_pending
+                or (
+                    active_trace is not None
+                    and active_trace.passive_decisions
+                    <= maximum_passive_observations
+                )
+            )
         ):
             self._emit(
                 "temporal_option_recovery_suppressed",
                 decision=self.decision_index + 1,
-                passive_decisions=active_trace.passive_decisions,
+                passive_decisions=(
+                    None
+                    if active_trace is None
+                    else active_trace.passive_decisions
+                ),
                 maximum_passive_observations=maximum_passive_observations,
                 autonomous_grace_remaining=self.autonomous_grace_remaining,
+                autonomous_intervention_pending=(
+                    self.autonomous_intervention_pending
+                ),
                 visual_stagnation_streak=self.visual_stagnation_streak,
                 archive_size=len(self.archive),
                 **self._frame_fields(self.frame),
@@ -4366,6 +4425,7 @@ class VerifiedNeuralAgent:
         self.frame = branch.frame
         self.last_navigation_change_decision = None
         self.pending_life_hazard_choice = None
+        self.autonomous_intervention_pending = False
         if self.goal_prior is not None:
             self.goal_prior.restore(
                 branch.goal_heart_slots,
