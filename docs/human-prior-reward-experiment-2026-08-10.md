@@ -197,3 +197,24 @@ synthetic frames.
 After this assisted positive control, the same fixed configuration must be
 tested without room-specific tuning, and the strict track still needs a learned
 object-centric substitute for these semantic prototypes.
+
+## Final v19 preparation-search baseline
+
+`cycle-000016-floor2-human-prior-v19-preparation-search-1000` completed all
+1,000 requested decisions with the cycle-16 neural parameters unchanged. It
+did not complete the chest or clear Room 2.
+
+The run investigated 8,463 actions, verified 6,525 branches, restored 271
+archive branches, and produced 57,693 telemetry events. It detected four life
+losses at decisions 48, 91, 132, and 492 and restored the pre-final-heart
+milestone after each one. Rollback invalidated 487 descendant archive branches
+in total. State ownership balanced exactly: 7,273 states were saved and 7,273
+were released.
+
+The final heart was nevertheless selected as a positive goal 11 times from
+several player positions and approach actions. The agent learned hazards for
+specific behavioral contexts, but it did not learn the reusable relationship
+“prepare the room before causing the last-heart transition.” This is the final
+baseline for the assisted exact-context architecture. Further room-specific
+reward or rollback tuning is deferred in favor of the persistent spatial
+causal model described in `spatial-causal-model-2026-08-10.md`.

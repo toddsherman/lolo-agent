@@ -5,6 +5,7 @@ from pathlib import Path
 
 from lolo_agent.experience_import import (
     ExperienceSource,
+    classify_reward_track,
     decode_logged_png,
     extract_experience,
 )
@@ -13,6 +14,15 @@ from lolo_agent.run_logging import encode_png
 
 
 class ExperienceImportTests(unittest.TestCase):
+    def test_reward_track_classification_keeps_assistance_explicit(self) -> None:
+        self.assertEqual(classify_reward_track({}), "strict")
+        self.assertEqual(
+            classify_reward_track({"metadata": {"reward_track": "human_prior_v2"}}),
+            "assisted",
+        )
+        with self.assertRaisesRegex(ValueError, "unrecognized telemetry reward track"):
+            classify_reward_track({"metadata": {"reward_track": "mystery"}})
+
     def test_logged_png_round_trip(self) -> None:
         frame = Frame(3, 2, 3, bytes(range(18)))
         with tempfile.TemporaryDirectory() as directory:
@@ -65,6 +75,7 @@ class ExperienceImportTests(unittest.TestCase):
         self.assertEqual(sequences[0].group, 10)
         self.assertEqual(sequences[0].durations, (8,))
         self.assertEqual(metadata["verified_transitions"], 1)
+        self.assertEqual(metadata["reward_track"], "strict")
         self.assertNotIn("combined_score", metadata)
 
 

@@ -81,6 +81,22 @@ lolo-ensemble-smoke \
   --checkpoint checkpoints/ensemble-smoke.pt
 ```
 
+Train the gated unlabeled spatial-token successor from persisted strict branch
+experience:
+
+```bash
+lolo-spatial-train \
+  --dataset experiments/lolo1-medium/dataset \
+  --checkpoint experiments/lolo1-spatial-smoke/checkpoints/spatial.pt \
+  --reward-track strict \
+  --max-groups 250
+```
+
+This model predicts spatial effects and uncertainty without object labels. Its
+metrics distinguish the effect-learning gate from the stricter planner-
+integration gate, which must beat frame persistence before imagined rollouts
+are allowed to steer the agent.
+
 Run the saved model in frozen evaluation mode:
 
 ```bash

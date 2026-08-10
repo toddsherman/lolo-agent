@@ -39,13 +39,22 @@ The mock puzzle is not imported by the agent package. Its symbolic state and
 success predicate are evaluator-side test fixtures; the agent receives only
 the rendered byte array.
 
-## Intended neural successor
+## Spatial causal successor
 
-The next model should preserve the same `WorldModel` semantics while adding:
+The first persistent spatial successor is implemented in
+`spatial_world_model.py`. It preserves a learned 2-D token map, predicts
+action-localized pixel effects with an uncertainty ensemble, and uses sparse
+rendering so unchanged pixels are copied rather than regenerated. Strict and
+assisted telemetry are now bound to separate dataset tracks.
 
-1. a convolutional/token encoder learned from frames;
-2. action-conditioned latent dynamics with an ensemble uncertainty head;
-3. multi-step prediction trained from replayed branches;
-4. object-centric slots or sparse spatial tokens discovered without labels;
-5. terminal/reversibility estimates learned from long-horizon reachability,
+Its held-out causal-effect gate passes, but planner integration remains gated
+because changed-region rendering has not yet beaten persistence. See
+`spatial-causal-model-2026-08-10.md` for the reproducible MPS result.
+
+The remaining successor milestones are:
+
+1. changed-region rendering that beats persistence on held-out causal roots;
+2. run- and room-held-out validation without semantic inputs;
+3. object-centric slots or sparse entity tokens discovered without labels;
+4. terminal/reversibility estimates learned from long-horizon reachability,
    not hand-authored death or object rules.

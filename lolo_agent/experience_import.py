@@ -22,6 +22,17 @@ class ExperienceSource:
     through_decision: Optional[int] = None
 
 
+def classify_reward_track(manifest: Dict[str, Any]) -> str:
+    """Classify policy provenance without exposing rewards to model training."""
+
+    configured = manifest.get("metadata", {}).get("reward_track")
+    if configured is None or configured == "strict":
+        return "strict"
+    if isinstance(configured, str) and configured.startswith("human_prior"):
+        return "assisted"
+    raise ValueError(f"unrecognized telemetry reward track: {configured!r}")
+
+
 def decode_logged_png(path: Path) -> Frame:
     """Decode the dependency-free, filter-0 PNG format emitted by RunLogger."""
 
@@ -174,6 +185,7 @@ def extract_experience(
     metadata = {
         "run": str(run_dir),
         "run_id": manifest.get("run_id", run_dir.name),
+        "reward_track": classify_reward_track(manifest),
         "manifest_sha256": sha256_file(manifest_path),
         "events_sha256": sha256_file(run_dir / "events.jsonl"),
         "through_decision": source.through_decision,
@@ -199,6 +211,7 @@ def import_experience_cycle(
     experiment_dir: Path,
     sources: Sequence[ExperienceSource],
     committed_horizon: int = 3,
+    reward_track: str = "strict",
 ) -> Dict[str, Any]:
     experiment_dir = Path(experiment_dir).expanduser().resolve()
     state_path = experiment_dir / "state.json"
@@ -207,6 +220,8 @@ def import_experience_cycle(
         raise ValueError("experience can only be imported while the experiment is idle")
     if not sources:
         raise ValueError("at least one experience source is required")
+    if reward_track not in ("strict", "assisted"):
+        raise ValueError("reward track must be 'strict' or 'assisted'")
     cycle = int(state["completed_cycles"]) + 1
     segment_id = f"cycle-{cycle:06d}"
     store = SequenceStore(experiment_dir / "dataset")
@@ -217,14 +232,21 @@ def import_experience_cycle(
     source_metadata = []
     for source in sources:
         extracted, metadata = extract_experience(source, group, committed_horizon)
+        if metadata["reward_track"] != reward_track:
+            raise ValueError(
+                f"cannot import {metadata['reward_track']!r} experience into the "
+                f"{reward_track!r} dataset: {metadata['run_id']}"
+            )
         all_sequences.extend(extracted)
         source_metadata.append(metadata)
         group = int(metadata["next_group"])
+    store.bind_reward_track(reward_track)
     store.append_segment(segment_id, all_sequences)
     provenance = {
-        "version": 1,
+        "version": 2,
         "created_at": utc_now(),
         "segment": segment_id,
+        "reward_track": reward_track,
         "persistent_inputs": ["pixels", "actions", "action_durations"],
         "excluded_inputs": ["evaluator_annotations", "planner_scores", "object_labels", "rewards"],
         "committed_horizon": committed_horizon,
@@ -266,11 +288,20 @@ def main() -> None:
         help="run directory, optionally suffixed with :THROUGH_DECISION",
     )
     parser.add_argument("--committed-horizon", type=int, default=3)
+    parser.add_argument(
+        "--reward-track",
+        choices=("strict", "assisted"),
+        default="strict",
+        help="bind the dataset to strict or explicitly assisted policy provenance",
+    )
     args = parser.parse_args()
     if args.committed_horizon <= 0:
         parser.error("--committed-horizon must be positive")
     result = import_experience_cycle(
-        args.experiment_dir, args.source, args.committed_horizon
+        args.experiment_dir,
+        args.source,
+        args.committed_horizon,
+        reward_track=args.reward_track,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
 
