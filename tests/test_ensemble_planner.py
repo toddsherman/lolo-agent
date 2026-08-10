@@ -176,6 +176,67 @@ class DynamicActionEffectEnv:
         return Frame(8, 8, 1, bytes([self.value]) * 64)
 
 
+class TemporaryControlPauseEnv:
+    def __init__(self) -> None:
+        self.tick = 0
+
+    def reset(self) -> Frame:
+        self.tick = 0
+        return self._frame()
+
+    def step(self, action: Action, frames: int = 1) -> Frame:
+        if self.tick < 2:
+            self.tick += 1
+        elif action == Action.RIGHT:
+            self.tick += 16
+        return self._frame()
+
+    def save_state(self) -> int:
+        return self.tick
+
+    def load_state(self, state: int) -> Frame:
+        self.tick = state
+        return self._frame()
+
+    def _frame(self) -> Frame:
+        return Frame(8, 8, 1, bytes([64 + self.tick]) * 64)
+
+
+class NovelSceneTransitionEnv:
+    def __init__(self) -> None:
+        self.triggered = False
+        self.tick = 0
+
+    def reset(self) -> Frame:
+        self.triggered = False
+        self.tick = 0
+        return self._frame()
+
+    def step(self, action: Action, frames: int = 1) -> Frame:
+        if not self.triggered and action == Action.RIGHT:
+            self.triggered = True
+            self.tick = 0
+        elif self.triggered:
+            self.tick += 1
+        return self._frame()
+
+    def save_state(self) -> tuple[bool, int]:
+        return self.triggered, self.tick
+
+    def load_state(self, state: tuple[bool, int]) -> Frame:
+        self.triggered, self.tick = state
+        return self._frame()
+
+    def _frame(self) -> Frame:
+        if not self.triggered:
+            pixels = bytes([64]) * 64
+        elif self.tick < 2:
+            pixels = bytes(64)
+        else:
+            pixels = bytes([224]) * 64
+        return Frame(8, 8, 1, pixels)
+
+
 class UniqueStateEnv(ActionEffectEnv):
     def __init__(self) -> None:
         super().__init__()
@@ -1756,6 +1817,102 @@ class EnsemblePlannerTests(unittest.TestCase):
             and event["reason"] == "control_collapse_rollback_descendant"
         ]
         self.assertTrue(removed)
+
+    def test_temporary_control_pause_is_not_learned_as_a_collapse(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        logger = RecordingLogger()
+        env = TemporaryControlPauseEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.NOOP),
+                planning_depth=1,
+                beam_width=2,
+                verify_actions=2,
+                action_frames=1,
+                control_collapse_confirmation_steps=4,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.planner.plan = lambda _frame: [
+            NeuralPlan((Action.RIGHT,), (1,), 1.0, 0.0),
+            NeuralPlan((Action.NOOP,), (1,), 0.0, 0.0),
+        ]
+        agent.pending_option_choice = ("source", Action.RIGHT, 1)
+        agent.pending_option_decision = 0
+        agent.pending_option_causal_evidence = True
+
+        decision = agent.decide()
+
+        self.assertEqual(decision.action, Action.NOOP)
+        confirmations = [
+            event
+            for event in logger.events
+            if event["event"] == "counterfactual_control_confirmation"
+        ]
+        self.assertEqual(len(confirmations), 1)
+        self.assertFalse(confirmations[0]["control_collapsed"])
+        self.assertTrue(confirmations[0]["control_returned"])
+        self.assertEqual(confirmations[0]["control_returned_step"], 2)
+        self.assertFalse(
+            any(
+                event["event"]
+                == "counterfactual_control_collapse_learned"
+                for event in logger.events
+            )
+        )
+
+    def test_novel_scene_after_darkness_is_not_a_control_collapse(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            NovelSceneTransitionEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.NOOP),
+                planning_depth=1,
+                beam_width=2,
+                verify_actions=2,
+                action_frames=1,
+                control_collapse_confirmation_steps=4,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.planner.plan = lambda _frame: [
+            NeuralPlan((Action.RIGHT,), (1,), 10.0, 0.0),
+            NeuralPlan((Action.NOOP,), (1,), 0.0, 0.0),
+        ]
+
+        trigger = agent.decide()
+        observation = agent.decide()
+
+        self.assertEqual(trigger.action, Action.RIGHT)
+        self.assertEqual(observation.action, Action.NOOP)
+        confirmation = next(
+            event
+            for event in logger.events
+            if event["event"] == "counterfactual_control_confirmation"
+        )
+        self.assertFalse(confirmation["control_collapsed"])
+        self.assertTrue(confirmation["dark_encountered"])
+        self.assertTrue(confirmation["novel_scene_observed"])
+        self.assertFalse(confirmation["returned_to_known_scene"])
+        self.assertFalse(
+            any(
+                event["event"]
+                == "counterfactual_control_collapse_learned"
+                for event in logger.events
+            )
+        )
 
     def test_duration_conditioned_planner_selects_a_press_length(self) -> None:
         model = EnsembleVisualDynamicsModel(

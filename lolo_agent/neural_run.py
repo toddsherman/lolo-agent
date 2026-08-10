@@ -245,6 +245,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--control-collapse-confirmation-steps",
+        type=int,
+        default=NeuralPlanningConfig().control_collapse_confirmation_steps,
+        help=(
+            "save-state lookahead steps used to distinguish permanent loss "
+            "of control from a temporary animation or novel scene transition"
+        ),
+    )
+    parser.add_argument(
         "--behavioral-edge-coverage-weight",
         type=float,
         default=0.0,
@@ -385,6 +394,10 @@ def main() -> None:
         )
     if args.autonomous_grace_decisions < 0:
         parser.error("--autonomous-grace-decisions must be non-negative")
+    if args.control_collapse_confirmation_steps <= 0:
+        parser.error(
+            "--control-collapse-confirmation-steps must be positive"
+        )
     if args.behavioral_edge_coverage_weight < 0.0:
         parser.error(
             "--behavioral-edge-coverage-weight must be non-negative"
@@ -527,6 +540,9 @@ def main() -> None:
             args.causal_cell_recovery_grace_decisions
         ),
         autonomous_grace_decisions=args.autonomous_grace_decisions,
+        control_collapse_confirmation_steps=(
+            args.control_collapse_confirmation_steps
+        ),
         behavioral_edge_coverage_weight=(
             args.behavioral_edge_coverage_weight
         ),

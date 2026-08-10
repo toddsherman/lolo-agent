@@ -125,11 +125,40 @@ state at decision 4. The restored frame retained HUD life 5; the rejected reset
 frame showed life 4. This resume point was already inside the death animation,
 so it is a mechanism proof rather than a useful gameplay frontier.
 
+## Temporal confirmation of lost control
+
+The first control-collapse detector made a terminal judgment after one future
+action horizon. That was unsafe for generalization because a temporary room
+animation can also make every controller action produce the same pixels.
+
+The detector now advances disposable save-state branches for four matched
+action horizons. It retains the branch if action-dependent outcomes return or
+if darkness resolves to a novel bright layout. It confirms a collapse only if
+control remains absent and no novel transition appears. These observations are
+counterfactual; the live agent state is restored after every probe.
+
+The 60-decision native A/B run
+`spatial-v14-room2-temporal-control-confirmation-from-d100-d60` recorded 24
+temporal confirmations. Eleven regained action-dependent control and were
+retained. Thirteen remained invariant across all four horizons; twelve were
+rolled back to their causal checkpoints. The first confirmed endpoint was a
+bright, stable room state at known-scene distance 0.0075, not a dark/reset
+transition. Visual inspection showed the controllable character boxed by the
+local layout. No life was lost, and the frozen-parameter audit passed.
+
+The preceding 150-decision run
+`spatial-v14-room2-control-preserving-lower-search-from-d100-d150` verified
+1,026 branches and 364 unique frames. It preserved the zero-remaining-item HUD
+and lost no life, but did not reach a stable scene transition. This establishes
+that the current bottleneck is multi-action reachability after the persistent
+frontier, rather than collecting or retaining that frontier.
+
 ## Telemetry
 
 New events preserve every diagnostic and recovery decision:
 
 - `counterfactual_control_probe`
+- `counterfactual_control_confirmation`
 - `counterfactual_control_escape_probe`
 - `counterfactual_control_collapse_learned`
 - `control_collapse_state_restored`
@@ -172,5 +201,5 @@ address the demonstrated timing and lineage failures.
 
 ## Verification
 
-The complete test suite passes: 161 tests, with 3 expected skips. Every native
+The complete test suite passes: 163 tests, with 3 expected skips. Every native
 run reported `frozen_evaluation_audit=pass`.

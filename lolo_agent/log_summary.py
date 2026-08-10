@@ -802,6 +802,29 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "counterfactual_control_probes": event_counts.get(
             "counterfactual_control_probe", 0
         ),
+        "counterfactual_control_confirmations": event_counts.get(
+            "counterfactual_control_confirmation", 0
+        ),
+        "counterfactual_control_confirmed_collapses": sum(
+            event["event"] == "counterfactual_control_confirmation"
+            and bool(event.get("control_collapsed"))
+            for event in events
+        ),
+        "counterfactual_control_returns": sum(
+            event["event"] == "counterfactual_control_confirmation"
+            and bool(event.get("control_returned"))
+            for event in events
+        ),
+        "counterfactual_novel_scene_transitions": sum(
+            event["event"] == "counterfactual_control_confirmation"
+            and bool(event.get("novel_scene_observed"))
+            for event in events
+        ),
+        "counterfactual_known_scene_returns": sum(
+            event["event"] == "counterfactual_control_confirmation"
+            and bool(event.get("returned_to_known_scene"))
+            for event in events
+        ),
         "counterfactual_control_escape_probes": event_counts.get(
             "counterfactual_control_escape_probe", 0
         ),

@@ -68,6 +68,7 @@ class NeuralPlanningConfig:
     autonomous_change_threshold: float = 0.00025
     action_equivalence_threshold: float = 0.0001
     autonomous_grace_decisions: int = 4
+    control_collapse_confirmation_steps: int = 4
     dark_transition_intensity_threshold: float = 0.05
     known_scene_return_distance_threshold: float = 0.01
     delayed_return_min_length: int = 4
@@ -463,6 +464,8 @@ class VerifiedNeuralAgent:
             raise ValueError("returnability probe beam width must be positive")
         if self.config.returnability_probe_pixel_l1_threshold < 0.0:
             raise ValueError("returnability probe threshold must be non-negative")
+        if self.config.control_collapse_confirmation_steps <= 0:
+            raise ValueError("control-collapse confirmation steps must be positive")
         if not 0.0 <= self.config.dark_transition_intensity_threshold <= 1.0:
             raise ValueError("dark transition threshold must be between zero and one")
         if not 0.0 <= self.config.known_scene_return_distance_threshold <= 1.0:
@@ -3106,6 +3109,134 @@ class VerifiedNeuralAgent:
                 maximum_duration = duration
         return maximum, maximum_duration
 
+    def _confirm_future_control_collapse(
+        self,
+        state: object,
+        frame: Frame,
+        actions: Sequence[Action],
+        duration: int,
+    ) -> Dict[str, Any]:
+        """Distinguish a terminal state from a temporary visual transition.
+
+        The probe is entirely counterfactual: it advances disposable save-state
+        branches and restores the caller's root afterward.  A collapse is not
+        confirmed if action-dependent outcomes return or if a dark/bright
+        sequence resolves to a visually novel scene.
+        """
+
+        temporary_states: List[object] = []
+        confirmation_state = state
+        confirmation_frame = frame
+        dark_encountered = False
+        returned_to_known_scene = False
+        novel_scene_observed = False
+        control_returned = False
+        control_returned_step: Optional[int] = None
+        maximum_spread = 0.0
+        observations: List[Dict[str, Any]] = []
+        direct_novelty_threshold = max(
+            0.05,
+            self.config.known_scene_return_distance_threshold * 5.0,
+        )
+
+        try:
+            for step in range(1, self.config.control_collapse_confirmation_steps + 1):
+                intensity = self._mean_frame_intensity(confirmation_frame)
+                is_dark = (
+                    intensity
+                    <= self.config.dark_transition_intensity_threshold
+                )
+                dark_encountered = dark_encountered or is_dark
+                minimum_known_distance: Optional[float] = None
+                if not is_dark and self.bright_scene_memory:
+                    signature = self._persistent_cell_values(
+                        confirmation_frame
+                    )
+                    minimum_known_distance = min(
+                        self._coarse_scene_distance(signature, remembered)
+                        for remembered in self.bright_scene_memory
+                    )
+
+                endpoints = []
+                for probe_action in actions:
+                    self.env.load_state(confirmation_state)
+                    endpoints.append(
+                        self.env.step(probe_action, duration)
+                    )
+                spread = max(
+                    (
+                        left.mean_absolute_difference(right)
+                        for index, left in enumerate(endpoints)
+                        for right in endpoints[index + 1 :]
+                    ),
+                    default=0.0,
+                )
+                maximum_spread = max(maximum_spread, spread)
+                observations.append(
+                    {
+                        "step": step,
+                        "scene_intensity": intensity,
+                        "dark": is_dark,
+                        "minimum_known_scene_distance": (
+                            minimum_known_distance
+                        ),
+                        "future_outcome_spread": spread,
+                    }
+                )
+                if spread > self.config.action_equivalence_threshold:
+                    control_returned = True
+                    control_returned_step = step
+                    break
+
+                if (
+                    not is_dark
+                    and minimum_known_distance is not None
+                    and dark_encountered
+                ):
+                    returned_to_known_scene = (
+                        minimum_known_distance
+                        <= self.config.known_scene_return_distance_threshold
+                    )
+                    novel_scene_observed = not returned_to_known_scene
+                    break
+
+                if (
+                    not is_dark
+                    and minimum_known_distance is not None
+                    and minimum_known_distance > direct_novelty_threshold
+                ):
+                    novel_scene_observed = True
+                    break
+
+                if step >= self.config.control_collapse_confirmation_steps:
+                    break
+                self.env.load_state(confirmation_state)
+                confirmation_frame = self.env.step(Action.NOOP, duration)
+                confirmation_state = self.env.save_state()
+                temporary_states.append(confirmation_state)
+        finally:
+            release_state = getattr(self.env, "release_state", None)
+            if release_state is not None:
+                for temporary_state in reversed(temporary_states):
+                    try:
+                        release_state(temporary_state)
+                    except Exception:
+                        pass
+
+        return {
+            "control_collapsed": not (
+                control_returned or novel_scene_observed
+            ),
+            "control_returned": control_returned,
+            "control_returned_step": control_returned_step,
+            "dark_encountered": dark_encountered,
+            "returned_to_known_scene": returned_to_known_scene,
+            "novel_scene_observed": novel_scene_observed,
+            "maximum_future_outcome_spread": maximum_spread,
+            "confirmation_steps": len(observations),
+            "observations": observations,
+        }
+
     def _option_initiation_evidence(
         self,
         candidate: Tuple[Any, ...],
@@ -4010,14 +4141,28 @@ class VerifiedNeuralAgent:
                     )
 
                 try:
-                    control_probe_spread = future_control_spread(
-                        causal_observation_wait[2]
+                    control_confirmation = (
+                        self._confirm_future_control_collapse(
+                            causal_observation_wait[2],
+                            causal_observation_wait[3],
+                            control_probe_actions,
+                            probe_duration,
+                        )
                     )
                 finally:
                     self.env.load_state(root)
-                control_collapsed = (
-                    control_probe_spread
-                    <= self.config.action_equivalence_threshold
+                control_probe_spread = control_confirmation[
+                    "maximum_future_outcome_spread"
+                ]
+                control_collapsed = control_confirmation[
+                    "control_collapsed"
+                ]
+                self._emit(
+                    "counterfactual_control_confirmation",
+                    decision=self.decision_index + 1,
+                    passive_action=causal_observation_wait[1].path[0],
+                    passive_action_frames=probe_duration,
+                    **control_confirmation,
                 )
                 self._emit(
                     "counterfactual_control_probe",
@@ -4028,6 +4173,24 @@ class VerifiedNeuralAgent:
                     probe_actions=control_probe_actions,
                     future_outcome_spread=control_probe_spread,
                     control_collapsed=control_collapsed,
+                    confirmation_steps=control_confirmation[
+                        "confirmation_steps"
+                    ],
+                    control_returned=control_confirmation[
+                        "control_returned"
+                    ],
+                    control_returned_step=control_confirmation[
+                        "control_returned_step"
+                    ],
+                    dark_encountered=control_confirmation[
+                        "dark_encountered"
+                    ],
+                    returned_to_known_scene=control_confirmation[
+                        "returned_to_known_scene"
+                    ],
+                    novel_scene_observed=control_confirmation[
+                        "novel_scene_observed"
+                    ],
                     action_dependent_controls=len(
                         action_dependent_controls
                     ),
