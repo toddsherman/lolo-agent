@@ -526,6 +526,103 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
         self.assertEqual(agent.goal_prior.current_slots(), ())
         self.assertIsNone(agent.pending_life_recovery)
 
+    def test_life_loss_prefers_the_goal_milestone_checkpoint(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        milestone_frame = room_frame(
+            ((48, 48),), life_glyph=LIFE_FIVE
+        )
+        source = room_frame(
+            open_chest=(32, 112), life_glyph=LIFE_FIVE
+        )
+        dark = Frame(256, 240, 3, bytes(256 * 240 * 3))
+        reset = room_frame(
+            ((48, 48), (176, 48)), life_glyph=LIFE_FOUR
+        )
+        agent = VerifiedNeuralAgent(
+            HeartRewardEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(human_prior_life_loss_penalty=100.0),
+        )
+        agent.reset(initial_frame=source)
+        assert agent.goal_prior is not None
+        milestone_choice = ("milestone-context", Action.LEFT, 16)
+        milestone = _LifeHazardCheckpoint(
+            state=agent.env.save_state(),
+            frame=milestone_frame,
+            choice=milestone_choice,
+            decision=5,
+            frontier_signature="milestone-context",
+            causal_context_signature="causal-context-root",
+            scene=agent._scene_signature(milestone_frame),
+            pose_action=Action.LEFT,
+            last_action=Action.NOOP,
+            last_duration=16,
+            action_streak=1,
+            goal_heart_slots=((48, 48),),
+            goal_player_slot=None,
+            kind="goal_milestone",
+        )
+        causal_choice = ("danger-context", Action.RIGHT, 16)
+        causal = _LifeHazardCheckpoint(
+            state=agent.env.save_state(),
+            frame=source,
+            choice=causal_choice,
+            decision=7,
+            frontier_signature="danger-context",
+            causal_context_signature="causal-context-root",
+            scene=agent._scene_signature(source),
+            pose_action=Action.RIGHT,
+            last_action=Action.NOOP,
+            last_duration=16,
+            action_streak=1,
+            goal_heart_slots=(),
+            goal_player_slot=None,
+        )
+        agent.pending_goal_milestone_checkpoint = milestone
+        agent.active_temporal_option = _TemporalOptionTrace(
+            choice=causal_choice,
+            initiation_decision=7,
+            start_decision=8,
+            entry_signature="animation",
+            entry_scene="room",
+            recovery_checkpoint=causal,
+            causal_evidence=True,
+        )
+
+        transition = agent.goal_prior.analyze(source, dark)
+        agent._record_human_prior_outcome(
+            transition, "animation-context", Action.NOOP, 16, source, dark
+        )
+        agent.goal_prior.commit(transition, dark)
+        confirmed = agent.goal_prior.analyze(dark, reset)
+        committed = agent._commit_goal_prior(confirmed, reset)
+        agent._record_human_prior_outcome(
+            committed, "reset-context", Action.NOOP, 16, dark, reset
+        )
+
+        self.assertIs(agent.pending_life_recovery, milestone)
+        self.assertEqual(
+            agent.temporal_option_values[milestone_choice], -100.0
+        )
+        self.assertEqual(agent.temporal_option_values[causal_choice], -100.0)
+        self.assertIs(
+            agent.active_temporal_option.recovery_checkpoint, causal
+        )
+
+        recovered = agent._restore_after_life_loss()
+
+        self.assertIsNotNone(recovered)
+        assert recovered is not None
+        self.assertEqual(recovered.frame.digest, milestone_frame.digest)
+        self.assertEqual(
+            agent.current_frontier_signature, "milestone-context"
+        )
+        self.assertEqual(agent.goal_prior.current_slots(), ((48, 48),))
+        self.assertIsNone(agent.active_temporal_option)
+
     def test_verified_planner_uses_navigation_without_clipping_intrinsic(self) -> None:
         model = EnsembleVisualDynamicsModel(
             latent_size=32, action_size=8, ensemble_size=2
@@ -699,6 +796,7 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
                 delayed_return_weight=0.0,
                 human_prior_heart_reward=25.0,
                 human_prior_all_hearts_reward=75.0,
+                human_prior_life_loss_penalty=100.0,
             ),
         )
 
@@ -707,6 +805,54 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
 
         self.assertEqual(decision.action, Action.RIGHT)
         self.assertGreaterEqual(decision.score, 90.0)
+        self.assertIsNotNone(agent.pending_goal_milestone_checkpoint)
+        assert agent.pending_goal_milestone_checkpoint is not None
+        self.assertEqual(
+            agent.pending_goal_milestone_checkpoint.goal_heart_slots,
+            ((48, 48),),
+        )
+        self.assertEqual(
+            agent.pending_goal_milestone_checkpoint.kind,
+            "goal_milestone",
+        )
+
+    def test_learned_delayed_hazard_blocks_a_positive_milestone(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        agent = VerifiedNeuralAgent(
+            HeartRewardEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.NOOP, Action.RIGHT),
+                planning_depth=1,
+                beam_width=2,
+                verify_actions=2,
+                action_frames=1,
+                actual_novelty_weight=0.0,
+                scene_novelty_weight=0.0,
+                prediction_error_weight=0.0,
+                actual_change_weight=0.0,
+                action_effect_weight=0.0,
+                causal_spatial_novelty_weight=0.0,
+                action_coverage_weight=0.0,
+                duration_coverage_weight=0.0,
+                consecutive_repeat_weight=0.0,
+                delayed_return_weight=0.0,
+                human_prior_heart_reward=25.0,
+                human_prior_all_hearts_reward=75.0,
+                human_prior_life_loss_penalty=100.0,
+            ),
+        )
+        agent.reset()
+        choice = (agent.current_frontier_signature, Action.RIGHT, 1)
+        agent._record_temporal_option_sample(choice, -100.0)
+
+        decision = agent.decide()
+
+        self.assertEqual(decision.action, Action.NOOP)
+        self.assertIsNone(agent.pending_goal_milestone_checkpoint)
 
     def test_best_progress_survives_restoring_an_ancestor(self) -> None:
         source = room_frame(((48, 48), (64, 48)))

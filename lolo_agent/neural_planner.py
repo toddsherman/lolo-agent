@@ -207,6 +207,7 @@ class _LifeHazardCheckpoint:
     action_streak: int
     goal_heart_slots: Tuple[Tuple[int, int], ...]
     goal_player_slot: Optional[Tuple[int, int]]
+    kind: str = "causal_option"
     state_id: Optional[str] = None
 
 
@@ -479,6 +480,9 @@ class VerifiedNeuralAgent:
             Tuple[int, str, Action, int, str]
         ] = None
         self.pending_life_recovery: Optional[_LifeHazardCheckpoint] = None
+        self.pending_goal_milestone_checkpoint: Optional[
+            _LifeHazardCheckpoint
+        ] = None
 
     def _reset_goal_prior(self) -> None:
         enabled = bool(
@@ -673,14 +677,32 @@ class VerifiedNeuralAgent:
                 choice, -self.config.human_prior_life_loss_penalty
             )
             recovery = None
+            recovery_source = None
+            milestone_hazard_value = None
+            milestone_hazard_samples = 0
+            milestone_checkpoint = self.pending_goal_milestone_checkpoint
+            if milestone_checkpoint is not None:
+                recovery = milestone_checkpoint
+                recovery_source = "goal_milestone"
+                self.pending_goal_milestone_checkpoint = None
+                milestone_hazard_value = self._record_temporal_option_sample(
+                    milestone_checkpoint.choice,
+                    -self.config.human_prior_life_loss_penalty,
+                )
+                milestone_hazard_samples = self.temporal_option_samples[
+                    milestone_checkpoint.choice
+                ]
             current_trace = self.active_temporal_option
             if (
-                current_trace is not None
+                recovery is None
+                and current_trace is not None
                 and current_trace.choice == choice
                 and current_trace.recovery_checkpoint is not None
             ):
                 recovery = current_trace.recovery_checkpoint
+                recovery_source = "causal_option"
                 current_trace.recovery_checkpoint = None
+            if recovery is not None:
                 if self.pending_life_recovery is not None:
                     self._release_life_hazard_checkpoint(
                         self.pending_life_recovery,
@@ -701,9 +723,17 @@ class VerifiedNeuralAgent:
                 learned_hazard_value=learned_value,
                 learned_hazard_samples=self.temporal_option_samples[choice],
                 recovery_checkpoint_available=recovery is not None,
+                recovery_checkpoint_source=recovery_source,
                 recovery_state_id=(
                     None if recovery is None else recovery.state_id
                 ),
+                milestone_hazard_choice=(
+                    None
+                    if milestone_checkpoint is None
+                    else milestone_checkpoint.choice
+                ),
+                milestone_hazard_value=milestone_hazard_value,
+                milestone_hazard_samples=milestone_hazard_samples,
                 agent_visible=True,
                 **analysis.telemetry(),
             )
@@ -845,6 +875,7 @@ class VerifiedNeuralAgent:
         self.last_navigation_change_decision = None
         self.pending_life_hazard_choice = None
         self.pending_life_recovery = None
+        self.pending_goal_milestone_checkpoint = None
         self._reset_goal_prior()
         self._calibrate_goal_prior(self.frame)
         self._emit(
@@ -865,6 +896,14 @@ class VerifiedNeuralAgent:
                 life_recovery, "agent_reset_or_close"
             )
             self.pending_life_recovery = None
+        milestone_recovery = getattr(
+            self, "pending_goal_milestone_checkpoint", None
+        )
+        if milestone_recovery is not None:
+            self._release_life_hazard_checkpoint(
+                milestone_recovery, "agent_reset_or_close"
+            )
+            self.pending_goal_milestone_checkpoint = None
         release_state = getattr(self.env, "release_state", None)
         if release_state is not None:
             for branch in getattr(self, "archive", []):
@@ -1629,9 +1668,14 @@ class VerifiedNeuralAgent:
         self, checkpoint: _LifeHazardCheckpoint, reason: str
     ) -> None:
         self._emit(
-            "life_hazard_checkpoint_released",
+            (
+                "goal_milestone_checkpoint_released"
+                if checkpoint.kind == "goal_milestone"
+                else "life_hazard_checkpoint_released"
+            ),
             decision=self.decision_index,
             reason=reason,
+            checkpoint_kind=checkpoint.kind,
             choice=checkpoint.choice,
             initiation_decision=checkpoint.decision,
             state_id=checkpoint.state_id,
@@ -3058,17 +3102,10 @@ class VerifiedNeuralAgent:
             )
             positive_goal_branches = [
                 item
-                for item in verified
+                for item in selection_verified
                 if branch_goal_analyses[id(item[2])] is not None
                 and branch_goal_analyses[id(item[2])].milestone_reward > 0.0
             ]
-            if positive_goal_branches:
-                selected_states = {id(item[2]) for item in selection_verified}
-                selection_verified.extend(
-                    item
-                    for item in positive_goal_branches
-                    if id(item[2]) not in selected_states
-                )
             if filtered_hazards:
                 self._emit(
                     "learned_hazards_filtered",
@@ -3475,10 +3512,16 @@ class VerifiedNeuralAgent:
                     if self.pending_option_choice is not None
                     else None
                 )
+                positive_goal_milestone = bool(
+                    committed_goal_analysis is not None
+                    and committed_goal_analysis.milestone_reward > 0.0
+                    and not committed_goal_analysis.chest_completed
+                )
                 if (
                     self.pending_option_choice is not None
                     and option_initiation_eligible
                     and self.config.human_prior_life_loss_penalty > 0.0
+                    and not positive_goal_milestone
                 ):
                     self.pending_option_recovery_checkpoint = (
                         _LifeHazardCheckpoint(
@@ -3508,6 +3551,65 @@ class VerifiedNeuralAgent:
                         source_behavioral_signature=source_signature,
                         **self._frame_fields(source_frame),
                     )
+                if (
+                    positive_goal_milestone
+                    and self.config.human_prior_life_loss_penalty > 0.0
+                ):
+                    if self.pending_goal_milestone_checkpoint is not None:
+                        self._release_life_hazard_checkpoint(
+                            self.pending_goal_milestone_checkpoint,
+                            "superseded_by_new_goal_milestone",
+                        )
+                    milestone_choice = (source_signature, action, duration)
+                    self.pending_goal_milestone_checkpoint = (
+                        _LifeHazardCheckpoint(
+                            state=root,
+                            frame=source_frame,
+                            choice=milestone_choice,
+                            decision=self.decision_index,
+                            frontier_signature=source_signature,
+                            causal_context_signature=(
+                                source_causal_context_signature
+                            ),
+                            scene=current_scene,
+                            pose_action=source_pose_action,
+                            last_action=source_last_action,
+                            last_duration=source_last_duration,
+                            action_streak=source_action_streak,
+                            goal_heart_slots=source_goal_heart_slots,
+                            goal_player_slot=source_goal_player_slot,
+                            kind="goal_milestone",
+                            state_id=self._state_id(root),
+                        )
+                    )
+                    self._emit(
+                        "goal_milestone_checkpoint_created",
+                        decision=self.decision_index,
+                        choice=milestone_choice,
+                        state_id=self._state_id(root),
+                        milestone_reward=(
+                            committed_goal_analysis.milestone_reward
+                            if committed_goal_analysis is not None
+                            else 0.0
+                        ),
+                        remaining_hearts=(
+                            committed_goal_analysis.remaining_hearts
+                            if committed_goal_analysis is not None
+                            else None
+                        ),
+                        source_behavioral_signature=source_signature,
+                        **self._frame_fields(source_frame),
+                    )
+                elif (
+                    committed_goal_analysis is not None
+                    and committed_goal_analysis.chest_completed
+                    and self.pending_goal_milestone_checkpoint is not None
+                ):
+                    self._release_life_hazard_checkpoint(
+                        self.pending_goal_milestone_checkpoint,
+                        "chest_completed",
+                    )
+                    self.pending_goal_milestone_checkpoint = None
                 self.pending_option_causal_evidence = option_initiation_eligible
                 self.pending_option_counterfactual = delayed_counterfactual
                 if delayed_counterfactual is not None:
@@ -4319,6 +4421,10 @@ class VerifiedNeuralAgent:
                     )
                 if self.pending_life_recovery is not None:
                     option_states.add(id(self.pending_life_recovery.state))
+                if self.pending_goal_milestone_checkpoint is not None:
+                    option_states.add(
+                        id(self.pending_goal_milestone_checkpoint.state)
+                    )
                 for candidate in states:
                     if (
                         id(candidate) not in archived_states
@@ -4375,6 +4481,11 @@ class VerifiedNeuralAgent:
         learned_value, learned = self._temporal_option_estimate(
             *checkpoint.choice
         )
+        restore_reason = (
+            "life_loss_goal_milestone"
+            if checkpoint.kind == "goal_milestone"
+            else "life_loss_checkpoint"
+        )
         goal_analysis = (
             None
             if self.goal_prior is None
@@ -4385,6 +4496,7 @@ class VerifiedNeuralAgent:
             decision=self.decision_index,
             causal_decision=checkpoint.decision,
             choice=checkpoint.choice,
+            checkpoint_kind=checkpoint.kind,
             state_id=state_id,
             learned_hazard_value=learned_value,
             learned_hazard_known=learned,
@@ -4402,7 +4514,7 @@ class VerifiedNeuralAgent:
             score=learned_value,
             branches_examined=0,
             restored_archive=True,
-            restore_reason="life_loss_checkpoint",
+            restore_reason=restore_reason,
             committed_state_id=state_id,
             archive_branches_added=0,
             archive_size=len(self.archive),

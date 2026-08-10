@@ -552,6 +552,14 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "life_hazard_checkpoint_restores": event_counts.get(
             "life_hazard_state_restored", 0
         ),
+        "goal_milestone_checkpoints_created": event_counts.get(
+            "goal_milestone_checkpoint_created", 0
+        ),
+        "goal_milestone_checkpoint_restores": sum(
+            event["event"] == "life_hazard_state_restored"
+            and event.get("checkpoint_kind") == "goal_milestone"
+            for event in events
+        ),
         "action_effect_observations": action_effect_observations,
         "action_effect_observations_by_action": dict(
             sorted(action_effect_observations_by_action.items())

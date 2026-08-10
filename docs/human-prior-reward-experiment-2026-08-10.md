@@ -107,6 +107,19 @@ exact lethal choice can be filtered without replaying the entire room or
 spending another life. Checkpoint creation, release, confirmation, and restore
 all have dedicated telemetry events and state IDs.
 
+v15 proved the short causal rollback path, but also showed why it is not enough
+for puzzle dead ends. It restored the first pre-`RIGHT` state and filtered that
+exact choice, then encountered two distinct lethal `RIGHT` contexts later. It
+never crossed x=80. The source v8 trace shows the final heart was collected at
+`(48,48)` while Lolo remained above the water; the shooter activated before the
+chest below the water was reachable. A longer-lived checkpoint is now retained
+before each positive semantic milestone. If a later death occurs before room
+completion, the death penalty is also credited to that milestone choice and the
+agent rewinds before it. Positive milestone branches no longer override an
+exact learned hazard. This lets the agent treat “collecting this now” as a
+contingent, potentially unrecoverable decision and experiment with preparation
+first, without encoding what preparation the room requires.
+
 The resulting direction is deliberately narrower: potential shaping guides
 immediate experiments; causal novelty decides what deserves persistent state;
 heart milestones preserve irreversible semantic progress; and a short temporal
@@ -141,7 +154,9 @@ Dedicated events include `human_prior_calibrated`,
 `temporal_option_recovery_suppressed`, `autonomous_intervention_started`, and
 `autonomous_intervention_selected`. Life rollback is recorded by
 `life_hazard_checkpoint_created`, `life_hazard_checkpoint_released`, and
-`life_hazard_state_restored`. Every committed and rejected
+`life_hazard_state_restored`. Longer-lived semantic rollback adds
+`goal_milestone_checkpoint_created` and
+`goal_milestone_checkpoint_released`. Every committed and rejected
 branch still retains its action, duration, source/target frames, intrinsic
 components, archive state IDs, and replay ordering.
 

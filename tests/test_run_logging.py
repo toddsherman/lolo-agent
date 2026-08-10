@@ -90,6 +90,8 @@ class RunLoggingTests(unittest.TestCase):
             self.assertIn("human_prior_life_losses", summary)
             self.assertIn("life_hazard_checkpoints_created", summary)
             self.assertIn("life_hazard_checkpoint_restores", summary)
+            self.assertIn("goal_milestone_checkpoints_created", summary)
+            self.assertIn("goal_milestone_checkpoint_restores", summary)
             self.assertIn("learned_hazard_filtered_choices", summary)
             self.assertIn("archive_hazard_rejections", summary)
             self.assertIn("archive_branch_rejections", summary)
