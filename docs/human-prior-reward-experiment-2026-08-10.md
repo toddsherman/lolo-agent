@@ -129,6 +129,13 @@ also truncates committed transition history from the abandoned future and
 restarts the frontier trace at the restored state. The number of invalidated
 descendants is logged on the restore event and in the run summary.
 
+The second v17 rollback exposed duplicate/stale native handle ownership during
+bulk invalidation. Cleanup now deduplicates releases by telemetry state ID (or
+object identity when no ID remains), never releases a state still referenced by
+a retained branch, and records stale-handle failures without aborting the
+agent. This changes cleanup robustness only; stale descendants are removed from
+the archive regardless.
+
 The resulting direction is deliberately narrower: potential shaping guides
 immediate experiments; causal novelty decides what deserves persistent state;
 heart milestones preserve irreversible semantic progress; and a short temporal

@@ -549,8 +549,9 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
         agent.reset(initial_frame=source)
         assert agent.goal_prior is not None
         milestone_choice = ("milestone-context", Action.LEFT, 16)
+        milestone_state = object()
         milestone = _LifeHazardCheckpoint(
-            state=agent.env.save_state(),
+            state=milestone_state,
             frame=milestone_frame,
             choice=milestone_choice,
             decision=5,
@@ -566,8 +567,9 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
             kind="goal_milestone",
         )
         causal_choice = ("danger-context", Action.RIGHT, 16)
+        causal_state = object()
         causal = _LifeHazardCheckpoint(
-            state=agent.env.save_state(),
+            state=causal_state,
             frame=source,
             choice=causal_choice,
             decision=7,
@@ -612,9 +614,21 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
             agent.active_temporal_option.recovery_checkpoint, causal
         )
         plan = NeuralPlan((Action.UP,), (16,), 0.0, 0.0)
+        retained_state = object()
+        duplicate_descendant_state = object()
+        stale_descendant_state = object()
+        released_states = {id(stale_descendant_state)}
+
+        def release_once(state) -> None:
+            key = id(state)
+            if key in released_states:
+                raise RuntimeError("already released")
+            released_states.add(key)
+
+        agent.env.release_state = release_once
         agent.archive = [
             _ArchivedBranch(
-                agent.env.save_state(),
+                retained_state,
                 milestone_frame,
                 plan,
                 0.0,
@@ -622,12 +636,28 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
                 5,
             ),
             _ArchivedBranch(
-                agent.env.save_state(),
+                duplicate_descendant_state,
                 source,
                 plan,
                 0.0,
                 agent._scene_signature(source),
                 6,
+            ),
+            _ArchivedBranch(
+                duplicate_descendant_state,
+                source,
+                plan,
+                0.0,
+                agent._scene_signature(source),
+                7,
+            ),
+            _ArchivedBranch(
+                stale_descendant_state,
+                source,
+                plan,
+                0.0,
+                agent._scene_signature(source),
+                8,
             ),
         ]
 

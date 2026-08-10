@@ -95,6 +95,9 @@ class RunLoggingTests(unittest.TestCase):
             self.assertIn(
                 "goal_milestone_descendant_invalidations", summary
             )
+            self.assertIn(
+                "goal_milestone_descendant_release_failures", summary
+            )
             self.assertIn("learned_hazard_filtered_choices", summary)
             self.assertIn("archive_hazard_rejections", summary)
             self.assertIn("archive_branch_rejections", summary)

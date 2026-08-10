@@ -4450,19 +4450,52 @@ class VerifiedNeuralAgent:
                 for branch in self.archive
                 if branch.created > checkpoint.decision
             ]
+            invalidated_ids = {
+                id(branch) for branch in invalidated_archive_branches
+            }
+            retained_state_ids = {
+                self._state_id(branch.state)
+                for branch in self.archive
+                if id(branch) not in invalidated_ids
+                and self._state_id(branch.state) is not None
+            }
+            released_state_keys = set()
             for branch in invalidated_archive_branches:
                 self.archive.remove(branch)
+                branch_state_id = self._state_id(branch.state)
                 self._emit(
                     "archive_branch_removed",
                     decision=self.decision_index + 1,
                     reason="goal_milestone_rollback_descendant",
-                    state_id=self._state_id(branch.state),
+                    state_id=branch_state_id,
                     created_decision=branch.created,
                     milestone_decision=checkpoint.decision,
                     **self._frame_fields(branch.frame),
                 )
-                if release_state is not None:
+                release_key = (
+                    branch_state_id
+                    if branch_state_id is not None
+                    else f"object-{id(branch.state)}"
+                )
+                if (
+                    release_state is None
+                    or branch_state_id in retained_state_ids
+                    or release_key in released_state_keys
+                ):
+                    continue
+                released_state_keys.add(release_key)
+                try:
                     release_state(branch.state)
+                except Exception as error:
+                    self._emit(
+                        "archive_branch_release_failed",
+                        decision=self.decision_index + 1,
+                        reason="goal_milestone_rollback_descendant",
+                        state_id=branch_state_id,
+                        created_decision=branch.created,
+                        error_type=type(error).__name__,
+                        error=str(error),
+                    )
             self.transition_history = [
                 transition
                 for transition in self.transition_history
