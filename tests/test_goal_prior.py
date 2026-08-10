@@ -227,6 +227,27 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
         self.assertEqual(prior.distance_to_hearts(source), 11.0)
         self.assertEqual(prior.distance_to_hearts(closer), 10.0)
 
+    def test_player_detector_rejects_a_magenta_chest_water_overlap(self) -> None:
+        frame = room_frame(player=(48, 48))
+        pixels = bytearray(frame.pixels)
+        false_candidate = (
+            [(21, 95, 217)] * 100
+            + [(0, 0, 0)] * 100
+            + [(255, 110, 204)] * 31
+            + [(255, 255, 255)] * 25
+        )
+        for index, value in enumerate(false_candidate):
+            row, column = divmod(index, 16)
+            offset = ((96 + row) * frame.width + 32 + column) * 3
+            pixels[offset : offset + 3] = bytes(value)
+        overlapped = Frame(
+            frame.width, frame.height, frame.channels, bytes(pixels)
+        )
+
+        prior = PixelHeartGoalPrior()
+
+        self.assertEqual(prior.detect_player(overlapped), (48, 48))
+
     def test_open_chest_becomes_the_goal_after_the_last_heart(self) -> None:
         initial = room_frame(((48, 48),), life_glyph=LIFE_FIVE)
         opened = room_frame(

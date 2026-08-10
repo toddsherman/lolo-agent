@@ -243,6 +243,7 @@ class PixelHeartGoalPrior:
         white = (255, 255, 255)
         black = (0, 0, 0)
         magenta = (183, 30, 123)
+        pink = (255, 110, 204)
         water_highlights = {(100, 176, 255), (192, 223, 255)}
         best: Optional[Tuple[Tuple[int, ...], HeartSlot]] = None
         for y in range(28, min(frame.height - 15, 205), 4):
@@ -252,6 +253,7 @@ class PixelHeartGoalPrior:
                     white: 0,
                     black: 0,
                     magenta: 0,
+                    pink: 0,
                 }
                 water_pixels = 0
                 for row in range(y, y + 16):
@@ -265,11 +267,13 @@ class PixelHeartGoalPrior:
                 white_pixels = counts[white]
                 black_pixels = counts[black]
                 magenta_pixels = counts[magenta]
+                pink_pixels = counts[pink]
                 if not (
-                    20 <= blue_pixels <= 120
+                    20 <= blue_pixels <= 140
                     and white_pixels >= 20
                     and black_pixels >= 25
-                    and magenta_pixels < 35
+                    and magenta_pixels < 10
+                    and pink_pixels < 10
                     and water_pixels < 10
                 ):
                     continue
@@ -279,6 +283,7 @@ class PixelHeartGoalPrior:
                     white_pixels,
                     black_pixels,
                     -magenta_pixels,
+                    -pink_pixels,
                     x,
                     y,
                 )
