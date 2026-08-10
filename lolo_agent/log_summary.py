@@ -327,6 +327,48 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                     "temporal_option_delayed_counterfactual_armed": event.get(
                         "temporal_option_delayed_counterfactual_armed", False
                     ),
+                    "human_prior_enabled": event.get(
+                        "human_prior_enabled", False
+                    ),
+                    "human_prior_reward_track": event.get(
+                        "human_prior_reward_track"
+                    ),
+                    "human_prior_goal_phase": event.get(
+                        "human_prior_goal_phase"
+                    ),
+                    "human_prior_remaining_hearts": event.get(
+                        "human_prior_remaining_hearts"
+                    ),
+                    "human_prior_collected_hearts": event.get(
+                        "human_prior_collected_hearts", 0
+                    ),
+                    "human_prior_goal_reward": event.get(
+                        "human_prior_goal_reward", 0.0
+                    ),
+                    "human_prior_milestone_reward": event.get(
+                        "human_prior_milestone_reward", 0.0
+                    ),
+                    "human_prior_navigation_reward": event.get(
+                        "human_prior_navigation_reward", 0.0
+                    ),
+                    "human_prior_life_loss_penalty": event.get(
+                        "human_prior_life_loss_penalty", 0.0
+                    ),
+                    "human_prior_life_loss_confirmed": event.get(
+                        "human_prior_life_loss_confirmed", False
+                    ),
+                    "human_prior_source_player_slot": json.dumps(
+                        event.get("human_prior_source_player_slot")
+                    ),
+                    "human_prior_target_player_slot": json.dumps(
+                        event.get("human_prior_target_player_slot")
+                    ),
+                    "human_prior_target_chest_slot": json.dumps(
+                        event.get("human_prior_target_chest_slot")
+                    ),
+                    "human_prior_target_chest_distance": event.get(
+                        "human_prior_target_chest_distance"
+                    ),
                     "abstract_signature": event.get("abstract_signature"),
                     "source_behavioral_signature": event.get(
                         "source_behavioral_signature"
@@ -402,6 +444,20 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "temporal_option_counterfactual_contrast",
         "temporal_option_counterfactuals",
         "temporal_option_delayed_counterfactual_armed",
+        "human_prior_enabled",
+        "human_prior_reward_track",
+        "human_prior_goal_phase",
+        "human_prior_remaining_hearts",
+        "human_prior_collected_hearts",
+        "human_prior_goal_reward",
+        "human_prior_milestone_reward",
+        "human_prior_navigation_reward",
+        "human_prior_life_loss_penalty",
+        "human_prior_life_loss_confirmed",
+        "human_prior_source_player_slot",
+        "human_prior_target_player_slot",
+        "human_prior_target_chest_slot",
+        "human_prior_target_chest_distance",
         "abstract_signature",
         "source_behavioral_signature",
         "target_frontier_signature",
@@ -484,6 +540,18 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             "autonomous_dynamics_detected", 0
         ),
         "autonomous_grace_waits": event_counts.get("autonomous_grace_wait", 0),
+        "human_prior_chest_completions": event_counts.get(
+            "human_prior_chest_completed", 0
+        ),
+        "human_prior_life_losses": event_counts.get(
+            "human_prior_life_loss_confirmed", 0
+        ),
+        "life_hazard_checkpoints_created": event_counts.get(
+            "life_hazard_checkpoint_created", 0
+        ),
+        "life_hazard_checkpoint_restores": event_counts.get(
+            "life_hazard_state_restored", 0
+        ),
         "action_effect_observations": action_effect_observations,
         "action_effect_observations_by_action": dict(
             sorted(action_effect_observations_by_action.items())

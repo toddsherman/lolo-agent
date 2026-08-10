@@ -87,6 +87,9 @@ class RunLoggingTests(unittest.TestCase):
             self.assertIn("action_effect_observations_by_action", summary)
             self.assertIn("action_effect_known_branches", summary)
             self.assertIn("learned_hazard_filter_events", summary)
+            self.assertIn("human_prior_life_losses", summary)
+            self.assertIn("life_hazard_checkpoints_created", summary)
+            self.assertIn("life_hazard_checkpoint_restores", summary)
             self.assertIn("learned_hazard_filtered_choices", summary)
             self.assertIn("archive_hazard_rejections", summary)
             self.assertIn("archive_branch_rejections", summary)
@@ -149,6 +152,12 @@ class RunLoggingTests(unittest.TestCase):
             self.assertNotEqual(
                 rows[0]["temporal_option_delayed_counterfactual_armed"], ""
             )
+            self.assertIn("human_prior_goal_phase", rows[0])
+            self.assertIn("human_prior_remaining_hearts", rows[0])
+            self.assertIn("human_prior_goal_reward", rows[0])
+            self.assertIn("human_prior_life_loss_penalty", rows[0])
+            self.assertIn("human_prior_life_loss_confirmed", rows[0])
+            self.assertIn("human_prior_target_player_slot", rows[0])
 
     def test_frames_are_content_addressed_and_deduplicated(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

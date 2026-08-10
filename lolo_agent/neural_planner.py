@@ -193,6 +193,24 @@ class _OptionCounterfactual:
 
 
 @dataclass
+class _LifeHazardCheckpoint:
+    state: object
+    frame: Frame
+    choice: Tuple[str, Action, int]
+    decision: int
+    frontier_signature: str
+    causal_context_signature: str
+    scene: str
+    pose_action: Optional[Action]
+    last_action: Optional[Action]
+    last_duration: Optional[int]
+    action_streak: int
+    goal_heart_slots: Tuple[Tuple[int, int], ...]
+    goal_player_slot: Optional[Tuple[int, int]]
+    state_id: Optional[str] = None
+
+
+@dataclass
 class _TemporalOptionTrace:
     choice: Optional[Tuple[str, Action, int]]
     initiation_decision: Optional[int]
@@ -200,6 +218,7 @@ class _TemporalOptionTrace:
     entry_signature: str
     entry_scene: str
     initiation_frame_digest: Optional[str] = None
+    recovery_checkpoint: Optional[_LifeHazardCheckpoint] = None
     causal_evidence: bool = False
     counterfactual: Optional[_OptionCounterfactual] = None
     passive_decisions: int = 0
@@ -438,6 +457,9 @@ class VerifiedNeuralAgent:
         self.pending_option_choice: Optional[Tuple[str, Action, int]] = None
         self.pending_option_decision: Optional[int] = None
         self.pending_option_frame_digest: Optional[str] = None
+        self.pending_option_recovery_checkpoint: Optional[
+            _LifeHazardCheckpoint
+        ] = None
         self.pending_option_causal_evidence = False
         self.pending_option_counterfactual: Optional[_OptionCounterfactual] = None
         self.active_temporal_option: Optional[_TemporalOptionTrace] = None
@@ -456,6 +478,7 @@ class VerifiedNeuralAgent:
         self.pending_life_hazard_choice: Optional[
             Tuple[int, str, Action, int, str]
         ] = None
+        self.pending_life_recovery: Optional[_LifeHazardCheckpoint] = None
 
     def _reset_goal_prior(self) -> None:
         enabled = bool(
@@ -649,6 +672,21 @@ class VerifiedNeuralAgent:
             learned_value = self._record_temporal_option_sample(
                 choice, -self.config.human_prior_life_loss_penalty
             )
+            recovery = None
+            current_trace = self.active_temporal_option
+            if (
+                current_trace is not None
+                and current_trace.choice == choice
+                and current_trace.recovery_checkpoint is not None
+            ):
+                recovery = current_trace.recovery_checkpoint
+                current_trace.recovery_checkpoint = None
+                if self.pending_life_recovery is not None:
+                    self._release_life_hazard_checkpoint(
+                        self.pending_life_recovery,
+                        "superseded_by_new_life_loss",
+                    )
+                self.pending_life_recovery = recovery
             self._emit(
                 "human_prior_life_loss_confirmed",
                 decision=self.decision_index + 1,
@@ -662,6 +700,10 @@ class VerifiedNeuralAgent:
                 target_frame=target_frame.digest,
                 learned_hazard_value=learned_value,
                 learned_hazard_samples=self.temporal_option_samples[choice],
+                recovery_checkpoint_available=recovery is not None,
+                recovery_state_id=(
+                    None if recovery is None else recovery.state_id
+                ),
                 agent_visible=True,
                 **analysis.telemetry(),
             )
@@ -781,6 +823,7 @@ class VerifiedNeuralAgent:
         self.pending_option_choice = None
         self.pending_option_decision = None
         self.pending_option_frame_digest = None
+        self.pending_option_recovery_checkpoint = None
         self.pending_option_causal_evidence = False
         self.pending_option_counterfactual = None
         self.active_temporal_option = None
@@ -801,6 +844,7 @@ class VerifiedNeuralAgent:
         self.decision_index = 0
         self.last_navigation_change_decision = None
         self.pending_life_hazard_choice = None
+        self.pending_life_recovery = None
         self._reset_goal_prior()
         self._calibrate_goal_prior(self.frame)
         self._emit(
@@ -815,6 +859,12 @@ class VerifiedNeuralAgent:
         if getattr(self, "active_temporal_option", None) is not None:
             self._discard_temporal_option("agent_reset_or_close")
         self._discard_pending_temporal_option("agent_reset_or_close")
+        life_recovery = getattr(self, "pending_life_recovery", None)
+        if life_recovery is not None:
+            self._release_life_hazard_checkpoint(
+                life_recovery, "agent_reset_or_close"
+            )
+            self.pending_life_recovery = None
         release_state = getattr(self.env, "release_state", None)
         if release_state is not None:
             for branch in getattr(self, "archive", []):
@@ -1575,13 +1625,35 @@ class VerifiedNeuralAgent:
         if release_state is not None:
             release_state(counterfactual.state)
 
+    def _release_life_hazard_checkpoint(
+        self, checkpoint: _LifeHazardCheckpoint, reason: str
+    ) -> None:
+        self._emit(
+            "life_hazard_checkpoint_released",
+            decision=self.decision_index,
+            reason=reason,
+            choice=checkpoint.choice,
+            initiation_decision=checkpoint.decision,
+            state_id=checkpoint.state_id,
+            **self._frame_fields(checkpoint.frame),
+        )
+        release_state = getattr(self.env, "release_state", None)
+        if release_state is not None:
+            release_state(checkpoint.state)
+
     def _discard_pending_temporal_option(self, reason: str) -> None:
         counterfactual = getattr(self, "pending_option_counterfactual", None)
         if counterfactual is not None:
             self._release_option_counterfactual(counterfactual, reason)
+        recovery = getattr(
+            self, "pending_option_recovery_checkpoint", None
+        )
+        if recovery is not None:
+            self._release_life_hazard_checkpoint(recovery, reason)
         self.pending_option_choice = None
         self.pending_option_decision = None
         self.pending_option_frame_digest = None
+        self.pending_option_recovery_checkpoint = None
         self.pending_option_causal_evidence = False
         self.pending_option_counterfactual = None
 
@@ -1609,6 +1681,10 @@ class VerifiedNeuralAgent:
             if trace.counterfactual is not None:
                 self._release_option_counterfactual(
                     trace.counterfactual, reason
+                )
+            if trace.recovery_checkpoint is not None:
+                self._release_life_hazard_checkpoint(
+                    trace.recovery_checkpoint, reason
                 )
         self.active_temporal_option = None
 
@@ -1706,6 +1782,9 @@ class VerifiedNeuralAgent:
                     initiation_frame_digest=(
                         self.pending_option_frame_digest
                     ),
+                    recovery_checkpoint=(
+                        self.pending_option_recovery_checkpoint
+                    ),
                     causal_evidence=self.pending_option_causal_evidence,
                     counterfactual=self.pending_option_counterfactual,
                 )
@@ -1713,6 +1792,7 @@ class VerifiedNeuralAgent:
                 self.pending_option_choice = None
                 self.pending_option_decision = None
                 self.pending_option_frame_digest = None
+                self.pending_option_recovery_checkpoint = None
                 self.pending_option_causal_evidence = False
                 self.pending_option_counterfactual = None
                 self._emit(
@@ -1721,6 +1801,11 @@ class VerifiedNeuralAgent:
                     choice=trace.choice,
                     initiation_decision=trace.initiation_decision,
                     initiation_frame=trace.initiation_frame_digest,
+                    life_recovery_state_id=(
+                        None
+                        if trace.recovery_checkpoint is None
+                        else trace.recovery_checkpoint.state_id
+                    ),
                     credited=trace.choice is not None and trace.causal_evidence,
                     causal_evidence=trace.causal_evidence,
                     counterfactual_state_id=(
@@ -1865,6 +1950,10 @@ class VerifiedNeuralAgent:
         if trace.counterfactual is not None:
             self._release_option_counterfactual(
                 trace.counterfactual, "temporal_option_completed"
+            )
+        if trace.recovery_checkpoint is not None:
+            self._release_life_hazard_checkpoint(
+                trace.recovery_checkpoint, "temporal_option_completed"
             )
         self.active_temporal_option = None
 
@@ -2416,6 +2505,9 @@ class VerifiedNeuralAgent:
             archive_size=len(self.archive),
             **self._frame_fields(self.frame),
         )
+        life_recovery = self._restore_after_life_loss()
+        if life_recovery is not None:
+            return life_recovery
         restored = self._restore_if_stagnant()
         if restored is not None:
             return restored
@@ -2463,6 +2555,17 @@ class VerifiedNeuralAgent:
         source_causal_context_signature = self.current_causal_context_signature
         source_signature = self.current_frontier_signature
         source_pose_action = self.current_pose_action
+        source_last_action = self.last_action
+        source_last_duration = self.last_duration
+        source_action_streak = self.action_streak
+        source_goal_heart_slots = (
+            () if self.goal_prior is None else self.goal_prior.current_slots()
+        )
+        source_goal_player_slot = (
+            None
+            if self.goal_prior is None
+            else self.goal_prior.current_player_slot
+        )
         best_by_button: Dict[Action, NeuralPlan] = {}
         for plan in best_by_action.values():
             action = plan.path[0]
@@ -3372,6 +3475,39 @@ class VerifiedNeuralAgent:
                     if self.pending_option_choice is not None
                     else None
                 )
+                if (
+                    self.pending_option_choice is not None
+                    and option_initiation_eligible
+                    and self.config.human_prior_life_loss_penalty > 0.0
+                ):
+                    self.pending_option_recovery_checkpoint = (
+                        _LifeHazardCheckpoint(
+                            state=root,
+                            frame=source_frame,
+                            choice=self.pending_option_choice,
+                            decision=self.decision_index,
+                            frontier_signature=source_signature,
+                            causal_context_signature=(
+                                source_causal_context_signature
+                            ),
+                            scene=current_scene,
+                            pose_action=source_pose_action,
+                            last_action=source_last_action,
+                            last_duration=source_last_duration,
+                            action_streak=source_action_streak,
+                            goal_heart_slots=source_goal_heart_slots,
+                            goal_player_slot=source_goal_player_slot,
+                            state_id=self._state_id(root),
+                        )
+                    )
+                    self._emit(
+                        "life_hazard_checkpoint_created",
+                        decision=self.decision_index,
+                        choice=self.pending_option_choice,
+                        state_id=self._state_id(root),
+                        source_behavioral_signature=source_signature,
+                        **self._frame_fields(source_frame),
+                    )
                 self.pending_option_causal_evidence = option_initiation_eligible
                 self.pending_option_counterfactual = delayed_counterfactual
                 if delayed_counterfactual is not None:
@@ -4160,6 +4296,10 @@ class VerifiedNeuralAgent:
                 option_states = set()
                 if self.pending_option_counterfactual is not None:
                     option_states.add(id(self.pending_option_counterfactual.state))
+                if self.pending_option_recovery_checkpoint is not None:
+                    option_states.add(
+                        id(self.pending_option_recovery_checkpoint.state)
+                    )
                 if (
                     self.active_temporal_option is not None
                     and self.active_temporal_option.counterfactual is not None
@@ -4167,6 +4307,18 @@ class VerifiedNeuralAgent:
                     option_states.add(
                         id(self.active_temporal_option.counterfactual.state)
                     )
+                if (
+                    self.active_temporal_option is not None
+                    and self.active_temporal_option.recovery_checkpoint
+                    is not None
+                ):
+                    option_states.add(
+                        id(
+                            self.active_temporal_option.recovery_checkpoint.state
+                        )
+                    )
+                if self.pending_life_recovery is not None:
+                    option_states.add(id(self.pending_life_recovery.state))
                 for candidate in states:
                     if (
                         id(candidate) not in archived_states
@@ -4174,6 +4326,112 @@ class VerifiedNeuralAgent:
                         and id(candidate) not in pruned_state_ids
                     ):
                         release_state(candidate)
+
+    def _restore_after_life_loss(self) -> Optional[Decision]:
+        checkpoint = self.pending_life_recovery
+        if checkpoint is None:
+            return None
+        state_id = checkpoint.state_id
+        self.env.load_state(checkpoint.state)
+        self.pending_life_recovery = None
+        release_state = getattr(self.env, "release_state", None)
+        if release_state is not None:
+            release_state(checkpoint.state)
+        self._discard_temporal_option("life_loss_checkpoint_restore")
+        self._discard_pending_temporal_option(
+            "life_loss_checkpoint_restore"
+        )
+        self.frame = checkpoint.frame
+        self.current_frontier_signature = checkpoint.frontier_signature
+        self.current_causal_context_signature = (
+            checkpoint.causal_context_signature
+        )
+        self.current_pose_action = checkpoint.pose_action
+        self.last_action = checkpoint.last_action
+        self.last_duration = checkpoint.last_duration
+        self.action_streak = checkpoint.action_streak
+        self.last_action_was_causal_spatial = False
+        self.current_scene = checkpoint.scene
+        self.scene_visits[checkpoint.scene] += 1
+        self.scene_streak = 1
+        self.visual_stagnation_streak = 0
+        self.delayed_return_recovery = False
+        self.delayed_return_loop_start = None
+        self.autonomous_grace_remaining = 0
+        self.autonomous_intervention_pending = False
+        self.last_navigation_change_decision = None
+        self.pending_life_hazard_choice = None
+        if self.goal_prior is not None:
+            self.goal_prior.restore(
+                checkpoint.goal_heart_slots,
+                checkpoint.frame,
+                checkpoint.goal_player_slot,
+            )
+        self.novelty.observe(self._signature(checkpoint.frame))
+        self.decision_index += 1
+        self.visual_last_visit[
+            self._signature(checkpoint.frame)
+        ] = self.decision_index
+        learned_value, learned = self._temporal_option_estimate(
+            *checkpoint.choice
+        )
+        goal_analysis = (
+            None
+            if self.goal_prior is None
+            else self.goal_prior.analyze(checkpoint.frame, checkpoint.frame)
+        )
+        self._emit(
+            "life_hazard_state_restored",
+            decision=self.decision_index,
+            causal_decision=checkpoint.decision,
+            choice=checkpoint.choice,
+            state_id=state_id,
+            learned_hazard_value=learned_value,
+            learned_hazard_known=learned,
+            source_behavioral_signature=checkpoint.frontier_signature,
+            **self._human_prior_fields(goal_analysis),
+            **self._frame_fields(checkpoint.frame),
+        )
+        self._emit(
+            "decision_committed",
+            decision=self.decision_index,
+            action=checkpoint.choice[1],
+            action_frames=checkpoint.choice[2],
+            path=(checkpoint.choice[1],),
+            durations=(checkpoint.choice[2],),
+            score=learned_value,
+            branches_examined=0,
+            restored_archive=True,
+            restore_reason="life_loss_checkpoint",
+            committed_state_id=state_id,
+            archive_branches_added=0,
+            archive_size=len(self.archive),
+            temporal_option_value=learned_value,
+            temporal_option_is_known=learned,
+            temporal_option_value_source=(
+                self._temporal_option_estimate_source(*checkpoint.choice)
+            ),
+            active_temporal_option=False,
+            source_behavioral_signature=checkpoint.frontier_signature,
+            target_frontier_signature=checkpoint.frontier_signature,
+            action_counts=self.action_counts,
+            duration_counts=self.duration_counts,
+            action_duration_counts=self._action_duration_count_rows(),
+            scene_streak=self.scene_streak,
+            visual_stagnation_streak=self.visual_stagnation_streak,
+            **self._human_prior_fields(goal_analysis),
+            **self._frame_fields(checkpoint.frame),
+        )
+        return Decision(
+            checkpoint.choice[1],
+            checkpoint.frame,
+            (checkpoint.choice[1],),
+            learned_value,
+            0,
+            restored_archive=True,
+            action_frames=checkpoint.choice[2],
+            planned_durations=(checkpoint.choice[2],),
+        )
 
     def _restore_if_stagnant(self) -> Optional[Decision]:
         assert self.frame is not None

@@ -96,6 +96,17 @@ hazard is credited to the causally supported active temporal option rather than
 the final passive `NOOP`. Exact initiation decision and frame are retained for
 telemetry.
 
+The v14 baseline confirmed that credit alone is insufficient for efficient
+save-state exploration: it learned `-100` for the correct option at decision
+41, then spent over 100 additional decisions replaying the room and still had
+two hearts remaining. In the assisted life-loss track, a causally supported
+temporal option now retains its pre-action emulator state as a temporary safety
+checkpoint. Normal completion releases it. A confirmed life loss instead
+restores it on the next decision while keeping the learned hazard value, so the
+exact lethal choice can be filtered without replaying the entire room or
+spending another life. Checkpoint creation, release, confirmation, and restore
+all have dedicated telemetry events and state IDs.
+
 The resulting direction is deliberately narrower: potential shaping guides
 immediate experiments; causal novelty decides what deserves persistent state;
 heart milestones preserve irreversible semantic progress; and a short temporal
@@ -128,7 +139,9 @@ Dedicated events include `human_prior_calibrated`,
 `human_prior_dark_transition_cleared`, and
 `human_prior_life_loss_confirmed`. Temporal control handoff is visible through
 `temporal_option_recovery_suppressed`, `autonomous_intervention_started`, and
-`autonomous_intervention_selected`. Every committed and rejected
+`autonomous_intervention_selected`. Life rollback is recorded by
+`life_hazard_checkpoint_created`, `life_hazard_checkpoint_released`, and
+`life_hazard_state_restored`. Every committed and rejected
 branch still retains its action, duration, source/target frames, intrinsic
 components, archive state IDs, and replay ordering.
 

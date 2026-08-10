@@ -13,6 +13,7 @@ from lolo_agent.neural_planner import (
     NeuralPlanningConfig,
     VerifiedNeuralAgent,
     _ArchivedBranch,
+    _LifeHazardCheckpoint,
     _TemporalOptionTrace,
 )
 from lolo_agent.pixels import Frame
@@ -464,13 +465,30 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
         )
         agent.reset(initial_frame=source)
         assert agent.goal_prior is not None
+        choice = ("danger-context", Action.RIGHT, 16)
+        checkpoint = _LifeHazardCheckpoint(
+            state=agent.env.save_state(),
+            frame=source,
+            choice=choice,
+            decision=7,
+            frontier_signature="danger-context",
+            causal_context_signature="causal-context-root",
+            scene=agent._scene_signature(source),
+            pose_action=None,
+            last_action=Action.NOOP,
+            last_duration=16,
+            action_streak=1,
+            goal_heart_slots=(),
+            goal_player_slot=None,
+        )
         agent.active_temporal_option = _TemporalOptionTrace(
-            choice=("danger-context", Action.RIGHT, 16),
+            choice=choice,
             initiation_decision=7,
             start_decision=8,
             entry_signature="animation",
             entry_scene="room",
             initiation_frame_digest=source.digest,
+            recovery_checkpoint=checkpoint,
             causal_evidence=True,
         )
 
@@ -490,13 +508,23 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
             committed, "reset-context", Action.NOOP, 16, dark, reset
         )
 
-        choice = ("danger-context", Action.RIGHT, 16)
         self.assertEqual(agent.temporal_option_values[choice], -100.0)
         self.assertEqual(agent.temporal_option_samples[choice], 1)
         self.assertNotIn(
             ("animation-context", Action.NOOP, 16),
             agent.temporal_option_values,
         )
+        self.assertIs(agent.pending_life_recovery, checkpoint)
+
+        recovered = agent._restore_after_life_loss()
+
+        self.assertIsNotNone(recovered)
+        assert recovered is not None
+        self.assertTrue(recovered.restored_archive)
+        self.assertEqual(recovered.frame.digest, source.digest)
+        self.assertEqual(agent.current_frontier_signature, "danger-context")
+        self.assertEqual(agent.goal_prior.current_slots(), ())
+        self.assertIsNone(agent.pending_life_recovery)
 
     def test_verified_planner_uses_navigation_without_clipping_intrinsic(self) -> None:
         model = EnsembleVisualDynamicsModel(
