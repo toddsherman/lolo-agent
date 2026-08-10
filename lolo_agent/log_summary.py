@@ -134,6 +134,8 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "spatial_shadow_predicted_effect",
         "spatial_shadow_actual_effect",
         "spatial_shadow_uncertainty",
+        "spatial_shadow_predicted_returnability",
+        "spatial_shadow_returnability_uncertainty",
     )
 
     edge_counts: Counter[Tuple[str, str, str, int]] = Counter()
@@ -729,6 +731,13 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         ),
         "spatial_shadow_parameter_audit_passed": any(
             event["event"] == "spatial_shadow_parameter_audit"
+            and event.get("status") == "pass"
+            and event.get("parameter_sha256_before")
+            == event.get("parameter_sha256_after")
+            for event in events
+        ),
+        "spatial_returnability_parameter_audit_passed": any(
+            event["event"] == "spatial_returnability_parameter_audit"
             and event.get("status") == "pass"
             and event.get("parameter_sha256_before")
             == event.get("parameter_sha256_after")

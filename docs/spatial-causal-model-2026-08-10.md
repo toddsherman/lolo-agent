@@ -220,6 +220,47 @@ insufficient evidence for default-on control, so weight 0 remains the plan of
 record. The counterfactual score is retained as telemetry and an opt-in
 research ablation.
 
+## Observed-returnability sidecar
+
+The next experiment added a separate ensemble relation head without changing
+v10. Its labels are derived from the strict pixel-transition graph. A positive
+transition has a real path from its endpoint back to its source visual state
+within three actions. A negative is admitted only when no such path was
+observed after the endpoint had outcomes for at least five distinct controls;
+all weaker evidence is censored. The graph contained 9,773 positive and 27,310
+well-probed negative edges, with 63,333 edges left unlabeled.
+
+Cycle 15 was held out in full. V11 globally pooled the relation map and largely
+reduced to action-specific constants. V12 retained a coarse 4×4 relation layout:
+
+| Measurement | V11 global | V12 4×4 |
+| --- | ---: | ---: |
+| Held-out examples | 2,000 | 2,000 |
+| ROC AUC | 0.657 | 0.677 |
+| Accuracy | 0.574 | 0.625 |
+| Brier score | 0.239 | 0.231 |
+| Constant Brier baseline | 0.250 | 0.250 |
+| Uncertainty/error correlation | -0.097 | -0.262 |
+
+Both pass the limited held-out discrimination gate, but neither passes the
+native gate. On 74 conclusive branches from the two unseen v10 continuation
+runs, v12 achieved ROC AUC 0.591 and Brier 0.343 versus a 0.203 constant
+baseline. Mean positive and negative probabilities were 0.673 and 0.660,
+respectively: a clear overconfident distribution shift.
+
+V12 was therefore attached with zero planning influence for five live native
+decisions:
+
+```text
+experiments/lolo1-spatial-v12/shadow_evaluations/spatial-v12-returnability-native5
+```
+
+All 30 verified branches logged probability and ensemble variance. Both frozen
+parameter audits passed. The live mean probability was 0.671, confirming the
+offline native diagnosis. The checkpoint remains useful as a reproducible
+failed candidate and telemetry probe, not as a reward, hazard estimate, or
+planner input.
+
 ## Run locally
 
 ```bash
@@ -250,13 +291,12 @@ python -m lolo_agent.spatial_train \
 
 ## Next gate
 
-1. Evaluate counterfactual usefulness in later rooms and across multiple
-   source-run folds, where hazards and longer causal chains provide a stronger
-   test than Room 1 movement.
-2. Add learned reachability, reversibility, and reset-risk heads over spatial
-   tokens. Those outcomes must be derived from visual trajectories rather than
-   heart, enemy, life, or room labels.
+1. Replace policy-dependent short-return classification with a representation
+   trained on explicit bidirectional counterfactual probes or longer observed
+   paths, still without semantic labels.
+2. Evaluate counterfactual usefulness and returnability across multiple
+   source-run and later-room folds before looking at another native holdout.
 3. Suppress residual false predicted change for NOOP, A, B, and blocked
    movement without weakening the gains on effective directional movement.
-4. Require a multi-seed improvement in task-level exploration or completion
-   before enabling any learned spatial priority by default.
+4. Add reset-risk only after returnability is calibrated, then require a
+   multi-seed task-level improvement before enabling either signal by default.

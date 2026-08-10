@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, List, Sequence, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import torch
 from torch import Tensor
@@ -9,6 +9,7 @@ from torch.nn import functional as F
 from .environment import Action
 from .neural_world_model import ACTION_TO_INDEX, frame_tensor
 from .pixels import Frame
+from .spatial_returnability import SpatialReturnabilityModel
 from .spatial_world_model import SpatialTokenDynamicsModel, spatial_effect_target
 
 
@@ -19,15 +20,41 @@ class SpatialShadowEvaluator:
         self,
         model: SpatialTokenDynamicsModel,
         device: Union[torch.device, str],
+        returnability_model: Optional[SpatialReturnabilityModel] = None,
     ) -> None:
         self.model = model
         self.device = torch.device(device)
         self.model.to(self.device)
         self.model.freeze()
+        self.returnability_model = returnability_model
+        if self.returnability_model is not None:
+            self.returnability_model.to(self.device)
+            self.returnability_model.freeze()
 
     @property
     def checkpoint_digest(self) -> str:
         return self.model.checkpoint_digest
+
+    @property
+    def returnability_checkpoint_digest(self) -> Optional[str]:
+        return (
+            None
+            if self.returnability_model is None
+            else self.returnability_model.checkpoint_digest
+        )
+
+    def _returnability_metrics(
+        self, source_tokens: Tensor, target_tokens: Tensor
+    ) -> Dict[str, Tensor]:
+        if self.returnability_model is None:
+            return {}
+        probability, uncertainty = self.returnability_model.predict(
+            source_tokens, target_tokens
+        )
+        return {
+            "returnability": probability,
+            "returnability_uncertainty": uncertainty,
+        }
 
     def _counterfactual_metrics(
         self,
@@ -73,10 +100,13 @@ class SpatialShadowEvaluator:
             dtype=torch.long,
             device=self.device,
         )
-        predicted, _tokens, uncertainty, effects = self.model.rollout(
+        predicted, tokens, uncertainty, effects = self.model.rollout(
             source_batch,
             actions,
             durations if self.model.duration_conditioned else None,
+        )
+        returnability = self._returnability_metrics(
+            self.model.encode(source_batch), tokens[:, 0]
         )
         horizon_weights = torch.tensor(
             [0.9**step for step in range(horizon)],
@@ -108,8 +138,9 @@ class SpatialShadowEvaluator:
             noop_effects[:, 0],
         )
         raw_activity_score = effect_mass + uncertainty_mass
-        return [
-            {
+        rows = []
+        for index in range(len(plans)):
+            row = {
                 "spatial_shadow_score": float(
                     counterfactual["usefulness"][index].cpu()
                 ),
@@ -129,8 +160,19 @@ class SpatialShadowEvaluator:
                 "spatial_shadow_predicted_change": float(final_change[index].cpu()),
                 "spatial_shadow_uncertainty": float(uncertainty_mass[index].cpu()),
             }
-            for index in range(len(plans))
-        ]
+            if returnability:
+                row.update(
+                    {
+                        "spatial_shadow_predicted_returnability": float(
+                            returnability["returnability"][index].cpu()
+                        ),
+                        "spatial_shadow_returnability_uncertainty": float(
+                            returnability["returnability_uncertainty"][index].cpu()
+                        ),
+                    }
+                )
+            rows.append(row)
+        return rows
 
     @torch.no_grad()
     def evaluate_transition(
@@ -154,7 +196,7 @@ class SpatialShadowEvaluator:
         durations = torch.tensor(
             [[duration], [duration]], dtype=torch.long, device=self.device
         )
-        predicted, _tokens, uncertainty, effects = self.model.rollout(
+        predicted, tokens, uncertainty, effects = self.model.rollout(
             source.expand(2, -1, -1, -1).contiguous(),
             actions,
             durations if self.model.duration_conditioned else None,
@@ -166,6 +208,9 @@ class SpatialShadowEvaluator:
             effects[:1, 0],
             predicted[1:, 0],
             effects[1:, 0],
+        )
+        returnability = self._returnability_metrics(
+            self.model.encode(source), tokens[:1, 0]
         )
         actual_effect = spatial_effect_target(
             source,
@@ -196,7 +241,7 @@ class SpatialShadowEvaluator:
         false_positive = int((predicted_active & ~actual_active).sum().cpu())
         false_negative = int((~predicted_active & actual_active).sum().cpu())
         f1_denominator = 2 * true_positive + false_positive + false_negative
-        return {
+        metrics: Dict[str, Union[bool, float]] = {
             "spatial_shadow_pixel_l1": float(
                 (predicted_frame - target).abs().mean().cpu()
             ),
@@ -230,3 +275,15 @@ class SpatialShadowEvaluator:
             "spatial_shadow_actual_effect": float(actual_effect.mean().cpu()),
             "spatial_shadow_uncertainty": float(uncertainty[0, 0].cpu()),
         }
+        if returnability:
+            metrics.update(
+                {
+                    "spatial_shadow_predicted_returnability": float(
+                        returnability["returnability"][0].cpu()
+                    ),
+                    "spatial_shadow_returnability_uncertainty": float(
+                        returnability["returnability_uncertainty"][0].cpu()
+                    ),
+                }
+            )
+        return metrics

@@ -48,15 +48,23 @@ rendering so unchanged pixels are copied rather than regenerated. Strict and
 assisted telemetry are now bound to separate dataset tracks.
 
 Its local flow/residual renderer passes a trajectory-balanced run-held-out
-offline gate by a narrow margin. Planner integration remains gated because a
-native zero-weight shadow run beat persistence on only 3/30 verified branches.
+offline and native prediction gate. Its counterfactual usefulness score remains
+disabled by default because paired planning ablations were mixed.
 See
 `spatial-causal-model-2026-08-10.md` for the reproducible MPS result.
+
+`spatial_returnability.py` adds a separate ensemble relation head over frozen
+spatial tokens. Its targets come only from the observed pixel-transition graph:
+positive transitions have an observed return path, well-probed non-returns are
+negative, and uncertain cases are censored. The sidecar passes one run-held-out
+development fold but fails native branch calibration, so it is attached only
+to telemetry and cannot affect the planner.
 
 The remaining successor milestones are:
 
 1. changed-region rendering that reliably beats persistence on native branches;
 2. multi-fold run- and room-held-out validation without semantic inputs;
 3. object-centric slots or sparse entity tokens discovered without labels;
-4. terminal/reversibility estimates learned from long-horizon reachability,
-   not hand-authored death or object rules.
+4. a native-generalizing reachability/reversibility representation, followed
+   by terminal-risk estimates learned from trajectories rather than hand-authored
+   death or object rules.

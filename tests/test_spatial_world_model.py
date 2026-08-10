@@ -8,6 +8,7 @@ from lolo_agent.ensemble_world_model import VisualSequence, split_sequence_runs
 from lolo_agent.environment import Action
 from lolo_agent.neural_world_model import ACTION_TO_INDEX, frame_tensor
 from lolo_agent.pixels import Frame
+from lolo_agent.spatial_returnability import SpatialReturnabilityModel
 from lolo_agent.spatial_shadow import SpatialShadowEvaluator
 from lolo_agent.spatial_world_model import (
     SpatialTokenDynamicsModel,
@@ -189,7 +190,12 @@ class SpatialWorldModelTests(unittest.TestCase):
             grid_size=4,
             duration_size=4,
         )
-        evaluator = SpatialShadowEvaluator(model, "cpu")
+        returnability = SpatialReturnabilityModel(
+            token_size=8, hidden_size=8, ensemble_size=2
+        )
+        evaluator = SpatialShadowEvaluator(
+            model, "cpu", returnability_model=returnability
+        )
         source = self.make_frame(4, 4, (255, 255, 255))
         target = self.make_frame(10, 4, (255, 255, 255))
         plans = evaluator.score_plans(
@@ -209,10 +215,13 @@ class SpatialWorldModelTests(unittest.TestCase):
         self.assertIn("spatial_shadow_predicted_causal_change", plans[0])
         self.assertIn("spatial_shadow_predicted_causal_effect", plans[0])
         self.assertIn("spatial_shadow_predicted_change", plans[0])
+        self.assertIn("spatial_shadow_predicted_returnability", plans[0])
+        self.assertIn("spatial_shadow_returnability_uncertainty", plans[0])
         self.assertIn("spatial_shadow_effect_f1", transition)
         self.assertIn("spatial_shadow_beats_persistence", transition)
         self.assertIn("spatial_shadow_predicted_pixel_change", transition)
         self.assertIn("spatial_shadow_usefulness_score", transition)
+        self.assertIn("spatial_shadow_predicted_returnability", transition)
         self.assertAlmostEqual(plans[1]["spatial_shadow_score"], 0.0, places=6)
         self.assertGreaterEqual(transition["spatial_shadow_effect_f1"], 0.0)
 

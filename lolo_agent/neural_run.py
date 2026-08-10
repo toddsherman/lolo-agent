@@ -19,6 +19,7 @@ from .neural_world_model import ACTION_ORDER, choose_torch_device
 from .pixels import Frame, signature_key
 from .replay import restore_logged_decision, validate_replay_inputs
 from .run_logging import LoggedEnvironment, RunLogger, sha256_file
+from .spatial_returnability import load_returnability_checkpoint
 from .spatial_shadow import SpatialShadowEvaluator
 from .spatial_world_model import load_spatial_checkpoint
 
@@ -133,6 +134,14 @@ def main() -> None:
             "verification; verified commit scoring remains outcome-based"
         ),
     )
+    parser.add_argument(
+        "--spatial-returnability-checkpoint",
+        type=Path,
+        help=(
+            "optional frozen observed-returnability sidecar; requires the exact "
+            "spatial checkpoint it was trained against and remains telemetry-only"
+        ),
+    )
     parser.add_argument("--decisions", type=int, default=20)
     parser.add_argument("--action-frames", type=int, default=4)
     parser.add_argument(
@@ -242,6 +251,13 @@ def main() -> None:
             "--spatial-selection-weight requires --spatial-shadow-checkpoint"
         )
     if (
+        args.spatial_returnability_checkpoint is not None
+        and args.spatial_shadow_checkpoint is None
+    ):
+        parser.error(
+            "--spatial-returnability-checkpoint requires --spatial-shadow-checkpoint"
+        )
+    if (
         args.consecutive_repeat_penalty_cap is not None
         and args.consecutive_repeat_penalty_cap < 0.0
     ):
@@ -280,6 +296,8 @@ def main() -> None:
     spatial_shadow = None
     spatial_shadow_before = None
     spatial_shadow_horizon = None
+    spatial_returnability_before = None
+    spatial_returnability_configuration = None
     if args.spatial_shadow_checkpoint is not None:
         shadow_model, spatial_shadow_horizon = load_spatial_checkpoint(
             args.spatial_shadow_checkpoint,
@@ -299,7 +317,21 @@ def main() -> None:
                 "planner action durations do not match the fixed-duration spatial "
                 "shadow checkpoint"
             )
-        spatial_shadow = SpatialShadowEvaluator(shadow_model, device)
+        returnability_model = None
+        if args.spatial_returnability_checkpoint is not None:
+            (
+                returnability_model,
+                spatial_returnability_configuration,
+            ) = load_returnability_checkpoint(
+                args.spatial_returnability_checkpoint,
+                shadow_model.checkpoint_digest,
+                device=device,
+                frozen=True,
+            )
+            spatial_returnability_before = returnability_model.checkpoint_digest
+        spatial_shadow = SpatialShadowEvaluator(
+            shadow_model, device, returnability_model=returnability_model
+        )
         spatial_shadow_before = spatial_shadow.checkpoint_digest
     bootstrap_fixture = (
         None if args.bootstrap == "none" else get_bootstrap_fixture(args.bootstrap)
@@ -381,6 +413,14 @@ def main() -> None:
                 else "observational"
             ),
             "selection_weight": args.spatial_selection_weight,
+        }
+    if args.spatial_returnability_checkpoint is not None:
+        inputs["spatial_returnability_checkpoint"] = {
+            "name": args.spatial_returnability_checkpoint.name,
+            "file_sha256": sha256_file(args.spatial_returnability_checkpoint),
+            "parameter_sha256": spatial_returnability_before,
+            "mode": "observational",
+            **(spatial_returnability_configuration or {}),
         }
     metadata = {
         "mode": "frozen_neural_evaluation",
@@ -516,6 +556,21 @@ def main() -> None:
                 parameter_sha256_before=spatial_shadow_before,
                 parameter_sha256_after=spatial_shadow_after,
             )
+            if spatial_returnability_before is not None:
+                spatial_returnability_after = (
+                    spatial_shadow.returnability_checkpoint_digest
+                )
+                if spatial_returnability_before != spatial_returnability_after:
+                    raise RuntimeError(
+                        "frozen returnability evaluation changed persistent parameters"
+                    )
+                logger.log(
+                    "spatial_returnability_parameter_audit",
+                    status="pass",
+                    mode="observational",
+                    parameter_sha256_before=spatial_returnability_before,
+                    parameter_sha256_after=spatial_returnability_after,
+                )
         logger.close("complete")
     except Exception as exc:
         if agent is not None:

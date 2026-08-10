@@ -36,6 +36,29 @@ class SequenceStoreTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 store.append_segment("cycle-000001", [sequence])
 
+    def test_transition_metadata_and_frame_subset_avoid_full_decode(self) -> None:
+        first = Frame(2, 2, 1, b"\x01\x02\x03\x04")
+        second = Frame(2, 2, 1, b"\x05\x06\x07\x08")
+        third = Frame(2, 2, 1, b"\x09\x0a\x0b\x0c")
+        sequence = VisualSequence(
+            0,
+            (first, second, third),
+            (Action.RIGHT, Action.DOWN),
+            (8, 4),
+            "run-a",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            store = SequenceStore(Path(directory))
+            store.append_segment("cycle-000001", [sequence])
+            transitions = store.transition_metadata()
+            frames = store.load_frame_subset((first.digest, third.digest))
+        self.assertEqual(
+            [(item.action, item.duration) for item in transitions],
+            [(Action.RIGHT, 8), (Action.DOWN, 4)],
+        )
+        self.assertTrue(all(item.source_run_id == "run-a" for item in transitions))
+        self.assertEqual(frames, {first.digest: first, third.digest: third})
+
     def test_legacy_segment_receives_conservative_run_provenance(self) -> None:
         frame = Frame(1, 1, 1, b"\x00")
         sequence = VisualSequence(

@@ -4,12 +4,24 @@ import json
 import os
 import random
 import zlib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from .ensemble_world_model import VisualSequence
 from .environment import Action
 from .pixels import Frame
+
+
+@dataclass(frozen=True)
+class StoredTransition:
+    """One pixel-state edge reconstructed from persistent sequence metadata."""
+
+    source_digest: str
+    target_digest: str
+    action: Action
+    duration: int
+    source_run_id: str
 
 
 class SequenceStore:
@@ -168,6 +180,57 @@ class SequenceStore:
 
     def load(self) -> List[VisualSequence]:
         return self._decode_records(self._records())
+
+    def transition_metadata(self) -> List[StoredTransition]:
+        """Read graph edges without decoding the large RGB frame payloads."""
+
+        transitions = []
+        for record in self._records():
+            frames = [str(item["digest"]) for item in record["frames"]]
+            actions = [Action(value) for value in record["actions"]]
+            durations = [int(value) for value in record.get("durations", [])]
+            if not durations:
+                durations = [4] * len(actions)
+            run_id = self._record_source_run_id(record)
+            transitions.extend(
+                StoredTransition(source, target, action, duration, run_id)
+                for source, target, action, duration in zip(
+                    frames, frames[1:], actions, durations
+                )
+            )
+        return transitions
+
+    def load_frame_subset(self, digests: Iterable[str]) -> Dict[str, Frame]:
+        """Decode only requested content-addressed frames from the store."""
+
+        requested = set(digests)
+        if not requested:
+            return {}
+        metadata: Dict[str, Tuple[int, int, int]] = {}
+        for record in self._records():
+            for item in record["frames"]:
+                digest = str(item["digest"])
+                if digest in requested and digest not in metadata:
+                    metadata[digest] = (
+                        int(item["width"]),
+                        int(item["height"]),
+                        int(item["channels"]),
+                    )
+            if len(metadata) == len(requested):
+                break
+        missing = requested - metadata.keys()
+        if missing:
+            raise KeyError(f"dataset does not contain {len(missing)} requested frames")
+        frames = {}
+        for digest, (width, height, channels) in metadata.items():
+            pixels = zlib.decompress(
+                (self.frames_dir / f"{digest}.rgb.zlib").read_bytes()
+            )
+            frame = Frame(width, height, channels, pixels)
+            if frame.digest != digest:
+                raise ValueError(f"dataset frame digest mismatch: {digest}")
+            frames[digest] = frame
+        return frames
 
     def load_sample(self, maximum_sequences: int, seed: int = 0) -> List[VisualSequence]:
         """Uniformly sample records before decoding their large RGB payloads."""

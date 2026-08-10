@@ -174,6 +174,22 @@ score, weight, bonus, mode, and `spatial_selection_applied_to_commit` flag.
 Omitting the option, or setting it to zero, preserves observational mode
 exactly.
 
+Supplying `--spatial-returnability-checkpoint` with the exact spatial
+checkpoint it was trained against adds two observational fields to candidate
+and verified-branch rows:
+
+- `spatial_shadow_predicted_returnability` is the ensemble mean probability of
+  an observed visual-state return path within the training horizon;
+- `spatial_shadow_returnability_uncertainty` is the variance across relation
+  heads.
+
+The sidecar is parameter-hash bound to its frozen spatial encoder and cannot be
+loaded with another encoder. The manifest records both checkpoint hashes and
+the pixel-graph target configuration. `summary.json` reports mean probability,
+mean uncertainty, and whether `spatial_returnability_parameter_audit` proved
+that evaluation left the sidecar unchanged. Returnability has no selection or
+commit weight; the current checkpoint is research telemetry, not a reward.
+
 ## Attempts and level labels
 
 An attempt begins whenever the environment is reset. Because room number,

@@ -108,6 +108,25 @@ score compares each predicted action with a duration-matched predicted NOOP;
 real verified outcomes alone decide which branch is committed. Zero remains
 the safe default.
 
+Train the observational returnability sidecar from pixel-state transition
+graphs while keeping the spatial world model frozen:
+
+```bash
+lolo-spatial-returnability-train \
+  --dataset experiments/lolo1-medium/dataset \
+  --spatial-checkpoint experiments/lolo1-spatial-v10/checkpoints/spatial-v10-native-adapt-e5.pt \
+  --checkpoint experiments/lolo1-spatial-v12/checkpoints/spatial-v12-returnability-grid4-e5.pt \
+  --reward-track strict \
+  --maximum-return-steps 3 \
+  --minimum-endpoint-actions 5 \
+  --spatial-bins 4
+```
+
+Positive targets require an observed visual-state return path. A transition is
+negative only after its endpoint has been probed with at least five distinct
+controls; inconclusive transitions remain unlabeled. This sidecar currently
+fails the native generalization gate and must remain telemetry-only.
+
 Run the saved model in frozen evaluation mode:
 
 ```bash
@@ -117,6 +136,7 @@ lolo-neural-run \
   --core "$HOME/Library/Application Support/RetroArch/cores/nestopia_libretro.dylib" \
   --checkpoint checkpoints/ensemble-smoke.pt \
   --spatial-shadow-checkpoint experiments/lolo1-spatial-v10/checkpoints/spatial-v10-native-adapt-e5.pt \
+  --spatial-returnability-checkpoint experiments/lolo1-spatial-v12/checkpoints/spatial-v12-returnability-grid4-e5.pt \
   --spatial-selection-weight 0 \
   --decisions 20 \
   --log-root runs

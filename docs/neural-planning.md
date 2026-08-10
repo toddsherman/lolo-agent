@@ -302,9 +302,10 @@ ordinary movement remains usable.
   rather than autonomously expanded.
 - Action coverage currently provides a strong temporary exploration prior and
   can over-regularize behavior toward uniform controller use.
-- The model has no explicit object slots, reachability head, or reversibility
-  prediction yet; spatial causal signatures are temporary attempt memory, not
-  persistent neural parameters.
+- The model has no explicit object slots or planner-ready reachability model.
+  The first persistent observed-returnability sidecar is telemetry-only because
+  it fails native calibration; spatial causal signatures remain temporary
+  attempt memory.
 - Room completion remains evaluator-only and is not available to the planner;
   the first-room completion was found through causal-outcome exploration rather
   than a completion reward.
