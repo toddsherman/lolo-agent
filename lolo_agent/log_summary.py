@@ -560,6 +560,12 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             and event.get("checkpoint_kind") == "goal_milestone"
             for event in events
         ),
+        "goal_milestone_descendant_invalidations": sum(
+            event["event"] == "archive_branch_removed"
+            and event.get("reason")
+            == "goal_milestone_rollback_descendant"
+            for event in events
+        ),
         "action_effect_observations": action_effect_observations,
         "action_effect_observations_by_action": dict(
             sorted(action_effect_observations_by_action.items())

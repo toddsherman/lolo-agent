@@ -120,6 +120,15 @@ exact learned hazard. This lets the agent treat “collecting this now” as a
 contingent, potentially unrecoverable decision and experiment with preparation
 first, without encoding what preparation the room requires.
 
+v16 validated the longer rollback twice, then found a branching-consistency
+bug: an archive state created after the abandoned final-heart timeline could be
+restored after rewinding before the heart. Milestone rollback now invalidates
+and releases every archived descendant created after the milestone decision,
+while preserving alternatives verified at the milestone decision itself. It
+also truncates committed transition history from the abandoned future and
+restarts the frontier trace at the restored state. The number of invalidated
+descendants is logged on the restore event and in the run summary.
+
 The resulting direction is deliberately narrower: potential shaping guides
 immediate experiments; causal novelty decides what deserves persistent state;
 heart milestones preserve irreversible semantic progress; and a short temporal

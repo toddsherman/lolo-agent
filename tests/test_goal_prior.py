@@ -611,6 +611,25 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
         self.assertIs(
             agent.active_temporal_option.recovery_checkpoint, causal
         )
+        plan = NeuralPlan((Action.UP,), (16,), 0.0, 0.0)
+        agent.archive = [
+            _ArchivedBranch(
+                agent.env.save_state(),
+                milestone_frame,
+                plan,
+                0.0,
+                agent._scene_signature(milestone_frame),
+                5,
+            ),
+            _ArchivedBranch(
+                agent.env.save_state(),
+                source,
+                plan,
+                0.0,
+                agent._scene_signature(source),
+                6,
+            ),
+        ]
 
         recovered = agent._restore_after_life_loss()
 
@@ -622,6 +641,7 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
         )
         self.assertEqual(agent.goal_prior.current_slots(), ((48, 48),))
         self.assertIsNone(agent.active_temporal_option)
+        self.assertEqual([branch.created for branch in agent.archive], [5])
 
     def test_verified_planner_uses_navigation_without_clipping_intrinsic(self) -> None:
         model = EnsembleVisualDynamicsModel(

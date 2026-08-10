@@ -92,6 +92,9 @@ class RunLoggingTests(unittest.TestCase):
             self.assertIn("life_hazard_checkpoint_restores", summary)
             self.assertIn("goal_milestone_checkpoints_created", summary)
             self.assertIn("goal_milestone_checkpoint_restores", summary)
+            self.assertIn(
+                "goal_milestone_descendant_invalidations", summary
+            )
             self.assertIn("learned_hazard_filtered_choices", summary)
             self.assertIn("archive_hazard_rejections", summary)
             self.assertIn("archive_branch_rejections", summary)

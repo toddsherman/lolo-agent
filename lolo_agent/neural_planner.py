@@ -4443,6 +4443,31 @@ class VerifiedNeuralAgent:
         release_state = getattr(self.env, "release_state", None)
         if release_state is not None:
             release_state(checkpoint.state)
+        invalidated_archive_branches = []
+        if checkpoint.kind == "goal_milestone":
+            invalidated_archive_branches = [
+                branch
+                for branch in self.archive
+                if branch.created > checkpoint.decision
+            ]
+            for branch in invalidated_archive_branches:
+                self.archive.remove(branch)
+                self._emit(
+                    "archive_branch_removed",
+                    decision=self.decision_index + 1,
+                    reason="goal_milestone_rollback_descendant",
+                    state_id=self._state_id(branch.state),
+                    created_decision=branch.created,
+                    milestone_decision=checkpoint.decision,
+                    **self._frame_fields(branch.frame),
+                )
+                if release_state is not None:
+                    release_state(branch.state)
+            self.transition_history = [
+                transition
+                for transition in self.transition_history
+                if transition.decision <= checkpoint.decision
+            ]
         self._discard_temporal_option("life_loss_checkpoint_restore")
         self._discard_pending_temporal_option(
             "life_loss_checkpoint_restore"
@@ -4478,6 +4503,11 @@ class VerifiedNeuralAgent:
         self.visual_last_visit[
             self._signature(checkpoint.frame)
         ] = self.decision_index
+        if checkpoint.kind == "goal_milestone":
+            self._restart_frontier_trace(
+                checkpoint.frontier_signature,
+                "goal_milestone_rollback",
+            )
         learned_value, learned = self._temporal_option_estimate(
             *checkpoint.choice
         )
@@ -4500,6 +4530,9 @@ class VerifiedNeuralAgent:
             state_id=state_id,
             learned_hazard_value=learned_value,
             learned_hazard_known=learned,
+            invalidated_archive_branches=len(
+                invalidated_archive_branches
+            ),
             source_behavioral_signature=checkpoint.frontier_signature,
             **self._human_prior_fields(goal_analysis),
             **self._frame_fields(checkpoint.frame),
