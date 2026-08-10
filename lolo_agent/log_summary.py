@@ -116,6 +116,10 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
     committed_causal_spatial_signatures: set[str] = set()
     causal_events_detected = 0
     committed_behavioral_edges: set[Tuple[str, str, int]] = set()
+    human_prior_world_effect_signatures: set[str] = set()
+    human_prior_world_contexts: set[str] = set()
+    human_prior_graph_states: set[str] = set()
+    human_prior_player_positions: set[Tuple[int, int]] = set()
     archive_rejections_by_reason: Counter[str] = Counter()
     spatial_shadow_rows: List[Dict[str, Any]] = []
     returnability_probe_rows: List[Dict[str, Any]] = []
@@ -211,6 +215,10 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             archive_rejections_by_reason[
                 str(event.get("reason", "unspecified"))
             ] += 1
+        if event["event"] == "human_prior_world_effect_confirmation":
+            world_effect = event.get("human_prior_world_effect_signature")
+            if world_effect:
+                human_prior_world_effect_signatures.add(str(world_effect))
         if event["event"] == "branch_verified":
             if event.get("action_effect_contrast") is not None:
                 action_effect_observations += 1
@@ -321,6 +329,20 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                 )
             if restored:
                 attempts[attempt]["restores"] += 1
+            world_context = event.get("human_prior_world_target_context")
+            if world_context:
+                human_prior_world_contexts.add(str(world_context))
+            graph_state = event.get("human_prior_graph_target_signature")
+            if graph_state:
+                human_prior_graph_states.add(str(graph_state))
+            player_position = event.get("human_prior_target_player_slot")
+            if (
+                isinstance(player_position, (list, tuple))
+                and len(player_position) == 2
+            ):
+                human_prior_player_positions.add(
+                    (int(player_position[0]), int(player_position[1]))
+                )
             frontier_value = event.get("persistent_frontier_value")
             if frontier_value is not None:
                 committed_frontier_values.append(float(frontier_value))
@@ -523,6 +545,24 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                     "human_prior_life_loss_confirmed": event.get(
                         "human_prior_life_loss_confirmed", False
                     ),
+                    "human_prior_best_first_applied": event.get(
+                        "human_prior_best_first_applied", False
+                    ),
+                    "human_prior_graph_source_signature": event.get(
+                        "human_prior_graph_source_signature"
+                    ),
+                    "human_prior_graph_target_signature": event.get(
+                        "human_prior_graph_target_signature"
+                    ),
+                    "human_prior_world_source_context": event.get(
+                        "human_prior_world_source_context"
+                    ),
+                    "human_prior_world_target_context": event.get(
+                        "human_prior_world_target_context"
+                    ),
+                    "human_prior_world_effect_signature": event.get(
+                        "human_prior_world_effect_signature"
+                    ),
                     "human_prior_source_player_slot": json.dumps(
                         event.get("human_prior_source_player_slot")
                     ),
@@ -647,6 +687,12 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "human_prior_navigation_reward",
         "human_prior_life_loss_penalty",
         "human_prior_life_loss_confirmed",
+        "human_prior_best_first_applied",
+        "human_prior_graph_source_signature",
+        "human_prior_graph_target_signature",
+        "human_prior_world_source_context",
+        "human_prior_world_target_context",
+        "human_prior_world_effect_signature",
         "human_prior_source_player_slot",
         "human_prior_target_player_slot",
         "human_prior_target_chest_slot",
@@ -916,6 +962,45 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         ),
         "human_prior_life_losses": event_counts.get(
             "human_prior_life_loss_confirmed", 0
+        ),
+        "human_prior_world_effect_confirmations": event_counts.get(
+            "human_prior_world_effect_confirmation", 0
+        ),
+        "human_prior_world_effects_accepted": sum(
+            event["event"] == "human_prior_world_effect_confirmation"
+            and bool(event.get("accepted"))
+            for event in events
+        ),
+        "human_prior_world_effects_rejected": sum(
+            event["event"] == "human_prior_world_effect_confirmation"
+            and not bool(event.get("accepted"))
+            for event in events
+        ),
+        "human_prior_unique_world_effect_signatures": len(
+            human_prior_world_effect_signatures
+        ),
+        "human_prior_unique_committed_world_contexts": len(
+            human_prior_world_contexts
+        ),
+        "human_prior_unique_committed_graph_states": len(
+            human_prior_graph_states
+        ),
+        "human_prior_unique_committed_player_positions": len(
+            human_prior_player_positions
+        ),
+        "human_prior_semantic_frontier_overrides": sum(
+            event["event"] == "archive_branch_added"
+            and bool(event.get("human_prior_semantic_frontier_override"))
+            for event in events
+        ),
+        "human_prior_best_first_filter_events": event_counts.get(
+            "human_prior_best_first_archives_filtered", 0
+        ),
+        "human_prior_best_first_frontier_exhaustions": event_counts.get(
+            "human_prior_best_first_frontier_exhausted", 0
+        ),
+        "human_prior_graph_stagnation_events": event_counts.get(
+            "human_prior_graph_stagnation_detected", 0
         ),
         "life_hazard_checkpoints_created": event_counts.get(
             "life_hazard_checkpoint_created", 0

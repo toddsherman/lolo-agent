@@ -13,6 +13,7 @@ from lolo_agent.ensemble_world_model import (
     save_ensemble_checkpoint,
 )
 from lolo_agent.environment import Action
+from lolo_agent.goal_prior import HeartGoalAnalysis
 from lolo_agent.mock_puzzle import MockPuzzleEnv
 from lolo_agent.neural_planner import (
     NeuralPlan,
@@ -1212,6 +1213,7 @@ class EnsemblePlannerTests(unittest.TestCase):
             causal_spatial_signature="02",
             causal_context_signature="causal-context-root",
             goal_source_signature="stable-goal-state",
+            goal_target_world_context="world-transformed",
         )
         older_unexpanded = _ArchivedBranch(
             state=env.save_state(),
@@ -1257,6 +1259,10 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertTrue(committed["human_prior_best_first_applied"])
         self.assertTrue(committed["human_prior_graph_edge_unexpanded"])
         self.assertEqual(
+            agent.current_human_prior_world_context_signature,
+            "world-transformed",
+        )
+        self.assertEqual(
             committed["restore_reason"],
             "human_prior_graph_stagnation",
         )
@@ -1279,6 +1285,12 @@ class EnsemblePlannerTests(unittest.TestCase):
         )
         agent.reset()
 
+        self.assertFalse(
+            agent._human_prior_semantic_frontier_novel(
+                "same-state", "same-state", Action.UP, 16
+            )
+        )
+
         self.assertTrue(
             agent._human_prior_semantic_frontier_novel(
                 "source-tile", "new-target-tile", Action.UP, 16
@@ -1292,6 +1304,89 @@ class EnsemblePlannerTests(unittest.TestCase):
             agent._human_prior_semantic_frontier_novel(
                 "source-tile", "new-target-tile", Action.UP, 16
             )
+        )
+
+    def test_human_prior_world_effect_masks_player_motion(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        agent = VerifiedNeuralAgent(
+            ActionEffectEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                causal_spatial_columns=2,
+                causal_spatial_rows=2,
+            ),
+        )
+        frame = Frame(32, 32, 3, bytes(32 * 32 * 3))
+        analysis = HeartGoalAnalysis(
+            reliable=True,
+            known_slots=(),
+            source_present=(),
+            target_present=(),
+            collected=(),
+            target_similarities=(),
+            heart_reward=0.0,
+            all_hearts_reward=0.0,
+            chest_reward=0.0,
+            navigation_reward=0.0,
+            life_loss_penalty=0.0,
+            total_reward=0.0,
+            global_visual_change=0.0,
+            target_intensity=0.0,
+            source_player_slot=(0, 0),
+            target_player_slot=(16, 0),
+            source_heart_distance=None,
+            target_heart_distance=None,
+            source_chest_slot=None,
+            target_chest_slot=None,
+            source_chest_distance=None,
+            target_chest_distance=None,
+            chest_completed=False,
+            source_life_signature=None,
+            target_life_signature=None,
+            life_counter_changed=False,
+            dark_transition_started=False,
+            life_loss_confirmed=False,
+        )
+
+        player_only = bytes((1, 1, 0, 0)).hex()
+        with_world_change = bytes((1, 1, 1, 0)).hex()
+        self.assertEqual(
+            agent._human_prior_world_effect_signature(
+                player_only, analysis, frame
+            ),
+            "",
+        )
+        self.assertEqual(
+            agent._human_prior_world_effect_signature(
+                with_world_change, analysis, frame
+            ),
+            bytes((0, 0, 1, 0)).hex(),
+        )
+        target_context = agent._next_human_prior_world_context(
+            "human-prior-world-root",
+            bytes((0, 0, 1, 0)).hex(),
+        )
+        source_signature, target_signature = (
+            agent._human_prior_graph_signatures(
+                analysis,
+                "human-prior-world-root",
+                target_context,
+            )
+        )
+        self.assertNotEqual(source_signature, target_signature)
+        self.assertIn("world=human-prior-world-root", source_signature)
+        self.assertIn(f"world={target_context}", target_signature)
+        self.assertEqual(
+            agent._next_human_prior_world_context(
+                target_context,
+                bytes((0, 0, 1, 0)).hex(),
+            ),
+            "human-prior-world-root",
         )
 
     def test_persistent_change_filters_regressive_archives_when_alternatives_exist(

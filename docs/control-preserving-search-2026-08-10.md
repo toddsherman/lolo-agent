@@ -192,6 +192,59 @@ passed. A known return under passive waiting is not treated as proof that the
 first action is fatal, because continued intervention can still be required to
 escape a dynamic threat.
 
+## Assisted semantic save-state frontier
+
+The explicitly labelled positive-control track now performs best-first search
+over a stable pixel goal key: remaining heart slots, detected player tile,
+detected open-chest tile, and the visible HUD life glyph. This key is used only
+for archive ordering on the assisted track. The strict track remains unchanged.
+
+The first 300-decision semantic-frontier run reached 45 detected player
+positions and chest distance 4, but restored 206 branches while verifying only
+819. Extending the same configuration was stopped at decision 572 after no new
+position had appeared since decision 211; the archive had fallen to 35 and the
+chest had not opened. Offline inspection found that the position-only key
+merged screens with materially different lower-room layouts. It also archived
+same-state actions during autonomous flashing merely because the controller
+edge had not yet been tried.
+
+The assisted graph now retains an alternative only when its stable semantic
+state changes. A matched action-versus-`NOOP` coarse effect is allowed to make
+a new world variant only after:
+
+1. source and target player cells are removed from the effect;
+2. directional effects are local to the detected player, while learned
+   interaction-button effects may be non-local; and
+3. counterfactual probing shows that action-dependent control is present on
+   the very next horizon.
+
+Accepted non-player cells are accumulated as a reversible parity state rather
+than an action-history hash. Applying the same coarse transformation twice
+returns to the prior context. Save-state archive entries and life/scene
+checkpoints preserve this context explicitly.
+
+The final native comparison,
+`spatial-v14-room2-assisted-reversible-world-context-from-d100-d300`, completed
+300 decisions with unchanged frozen parameters:
+
+| Metric at decision 300 | Position-only graph | Reversible world context |
+|---|---:|---:|
+| Detected player positions | 45 | 36 |
+| Distinct assisted graph states | 45 | 101 |
+| Archive restores | 206 | 123 |
+| Verified branches | 819 | 1,503 |
+| Unique frames | 457 | 1,116 |
+| Best chest distance | 4 | 4 |
+| Confirmed life losses | 0 | 0 |
+
+The new run probed 204 candidate non-player effects, rejected 86 without
+immediate control, accepted 118, and visited 36 world-context values. It did
+not open the chest or clear Room 2. The result is nevertheless a stronger
+search direction: it spends fewer decisions restoring animation-sensitive
+branches and investigates more action-conditioned puzzle states, at the cost
+of deferring nine positions in the far upper-right corridor within this fixed
+budget.
+
 ## Telemetry
 
 New events preserve every diagnostic and recovery decision:
@@ -243,7 +296,13 @@ verified save states, with controllability as a hard constraint and persistent
 pixel changes as the progress value. Increasing a semantic reward would not
 address the demonstrated timing and lineage failures.
 
+The semantic-frontier comparison has now reached that gate. The next experiment
+should plan short, verified multi-action options inside each assisted world
+context and prefer options that reach a new context or a new player position
+without losing immediate control. It should not increase the heart/chest reward
+or add a room-specific action sequence.
+
 ## Verification
 
-The complete test suite passes: 165 tests, with 3 expected skips. Every native
-run reported `frozen_evaluation_audit=pass`.
+The complete test suite passes: 168 tests, with 3 expected skips. Every
+completed native run reported `frozen_evaluation_audit=pass`.

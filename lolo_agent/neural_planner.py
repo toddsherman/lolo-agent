@@ -159,6 +159,9 @@ class _ArchivedBranch:
     search_depth: int = 0
     goal_source_signature: str = ""
     goal_target_signature: str = ""
+    goal_source_world_context: str = "human-prior-world-root"
+    goal_target_world_context: str = "human-prior-world-root"
+    goal_world_effect_signature: str = ""
 
 
 @dataclass(frozen=True)
@@ -232,6 +235,7 @@ class _LifeHazardCheckpoint:
     action_streak: int
     goal_heart_slots: Tuple[Tuple[int, int], ...]
     goal_player_slot: Optional[Tuple[int, int]]
+    human_prior_world_context_signature: str = "human-prior-world-root"
     kind: str = "causal_option"
     state_id: Optional[str] = None
 
@@ -585,6 +589,9 @@ class VerifiedNeuralAgent:
         ] = Counter()
         self.human_prior_graph_state_visits: CounterType[str] = Counter()
         self.human_prior_graph_recovery_pending = False
+        self.current_human_prior_world_context_signature = (
+            "human-prior-world-root"
+        )
         self.last_navigation_change_decision: Optional[int] = None
         self.pending_life_hazard_choice: Optional[
             Tuple[int, str, Action, int, str]
@@ -703,6 +710,7 @@ class VerifiedNeuralAgent:
         player: Optional[Tuple[int, int]],
         chest: Optional[Tuple[int, int]],
         life_signature: Optional[str],
+        world_context: str = "human-prior-world-root",
     ) -> str:
         """Stable assisted-track state key derived only from labelled pixels.
 
@@ -721,26 +729,112 @@ class VerifiedNeuralAgent:
         life_key = life_signature or "unknown"
         return (
             f"hearts={hearts}|player={player[0]},{player[1]}|"
-            f"chest={chest_key}|life={life_key}"
+            f"chest={chest_key}|life={life_key}|world={world_context}"
+        )
+
+    def _human_prior_world_effect_signature(
+        self,
+        spatial_signature: Optional[str],
+        analysis: Optional[HeartGoalAnalysis],
+        frame: Frame,
+        action: Optional[Action] = None,
+    ) -> str:
+        """Remove detected player motion from a matched causal pixel effect.
+
+        The remaining cells are a rule-free, action-conditioned indication
+        that something in the room changed independently of the controlled
+        sprite.  Comparing against a duration-matched NOOP has already
+        removed autonomous animation; masking the source and target player
+        tiles prevents ordinary movement from creating path-dependent world
+        states.
+        """
+
+        if not spatial_signature or analysis is None:
+            return ""
+        try:
+            occupied = bytearray.fromhex(spatial_signature)
+        except ValueError:
+            return ""
+        columns = min(self.config.causal_spatial_columns, frame.width)
+        rows = min(self.config.causal_spatial_rows, frame.height)
+        if len(occupied) != columns * rows:
+            return ""
+        player_cells = set()
+        for slot in {
+            analysis.source_player_slot,
+            analysis.target_player_slot,
+        }:
+            if slot is None:
+                continue
+            gx = min(columns - 1, max(0, slot[0] * columns // frame.width))
+            gy = min(rows - 1, max(0, slot[1] * rows // frame.height))
+            player_cells.add((gx, gy))
+            occupied[gy * columns + gx] = 0
+        if action not in (Action.A, Action.B) and player_cells:
+            for index in range(len(occupied)):
+                gx = index % columns
+                gy = index // columns
+                if min(
+                    abs(gx - px) + abs(gy - py)
+                    for px, py in player_cells
+                ) > 1:
+                    occupied[index] = 0
+        if not any(occupied):
+            return ""
+        return occupied.hex()
+
+    @staticmethod
+    def _next_human_prior_world_context(
+        source_context: str, world_effect_signature: str
+    ) -> str:
+        if not world_effect_signature:
+            return source_context
+        effect = bytes.fromhex(world_effect_signature)
+        width = max(1, (len(effect) + 3) // 4)
+        try:
+            active = (
+                0
+                if source_context == "human-prior-world-root"
+                else int(source_context, 16)
+            )
+        except ValueError:
+            active = 0
+        for index, changed in enumerate(effect):
+            if changed:
+                active ^= 1 << index
+        return (
+            "human-prior-world-root"
+            if active == 0
+            else f"{active:0{width}x}"
         )
 
     def _human_prior_graph_signatures(
-        self, analysis: Optional[HeartGoalAnalysis]
+        self,
+        analysis: Optional[HeartGoalAnalysis],
+        source_world_context: Optional[str] = None,
+        target_world_context: Optional[str] = None,
     ) -> Tuple[str, str]:
         if analysis is None:
             return "", ""
+        source_context = (
+            source_world_context
+            or self.current_human_prior_world_context_signature
+        )
+        target_context = target_world_context or source_context
         return (
             self._human_prior_graph_signature(
                 analysis.source_present,
                 analysis.source_player_slot,
                 analysis.source_chest_slot,
                 analysis.source_life_signature,
+                source_context,
             ),
             self._human_prior_graph_signature(
                 analysis.target_present,
                 analysis.target_player_slot,
                 analysis.target_chest_slot or analysis.source_chest_slot,
                 analysis.target_life_signature,
+                target_context,
             ),
         )
 
@@ -783,11 +877,14 @@ class VerifiedNeuralAgent:
         _visits, edge_unexpanded = self._human_prior_graph_edge_coverage(
             source_signature, action, duration
         )
+        state_changed = bool(
+            target_signature and target_signature != source_signature
+        )
         target_unvisited = bool(
-            target_signature
+            state_changed
             and not self.human_prior_graph_state_visits[target_signature]
         )
-        return edge_unexpanded or target_unvisited
+        return target_unvisited or (edge_unexpanded and state_changed)
 
     def _record_human_prior_outcome(
         self,
@@ -1020,6 +1117,9 @@ class VerifiedNeuralAgent:
         self.human_prior_graph_edge_visits = Counter()
         self.human_prior_graph_state_visits = Counter()
         self.human_prior_graph_recovery_pending = False
+        self.current_human_prior_world_context_signature = (
+            "human-prior-world-root"
+        )
         self.last_causal_cell_progress_decision = None
         self.behavioral_edge_visits = Counter()
         self.causal_spatial_cell_visits: CounterType[Tuple[int, int]] = Counter()
@@ -1138,6 +1238,9 @@ class VerifiedNeuralAgent:
                 None
                 if self.goal_prior is None
                 else self.goal_prior.current_player_slot
+            ),
+            human_prior_world_context_signature=(
+                self.current_human_prior_world_context_signature
             ),
             kind="known_scene_root",
             state_id=self._state_id(known_scene_state),
@@ -3649,6 +3752,9 @@ class VerifiedNeuralAgent:
         current_scene = self._scene_signature(self.frame)
         source_frame = self.frame
         source_causal_context_signature = self.current_causal_context_signature
+        source_human_prior_world_context_signature = (
+            self.current_human_prior_world_context_signature
+        )
         source_signature = self.current_frontier_signature
         source_pose_action = self.current_pose_action
         source_last_action = self.last_action
@@ -3916,6 +4022,9 @@ class VerifiedNeuralAgent:
             branch_action_penalties: Dict[int, Dict[str, float]] = {}
             branch_goal_analyses: Dict[int, Optional[HeartGoalAnalysis]] = {}
             branch_goal_signatures: Dict[int, Tuple[str, str]] = {}
+            branch_goal_world_contexts: Dict[
+                int, Tuple[str, str, str]
+            ] = {}
             for (
                 plan,
                 state,
@@ -4111,8 +4220,72 @@ class VerifiedNeuralAgent:
                     else self.goal_prior.analyze(source_frame, target)
                 )
                 branch_goal_analyses[id(state)] = goal_analysis
+                goal_world_effect_signature = (
+                    self._human_prior_world_effect_signature(
+                        causal_spatial_signature,
+                        goal_analysis,
+                        target,
+                        plan.path[0],
+                    )
+                )
+                world_effect_confirmation: Optional[Dict[str, Any]] = None
+                if (
+                    goal_world_effect_signature
+                    and self.config.human_prior_best_first_archive
+                    and len(self.config.actions) > 1
+                ):
+                    control_probe_actions = tuple(
+                        dict.fromkeys((*self.config.actions, Action.NOOP))
+                    )
+                    try:
+                        world_effect_confirmation = (
+                            self._confirm_future_control_collapse(
+                                state,
+                                target,
+                                control_probe_actions,
+                                duration,
+                            )
+                        )
+                    finally:
+                        self.env.load_state(root)
+                    world_effect_confirmed = bool(
+                        world_effect_confirmation["control_returned"]
+                        and world_effect_confirmation[
+                            "control_returned_step"
+                        ]
+                        == 1
+                    )
+                    self._emit(
+                        "human_prior_world_effect_confirmation",
+                        decision=self.decision_index + 1,
+                        action=plan.path[0],
+                        action_frames=duration,
+                        accepted=world_effect_confirmed,
+                        human_prior_world_effect_signature=(
+                            goal_world_effect_signature
+                        ),
+                        **world_effect_confirmation,
+                        **self._frame_fields(target),
+                    )
+                    if not world_effect_confirmed:
+                        goal_world_effect_signature = ""
+                goal_target_world_context = (
+                    self._next_human_prior_world_context(
+                        source_human_prior_world_context_signature,
+                        goal_world_effect_signature,
+                    )
+                )
+                branch_goal_world_contexts[id(state)] = (
+                    source_human_prior_world_context_signature,
+                    goal_target_world_context,
+                    goal_world_effect_signature,
+                )
                 goal_source_signature, goal_target_signature = (
-                    self._human_prior_graph_signatures(goal_analysis)
+                    self._human_prior_graph_signatures(
+                        goal_analysis,
+                        source_human_prior_world_context_signature,
+                        goal_target_world_context,
+                    )
                 )
                 branch_goal_signatures[id(state)] = (
                     goal_source_signature,
@@ -4266,6 +4439,15 @@ class VerifiedNeuralAgent:
                     ),
                     human_prior_graph_target_signature=(
                         goal_target_signature or None
+                    ),
+                    human_prior_world_source_context=(
+                        source_human_prior_world_context_signature
+                    ),
+                    human_prior_world_target_context=(
+                        goal_target_world_context
+                    ),
+                    human_prior_world_effect_signature=(
+                        goal_world_effect_signature or None
                     ),
                     human_prior_graph_edge_visits_before=(
                         human_prior_graph_edge_visits_before
@@ -4946,6 +5128,11 @@ class VerifiedNeuralAgent:
                 committed_goal_source_signature,
                 committed_goal_target_signature,
             ) = branch_goal_signatures[id(state)]
+            (
+                committed_goal_source_world_context,
+                committed_goal_target_world_context,
+                committed_goal_world_effect_signature,
+            ) = branch_goal_world_contexts[id(state)]
             self._advance_temporal_option(
                 source_signature,
                 current_scene,
@@ -5038,6 +5225,9 @@ class VerifiedNeuralAgent:
             )
             self.current_causal_context_signature = (
                 committed_target_causal_context_signature
+            )
+            self.current_human_prior_world_context_signature = (
+                committed_goal_target_world_context
             )
             if committed_context["detected"]:
                 self.causal_outcome_contexts.add(
@@ -5188,6 +5378,9 @@ class VerifiedNeuralAgent:
                             action_streak=source_action_streak,
                             goal_heart_slots=source_goal_heart_slots,
                             goal_player_slot=source_goal_player_slot,
+                            human_prior_world_context_signature=(
+                                source_human_prior_world_context_signature
+                            ),
                             state_id=self._state_id(root),
                         )
                     )
@@ -5226,6 +5419,9 @@ class VerifiedNeuralAgent:
                             action_streak=source_action_streak,
                             goal_heart_slots=source_goal_heart_slots,
                             goal_player_slot=source_goal_player_slot,
+                            human_prior_world_context_signature=(
+                                source_human_prior_world_context_signature
+                            ),
                             kind="goal_milestone",
                             state_id=self._state_id(root),
                         )
@@ -5388,6 +5584,15 @@ class VerifiedNeuralAgent:
                         goal_target_signature=(
                             committed_goal_target_signature
                         ),
+                        goal_source_world_context=(
+                            committed_goal_source_world_context
+                        ),
+                        goal_target_world_context=(
+                            committed_goal_target_world_context
+                        ),
+                        goal_world_effect_signature=(
+                            committed_goal_world_effect_signature
+                        ),
                     )
                 )
                 added += 1
@@ -5532,6 +5737,11 @@ class VerifiedNeuralAgent:
                     alternative_goal_source_signature,
                     alternative_goal_target_signature,
                 ) = branch_goal_signatures[id(alternative_state)]
+                (
+                    alternative_goal_source_world_context,
+                    alternative_goal_target_world_context,
+                    alternative_goal_world_effect_signature,
+                ) = branch_goal_world_contexts[id(alternative_state)]
                 alternative_semantic_frontier_novel = (
                     self._human_prior_semantic_frontier_novel(
                         alternative_goal_source_signature,
@@ -5760,6 +5970,15 @@ class VerifiedNeuralAgent:
                         goal_target_signature=(
                             alternative_goal_target_signature
                         ),
+                        goal_source_world_context=(
+                            alternative_goal_source_world_context
+                        ),
+                        goal_target_world_context=(
+                            alternative_goal_target_world_context
+                        ),
+                        goal_world_effect_signature=(
+                            alternative_goal_world_effect_signature
+                        ),
                     )
                 )
                 added += 1
@@ -5791,6 +6010,15 @@ class VerifiedNeuralAgent:
                     ),
                     human_prior_graph_target_signature=(
                         alternative_goal_target_signature or None
+                    ),
+                    human_prior_world_source_context=(
+                        alternative_goal_source_world_context
+                    ),
+                    human_prior_world_target_context=(
+                        alternative_goal_target_world_context
+                    ),
+                    human_prior_world_effect_signature=(
+                        alternative_goal_world_effect_signature or None
                     ),
                     persistent_frontier_value=archive_frontier_value,
                     causal_spatial_archive_bonus=(
@@ -5965,6 +6193,12 @@ class VerifiedNeuralAgent:
                             parent_frame_digest=source_frame.digest,
                             parent_decision=self.decision_index - 1,
                             search_depth=source_search_depth,
+                            goal_source_world_context=(
+                                source_human_prior_world_context_signature
+                            ),
+                            goal_target_world_context=(
+                                source_human_prior_world_context_signature
+                            ),
                         )
                     )
                     added += 1
@@ -6186,6 +6420,15 @@ class VerifiedNeuralAgent:
                 human_prior_graph_target_signature=(
                     committed_goal_target_signature or None
                 ),
+                human_prior_world_source_context=(
+                    committed_goal_source_world_context
+                ),
+                human_prior_world_target_context=(
+                    committed_goal_target_world_context
+                ),
+                human_prior_world_effect_signature=(
+                    committed_goal_world_effect_signature or None
+                ),
                 human_prior_graph_edge_visits_before=(
                     committed_goal_graph_edge_visits_before
                 ),
@@ -6370,6 +6613,9 @@ class VerifiedNeuralAgent:
         self.current_causal_context_signature = (
             checkpoint.causal_context_signature
         )
+        self.current_human_prior_world_context_signature = (
+            checkpoint.human_prior_world_context_signature
+        )
         self.current_pose_action = checkpoint.pose_action
         self.last_action = checkpoint.last_action
         self.last_duration = checkpoint.last_duration
@@ -6502,6 +6748,9 @@ class VerifiedNeuralAgent:
         self.current_frontier_signature = checkpoint.frontier_signature
         self.current_causal_context_signature = (
             checkpoint.causal_context_signature
+        )
+        self.current_human_prior_world_context_signature = (
+            checkpoint.human_prior_world_context_signature
         )
         self.current_pose_action = checkpoint.pose_action
         self.last_action = checkpoint.last_action
@@ -7319,6 +7568,9 @@ class VerifiedNeuralAgent:
         self.current_causal_context_signature = (
             restored_causal_context_signature
         )
+        self.current_human_prior_world_context_signature = (
+            branch.goal_target_world_context
+        )
         if branch.causal_event_outcome:
             self.causal_outcome_contexts.add(
                 restored_causal_context_signature
@@ -7473,6 +7725,15 @@ class VerifiedNeuralAgent:
             human_prior_graph_target_signature=(
                 branch.goal_target_signature or None
             ),
+            human_prior_world_source_context=(
+                branch.goal_source_world_context
+            ),
+            human_prior_world_target_context=(
+                branch.goal_target_world_context
+            ),
+            human_prior_world_effect_signature=(
+                branch.goal_world_effect_signature or None
+            ),
             human_prior_graph_edge_visits_before=(
                 restored_goal_graph_edge_visits_before
             ),
@@ -7590,6 +7851,15 @@ class VerifiedNeuralAgent:
             ),
             human_prior_graph_target_signature=(
                 branch.goal_target_signature or None
+            ),
+            human_prior_world_source_context=(
+                branch.goal_source_world_context
+            ),
+            human_prior_world_target_context=(
+                branch.goal_target_world_context
+            ),
+            human_prior_world_effect_signature=(
+                branch.goal_world_effect_signature or None
             ),
             human_prior_graph_edge_visits_before=(
                 restored_goal_graph_edge_visits_before

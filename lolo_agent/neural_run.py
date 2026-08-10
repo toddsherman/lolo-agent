@@ -814,22 +814,31 @@ def main() -> None:
                 else None
             )
             decisions = []
-            for decision_index in range(1, args.decisions + 1):
-                decision = agent.decide()
-                decisions.append(decision)
-                stop = (
-                    None
-                    if detector is None
-                    else detector.observe(decision_index, decision.frame)
-                )
-                if stop is not None:
-                    logger.log(
-                        "evaluator_stable_scene_change",
-                        agent_visible=False,
-                        **stop,
+            try:
+                for decision_index in range(1, args.decisions + 1):
+                    decision = agent.decide()
+                    decisions.append(decision)
+                    stop = (
+                        None
+                        if detector is None
+                        else detector.observe(decision_index, decision.frame)
                     )
-                    break
-            agent.clear_archive()
+                    if stop is not None:
+                        logger.log(
+                            "evaluator_stable_scene_change",
+                            agent_visible=False,
+                            **stop,
+                        )
+                        break
+            finally:
+                try:
+                    agent.clear_archive()
+                except Exception as cleanup_error:
+                    logger.log(
+                        "agent_cleanup_failed",
+                        error_type=type(cleanup_error).__name__,
+                        error=str(cleanup_error),
+                    )
         after = model.checkpoint_digest
         if before != after:
             raise RuntimeError("frozen evaluation changed persistent parameters")
@@ -873,10 +882,11 @@ def main() -> None:
                     parameter_sha256_after=spatial_returnability_after,
                 )
         logger.close("complete")
-    except Exception as exc:
-        if agent is not None:
-            agent.clear_archive()
-        logger.close("error", str(exc))
+    except BaseException as exc:
+        logger.close(
+            "interrupted" if isinstance(exc, KeyboardInterrupt) else "error",
+            str(exc),
+        )
         build_run_summary(logger.run_dir)
         raise
     summary = build_run_summary(logger.run_dir)

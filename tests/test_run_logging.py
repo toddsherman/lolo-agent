@@ -88,6 +88,29 @@ class RunLoggingTests(unittest.TestCase):
             self.assertIn("action_effect_known_branches", summary)
             self.assertIn("learned_hazard_filter_events", summary)
             self.assertIn("human_prior_life_losses", summary)
+            self.assertIn("human_prior_world_effect_confirmations", summary)
+            self.assertIn("human_prior_world_effects_accepted", summary)
+            self.assertIn("human_prior_world_effects_rejected", summary)
+            self.assertIn(
+                "human_prior_unique_world_effect_signatures", summary
+            )
+            self.assertIn(
+                "human_prior_unique_committed_world_contexts", summary
+            )
+            self.assertIn(
+                "human_prior_unique_committed_graph_states", summary
+            )
+            self.assertIn(
+                "human_prior_unique_committed_player_positions", summary
+            )
+            self.assertIn(
+                "human_prior_semantic_frontier_overrides", summary
+            )
+            self.assertIn("human_prior_best_first_filter_events", summary)
+            self.assertIn(
+                "human_prior_best_first_frontier_exhaustions", summary
+            )
+            self.assertIn("human_prior_graph_stagnation_events", summary)
             self.assertIn("life_hazard_checkpoints_created", summary)
             self.assertIn("life_hazard_checkpoint_restores", summary)
             self.assertIn("goal_milestone_checkpoints_created", summary)

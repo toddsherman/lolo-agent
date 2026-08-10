@@ -152,6 +152,33 @@ causal cells, and global coverage score/bonus totals.
 can map where action-dependent changes occurred without adding semantic object
 labels.
 
+On the explicitly labelled assisted reward track, semantic archive search adds:
+
+- `human_prior_graph_source_signature` and
+  `human_prior_graph_target_signature`, stable keys containing the visible
+  goal state, detected player tile, HUD life glyph, and reversible world
+  context;
+- `human_prior_world_source_context`,
+  `human_prior_world_target_context`, and
+  `human_prior_world_effect_signature` on verified, archived, restored, and
+  committed transitions;
+- `human_prior_world_effect_confirmation`, which records the candidate coarse
+  effect, immediate-control acceptance, future outcome spread, confirmation
+  observations, action, duration, and endpoint frame;
+- `human_prior_semantic_frontier_override`, which explains when a new assisted
+  graph state is retained despite coarse causal-frontier deduplication; and
+- `human_prior_best_first_archives_filtered`,
+  `human_prior_best_first_frontier_exhausted`, and
+  `human_prior_graph_stagnation_detected`, which make every semantic
+  backtracking decision reconstructable.
+
+These fields are experimental assisted-track telemetry. They do not expose ROM
+memory and are not present in the strict policy state. `summary.json` rolls up
+confirmation/acceptance counts, unique effect signatures, committed world
+contexts, graph states, player positions, semantic overrides, best-first
+filter/exhaustion events, and graph-stagnation events. `decisions.csv` carries
+the graph and world-context keys on every commit.
+
 ## Frozen spatial-model telemetry
 
 Supplying `--spatial-shadow-checkpoint` adds predictions from the spatial model

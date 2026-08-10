@@ -218,3 +218,31 @@ specific behavioral contexts, but it did not learn the reusable relationship
 baseline for the assisted exact-context architecture. Further room-specific
 reward or rollback tuning is deferred in favor of the persistent spatial
 causal model described in `spatial-causal-model-2026-08-10.md`.
+
+## Reversible assisted world context
+
+After the all-heart frontier was recovered, a stable assisted best-first graph
+was added as a positive-control search mechanism. The first key used only the
+visible goal state and player tile. It reached 45 player positions and chest
+distance 4, but a longer continuation added no position after decision 211 and
+did not complete the room.
+
+The key now includes confirmed action-conditioned non-player coarse cells. It
+does not label those cells as enemies, blocks, hazards, or any other object.
+Directional effects are masked to remove player motion and remote animation;
+the endpoint must retain counterfactual control immediately. Accepted cells are
+represented by reversible parity so repeated inverse-like effects can revisit
+an existing context instead of extending a path-history string.
+
+In the 300-decision frozen comparison
+`spatial-v14-room2-assisted-reversible-world-context-from-d100-d300`, the agent
+visited 101 goal-plus-world graph states across 36 player positions, verified
+1,503 branches, restored 123 archives, and produced 1,116 unique frames. The
+position-only comparison visited 45 graph states, verified 819 branches,
+restored 206 archives, and produced 457 unique frames. Neither run opened the
+chest; both reached chest distance 4 and lost no life.
+
+This supports the current plan of record: keep the reward weights fixed and
+improve verified multi-action planning over the richer context. The strict
+rule-free evaluation track remains separate and receives none of the heart,
+chest, player, or life prototypes used by this assisted diagnostic.
