@@ -4092,6 +4092,28 @@ class VerifiedNeuralAgent:
             < self.config.visual_stagnation_visits
         ):
             return None
+        active_trace = self.active_temporal_option
+        maximum_passive_observations = (
+            self.config.autonomous_grace_decisions
+            + self.config.visual_stagnation_visits
+        )
+        if (
+            not delayed_return
+            and active_trace is not None
+            and active_trace.passive_decisions
+            <= maximum_passive_observations
+        ):
+            self._emit(
+                "temporal_option_recovery_suppressed",
+                decision=self.decision_index + 1,
+                passive_decisions=active_trace.passive_decisions,
+                maximum_passive_observations=maximum_passive_observations,
+                autonomous_grace_remaining=self.autonomous_grace_remaining,
+                visual_stagnation_streak=self.visual_stagnation_streak,
+                archive_size=len(self.archive),
+                **self._frame_fields(self.frame),
+            )
+            return None
         recovery_reason = (
             "delayed_visual_return" if delayed_return else "visual_stagnation"
         )

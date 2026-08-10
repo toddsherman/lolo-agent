@@ -31,6 +31,10 @@ colours. All detections and rewards are recorded on every verified branch.
   causal archives. It does not create an archive by itself.
 - A distance-changing action receives a two-decision grace window before
   delayed-return recovery may abandon that new frontier.
+- A bounded temporal-option observation window now takes precedence over
+  visual-stagnation recovery. This prevents archive restoration from cutting
+  off a delayed animation before the configured passive observations and the
+  subsequent intervention can occur.
 - After the final heart, either of the two pixel-observed open-treasure
   animation frames becomes the navigation target using the same symmetric
   `+1`/`-1` potential. Contact followed by a dark or room-changing frame gives

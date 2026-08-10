@@ -514,6 +514,55 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertFalse(first.restored_archive)
         self.assertTrue(second.restored_archive)
 
+    def test_temporal_observation_window_precedes_stagnation_recovery(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = MockPuzzleEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                visual_stagnation_visits=1,
+                autonomous_grace_decisions=2,
+            ),
+        )
+        frame = agent.reset()
+        branch_state = env.save_state()
+        agent.archive = [
+            _ArchivedBranch(
+                branch_state,
+                frame,
+                NeuralPlan((Action.RIGHT,), (1,), 1.0, 0.0),
+                1.0,
+                "other-scene",
+                0,
+            )
+        ]
+        agent.visual_stagnation_streak = 1
+        agent.active_temporal_option = _TemporalOptionTrace(
+            choice=("source", Action.RIGHT, 1),
+            initiation_decision=1,
+            start_decision=1,
+            entry_signature="source",
+            entry_scene="scene",
+            passive_decisions=3,
+        )
+
+        suppressed = agent._restore_if_stagnant()
+
+        self.assertIsNone(suppressed)
+        self.assertEqual(len(agent.archive), 1)
+
+        agent.active_temporal_option.passive_decisions = 4
+        restored = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(restored)
+        self.assertTrue(restored.restored_archive)
+
     def test_duration_conditioned_planner_selects_a_press_length(self) -> None:
         model = EnsembleVisualDynamicsModel(
             latent_size=32,
