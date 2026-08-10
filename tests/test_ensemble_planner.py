@@ -1164,6 +1164,136 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(committed["parent_decision"], 7)
         self.assertEqual(committed["search_depth"], 3)
 
+    def test_human_prior_best_first_uses_stable_goal_state_edges(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = UniqueStateEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.LEFT),
+                planning_depth=1,
+                visual_stagnation_visits=1,
+                behavioral_best_first_archive=True,
+                human_prior_best_first_archive=True,
+                human_prior_graph_stagnation_visits=3,
+            ),
+            event_logger=logger,
+        )
+        current = agent.reset()
+        scene = agent._scene_signature(current)
+        repeated_frame = Frame(8, 8, 1, bytes([10]) + bytes(63))
+        unexpanded_frame = Frame(8, 8, 1, bytes([20]) + bytes(63))
+        older_unexpanded_frame = Frame(8, 8, 1, bytes([30]) + bytes(63))
+        repeated = _ArchivedBranch(
+            state=env.save_state(),
+            frame=repeated_frame,
+            plan=NeuralPlan((Action.RIGHT,), (4,), 0.0, 0.0),
+            score=100.0,
+            scene=scene,
+            created=1,
+            origin_signature="animation-cluster-a",
+            causal_spatial_signature="01",
+            causal_context_signature="causal-context-root",
+            goal_source_signature="stable-goal-state",
+        )
+        unexpanded = _ArchivedBranch(
+            state=env.save_state(),
+            frame=unexpanded_frame,
+            plan=NeuralPlan((Action.LEFT,), (4,), 0.0, 0.0),
+            score=10.0,
+            scene=scene,
+            created=10,
+            origin_signature="animation-cluster-b",
+            causal_spatial_signature="02",
+            causal_context_signature="causal-context-root",
+            goal_source_signature="stable-goal-state",
+        )
+        older_unexpanded = _ArchivedBranch(
+            state=env.save_state(),
+            frame=older_unexpanded_frame,
+            plan=NeuralPlan((Action.UP,), (4,), 0.0, 0.0),
+            score=0.0,
+            scene=scene,
+            created=1,
+            origin_signature="animation-cluster-c",
+            causal_spatial_signature="03",
+            causal_context_signature="causal-context-root",
+            goal_source_signature="stable-goal-state",
+        )
+        agent.archive = [repeated, older_unexpanded, unexpanded]
+        agent._archive_frontier_score = lambda branch: branch.score
+        agent.human_prior_graph_edge_visits[
+            ("stable-goal-state", Action.RIGHT, 4)
+        ] = 2
+        agent.human_prior_graph_recovery_pending = True
+
+        restored = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(restored)
+        self.assertEqual(restored.frame.digest, unexpanded_frame.digest)
+        self.assertEqual(
+            agent.human_prior_graph_edge_visits[
+                ("stable-goal-state", Action.LEFT, 4)
+            ],
+            1,
+        )
+        filtered = [
+            event
+            for event in logger.events
+            if event["event"]
+            == "human_prior_best_first_archives_filtered"
+        ]
+        self.assertEqual(len(filtered), 1)
+        committed = [
+            event
+            for event in logger.events
+            if event["event"] == "decision_committed"
+        ][-1]
+        self.assertTrue(committed["human_prior_best_first_applied"])
+        self.assertTrue(committed["human_prior_graph_edge_unexpanded"])
+        self.assertEqual(
+            committed["restore_reason"],
+            "human_prior_graph_stagnation",
+        )
+
+    def test_new_semantic_target_overrides_coarse_frontier_deduplication(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        agent = VerifiedNeuralAgent(
+            ActionEffectEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.UP,),
+                planning_depth=1,
+                human_prior_best_first_archive=True,
+            ),
+        )
+        agent.reset()
+
+        self.assertTrue(
+            agent._human_prior_semantic_frontier_novel(
+                "source-tile", "new-target-tile", Action.UP, 16
+            )
+        )
+        agent.human_prior_graph_edge_visits[
+            ("source-tile", Action.UP, 16)
+        ] = 1
+        agent.human_prior_graph_state_visits["new-target-tile"] = 1
+        self.assertFalse(
+            agent._human_prior_semantic_frontier_novel(
+                "source-tile", "new-target-tile", Action.UP, 16
+            )
+        )
+
     def test_persistent_change_filters_regressive_archives_when_alternatives_exist(
         self,
     ) -> None:

@@ -99,6 +99,8 @@ class NeuralPlanningConfig:
     human_prior_navigation_reward: float = 0.0
     human_prior_life_loss_penalty: float = 0.0
     human_prior_navigation_recovery_grace: int = 0
+    human_prior_best_first_archive: bool = False
+    human_prior_graph_stagnation_visits: int = 0
     human_prior_intrinsic_clip: float = 10.0
     spatial_selection_weight: float = 0.0
     returnability_probe_depth: int = 0
@@ -155,6 +157,8 @@ class _ArchivedBranch:
     parent_frame_digest: Optional[str] = None
     parent_decision: int = 0
     search_depth: int = 0
+    goal_source_signature: str = ""
+    goal_target_signature: str = ""
 
 
 @dataclass(frozen=True)
@@ -453,6 +457,10 @@ class VerifiedNeuralAgent:
             raise ValueError(
                 "human-prior navigation recovery grace must be non-negative"
             )
+        if self.config.human_prior_graph_stagnation_visits < 0:
+            raise ValueError(
+                "human-prior graph stagnation visits must be non-negative"
+            )
         if self.config.human_prior_intrinsic_clip <= 0.0:
             raise ValueError("human-prior intrinsic clip must be positive")
         if self.config.spatial_selection_weight < 0.0:
@@ -572,6 +580,11 @@ class VerifiedNeuralAgent:
             )
         )
         self.goal_prior: Optional[PixelHeartGoalPrior] = None
+        self.human_prior_graph_edge_visits: CounterType[
+            Tuple[str, Action, int]
+        ] = Counter()
+        self.human_prior_graph_state_visits: CounterType[str] = Counter()
+        self.human_prior_graph_recovery_pending = False
         self.last_navigation_change_decision: Optional[int] = None
         self.pending_life_hazard_choice: Optional[
             Tuple[int, str, Action, int, str]
@@ -683,6 +696,98 @@ class VerifiedNeuralAgent:
             ),
             **analysis.telemetry(),
         }
+
+    @staticmethod
+    def _human_prior_graph_signature(
+        present: Sequence[Tuple[int, int]],
+        player: Optional[Tuple[int, int]],
+        chest: Optional[Tuple[int, int]],
+        life_signature: Optional[str],
+    ) -> str:
+        """Stable assisted-track state key derived only from labelled pixels.
+
+        Animation frames should not turn one physical puzzle position into an
+        unlimited number of apparent graph nodes.  The key is unavailable
+        when the explicit player detector is unavailable, in which case the
+        strict visual/behavioral frontier remains authoritative.
+        """
+
+        if player is None:
+            return ""
+        hearts = ";".join(
+            f"{x},{y}" for x, y in sorted(set(present))
+        )
+        chest_key = "none" if chest is None else f"{chest[0]},{chest[1]}"
+        life_key = life_signature or "unknown"
+        return (
+            f"hearts={hearts}|player={player[0]},{player[1]}|"
+            f"chest={chest_key}|life={life_key}"
+        )
+
+    def _human_prior_graph_signatures(
+        self, analysis: Optional[HeartGoalAnalysis]
+    ) -> Tuple[str, str]:
+        if analysis is None:
+            return "", ""
+        return (
+            self._human_prior_graph_signature(
+                analysis.source_present,
+                analysis.source_player_slot,
+                analysis.source_chest_slot,
+                analysis.source_life_signature,
+            ),
+            self._human_prior_graph_signature(
+                analysis.target_present,
+                analysis.target_player_slot,
+                analysis.target_chest_slot or analysis.source_chest_slot,
+                analysis.target_life_signature,
+            ),
+        )
+
+    def _current_human_prior_graph_signature(self) -> str:
+        if self.goal_prior is None or self.frame is None:
+            return ""
+        analysis = self.goal_prior.analyze(self.frame, self.frame)
+        return self._human_prior_graph_signatures(analysis)[1]
+
+    def _human_prior_graph_edge_coverage(
+        self, signature: str, action: Action, duration: int
+    ) -> Tuple[int, bool]:
+        if not signature:
+            return 0, False
+        visits = self.human_prior_graph_edge_visits[
+            (signature, action, duration)
+        ]
+        return visits, visits == 0
+
+    def _record_human_prior_graph_edge(
+        self, signature: str, action: Action, duration: int
+    ) -> None:
+        if signature:
+            self.human_prior_graph_edge_visits[
+                (signature, action, duration)
+            ] += 1
+
+    def _human_prior_semantic_frontier_novel(
+        self,
+        source_signature: str,
+        target_signature: str,
+        action: Action,
+        duration: int,
+    ) -> bool:
+        if (
+            not self.config.human_prior_best_first_archive
+            or not source_signature
+        ):
+            return False
+        _visits, edge_unexpanded = self._human_prior_graph_edge_coverage(
+            source_signature, action, duration
+        )
+        target_unvisited = bool(
+            target_signature
+            and not self.human_prior_graph_state_visits[target_signature]
+        )
+        return edge_unexpanded or target_unvisited
 
     def _record_human_prior_outcome(
         self,
@@ -912,6 +1017,9 @@ class VerifiedNeuralAgent:
         self.action_effect_values = {}
         self.action_effect_samples = Counter()
         self.causal_spatial_visits = Counter()
+        self.human_prior_graph_edge_visits = Counter()
+        self.human_prior_graph_state_visits = Counter()
+        self.human_prior_graph_recovery_pending = False
         self.last_causal_cell_progress_decision = None
         self.behavioral_edge_visits = Counter()
         self.causal_spatial_cell_visits: CounterType[Tuple[int, int]] = Counter()
@@ -1003,6 +1111,11 @@ class VerifiedNeuralAgent:
         self.pending_goal_milestone_checkpoint = None
         self._reset_goal_prior()
         self._calibrate_goal_prior(self.frame)
+        initial_goal_signature = self._current_human_prior_graph_signature()
+        if initial_goal_signature:
+            self.human_prior_graph_state_visits[
+                initial_goal_signature
+            ] += 1
         known_scene_state = self.env.save_state()
         self.known_scene_recovery_checkpoint = _LifeHazardCheckpoint(
             state=known_scene_state,
@@ -3401,6 +3514,36 @@ class VerifiedNeuralAgent:
         life_recovery = self._restore_after_life_loss()
         if life_recovery is not None:
             return life_recovery
+        semantic_stagnation_limit = (
+            self.config.human_prior_graph_stagnation_visits
+        )
+        current_goal_graph_signature = (
+            self._current_human_prior_graph_signature()
+        )
+        current_goal_graph_visits = (
+            0
+            if not current_goal_graph_signature
+            else self.human_prior_graph_state_visits[
+                current_goal_graph_signature
+            ]
+        )
+        self.human_prior_graph_recovery_pending = bool(
+            self.config.human_prior_best_first_archive
+            and semantic_stagnation_limit > 0
+            and current_goal_graph_signature
+            and current_goal_graph_visits >= semantic_stagnation_limit
+            and self.archive
+        )
+        if self.human_prior_graph_recovery_pending:
+            self._emit(
+                "human_prior_graph_stagnation_detected",
+                decision=self.decision_index + 1,
+                goal_signature=current_goal_graph_signature,
+                state_visits=current_goal_graph_visits,
+                stagnation_limit=semantic_stagnation_limit,
+                archive_size=len(self.archive),
+                **self._frame_fields(self.frame),
+            )
         restored = self._restore_if_stagnant()
         if restored is not None:
             return restored
@@ -3772,6 +3915,7 @@ class VerifiedNeuralAgent:
             branch_causal_contexts: Dict[int, Dict[str, Any]] = {}
             branch_action_penalties: Dict[int, Dict[str, float]] = {}
             branch_goal_analyses: Dict[int, Optional[HeartGoalAnalysis]] = {}
+            branch_goal_signatures: Dict[int, Tuple[str, str]] = {}
             for (
                 plan,
                 state,
@@ -3967,6 +4111,21 @@ class VerifiedNeuralAgent:
                     else self.goal_prior.analyze(source_frame, target)
                 )
                 branch_goal_analyses[id(state)] = goal_analysis
+                goal_source_signature, goal_target_signature = (
+                    self._human_prior_graph_signatures(goal_analysis)
+                )
+                branch_goal_signatures[id(state)] = (
+                    goal_source_signature,
+                    goal_target_signature,
+                )
+                (
+                    human_prior_graph_edge_visits_before,
+                    human_prior_graph_edge_unexpanded,
+                ) = self._human_prior_graph_edge_coverage(
+                    goal_source_signature,
+                    plan.path[0],
+                    duration,
+                )
                 score, clipped_intrinsic_score = self._human_prior_score(
                     intrinsic_score, goal_analysis
                 )
@@ -4101,6 +4260,18 @@ class VerifiedNeuralAgent:
                     intrinsic_score=intrinsic_score,
                     human_prior_clipped_intrinsic_score=(
                         clipped_intrinsic_score
+                    ),
+                    human_prior_graph_source_signature=(
+                        goal_source_signature or None
+                    ),
+                    human_prior_graph_target_signature=(
+                        goal_target_signature or None
+                    ),
+                    human_prior_graph_edge_visits_before=(
+                        human_prior_graph_edge_visits_before
+                    ),
+                    human_prior_graph_edge_unexpanded=(
+                        human_prior_graph_edge_unexpanded
                     ),
                     **self._human_prior_fields(goal_analysis),
                     abstract_signature=target_visual_cluster,
@@ -4771,6 +4942,10 @@ class VerifiedNeuralAgent:
                 target_frontier_signature,
             ) = chosen
             committed_goal_analysis = branch_goal_analyses[id(state)]
+            (
+                committed_goal_source_signature,
+                committed_goal_target_signature,
+            ) = branch_goal_signatures[id(state)]
             self._advance_temporal_option(
                 source_signature,
                 current_scene,
@@ -4878,6 +5053,26 @@ class VerifiedNeuralAgent:
             self._record_behavioral_edge(
                 source_signature, action, duration
             )
+            (
+                committed_goal_graph_edge_visits_before,
+                committed_goal_graph_edge_unexpanded,
+            ) = self._human_prior_graph_edge_coverage(
+                committed_goal_source_signature, action, duration
+            )
+            self._record_human_prior_graph_edge(
+                committed_goal_source_signature, action, duration
+            )
+            committed_goal_graph_state_visits_before = (
+                0
+                if not committed_goal_target_signature
+                else self.human_prior_graph_state_visits[
+                    committed_goal_target_signature
+                ]
+            )
+            if committed_goal_target_signature:
+                self.human_prior_graph_state_visits[
+                    committed_goal_target_signature
+                ] += 1
             self.action_counts[action] += 1
             self.duration_counts[duration] += 1
             self.action_duration_counts[(action, duration)] += 1
@@ -5187,6 +5382,12 @@ class VerifiedNeuralAgent:
                         parent_frame_digest=source_frame.digest,
                         parent_decision=self.decision_index - 1,
                         search_depth=source_search_depth + 1,
+                        goal_source_signature=(
+                            committed_goal_source_signature
+                        ),
+                        goal_target_signature=(
+                            committed_goal_target_signature
+                        ),
                     )
                 )
                 added += 1
@@ -5327,6 +5528,18 @@ class VerifiedNeuralAgent:
                 alternative_goal_analysis = branch_goal_analyses[
                     id(alternative_state)
                 ]
+                (
+                    alternative_goal_source_signature,
+                    alternative_goal_target_signature,
+                ) = branch_goal_signatures[id(alternative_state)]
+                alternative_semantic_frontier_novel = (
+                    self._human_prior_semantic_frontier_novel(
+                        alternative_goal_source_signature,
+                        alternative_goal_target_signature,
+                        alternative_plan.path[0],
+                        alternative_plan.durations[0],
+                    )
+                )
                 alternative_pose_action = self._resulting_pose_action(
                     source_pose_action,
                     alternative_plan.path[0],
@@ -5334,17 +5547,21 @@ class VerifiedNeuralAgent:
                 alternative_causal_outcome_key = self._causal_outcome_key(
                     alternative_frame, alternative_pose_action
                 )
-                if alternative_context["detected"] and (
-                    self.causal_outcome_restores[
-                        alternative_causal_outcome_key
-                    ]
-                    or any(
-                        branch.causal_event_outcome
-                        and self._causal_outcome_key(
-                            branch.frame, branch.pose_action
+                if (
+                    alternative_context["detected"]
+                    and not alternative_semantic_frontier_novel
+                    and (
+                        self.causal_outcome_restores[
+                            alternative_causal_outcome_key
+                        ]
+                        or any(
+                            branch.causal_event_outcome
+                            and self._causal_outcome_key(
+                                branch.frame, branch.pose_action
+                            )
+                            == alternative_causal_outcome_key
+                            for branch in self.archive
                         )
-                        == alternative_causal_outcome_key
-                        for branch in self.archive
                     )
                 ):
                     self._emit(
@@ -5441,6 +5658,8 @@ class VerifiedNeuralAgent:
                         and alternative_goal_analysis.milestone_reward > 0.0
                     ):
                         causal_frontier_already_covered = False
+                    elif alternative_semantic_frontier_novel:
+                        causal_frontier_already_covered = False
                 if causal_frontier_already_covered:
                     self._emit(
                         "archive_branch_rejected",
@@ -5535,6 +5754,12 @@ class VerifiedNeuralAgent:
                         parent_frame_digest=source_frame.digest,
                         parent_decision=self.decision_index - 1,
                         search_depth=source_search_depth + 1,
+                        goal_source_signature=(
+                            alternative_goal_source_signature
+                        ),
+                        goal_target_signature=(
+                            alternative_goal_target_signature
+                        ),
                     )
                 )
                 added += 1
@@ -5558,6 +5783,15 @@ class VerifiedNeuralAgent:
                     scene=self._scene_signature(alternative_frame),
                     origin_signature=source_signature,
                     frontier_signature=alternative_frontier_signature,
+                    human_prior_semantic_frontier_override=(
+                        alternative_semantic_frontier_novel
+                    ),
+                    human_prior_graph_source_signature=(
+                        alternative_goal_source_signature or None
+                    ),
+                    human_prior_graph_target_signature=(
+                        alternative_goal_target_signature or None
+                    ),
                     persistent_frontier_value=archive_frontier_value,
                     causal_spatial_archive_bonus=(
                         archive_causal_spatial_bonus
@@ -5945,6 +6179,27 @@ class VerifiedNeuralAgent:
                 temporal_option_counterfactuals=option_counterfactuals,
                 temporal_option_delayed_counterfactual_armed=(
                     self.pending_option_counterfactual is not None
+                ),
+                human_prior_graph_source_signature=(
+                    committed_goal_source_signature or None
+                ),
+                human_prior_graph_target_signature=(
+                    committed_goal_target_signature or None
+                ),
+                human_prior_graph_edge_visits_before=(
+                    committed_goal_graph_edge_visits_before
+                ),
+                human_prior_graph_edge_unexpanded=(
+                    committed_goal_graph_edge_unexpanded
+                ),
+                human_prior_graph_state_visits_before=(
+                    committed_goal_graph_state_visits_before
+                ),
+                human_prior_graph_stagnation_limit=(
+                    self.config.human_prior_graph_stagnation_visits
+                ),
+                human_prior_best_first_archive_enabled=(
+                    self.config.human_prior_best_first_archive
                 ),
                 **self._human_prior_fields(committed_goal_analysis),
                 action_counts=self.action_counts,
@@ -6335,9 +6590,13 @@ class VerifiedNeuralAgent:
         current_scene = self._scene_signature(self.frame)
         delayed_return = self.delayed_return_recovery
         known_scene_return = self.known_scene_return_recovery_pending
+        human_prior_graph_stagnation = (
+            self.human_prior_graph_recovery_pending
+        )
         if (
             not delayed_return
             and not known_scene_return
+            and not human_prior_graph_stagnation
             and self.visual_stagnation_streak
             < self.config.visual_stagnation_visits
         ):
@@ -6400,6 +6659,7 @@ class VerifiedNeuralAgent:
         if (
             not delayed_return
             and not known_scene_return
+            and not human_prior_graph_stagnation
             and (passive_window_open or autonomous_window_open)
         ):
             self._emit(
@@ -6424,15 +6684,20 @@ class VerifiedNeuralAgent:
             "known_scene_return_after_dark_transition"
             if known_scene_return
             else (
-                "delayed_visual_return"
-                if delayed_return
-                else "visual_stagnation"
+                "human_prior_graph_stagnation"
+                if human_prior_graph_stagnation
+                else (
+                    "delayed_visual_return"
+                    if delayed_return
+                    else "visual_stagnation"
+                )
             )
         )
         causal_cell_grace = self.config.causal_cell_recovery_grace_decisions
         if (
             causal_cell_grace > 0
             and not known_scene_return
+            and not human_prior_graph_stagnation
             and self.last_causal_cell_progress_decision is not None
             and self.decision_index
             - self.last_causal_cell_progress_decision
@@ -6477,7 +6742,7 @@ class VerifiedNeuralAgent:
             self.delayed_return_recovery = False
             self.delayed_return_loop_start = None
             return None
-        if delayed_return or known_scene_return:
+        if delayed_return or known_scene_return or human_prior_graph_stagnation:
             loop_start = self.delayed_return_loop_start or 0
             current_signature = self._signature(self.frame)
             if self.config.behavioral_best_first_archive:
@@ -6655,12 +6920,20 @@ class VerifiedNeuralAgent:
                 checkpoint_restored = self._restore_known_scene_checkpoint()
                 if checkpoint_restored is not None:
                     return checkpoint_restored
-            if delayed_return or known_scene_return:
+            if (
+                delayed_return
+                or known_scene_return
+                or human_prior_graph_stagnation
+            ):
                 self._emit(
                     (
                         "known_scene_return_recovery_unavailable"
                         if known_scene_return
-                        else "delayed_return_recovery_unavailable"
+                        else (
+                            "human_prior_graph_recovery_unavailable"
+                            if human_prior_graph_stagnation
+                            else "delayed_return_recovery_unavailable"
+                        )
                     ),
                     decision=self.decision_index,
                     loop_start=self.delayed_return_loop_start,
@@ -6670,6 +6943,7 @@ class VerifiedNeuralAgent:
                 self.delayed_return_recovery = False
                 self.delayed_return_loop_start = None
                 self.known_scene_return_recovery_pending = False
+                self.human_prior_graph_recovery_pending = False
             return None
         safe_eligible = []
         hazardous_eligible = []
@@ -6742,7 +7016,53 @@ class VerifiedNeuralAgent:
                 self.delayed_return_loop_start = None
             if known_scene_return:
                 self.known_scene_return_recovery_pending = False
+            if human_prior_graph_stagnation:
+                self.human_prior_graph_recovery_pending = False
             return None
+        human_prior_best_first_applied = False
+        human_prior_intervention_eligible = [
+            candidate
+            for candidate in behavioral_frontier_candidates
+            if candidate.plan.path[0] != Action.NOOP
+            and candidate.goal_source_signature
+        ]
+        if (
+            self.config.human_prior_best_first_archive
+            and human_prior_intervention_eligible
+        ):
+            human_prior_unexpanded_eligible = [
+                candidate
+                for candidate in human_prior_intervention_eligible
+                if self._human_prior_graph_edge_coverage(
+                    candidate.goal_source_signature,
+                    candidate.plan.path[0],
+                    candidate.plan.durations[0],
+                )[1]
+            ]
+            if human_prior_unexpanded_eligible:
+                alternatives_before = len(behavioral_frontier_candidates)
+                eligible = human_prior_unexpanded_eligible
+                human_prior_best_first_applied = True
+                self._emit(
+                    "human_prior_best_first_archives_filtered",
+                    decision=self.decision_index + 1,
+                    alternatives_before=alternatives_before,
+                    filtered_branches=(
+                        alternatives_before - len(eligible)
+                    ),
+                    alternatives_remaining=len(eligible),
+                    unexpanded_goal_edges=len(eligible),
+                    recovery_reason=recovery_reason,
+                )
+            else:
+                self._emit(
+                    "human_prior_best_first_frontier_exhausted",
+                    decision=self.decision_index + 1,
+                    intervention_alternatives=len(
+                        human_prior_intervention_eligible
+                    ),
+                    recovery_reason=recovery_reason,
+                )
         behavioral_intervention_eligible = [
             candidate
             for candidate in behavioral_frontier_candidates
@@ -6750,6 +7070,8 @@ class VerifiedNeuralAgent:
             and candidate.origin_signature
         ]
         if (
+            not human_prior_best_first_applied
+            and
             self.config.behavioral_best_first_archive
             and behavioral_intervention_eligible
         ):
@@ -6817,6 +7139,14 @@ class VerifiedNeuralAgent:
         )
         if goal_eligible:
             pass
+        elif human_prior_best_first_applied:
+            affordance_breadth_first = False
+            restore_key = lambda item: (
+                self._archive_frontier_score(item),
+                -item.created,
+                self.novelty.score(self._signature(item.frame)),
+                item.score,
+            )
         elif behavioral_best_first_applied:
             affordance_breadth_first = False
             restore_key = lambda item: (
@@ -6851,7 +7181,7 @@ class VerifiedNeuralAgent:
             affordance_breadth_first = bool(affordance_eligible)
             if affordance_eligible:
                 eligible = affordance_eligible
-        if behavioral_best_first_applied:
+        if human_prior_best_first_applied or behavioral_best_first_applied:
             pass
         elif not goal_eligible and not causal_event_eligible and affordance_breadth_first:
             eligible = affordance_eligible
@@ -6935,6 +7265,30 @@ class VerifiedNeuralAgent:
             branch.plan.path[0],
             branch.plan.durations[0],
         )
+        (
+            restored_goal_graph_edge_visits_before,
+            restored_goal_graph_edge_unexpanded,
+        ) = self._human_prior_graph_edge_coverage(
+            branch.goal_source_signature,
+            branch.plan.path[0],
+            branch.plan.durations[0],
+        )
+        self._record_human_prior_graph_edge(
+            branch.goal_source_signature,
+            branch.plan.path[0],
+            branch.plan.durations[0],
+        )
+        restored_goal_graph_state_visits_before = (
+            0
+            if not branch.goal_target_signature
+            else self.human_prior_graph_state_visits[
+                branch.goal_target_signature
+            ]
+        )
+        if branch.goal_target_signature:
+            self.human_prior_graph_state_visits[
+                branch.goal_target_signature
+            ] += 1
         restored_visual_cluster = self._abstract_signature(branch.frame)
         restored_frontier_signature = (
             branch.frontier_signature
@@ -6975,6 +7329,7 @@ class VerifiedNeuralAgent:
         self.delayed_return_recovery = False
         self.delayed_return_loop_start = None
         self.known_scene_return_recovery_pending = False
+        self.human_prior_graph_recovery_pending = False
         self.dark_transition_start_decision = None
         self.pending_option_choice = (
             (
@@ -7106,6 +7461,30 @@ class VerifiedNeuralAgent:
                 self.config.behavioral_best_first_archive
             ),
             behavioral_best_first_applied=behavioral_best_first_applied,
+            human_prior_best_first_archive_enabled=(
+                self.config.human_prior_best_first_archive
+            ),
+            human_prior_best_first_applied=(
+                human_prior_best_first_applied
+            ),
+            human_prior_graph_source_signature=(
+                branch.goal_source_signature or None
+            ),
+            human_prior_graph_target_signature=(
+                branch.goal_target_signature or None
+            ),
+            human_prior_graph_edge_visits_before=(
+                restored_goal_graph_edge_visits_before
+            ),
+            human_prior_graph_edge_unexpanded=(
+                restored_goal_graph_edge_unexpanded
+            ),
+            human_prior_graph_state_visits_before=(
+                restored_goal_graph_state_visits_before
+            ),
+            human_prior_graph_stagnation_limit=(
+                self.config.human_prior_graph_stagnation_visits
+            ),
             speculative_persistence_applied=(
                 speculative_persistence_applied
             ),
@@ -7200,6 +7579,30 @@ class VerifiedNeuralAgent:
                 self.config.behavioral_best_first_archive
             ),
             behavioral_best_first_applied=behavioral_best_first_applied,
+            human_prior_best_first_archive_enabled=(
+                self.config.human_prior_best_first_archive
+            ),
+            human_prior_best_first_applied=(
+                human_prior_best_first_applied
+            ),
+            human_prior_graph_source_signature=(
+                branch.goal_source_signature or None
+            ),
+            human_prior_graph_target_signature=(
+                branch.goal_target_signature or None
+            ),
+            human_prior_graph_edge_visits_before=(
+                restored_goal_graph_edge_visits_before
+            ),
+            human_prior_graph_edge_unexpanded=(
+                restored_goal_graph_edge_unexpanded
+            ),
+            human_prior_graph_state_visits_before=(
+                restored_goal_graph_state_visits_before
+            ),
+            human_prior_graph_stagnation_limit=(
+                self.config.human_prior_graph_stagnation_visits
+            ),
             speculative_persistence_applied=(
                 speculative_persistence_applied
             ),

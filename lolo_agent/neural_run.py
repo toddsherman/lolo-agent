@@ -353,6 +353,24 @@ def main() -> None:
         help="decisions before delayed-return recovery may abandon a closer heart frontier",
     )
     parser.add_argument(
+        "--human-prior-best-first-archive",
+        action="store_true",
+        help=(
+            "on the explicitly labelled reward track, expand archived "
+            "controller edges by stable pixel-detected goal state before "
+            "animation-sensitive behavioral clusters"
+        ),
+    )
+    parser.add_argument(
+        "--human-prior-graph-stagnation-visits",
+        type=int,
+        default=0,
+        help=(
+            "repeated stable pixel-detected goal states required before "
+            "assisted archive backtracking; zero disables the trigger"
+        ),
+    )
+    parser.add_argument(
         "--human-prior-life-loss-penalty",
         type=float,
         default=100.0,
@@ -492,6 +510,10 @@ def main() -> None:
         parser.error(
             "--human-prior-navigation-recovery-grace must be non-negative"
         )
+    if args.human_prior_graph_stagnation_visits < 0:
+        parser.error(
+            "--human-prior-graph-stagnation-visits must be non-negative"
+        )
     if args.human_prior_intrinsic_clip <= 0.0:
         parser.error("--human-prior-intrinsic-clip must be positive")
 
@@ -622,6 +644,16 @@ def main() -> None:
         ),
         human_prior_navigation_recovery_grace=(
             args.human_prior_navigation_recovery_grace
+            if args.human_prior_hearts
+            else 0
+        ),
+        human_prior_best_first_archive=(
+            args.human_prior_best_first_archive
+            if args.human_prior_hearts
+            else False
+        ),
+        human_prior_graph_stagnation_visits=(
+            args.human_prior_graph_stagnation_visits
             if args.human_prior_hearts
             else 0
         ),
