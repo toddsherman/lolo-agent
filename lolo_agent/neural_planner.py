@@ -45,6 +45,9 @@ class NeuralPlanningConfig:
     actual_change_weight: float = 0.25
     action_effect_weight: float = 0.75
     causal_spatial_novelty_weight: float = 2.0
+    causal_cell_coverage_weight: float = 0.0
+    persistent_change_stability_decisions: int = 0
+    persistent_change_minimum_value_drop: int = 0
     causal_affordance_weight: float = 3.0
     causal_event_archive_weight: float = 4.0
     causal_change_pixel_threshold: int = 12
@@ -401,6 +404,16 @@ class VerifiedNeuralAgent:
             raise ValueError("temporal option action prior weight must be in [0, 1]")
         if self.config.causal_change_pixel_threshold < 0:
             raise ValueError("causal pixel threshold must be non-negative")
+        if self.config.causal_cell_coverage_weight < 0.0:
+            raise ValueError("causal cell coverage weight must be non-negative")
+        if self.config.persistent_change_stability_decisions < 0:
+            raise ValueError(
+                "persistent change stability decisions must be non-negative"
+            )
+        if not 0 <= self.config.persistent_change_minimum_value_drop <= 15:
+            raise ValueError(
+                "persistent change minimum value drop must be in [0, 15]"
+            )
         if (
             self.config.causal_spatial_columns <= 0
             or self.config.causal_spatial_rows <= 0
@@ -444,6 +457,13 @@ class VerifiedNeuralAgent:
         self.action_effect_values: Dict[Tuple[str, Action], float] = {}
         self.action_effect_samples: CounterType[Tuple[str, Action]] = Counter()
         self.causal_spatial_visits: CounterType[str] = Counter()
+        self.persistent_change_baseline: List[int] = []
+        self.persistent_change_value_counts: List[
+            CounterType[int]
+        ] = []
+        self.persistent_change_candidates: Dict[int, Tuple[int, int]] = {}
+        self.persistent_change_cells: Dict[int, int] = {}
+        self.persistent_change_mismatches: CounterType[int] = Counter()
         self.last_action: Optional[Action] = None
         self.last_duration: Optional[int] = None
         self.last_action_was_causal_spatial = False
@@ -848,6 +868,14 @@ class VerifiedNeuralAgent:
         self.action_effect_samples = Counter()
         self.causal_spatial_visits = Counter()
         self.causal_spatial_cell_visits: CounterType[Tuple[int, int]] = Counter()
+        persistent_values = self._persistent_cell_values(self.frame)
+        self.persistent_change_baseline = list(persistent_values)
+        self.persistent_change_value_counts = [
+            Counter({value: 1}) for value in persistent_values
+        ]
+        self.persistent_change_candidates = {}
+        self.persistent_change_cells = {}
+        self.persistent_change_mismatches = Counter()
         self.discovered_interaction_actions: set[Action] = set()
         self.discovered_interaction_durations: Dict[Action, set[int]] = {}
         self.archive_branch_restores: CounterType[
@@ -1100,6 +1128,198 @@ class VerifiedNeuralAgent:
             for index, value in enumerate(occupied)
             if value
         }
+
+    def _causal_cell_coverage(
+        self, spatial_signature: Optional[str]
+    ) -> Tuple[float, int, int]:
+        """Return global novelty for cells changed relative to matched NOOP."""
+        cells = self._causal_spatial_cells(spatial_signature)
+        if not cells:
+            return 0.0, 0, 0
+        values = [
+            1.0 / math.sqrt(self.causal_spatial_cell_visits[cell] + 1)
+            for cell in cells
+        ]
+        return (
+            sum(values) / len(values),
+            sum(self.causal_spatial_cell_visits[cell] == 0 for cell in cells),
+            len(cells),
+        )
+
+    def _persistent_cell_values(self, frame: Frame) -> Tuple[int, ...]:
+        return frame.coarse_signature(
+            columns=self.config.causal_spatial_columns,
+            rows=self.config.causal_spatial_rows,
+        )
+
+    def _persistent_change_fields(self) -> Dict[str, Any]:
+        columns = self.config.causal_spatial_columns
+        return {
+            "persistent_change_enabled": (
+                self.config.persistent_change_stability_decisions > 0
+            ),
+            "persistent_change_stability_decisions": (
+                self.config.persistent_change_stability_decisions
+            ),
+            "persistent_change_minimum_value_drop": (
+                self.config.persistent_change_minimum_value_drop
+            ),
+            "persistent_change_active_count": len(
+                self.persistent_change_cells
+            ),
+            "persistent_change_active_cells": [
+                {
+                    "column": index % columns,
+                    "row": index // columns,
+                    "value": value,
+                }
+                for index, value in sorted(
+                    self.persistent_change_cells.items()
+                )
+            ],
+        }
+
+    def _matches_persistent_changes(self, frame: Frame) -> bool:
+        if not self.persistent_change_cells:
+            return True
+        values = self._persistent_cell_values(frame)
+        return all(
+            index < len(values) and values[index] == value
+            for index, value in self.persistent_change_cells.items()
+        )
+
+    def _observe_persistent_changes(self, frame: Frame) -> None:
+        stability = self.config.persistent_change_stability_decisions
+        if stability <= 0:
+            return
+        values = self._persistent_cell_values(frame)
+        activated = []
+        retired = []
+        baseline_adapted = []
+        for index, (baseline, value) in enumerate(
+            zip(self.persistent_change_baseline, values)
+        ):
+            active_value = self.persistent_change_cells.get(index)
+            if active_value is None:
+                value_counts = self.persistent_change_value_counts[index]
+                value_counts[value] += 1
+                learned_baseline = max(
+                    value_counts,
+                    key=lambda candidate: (
+                        value_counts[candidate],
+                        candidate == baseline,
+                    ),
+                )
+                if learned_baseline != baseline:
+                    self.persistent_change_baseline[index] = learned_baseline
+                    self.persistent_change_candidates.pop(index, None)
+                    baseline_adapted.append(
+                        (index, baseline, learned_baseline)
+                    )
+                    baseline = learned_baseline
+            if active_value is not None:
+                if value == active_value:
+                    self.persistent_change_mismatches[index] = 0
+                elif value != baseline:
+                    self.persistent_change_mismatches[index] = 0
+                else:
+                    mismatches = self.persistent_change_mismatches[index] + 1
+                    self.persistent_change_mismatches[index] = mismatches
+                    if mismatches >= stability:
+                        retired.append((index, active_value))
+                        self.persistent_change_cells.pop(index, None)
+                        self.persistent_change_mismatches.pop(index, None)
+                        self.persistent_change_baseline[index] = value
+                        self.persistent_change_value_counts[index] = Counter(
+                            {value: 1}
+                        )
+                        baseline = value
+            if index in self.persistent_change_cells:
+                self.persistent_change_candidates.pop(index, None)
+                continue
+            if value == baseline:
+                self.persistent_change_candidates.pop(index, None)
+                continue
+            if (
+                self.config.persistent_change_minimum_value_drop > 0
+                and baseline - value
+                < self.config.persistent_change_minimum_value_drop
+            ):
+                self.persistent_change_candidates.pop(index, None)
+                continue
+            candidate_value, candidate_count = (
+                self.persistent_change_candidates.get(index, (value, 0))
+            )
+            candidate_count = (
+                candidate_count + 1
+                if candidate_value == value
+                else 1
+            )
+            self.persistent_change_candidates[index] = (
+                value,
+                candidate_count,
+            )
+            if (
+                candidate_count >= stability
+                and self.persistent_change_cells.get(index) != value
+            ):
+                previous = self.persistent_change_cells.get(index)
+                self.persistent_change_cells[index] = value
+                self.persistent_change_mismatches[index] = 0
+                activated.append((index, value, previous))
+        if activated or retired or baseline_adapted:
+            columns = self.config.causal_spatial_columns
+            self._emit(
+                "persistent_change_evidence_updated",
+                decision=self.decision_index,
+                activated=[
+                    {
+                        "column": index % columns,
+                        "row": index // columns,
+                        "value": value,
+                        "previous_value": previous,
+                    }
+                    for index, value, previous in activated
+                ],
+                retired=[
+                    {
+                        "column": index % columns,
+                        "row": index // columns,
+                        "value": value,
+                    }
+                    for index, value in retired
+                ],
+                baseline_adapted=[
+                    {
+                        "column": index % columns,
+                        "row": index // columns,
+                        "previous_value": previous,
+                        "value": value,
+                    }
+                    for index, previous, value in baseline_adapted
+                ],
+                **self._persistent_change_fields(),
+            )
+
+    def _reset_persistent_change_observation_window(
+        self, reason: str
+    ) -> None:
+        if self.config.persistent_change_stability_decisions <= 0:
+            return
+        candidate_count = len(self.persistent_change_candidates)
+        self.persistent_change_candidates = {}
+        self.persistent_change_mismatches = Counter()
+        self.persistent_change_value_counts = [
+            Counter({value: 1})
+            for value in self.persistent_change_baseline
+        ]
+        self._emit(
+            "persistent_change_observation_window_reset",
+            decision=self.decision_index,
+            reason=reason,
+            discarded_candidates=candidate_count,
+            **self._persistent_change_fields(),
+        )
 
     def _causal_target_context(
         self, source_context: str, spatial_signature: Optional[str]
@@ -2174,6 +2394,14 @@ class VerifiedNeuralAgent:
             self.causal_spatial_visits[frontier_key] + 1
         )
 
+    def _archive_causal_cell_coverage_bonus(
+        self, branch: _ArchivedBranch
+    ) -> float:
+        coverage, _unvisited, _count = self._causal_cell_coverage(
+            branch.causal_spatial_signature
+        )
+        return self.config.causal_cell_coverage_weight * coverage
+
     def _archive_frontier_score(self, branch: _ArchivedBranch) -> float:
         own_value = self._frontier_estimate(
             branch.frontier_signature
@@ -2196,6 +2424,9 @@ class VerifiedNeuralAgent:
         )
         option_bonus = self.config.temporal_option_score_weight * option_value
         causal_spatial_bonus = self._archive_causal_spatial_bonus(branch)
+        causal_cell_coverage_bonus = (
+            self._archive_causal_cell_coverage_bonus(branch)
+        )
         affordance_bonus = (
             self.config.causal_affordance_weight
             * math.sqrt(len(branch.causal_affordance_actions))
@@ -2250,6 +2481,7 @@ class VerifiedNeuralAgent:
                 choice_value
                 + option_bonus
                 + causal_spatial_bonus
+                + causal_cell_coverage_bonus
                 + affordance_bonus
                 + causal_event_bonus
                 + goal_navigation_bonus
@@ -2259,6 +2491,7 @@ class VerifiedNeuralAgent:
             max(own_value, self.config.frontier_origin_weight * origin_value)
             + option_bonus
             + causal_spatial_bonus
+            + causal_cell_coverage_bonus
             + affordance_bonus
             + causal_event_bonus
             + goal_navigation_bonus
@@ -2857,6 +3090,11 @@ class VerifiedNeuralAgent:
                     else 1.0 / math.sqrt(causal_spatial_visits + 1)
                 )
                 (
+                    causal_cell_coverage,
+                    causal_cell_unvisited,
+                    causal_cell_count,
+                ) = self._causal_cell_coverage(causal_spatial_signature)
+                (
                     target_causal_context_signature,
                     causal_event_detected,
                     causal_component_count,
@@ -2892,6 +3130,9 @@ class VerifiedNeuralAgent:
                     "causal_change_centroid": causal_change_centroid,
                     "causal_spatial_visits": causal_spatial_visits,
                     "causal_spatial_novelty": causal_spatial_novelty,
+                    "causal_cell_coverage": causal_cell_coverage,
+                    "causal_cell_unvisited": causal_cell_unvisited,
+                    "causal_cell_count": causal_cell_count,
                     "target_causal_context_signature": (
                         target_causal_context_signature
                     ),
@@ -2978,6 +3219,9 @@ class VerifiedNeuralAgent:
                     causal_change_centroid = None
                     causal_spatial_visits = 0
                     causal_spatial_novelty = 0.0
+                    causal_cell_coverage = 0.0
+                    causal_cell_unvisited = 0
+                    causal_cell_count = 0
                 else:
                     action_effect_contrast = observed_effect["contrast"]
                     action_effect_value = observed_effect["value"]
@@ -2997,6 +3241,15 @@ class VerifiedNeuralAgent:
                     ]
                     causal_spatial_novelty = observed_effect[
                         "causal_spatial_novelty"
+                    ]
+                    causal_cell_coverage = observed_effect[
+                        "causal_cell_coverage"
+                    ]
+                    causal_cell_unvisited = observed_effect[
+                        "causal_cell_unvisited"
+                    ]
+                    causal_cell_count = observed_effect[
+                        "causal_cell_count"
                     ]
                 transition_spatial_signature = self._causal_spatial_effect(
                     target, self.frame
@@ -3069,6 +3322,12 @@ class VerifiedNeuralAgent:
                     if temporal_option_value >= 0.0
                     else 0.0
                 )
+                causal_cell_coverage_bonus = (
+                    self.config.causal_cell_coverage_weight
+                    * causal_cell_coverage
+                    if temporal_option_value >= 0.0
+                    else 0.0
+                )
                 if choice_frontier_is_known:
                     persistent_frontier_value = choice_frontier_value
                 action_penalty_components = self._action_penalty_components(
@@ -3083,6 +3342,7 @@ class VerifiedNeuralAgent:
                     + self.config.actual_change_weight * visual_change
                     + action_effect_bonus
                     + causal_spatial_bonus
+                    + causal_cell_coverage_bonus
                     + self.config.frontier_score_weight * persistent_frontier_value
                     + self.config.temporal_option_score_weight
                     * temporal_option_value
@@ -3191,6 +3451,10 @@ class VerifiedNeuralAgent:
                     causal_spatial_visits=causal_spatial_visits,
                     causal_spatial_novelty=causal_spatial_novelty,
                     causal_spatial_bonus=causal_spatial_bonus,
+                    causal_cell_coverage=causal_cell_coverage,
+                    causal_cell_unvisited=causal_cell_unvisited,
+                    causal_cell_count=causal_cell_count,
+                    causal_cell_coverage_bonus=causal_cell_coverage_bonus,
                     persistent_frontier_value=persistent_frontier_value,
                     choice_frontier_value=choice_frontier_value,
                     choice_frontier_is_known=choice_frontier_is_known,
@@ -3574,6 +3838,7 @@ class VerifiedNeuralAgent:
                 committed_causal_spatial_signature is not None
             )
             self.decision_index += 1
+            self._observe_persistent_changes(target)
             if (
                 committed_goal_analysis is not None
                 and committed_goal_analysis.navigation_reward != 0.0
@@ -4395,6 +4660,9 @@ class VerifiedNeuralAgent:
                 committed_causal_changed_pixels = 0
                 committed_causal_change_centroid = None
                 committed_causal_spatial_visits_before = 0
+                committed_causal_cell_coverage = 0.0
+                committed_causal_cell_unvisited = 0
+                committed_causal_cell_count = 0
             else:
                 committed_causal_spatial_novelty = committed_effect[
                     "causal_spatial_novelty"
@@ -4408,9 +4676,24 @@ class VerifiedNeuralAgent:
                 committed_causal_spatial_visits_before = committed_effect[
                     "causal_spatial_visits"
                 ]
+                committed_causal_cell_coverage = committed_effect[
+                    "causal_cell_coverage"
+                ]
+                committed_causal_cell_unvisited = committed_effect[
+                    "causal_cell_unvisited"
+                ]
+                committed_causal_cell_count = committed_effect[
+                    "causal_cell_count"
+                ]
             committed_causal_spatial_bonus = (
                 self.config.causal_spatial_novelty_weight
                 * committed_causal_spatial_novelty
+                if committed_temporal_option_value >= 0.0
+                else 0.0
+            )
+            committed_causal_cell_coverage_bonus = (
+                self.config.causal_cell_coverage_weight
+                * committed_causal_cell_coverage
                 if committed_temporal_option_value >= 0.0
                 else 0.0
             )
@@ -4480,6 +4763,12 @@ class VerifiedNeuralAgent:
                 causal_changed_pixels=committed_causal_changed_pixels,
                 causal_change_centroid=committed_causal_change_centroid,
                 causal_spatial_bonus=committed_causal_spatial_bonus,
+                causal_cell_coverage=committed_causal_cell_coverage,
+                causal_cell_unvisited=committed_causal_cell_unvisited,
+                causal_cell_count=committed_causal_cell_count,
+                causal_cell_coverage_bonus=(
+                    committed_causal_cell_coverage_bonus
+                ),
                 temporal_option_value=committed_temporal_option_value,
                 temporal_option_is_known=self._temporal_option_estimate(
                     source_signature, action, duration
@@ -4508,6 +4797,7 @@ class VerifiedNeuralAgent:
                 action_duration_counts=self._action_duration_count_rows(),
                 scene_streak=self.scene_streak,
                 visual_stagnation_streak=self.visual_stagnation_streak,
+                **self._persistent_change_fields(),
                 **self._frame_fields(target),
             )
             return Decision(
@@ -4860,6 +5150,30 @@ class VerifiedNeuralAgent:
                         filtered_branches=removed,
                         alternatives_remaining=len(eligible),
                     )
+        if self.persistent_change_cells:
+            persistent_change_eligible = [
+                branch
+                for branch in eligible
+                if self._matches_persistent_changes(branch.frame)
+            ]
+            if persistent_change_eligible:
+                removed = len(eligible) - len(persistent_change_eligible)
+                eligible = persistent_change_eligible
+                if removed:
+                    self._emit(
+                        "persistent_change_archives_filtered",
+                        decision=self.decision_index + 1,
+                        filtered_branches=removed,
+                        alternatives_remaining=len(eligible),
+                        **self._persistent_change_fields(),
+                    )
+            else:
+                self._emit(
+                    "persistent_change_preservation_unavailable",
+                    decision=self.decision_index + 1,
+                    alternatives_examined=len(eligible),
+                    **self._persistent_change_fields(),
+                )
         global_goal_eligible = [
             branch for branch in eligible if branch.goal_progress_reward > 0.0
         ]
@@ -5049,10 +5363,14 @@ class VerifiedNeuralAgent:
         self.visual_stagnation_streak = 0
         self.autonomous_grace_remaining = 0
         self.decision_index += 1
+        self._reset_persistent_change_observation_window("archive_restore")
         self.visual_last_visit[self._signature(branch.frame)] = self.decision_index
         selected_frontier_value = self._archive_frontier_score(branch)
         selected_causal_spatial_archive_bonus = (
             self._archive_causal_spatial_bonus(branch)
+        )
+        selected_causal_cell_coverage_archive_bonus = (
+            self._archive_causal_cell_coverage_bonus(branch)
         )
         restored_visual_cluster = self._abstract_signature(branch.frame)
         restored_frontier_signature = (
@@ -5144,6 +5462,11 @@ class VerifiedNeuralAgent:
             if not branch.causal_spatial_signature
             else 1.0 / math.sqrt(restored_causal_spatial_visits_before + 1)
         )
+        (
+            restored_causal_cell_coverage,
+            restored_causal_cell_unvisited,
+            restored_causal_cell_count,
+        ) = self._causal_cell_coverage(branch.causal_spatial_signature)
         if branch.causal_spatial_signature:
             self.causal_spatial_visits[
                 self._causal_frontier_key(
@@ -5169,6 +5492,12 @@ class VerifiedNeuralAgent:
             if restored_option_value >= 0.0
             else 0.0
         )
+        restored_causal_cell_coverage_bonus = (
+            self.config.causal_cell_coverage_weight
+            * restored_causal_cell_coverage
+            if restored_option_value >= 0.0
+            else 0.0
+        )
         self._emit(
             "archive_branch_restored",
             decision=self.decision_index,
@@ -5189,6 +5518,9 @@ class VerifiedNeuralAgent:
             persistent_frontier_value=selected_frontier_value,
             causal_spatial_archive_bonus=(
                 selected_causal_spatial_archive_bonus
+            ),
+            causal_cell_coverage_archive_bonus=(
+                selected_causal_cell_coverage_archive_bonus
             ),
             action_effect_contrast=None,
             action_effect_value=restored_action_effect_value,
@@ -5214,6 +5546,10 @@ class VerifiedNeuralAgent:
             causal_changed_pixels=branch.causal_changed_pixels,
             causal_change_centroid=branch.causal_change_centroid,
             causal_spatial_bonus=restored_causal_spatial_bonus,
+            causal_cell_coverage=restored_causal_cell_coverage,
+            causal_cell_unvisited=restored_causal_cell_unvisited,
+            causal_cell_count=restored_causal_cell_count,
+            causal_cell_coverage_bonus=restored_causal_cell_coverage_bonus,
             human_prior_enabled=self.goal_prior is not None,
             human_prior_reward_track=(
                 "human_prior_v2" if self.goal_prior is not None else None
@@ -5244,6 +5580,7 @@ class VerifiedNeuralAgent:
             abstract_signature=restored_visual_cluster,
             target_frontier_signature=restored_frontier_signature,
             archive_size=len(self.archive),
+            **self._persistent_change_fields(),
             **self._frame_fields(branch.frame),
         )
         self._emit(
@@ -5289,6 +5626,10 @@ class VerifiedNeuralAgent:
             causal_changed_pixels=branch.causal_changed_pixels,
             causal_change_centroid=branch.causal_change_centroid,
             causal_spatial_bonus=restored_causal_spatial_bonus,
+            causal_cell_coverage=restored_causal_cell_coverage,
+            causal_cell_unvisited=restored_causal_cell_unvisited,
+            causal_cell_count=restored_causal_cell_count,
+            causal_cell_coverage_bonus=restored_causal_cell_coverage_bonus,
             human_prior_enabled=self.goal_prior is not None,
             human_prior_reward_track=(
                 "human_prior_v2" if self.goal_prior is not None else None
@@ -5325,6 +5666,7 @@ class VerifiedNeuralAgent:
             action_duration_counts=self._action_duration_count_rows(),
             scene_streak=self.scene_streak,
             visual_stagnation_streak=self.visual_stagnation_streak,
+            **self._persistent_change_fields(),
             **self._frame_fields(branch.frame),
         )
         return Decision(

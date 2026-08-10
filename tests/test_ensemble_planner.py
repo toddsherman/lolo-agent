@@ -624,6 +624,133 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(changed_pixels, 2)
         self.assertEqual(centroid, (2.0, 0.0))
 
+    def test_causal_cell_coverage_decays_across_the_attempt(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        agent = VerifiedNeuralAgent(
+            ActionEffectEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                causal_spatial_columns=4,
+                causal_spatial_rows=4,
+                causal_cell_coverage_weight=4.0,
+            ),
+        )
+        agent.reset()
+        occupied = bytes([0] * 5 + [1, 1] + [0] * 9).hex()
+
+        self.assertEqual(agent._causal_cell_coverage(occupied), (1.0, 2, 2))
+        agent.causal_spatial_cell_visits[(1, 1)] = 3
+        self.assertEqual(agent._causal_cell_coverage(occupied), (0.75, 1, 2))
+
+        branch = _ArchivedBranch(
+            1,
+            agent.frame,
+            NeuralPlan((Action.RIGHT,), (4,), 0.0, 0.0),
+            0.0,
+            "scene",
+            1,
+            causal_spatial_signature=occupied,
+        )
+        self.assertEqual(agent._archive_causal_cell_coverage_bonus(branch), 3.0)
+
+    def test_causal_cell_coverage_weight_must_be_non_negative(self) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        with self.assertRaisesRegex(ValueError, "coverage weight"):
+            VerifiedNeuralAgent(
+                ActionEffectEnv(),
+                model,
+                "cpu",
+                NeuralPlanningConfig(
+                    actions=(Action.RIGHT,),
+                    planning_depth=1,
+                    causal_cell_coverage_weight=-1.0,
+                ),
+            )
+
+    def test_persistent_change_filters_regressive_archives_when_alternatives_exist(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
+        env = UniqueStateEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                visual_stagnation_visits=1,
+                causal_spatial_columns=2,
+                causal_spatial_rows=2,
+                persistent_change_stability_decisions=2,
+                persistent_change_minimum_value_drop=4,
+            ),
+        )
+        baseline = Frame(8, 8, 1, bytes([255]) * 64)
+        agent.reset(baseline)
+        changed_pixels = bytearray([255] * 64)
+        for row in range(4):
+            changed_pixels[row * 8 : row * 8 + 4] = bytes(4)
+        changed = Frame(8, 8, 1, bytes(changed_pixels))
+        changed_variant_pixels = bytearray(changed_pixels)
+        changed_variant_pixels[-1] = 254
+        changed_variant = Frame(8, 8, 1, bytes(changed_variant_pixels))
+
+        agent._observe_persistent_changes(baseline)
+        agent._observe_persistent_changes(baseline)
+        agent._observe_persistent_changes(changed)
+        agent._observe_persistent_changes(changed)
+        self.assertEqual(agent.persistent_change_cells, {0: 0})
+        self.assertTrue(agent._matches_persistent_changes(changed_variant))
+        self.assertFalse(agent._matches_persistent_changes(baseline))
+
+        agent.frame = changed_variant
+        scene = agent._scene_signature(changed_variant)
+        plan = NeuralPlan((Action.RIGHT,), (1,), 0.0, 0.0)
+        agent.archive = [
+            _ArchivedBranch(
+                env.save_state(),
+                baseline,
+                plan,
+                100.0,
+                scene,
+                1,
+                causal_spatial_signature="regression",
+                causal_context_signature="causal-context-root",
+            ),
+            _ArchivedBranch(
+                env.save_state(),
+                changed,
+                plan,
+                0.0,
+                scene,
+                2,
+                causal_spatial_signature="preserved",
+                causal_context_signature="causal-context-root",
+            ),
+        ]
+        agent.visual_stagnation_streak = 1
+
+        restored = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(restored)
+        self.assertEqual(restored.frame.digest, changed.digest)
+
+        overlay_pixels = bytearray([255] * 64)
+        for row in range(4):
+            overlay_pixels[row * 8 : row * 8 + 4] = bytes([128]) * 4
+        overlay = Frame(8, 8, 1, bytes(overlay_pixels))
+        agent._observe_persistent_changes(overlay)
+        agent._observe_persistent_changes(overlay)
+        self.assertEqual(agent.persistent_change_cells, {0: 0})
+
+        agent._observe_persistent_changes(baseline)
+        agent._observe_persistent_changes(baseline)
+        self.assertEqual(agent.persistent_change_cells, {})
+
     def test_learned_hazard_is_verified_but_not_committed_when_safe(self) -> None:
         model = EnsembleVisualDynamicsModel(latent_size=32, action_size=9, ensemble_size=2)
         agent = VerifiedNeuralAgent(

@@ -174,6 +174,33 @@ def main() -> None:
     parser.add_argument("--archive-capacity", type=int, default=256)
     parser.add_argument("--archive-max-age", type=int, default=512)
     parser.add_argument(
+        "--causal-cell-coverage-weight",
+        type=float,
+        default=0.0,
+        help=(
+            "reward action-caused changes in globally under-visited coarse "
+            "screen cells; zero disables the reward"
+        ),
+    )
+    parser.add_argument(
+        "--persistent-change-stability-decisions",
+        type=int,
+        default=0,
+        help=(
+            "consecutive observations required before a changed coarse cell "
+            "temporarily constrains archive recovery; zero disables it"
+        ),
+    )
+    parser.add_argument(
+        "--persistent-change-minimum-value-drop",
+        type=int,
+        default=0,
+        help=(
+            "optional minimum 4-bit coarse-intensity decrease for persistent "
+            "change evidence; zero accepts changes in either direction"
+        ),
+    )
+    parser.add_argument(
         "--consecutive-repeat-penalty-cap",
         type=float,
         help="optional cap on the weighted consecutive-repeat penalty",
@@ -263,6 +290,16 @@ def main() -> None:
         parser.error("--archive-capacity must be positive")
     if args.archive_max_age <= 0:
         parser.error("--archive-max-age must be positive")
+    if args.causal_cell_coverage_weight < 0.0:
+        parser.error("--causal-cell-coverage-weight must be non-negative")
+    if args.persistent_change_stability_decisions < 0:
+        parser.error(
+            "--persistent-change-stability-decisions must be non-negative"
+        )
+    if not 0 <= args.persistent_change_minimum_value_drop <= 15:
+        parser.error(
+            "--persistent-change-minimum-value-drop must be between 0 and 15"
+        )
     if args.spatial_selection_weight < 0.0:
         parser.error("--spatial-selection-weight must be non-negative")
     if args.returnability_probe_depth < 0:
@@ -388,6 +425,13 @@ def main() -> None:
         verify_actions=args.verify_actions,
         archive_capacity=args.archive_capacity,
         archive_max_age=args.archive_max_age,
+        causal_cell_coverage_weight=args.causal_cell_coverage_weight,
+        persistent_change_stability_decisions=(
+            args.persistent_change_stability_decisions
+        ),
+        persistent_change_minimum_value_drop=(
+            args.persistent_change_minimum_value_drop
+        ),
         consecutive_repeat_penalty_cap=args.consecutive_repeat_penalty_cap,
         delayed_return_penalty_cap=args.delayed_return_penalty_cap,
         human_prior_heart_reward=(

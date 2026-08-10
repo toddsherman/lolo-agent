@@ -120,8 +120,25 @@ Matched-neutral exploration adds the following raw events and decision fields:
 - `causal_spatial_signature`, `causal_changed_pixels`,
   `causal_change_centroid`, `causal_spatial_novelty`, and
   `causal_spatial_bonus` describe action-dependent screen changes;
+- `causal_cell_coverage`, `causal_cell_unvisited`, `causal_cell_count`, and
+  `causal_cell_coverage_bonus` describe global attempt-level coverage of the
+  coarse cells changed relative to matched `NOOP`; the bonus is disabled by
+  default and enabled with `--causal-cell-coverage-weight`;
 - `causal_spatial_archive_bonus` records the live rarity value used when an
   archived branch is selected;
+- `causal_cell_coverage_archive_bonus` records the corresponding live global
+  coverage value used to rank an archived branch;
+- `persistent_change_evidence_updated` records coarse cells whose visual value
+  stayed different from their learned pre-change modal value for the configured
+  number of committed observations, or later ceased to do so; baselines adapt
+  before activation so moving sprites do not permanently imprint the first
+  frame; `--persistent-change-minimum-value-drop` can restrict evidence to
+  persistent disappearance of visually salient content without naming it;
+- `persistent_change_archives_filtered` records temporary preference for
+  archived states that preserve all active persistent changes, while
+  `persistent_change_preservation_unavailable` makes the fallback to older
+  alternatives explicit; this rule-free mechanism is disabled by default and
+  enabled with `--persistent-change-stability-decisions`;
 - `archive_branch_rejected` distinguishes covered causal frontiers, exhausted
   causal outcomes, non-causal alternatives, and learned hazards;
 - `archive_causal_outcome_added` records a retained persistent visual
@@ -129,7 +146,8 @@ Matched-neutral exploration adds the following raw events and decision fields:
   already-restored coarse-pixel and directional-pose key.
 
 `summary.json` aggregates matched-neutral verifications, total and unique
-causal-spatial observations, and unique committed causal signatures.
+causal-spatial observations, unique committed causal signatures, first-visited
+causal cells, and global coverage score/bonus totals.
 `decisions.csv` includes the corresponding per-commit fields so a visualization
 can map where action-dependent changes occurred without adding semantic object
 labels.

@@ -403,6 +403,34 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                     "causal_spatial_bonus": event.get(
                         "causal_spatial_bonus"
                     ),
+                    "causal_cell_coverage": event.get(
+                        "causal_cell_coverage"
+                    ),
+                    "causal_cell_unvisited": event.get(
+                        "causal_cell_unvisited", 0
+                    ),
+                    "causal_cell_count": event.get(
+                        "causal_cell_count", 0
+                    ),
+                    "causal_cell_coverage_bonus": event.get(
+                        "causal_cell_coverage_bonus"
+                    ),
+                    "persistent_change_enabled": event.get(
+                        "persistent_change_enabled", False
+                    ),
+                    "persistent_change_stability_decisions": event.get(
+                        "persistent_change_stability_decisions", 0
+                    ),
+                    "persistent_change_minimum_value_drop": event.get(
+                        "persistent_change_minimum_value_drop", 0
+                    ),
+                    "persistent_change_active_count": event.get(
+                        "persistent_change_active_count", 0
+                    ),
+                    "persistent_change_active_cells": json.dumps(
+                        event.get("persistent_change_active_cells", []),
+                        sort_keys=True,
+                    ),
                     "temporal_option_value": event.get("temporal_option_value"),
                     "temporal_option_is_known": event.get(
                         "temporal_option_is_known", False
@@ -538,6 +566,15 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "causal_changed_pixels",
         "causal_change_centroid",
         "causal_spatial_bonus",
+        "causal_cell_coverage",
+        "causal_cell_unvisited",
+        "causal_cell_count",
+        "causal_cell_coverage_bonus",
+        "persistent_change_enabled",
+        "persistent_change_stability_decisions",
+        "persistent_change_minimum_value_drop",
+        "persistent_change_active_count",
+        "persistent_change_active_cells",
         "temporal_option_value",
         "temporal_option_is_known",
         "temporal_option_value_source",
@@ -772,6 +809,66 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "unique_causal_spatial_signatures": len(causal_spatial_signatures),
         "committed_causal_spatial_signatures": len(
             committed_causal_spatial_signatures
+        ),
+        "causal_cells_first_visited": sum(
+            int(row.get("causal_cell_unvisited") or 0)
+            for row in decision_rows
+        ),
+        "causal_cell_coverage_bonus_total": sum(
+            float(row.get("causal_cell_coverage_bonus") or 0.0)
+            for row in decision_rows
+        ),
+        "causal_cell_coverage_mean": (
+            sum(
+                float(row["causal_cell_coverage"])
+                for row in decision_rows
+                if row.get("causal_cell_coverage") is not None
+            )
+            / sum(
+                row.get("causal_cell_coverage") is not None
+                for row in decision_rows
+            )
+            if any(
+                row.get("causal_cell_coverage") is not None
+                for row in decision_rows
+            )
+            else 0.0
+        ),
+        "persistent_change_updates": event_counts.get(
+            "persistent_change_evidence_updated", 0
+        ),
+        "persistent_change_activations": sum(
+            len(event.get("activated", []))
+            for event in events
+            if event["event"] == "persistent_change_evidence_updated"
+        ),
+        "persistent_change_retirements": sum(
+            len(event.get("retired", []))
+            for event in events
+            if event["event"] == "persistent_change_evidence_updated"
+        ),
+        "persistent_change_baseline_adaptations": sum(
+            len(event.get("baseline_adapted", []))
+            for event in events
+            if event["event"] == "persistent_change_evidence_updated"
+        ),
+        "persistent_change_archive_filter_events": event_counts.get(
+            "persistent_change_archives_filtered", 0
+        ),
+        "persistent_change_archive_branches_filtered": sum(
+            int(event.get("filtered_branches", 0))
+            for event in events
+            if event["event"] == "persistent_change_archives_filtered"
+        ),
+        "persistent_change_preservation_unavailable": event_counts.get(
+            "persistent_change_preservation_unavailable", 0
+        ),
+        "persistent_change_max_active_cells": max(
+            (
+                int(event.get("persistent_change_active_count", 0))
+                for event in events
+            ),
+            default=0,
         ),
         "causal_events_detected": causal_events_detected,
         "returnability_probe_branches": len(returnability_probe_summaries),

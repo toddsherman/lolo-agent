@@ -109,6 +109,13 @@ class RunLoggingTests(unittest.TestCase):
             self.assertIn("causal_spatial_observations", summary)
             self.assertIn("unique_causal_spatial_signatures", summary)
             self.assertIn("committed_causal_spatial_signatures", summary)
+            self.assertIn("causal_cells_first_visited", summary)
+            self.assertIn("causal_cell_coverage_bonus_total", summary)
+            self.assertIn("causal_cell_coverage_mean", summary)
+            self.assertIn("persistent_change_updates", summary)
+            self.assertIn("persistent_change_activations", summary)
+            self.assertIn("persistent_change_archive_filter_events", summary)
+            self.assertIn("persistent_change_max_active_cells", summary)
             self.assertEqual(summary["spatial_shadow_evaluations"], 0)
             self.assertEqual(summary["spatial_shadow_beats_persistence"], 0)
             self.assertIn("spatial_shadow_mean_metrics", summary)
@@ -149,6 +156,23 @@ class RunLoggingTests(unittest.TestCase):
             self.assertNotEqual(rows[0]["causal_changed_pixels"], "")
             self.assertNotEqual(rows[0]["causal_change_centroid"], "")
             self.assertNotEqual(rows[0]["causal_spatial_bonus"], "")
+            self.assertNotEqual(rows[0]["causal_cell_coverage"], "")
+            self.assertNotEqual(rows[0]["causal_cell_unvisited"], "")
+            self.assertNotEqual(rows[0]["causal_cell_count"], "")
+            self.assertNotEqual(rows[0]["causal_cell_coverage_bonus"], "")
+            self.assertNotEqual(rows[0]["persistent_change_enabled"], "")
+            self.assertNotEqual(
+                rows[0]["persistent_change_stability_decisions"], ""
+            )
+            self.assertNotEqual(
+                rows[0]["persistent_change_minimum_value_drop"], ""
+            )
+            self.assertNotEqual(
+                rows[0]["persistent_change_active_count"], ""
+            )
+            self.assertNotEqual(
+                rows[0]["persistent_change_active_cells"], ""
+            )
             self.assertNotEqual(rows[0]["duration_counts"], "")
             self.assertNotEqual(rows[0]["action_duration_counts"], "")
             self.assertNotEqual(rows[0]["active_temporal_option"], "")
