@@ -60,6 +60,13 @@ negative, and uncertain cases are censored. The sidecar passes one run-held-out
 development fold but fails native branch calibration, so it is attached only
 to telemetry and cannot affect the planner.
 
+`bidirectional_probe.py` collects stronger relation targets directly from
+opaque save-state branches. It performs a bounded pixel-only search from each
+endpoint toward a duration-matched NOOP reference from the original root. The
+collector has a separate logging phase and no reference to planner scores,
+objects, rewards, or evaluator labels. Its output is intended to replace the
+policy-dependent graph negatives used by the first returnability sidecar.
+
 The remaining successor milestones are:
 
 1. changed-region rendering that reliably beats persistence on native branches;

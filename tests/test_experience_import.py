@@ -26,6 +26,16 @@ class ExperienceImportTests(unittest.TestCase):
             classify_reward_track({"metadata": {"reward_track": "human_prior_v2"}}),
             "assisted",
         )
+        self.assertEqual(
+            classify_reward_track(
+                {
+                    "metadata": {
+                        "reward_track": "human_prior_resume_observational"
+                    }
+                }
+            ),
+            "assisted",
+        )
         with self.assertRaisesRegex(ValueError, "unrecognized telemetry reward track"):
             classify_reward_track({"metadata": {"reward_track": "mystery"}})
 

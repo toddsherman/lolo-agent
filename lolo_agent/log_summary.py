@@ -117,6 +117,8 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
     causal_events_detected = 0
     archive_rejections_by_reason: Counter[str] = Counter()
     spatial_shadow_rows: List[Dict[str, Any]] = []
+    returnability_probe_rows: List[Dict[str, Any]] = []
+    returnability_probe_summaries: List[Dict[str, Any]] = []
     spatial_shadow_metric_fields = (
         "spatial_shadow_pixel_l1",
         "spatial_shadow_persistence_l1",
@@ -141,6 +143,39 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
     edge_counts: Counter[Tuple[str, str, str, int]] = Counter()
     node_details: Dict[str, Dict[str, Any]] = {}
     for event in events:
+        if event["event"] == "bidirectional_probe_step":
+            returnability_probe_rows.append(
+                {
+                    "seq": event["seq"],
+                    "elapsed_ms": event["elapsed_ms"],
+                    "attempt": event.get("attempt", 0),
+                    "decision": event.get("decision"),
+                    "branch_id": event.get("branch_id"),
+                    "candidate_rank": event.get("candidate_rank"),
+                    "initial_action": event.get("initial_action"),
+                    "initial_action_frames": event.get("initial_action_frames"),
+                    "probe_depth": event.get("probe_depth"),
+                    "probe_path": json.dumps(event.get("probe_path", [])),
+                    "probe_action": event.get("probe_action"),
+                    "probe_action_frames": event.get("probe_action_frames"),
+                    "total_action_frames": event.get("total_action_frames"),
+                    "matched_noop_frame": event.get("matched_noop_frame"),
+                    "matched_noop_l1": event.get("matched_noop_l1"),
+                    "exact_pixel_return": event.get("exact_pixel_return", False),
+                    "return_observed": event.get("return_observed", False),
+                    "source_frame": event.get("source_frame"),
+                    "endpoint_frame": event.get("endpoint_frame"),
+                    "frame": event.get("frame"),
+                    "visual_signature": event.get("visual_signature"),
+                    "scene_signature": event.get("scene_signature"),
+                    "parent_state_id": event.get("parent_state_id"),
+                    "child_state_id": event.get("child_state_id"),
+                    "env_step_seq": event.get("env_step_seq"),
+                    "state_save_seq": event.get("state_save_seq"),
+                }
+            )
+        elif event["event"] == "bidirectional_probe_completed":
+            returnability_probe_summaries.append(event)
         if event["event"] == "spatial_shadow_branch_evaluated":
             spatial_shadow_rows.append(
                 {
@@ -565,6 +600,41 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         writer.writeheader()
         writer.writerows(spatial_shadow_rows)
 
+    returnability_probe_columns = [
+        "seq",
+        "elapsed_ms",
+        "attempt",
+        "decision",
+        "branch_id",
+        "candidate_rank",
+        "initial_action",
+        "initial_action_frames",
+        "probe_depth",
+        "probe_path",
+        "probe_action",
+        "probe_action_frames",
+        "total_action_frames",
+        "matched_noop_frame",
+        "matched_noop_l1",
+        "exact_pixel_return",
+        "return_observed",
+        "source_frame",
+        "endpoint_frame",
+        "frame",
+        "visual_signature",
+        "scene_signature",
+        "parent_state_id",
+        "child_state_id",
+        "env_step_seq",
+        "state_save_seq",
+    ]
+    with (run_dir / "returnability_probes.csv").open(
+        "w", encoding="utf-8", newline=""
+    ) as handle:
+        writer = csv.DictWriter(handle, fieldnames=returnability_probe_columns)
+        writer.writeheader()
+        writer.writerows(returnability_probe_rows)
+
     graph = {
         "schema_version": SCHEMA_VERSION,
         "run_id": manifest["run_id"],
@@ -704,6 +774,28 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             committed_causal_spatial_signatures
         ),
         "causal_events_detected": causal_events_detected,
+        "returnability_probe_branches": len(returnability_probe_summaries),
+        "returnability_probe_paths": len(returnability_probe_rows),
+        "returnability_probe_returning_paths": sum(
+            bool(row.get("return_observed")) for row in returnability_probe_rows
+        ),
+        "returnability_probe_branches_with_return": sum(
+            bool(event.get("return_observed"))
+            for event in returnability_probe_summaries
+        ),
+        "returnability_probe_no_return_within_budget": sum(
+            bool(event.get("no_return_within_probe_budget"))
+            for event in returnability_probe_summaries
+        ),
+        "returnability_probe_mean_best_matched_noop_l1": (
+            sum(
+                float(event.get("best_matched_noop_l1", 0.0))
+                for event in returnability_probe_summaries
+            )
+            / len(returnability_probe_summaries)
+            if returnability_probe_summaries
+            else 0.0
+        ),
         "spatial_shadow_evaluations": len(spatial_shadow_rows),
         "spatial_selection_enabled": any(
             float(row.get("spatial_shadow_selection_weight") or 0.0) > 0.0
@@ -828,6 +920,7 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             "frames": "frames/",
             "transitions": "transitions.json",
             "spatial_shadow": "spatial_shadow.csv",
+            "returnability_probes": "returnability_probes.csv",
         },
     }
     (run_dir / "summary.json").write_text(

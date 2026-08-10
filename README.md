@@ -127,6 +127,23 @@ negative only after its endpoint has been probed with at least five distinct
 controls; inconclusive transitions remain unlabeled. This sidecar currently
 fails the native generalization gate and must remain telemetry-only.
 
+Collect explicit short-horizon return evidence from verified save-state
+branches without changing the policy:
+
+```bash
+lolo-neural-run \
+  ... \
+  --returnability-probe-depth 2 \
+  --returnability-probe-beam-width 4 \
+  --returnability-probe-pixel-l1-threshold 0.002
+```
+
+Each probe restores the branch endpoint, tests every configured controller
+action, and compares the result with a NOOP branch advanced for the same total
+number of emulator frames. Probe actions are logged under a separate phase,
+excluded from normal experience import, and cannot affect planning. Results are
+flattened to `returnability_probes.csv`.
+
 Run the saved model in frozen evaluation mode:
 
 ```bash

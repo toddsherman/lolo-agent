@@ -9,6 +9,7 @@ import torch
 from torch import Tensor
 
 from .agent import Decision
+from .bidirectional_probe import BidirectionalProbeCollector
 from .ensemble_world_model import EnsembleVisualDynamicsModel
 from .environment import Action, PixelSaveStateEnv
 from .goal_prior import HeartGoalAnalysis, PixelHeartGoalPrior
@@ -89,6 +90,9 @@ class NeuralPlanningConfig:
     human_prior_navigation_recovery_grace: int = 0
     human_prior_intrinsic_clip: float = 10.0
     spatial_selection_weight: float = 0.0
+    returnability_probe_depth: int = 0
+    returnability_probe_beam_width: int = 4
+    returnability_probe_pixel_l1_threshold: float = 0.002
 
 
 @dataclass(frozen=True)
@@ -424,6 +428,12 @@ class VerifiedNeuralAgent:
             raise ValueError("spatial selection weight must be non-negative")
         if self.config.spatial_selection_weight > 0.0 and spatial_shadow is None:
             raise ValueError("positive spatial selection weight requires a spatial model")
+        if self.config.returnability_probe_depth < 0:
+            raise ValueError("returnability probe depth must be non-negative")
+        if self.config.returnability_probe_beam_width <= 0:
+            raise ValueError("returnability probe beam width must be positive")
+        if self.config.returnability_probe_pixel_l1_threshold < 0.0:
+            raise ValueError("returnability probe threshold must be non-negative")
         self.model.freeze()
         self.planner = NeuralRolloutPlanner(model, device, self.config)
         self.novelty = VisualNovelty()
@@ -482,6 +492,22 @@ class VerifiedNeuralAgent:
         self.decision_index = 0
         self.event_logger = event_logger
         self.spatial_shadow = spatial_shadow
+        self.returnability_probe = (
+            None
+            if self.config.returnability_probe_depth == 0
+            else BidirectionalProbeCollector(
+                self.env,
+                self.config.actions,
+                maximum_depth=self.config.returnability_probe_depth,
+                beam_width=self.config.returnability_probe_beam_width,
+                pixel_l1_threshold=(
+                    self.config.returnability_probe_pixel_l1_threshold
+                ),
+                emit=self._emit,
+                frame_fields=self._frame_fields,
+                state_id=self._state_id,
+            )
+        )
         self.goal_prior: Optional[PixelHeartGoalPrior] = None
         self.last_navigation_change_decision: Optional[int] = None
         self.pending_life_hazard_choice: Optional[
@@ -3087,6 +3113,18 @@ class VerifiedNeuralAgent:
                     f"decision-{self.decision_index + 1:08d}-"
                     f"branch-{candidate_rank:02d}"
                 )
+                if self.returnability_probe is not None:
+                    self.returnability_probe.collect(
+                        root_state=root,
+                        endpoint_state=state,
+                        source_frame=source_frame,
+                        endpoint_frame=target,
+                        initial_action=plan.path[0],
+                        action_frames=duration,
+                        decision=self.decision_index + 1,
+                        branch_id=branch_id,
+                        candidate_rank=candidate_rank,
+                    )
                 if self.spatial_shadow is not None:
                     self._emit(
                         "spatial_shadow_branch_evaluated",

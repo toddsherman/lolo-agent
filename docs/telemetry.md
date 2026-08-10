@@ -190,6 +190,38 @@ mean uncertainty, and whether `spatial_returnability_parameter_audit` proved
 that evaluation left the sidecar unchanged. Returnability has no selection or
 commit weight; the current checkpoint is research telemetry, not a reward.
 
+## Bidirectional save-state probes
+
+`--returnability-probe-depth N` enables explicit, telemetry-only endpoint
+experiments. For every verified branch, the collector restores its save state,
+tests all configured controller actions at the branch duration, and retains the
+closest `--returnability-probe-beam-width` endpoints for the next depth. A
+candidate is compared with the frame produced by restoring the original root
+and applying NOOP for the same total emulator time. This matched control keeps
+ordinary animation from masquerading as irreversibility.
+
+The append-only event stream includes:
+
+- `bidirectional_probe_started` with the actions, depth, beam, threshold, state
+  aliases, and source pixels;
+- `bidirectional_probe_reference` for every duration-matched NOOP frame;
+- `bidirectional_probe_step` for every tested path, including state aliases,
+  emulator event links, pixel distance, exact-match status, and return result;
+- `bidirectional_probe_completed` with path coverage, shortest observed return,
+  best distance, and `no_return_within_probe_budget`.
+
+All generated emulator steps use phase `returnability_probe`. The standard
+experience importer excludes them, and branch scores, attempt memory, and
+persistent parameters never see their outcomes. `returnability_probes.csv`
+provides one row per path. `summary.json` reports probed branches and paths,
+return counts, budget-scoped non-returns, mean best distance, and the artifact
+location. “No return” always means within the logged action/depth/beam budget;
+it is not asserted as a universal property.
+
+When a probe run resumes from assisted-policy telemetry, its manifest inherits
+assisted provenance as `human_prior_resume_observational`. Such a run can be
+used for evaluator validation but cannot enter the strict dataset.
+
 ## Attempts and level labels
 
 An attempt begins whenever the environment is reset. Because room number,

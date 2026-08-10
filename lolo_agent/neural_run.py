@@ -12,6 +12,7 @@ from .bootstrap import (
     get_bootstrap_fixture,
 )
 from .ensemble_world_model import load_ensemble_checkpoint
+from .experience_import import classify_reward_track
 from .log_summary import build_run_summary
 from .native_env import NativeLibretroEnv
 from .neural_planner import NeuralPlanningConfig, VerifiedNeuralAgent
@@ -142,6 +143,27 @@ def main() -> None:
             "spatial checkpoint it was trained against and remains telemetry-only"
         ),
     )
+    parser.add_argument(
+        "--returnability-probe-depth",
+        type=int,
+        default=0,
+        help=(
+            "telemetry-only save-state search for a matched-NOOP pixel return; "
+            "zero disables probing"
+        ),
+    )
+    parser.add_argument(
+        "--returnability-probe-beam-width",
+        type=int,
+        default=4,
+        help="closest endpoint states retained at each return-probe depth",
+    )
+    parser.add_argument(
+        "--returnability-probe-pixel-l1-threshold",
+        type=float,
+        default=0.002,
+        help="maximum matched-NOOP mean pixel difference counted as a return",
+    )
     parser.add_argument("--decisions", type=int, default=20)
     parser.add_argument("--action-frames", type=int, default=4)
     parser.add_argument(
@@ -243,6 +265,14 @@ def main() -> None:
         parser.error("--archive-max-age must be positive")
     if args.spatial_selection_weight < 0.0:
         parser.error("--spatial-selection-weight must be non-negative")
+    if args.returnability_probe_depth < 0:
+        parser.error("--returnability-probe-depth must be non-negative")
+    if args.returnability_probe_beam_width <= 0:
+        parser.error("--returnability-probe-beam-width must be positive")
+    if args.returnability_probe_pixel_l1_threshold < 0.0:
+        parser.error(
+            "--returnability-probe-pixel-l1-threshold must be non-negative"
+        )
     if (
         args.spatial_selection_weight > 0.0
         and args.spatial_shadow_checkpoint is None
@@ -377,19 +407,27 @@ def main() -> None:
         ),
         human_prior_intrinsic_clip=args.human_prior_intrinsic_clip,
         spatial_selection_weight=args.spatial_selection_weight,
+        returnability_probe_depth=args.returnability_probe_depth,
+        returnability_probe_beam_width=args.returnability_probe_beam_width,
+        returnability_probe_pixel_l1_threshold=(
+            args.returnability_probe_pixel_l1_threshold
+        ),
     )
     rom_sha256 = sha256_file(args.rom)
     resume_metadata = None
+    resume_reward_track = None
     if args.resume_run is not None:
         source_manifest = validate_replay_inputs(
             args.resume_run, args.host, args.core, args.rom
         )
         source_events = args.resume_run.expanduser().resolve() / "events.jsonl"
+        resume_reward_track = classify_reward_track(source_manifest)
         resume_metadata = {
             "source_run": str(args.resume_run.expanduser().resolve()),
             "source_run_id": source_manifest.get("run_id"),
             "source_decision": args.resume_decision,
             "source_events_sha256": sha256_file(source_events),
+            "source_reward_track": resume_reward_track,
         }
     inputs = {
         "rom": {"name": args.rom.name, "sha256": rom_sha256},
@@ -425,7 +463,13 @@ def main() -> None:
     metadata = {
         "mode": "frozen_neural_evaluation",
         "reward_track": (
-            "human_prior_v2" if args.human_prior_hearts else "strict_rule_free"
+            "human_prior_v2"
+            if args.human_prior_hearts
+            else (
+                "human_prior_resume_observational"
+                if resume_reward_track == "assisted"
+                else "strict_rule_free"
+            )
         ),
         "requested_decisions": args.decisions,
         "device": str(device),

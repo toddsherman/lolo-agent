@@ -228,6 +228,44 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(len(report.horizon_uncertainty), 2)
         self.assertTrue(all(value >= 0 for value in report.horizon_uncertainty))
 
+    def test_bidirectional_probe_cannot_change_committed_decision(self) -> None:
+        torch.manual_seed(13)
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        base = dict(
+            actions=(Action.RIGHT, Action.LEFT, Action.NOOP),
+            planning_depth=1,
+            beam_width=3,
+            verify_actions=3,
+            action_frames=1,
+            visual_stagnation_visits=99,
+        )
+        control = VerifiedNeuralAgent(
+            ActionEffectEnv(), model, "cpu", NeuralPlanningConfig(**base)
+        )
+        probed = VerifiedNeuralAgent(
+            ActionEffectEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                **base,
+                returnability_probe_depth=1,
+                returnability_probe_beam_width=2,
+                returnability_probe_pixel_l1_threshold=0.0,
+            ),
+        )
+        control.reset()
+        probed.reset()
+
+        control_decision = control.decide()
+        probed_decision = probed.decide()
+
+        self.assertEqual(probed_decision.action, control_decision.action)
+        self.assertEqual(probed_decision.action_frames, control_decision.action_frames)
+        self.assertEqual(probed_decision.frame, control_decision.frame)
+        self.assertAlmostEqual(probed_decision.score, control_decision.score)
+
     def test_mixed_horizon_training_and_validation(self) -> None:
         sequences = [
             VisualSequence(

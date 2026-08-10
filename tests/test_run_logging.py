@@ -183,6 +183,63 @@ class RunLoggingTests(unittest.TestCase):
             manifest = json.loads((logger.run_dir / "manifest.json").read_text())
             self.assertEqual(manifest["unique_frame_count"], 1)
 
+    def test_bidirectional_probe_has_separate_phase_and_flat_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            logger = RunLogger(Path(directory), run_id="probe-audit")
+            env = LoggedEnvironment(MockPuzzleEnv(), logger)
+            model = EnsembleVisualDynamicsModel(
+                latent_size=16, action_size=8, ensemble_size=2
+            )
+            agent = VerifiedNeuralAgent(
+                env,
+                model,
+                "cpu",
+                NeuralPlanningConfig(
+                    actions=(Action.LEFT, Action.RIGHT),
+                    planning_depth=1,
+                    beam_width=2,
+                    verify_actions=2,
+                    action_frames=1,
+                    visual_stagnation_visits=99,
+                    returnability_probe_depth=1,
+                    returnability_probe_beam_width=1,
+                    returnability_probe_pixel_l1_threshold=0.0,
+                ),
+                event_logger=logger,
+            )
+            agent.reset()
+            agent.decide()
+            agent.clear_archive()
+            logger.close()
+
+            events = list(read_events(logger.run_dir))
+            probe_steps = [
+                event
+                for event in events
+                if event["event"] == "env_step"
+                and event.get("phase") == "returnability_probe"
+            ]
+            agent_steps = [
+                event
+                for event in events
+                if event["event"] == "env_step"
+                and event.get("phase") == "agent"
+            ]
+            self.assertEqual(len(probe_steps), 6)
+            self.assertEqual(len(agent_steps), 3)
+            summary = build_run_summary(logger.run_dir)
+            self.assertEqual(summary["returnability_probe_branches"], 2)
+            self.assertEqual(summary["returnability_probe_paths"], 4)
+            self.assertGreaterEqual(
+                summary["returnability_probe_branches_with_return"], 1
+            )
+            with (logger.run_dir / "returnability_probes.csv").open(
+                encoding="utf-8"
+            ) as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(len(rows), 4)
+            self.assertTrue(all(row["branch_id"] for row in rows))
+
     def test_evaluator_bootstrap_is_logged_but_excluded_from_agent_statistics(
         self,
     ) -> None:

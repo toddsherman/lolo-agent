@@ -306,6 +306,9 @@ ordinary movement remains usable.
   The first persistent observed-returnability sidecar is telemetry-only because
   it fails native calibration; spatial causal signatures remain temporary
   attempt memory.
+- Optional bidirectional probes can now produce explicit short-horizon return
+  evidence, but this evidence is isolated from the live planner and is not yet
+  part of persistent strict training.
 - Room completion remains evaluator-only and is not available to the planner;
   the first-room completion was found through causal-outcome exploration rather
   than a completion reward.
