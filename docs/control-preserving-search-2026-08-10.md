@@ -588,7 +588,19 @@ object pixels are still required. A synthetic overlapping-player regression
 confirms that multiple poses collapse to one entity context while the local
 transformation remains action-controlled.
 
+The exact option verifier previously used one four-frame press for every
+controller action. That is appropriate for testing a button interaction and
+directional facing, but it cannot represent a sustained movement or push even
+though the frozen duration-conditioned planner already verifies 16-frame
+gameplay actions. The optional
+`--human-prior-option-search-long-direction-frames` setting now adds a second
+duration only to directional search edges. Every heterogeneous path is
+compared with an all-`NOOP` reference having the same total elapsed frames, and
+the exact per-edge durations remain part of coverage, archive, and telemetry
+identity. A synthetic long-press environment verifies that a 16-frame movement
+endpoint is discovered while four-frame button edges remain available.
+
 ## Verification
 
-The complete test suite passes: 202 tests, with 3 expected skips. Every
+The complete test suite passes: 203 tests, with 3 expected skips. Every
 completed native run reported `frozen_evaluation_audit=pass`.

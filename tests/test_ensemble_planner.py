@@ -409,6 +409,32 @@ class ControllabilityGainEnv:
         return Frame(8, 8, 1, bytes(pixels))
 
 
+class LongPressMovementEnv:
+    def __init__(self) -> None:
+        self.position = 0
+
+    def reset(self) -> Frame:
+        self.position = 0
+        return self._frame()
+
+    def step(self, action: Action, frames: int = 1) -> Frame:
+        if action == Action.RIGHT and frames >= 16:
+            self.position = 1
+        return self._frame()
+
+    def save_state(self) -> int:
+        return self.position
+
+    def load_state(self, state: int) -> Frame:
+        self.position = state
+        return self._frame()
+
+    def _frame(self) -> Frame:
+        pixels = bytearray(64)
+        pixels[self.position] = 255
+        return Frame(8, 8, 1, bytes(pixels))
+
+
 class DelayedControllabilityGainEnv:
     def __init__(self) -> None:
         self.world_active = False
@@ -2375,6 +2401,60 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertTrue(eligible[0]["eligible"])
         self.assertEqual(eligible[0]["entity_effect_cells"], ((1, 0),))
         self.assertEqual(eligible[0]["confirmed_action_indices"], (0, 1))
+
+    def test_option_search_can_add_long_direction_edges(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            LongPressMovementEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.A),
+                planning_depth=1,
+                action_frames=4,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=4,
+                human_prior_option_search_action_frames=4,
+                human_prior_option_search_long_direction_frames=16,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        source_signature = agent._current_human_prior_graph_signature()
+        agent.human_prior_graph_state_visits[source_signature] = 1
+        agent.human_prior_player_position_visits[(0, 0)] = 1
+
+        added = agent._search_human_prior_options()
+
+        self.assertEqual(added, 1)
+        self.assertEqual(len(agent.archive), 1)
+        self.assertIn(16, agent.archive[0].plan.durations)
+        started = [
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_search_started"
+        ][0]
+        self.assertEqual(
+            started["action_duration_edges"],
+            (
+                (Action.RIGHT, 4),
+                (Action.RIGHT, 16),
+                (Action.A, 4),
+            ),
+        )
+        neutral = [
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_neutral_verified"
+        ]
+        self.assertIn(4, {event["elapsed_frames"] for event in neutral})
+        self.assertIn(16, {event["elapsed_frames"] for event in neutral})
 
     def test_unlabeled_entity_frontier_archives_settled_state(self) -> None:
         model = EnsembleVisualDynamicsModel(

@@ -181,7 +181,12 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   save-state sequence rollout, its duration-matched all-`NOOP` reference,
   action/duration path, parent and endpoint state IDs, player-masked
   non-player effect signature, conservative nonlocal effect cells,
-  pixel-derived goal analysis, novelty counts, score, and selection;
+  pixel-derived goal analysis, novelty counts, score, and selection. With
+  `--human-prior-option-search-long-direction-frames`, each directional action
+  additionally receives one long-press edge while buttons and neutral waits
+  retain the base option-search duration. `action_duration_edges` records the
+  exact expansion set, and each neutral event records `elapsed_frames` plus
+  the heterogeneous duration tuple used for its matched reference;
 - `human_prior_option_world_effect_stability`, which replays a bounded sample
   of distinct option effects beside duration-matched all-`NOOP` controls at
   future horizons and records the intersected coarse cells, conservative

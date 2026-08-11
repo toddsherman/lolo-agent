@@ -109,6 +109,7 @@ class NeuralPlanningConfig:
     human_prior_option_search_depth: int = 0
     human_prior_option_search_beam_width: int = 8
     human_prior_option_search_action_frames: int = 0
+    human_prior_option_search_long_direction_frames: int = 0
     human_prior_option_effect_stability_steps: int = 0
     human_prior_option_effect_probe_limit: int = 8
     human_prior_option_effect_max_stable_cells: int = 4
@@ -534,6 +535,11 @@ class VerifiedNeuralAgent:
         if self.config.human_prior_option_search_action_frames < 0:
             raise ValueError(
                 "human-prior option search action frames must be non-negative"
+            )
+        if self.config.human_prior_option_search_long_direction_frames < 0:
+            raise ValueError(
+                "human-prior option search long direction frames must be "
+                "non-negative"
             )
         if self.config.human_prior_option_effect_stability_steps < 0:
             raise ValueError(
@@ -2377,6 +2383,26 @@ class VerifiedNeuralAgent:
                 self.config.action_durations
                 or (self.config.action_frames,)
             )
+        directional_actions = {
+            Action.UP,
+            Action.DOWN,
+            Action.LEFT,
+            Action.RIGHT,
+        }
+        long_direction_duration = (
+            self.config.human_prior_option_search_long_direction_frames
+        )
+        action_edges = tuple(
+            (action, edge_duration)
+            for action in actions
+            for edge_duration in (
+                (duration, long_direction_duration)
+                if action in directional_actions
+                and long_direction_duration > 0
+                and long_direction_duration != duration
+                else (duration,)
+            )
+        )
         source_frame = self.frame
         source_analysis = self.goal_prior.analyze(
             source_frame, source_frame
@@ -2437,39 +2463,57 @@ class VerifiedNeuralAgent:
             beam_width=self.config.human_prior_option_search_beam_width,
             actions=actions,
             action_frames=duration,
+            action_duration_edges=action_edges,
+            long_direction_frames=(
+                long_direction_duration or None
+            ),
             **self._frame_fields(source_frame),
         )
+        neutral_targets: Dict[int, Tuple[Frame, Optional[int]]] = {}
+        neutral_events: set[Tuple[int, int]] = set()
         try:
             for depth in range(
                 1, self.config.human_prior_option_search_depth + 1
             ):
-                self.env.load_state(root)
-                neutral_target = source_frame
-                for _neutral_step in range(depth):
-                    neutral_target = self.env.step(
-                        Action.NOOP, duration
-                    )
-                self._emit(
-                    "human_prior_option_neutral_verified",
-                    decision=self.decision_index + 1,
-                    depth=depth,
-                    path=(Action.NOOP,) * depth,
-                    durations=(duration,) * depth,
-                    source_state_id=self._state_id(root),
-                    env_step_seq=getattr(
-                        self.env, "last_step_seq", None
-                    ),
-                    **self._frame_fields(neutral_target),
-                )
                 depth_candidates: List[_HumanPriorOptionNode] = []
                 for parent in parents:
-                    for action in actions:
+                    for action, edge_duration in action_edges:
+                        durations = (*parent.durations, edge_duration)
+                        elapsed_frames = sum(durations)
+                        neutral_cached = neutral_targets.get(elapsed_frames)
+                        if neutral_cached is None:
+                            self.env.load_state(root)
+                            neutral_target = self.env.step(
+                                Action.NOOP, elapsed_frames
+                            )
+                            neutral_seq = getattr(
+                                self.env, "last_step_seq", None
+                            )
+                            neutral_targets[elapsed_frames] = (
+                                neutral_target,
+                                neutral_seq,
+                            )
+                        else:
+                            neutral_target, neutral_seq = neutral_cached
+                        neutral_event_key = (depth, elapsed_frames)
+                        if neutral_event_key not in neutral_events:
+                            neutral_events.add(neutral_event_key)
+                            self._emit(
+                                "human_prior_option_neutral_verified",
+                                decision=self.decision_index + 1,
+                                depth=depth,
+                                path=(Action.NOOP,) * depth,
+                                durations=durations,
+                                elapsed_frames=elapsed_frames,
+                                source_state_id=self._state_id(root),
+                                env_step_seq=neutral_seq,
+                                **self._frame_fields(neutral_target),
+                            )
                         self.env.load_state(parent.state)
-                        target = self.env.step(action, duration)
+                        target = self.env.step(action, edge_duration)
                         state = self.env.save_state()
                         saved_states.append(state)
                         path = (*parent.path, action)
-                        durations = (*parent.durations, duration)
                         analysis = self.goal_prior.analyze(
                             source_frame, target
                         )

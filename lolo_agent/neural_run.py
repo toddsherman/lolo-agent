@@ -451,6 +451,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--human-prior-option-search-long-direction-frames",
+        type=int,
+        default=0,
+        help=(
+            "optional second press length for directional exact-option edges; "
+            "buttons and neutral waits retain the base search press length"
+        ),
+    )
+    parser.add_argument(
         "--human-prior-option-effect-stability-steps",
         type=int,
         default=0,
@@ -700,6 +709,11 @@ def main() -> None:
         parser.error(
             "--human-prior-option-search-action-frames must be non-negative"
         )
+    if args.human_prior_option_search_long_direction_frames < 0:
+        parser.error(
+            "--human-prior-option-search-long-direction-frames must be "
+            "non-negative"
+        )
     if args.human_prior_option_effect_stability_steps < 0:
         parser.error(
             "--human-prior-option-effect-stability-steps must be non-negative"
@@ -909,6 +923,9 @@ def main() -> None:
         ),
         human_prior_option_search_action_frames=(
             args.human_prior_option_search_action_frames
+        ),
+        human_prior_option_search_long_direction_frames=(
+            args.human_prior_option_search_long_direction_frames
         ),
         human_prior_option_effect_stability_steps=(
             args.human_prior_option_effect_stability_steps
