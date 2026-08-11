@@ -187,6 +187,7 @@ class _ArchivedBranch:
     human_prior_verified_option: bool = False
     human_prior_option_world_effect_signature: str = ""
     human_prior_option_entity_state_signature: str = ""
+    human_prior_option_effect_frontier_reason: str = ""
     goal_chest_obtained: bool = False
     goal_milestone_checkpoint: Optional["_LifeHazardCheckpoint"] = None
 
@@ -1027,17 +1028,15 @@ class VerifiedNeuralAgent:
             not allow_nonlocal
             and action
             in (Action.UP, Action.DOWN, Action.LEFT, Action.RIGHT)
-            and analysis.source_player_slot is not None
-            and analysis.target_player_slot is not None
-            and analysis.source_player_slot != analysis.target_player_slot
         ):
             # The stable graph key already represents ordinary detected
-            # movement.  Coarse cells beside the two anchors are dominated by
-            # sprite outline/animation spill, so toggling them into the world
-            # context invents a new room state for every walking pose.  Exact
-            # option search uses allow_nonlocal=True and retains its stricter
-            # persistence, phase, player-mask, and action-control audits for
-            # real transformations that accompany movement.
+            # movement. Coarse cells beside the anchors are dominated by
+            # sprite outline/animation spill even when a blocked press leaves
+            # the snapped player tile unchanged, so toggling them into the
+            # world context invents a room state for every directional pose.
+            # Exact option search uses allow_nonlocal=True and retains its
+            # stricter persistence, phase, player-mask, and action-control
+            # audits for real transformations that accompany movement.
             return ""
         if (
             not allow_nonlocal
@@ -1996,6 +1995,10 @@ class VerifiedNeuralAgent:
         )
         controllability = {
             "endpoint_matched": False,
+            "player_footprint_matched": False,
+            "factual_player_footprint_pixels": 0,
+            "control_player_footprint_pixels": 0,
+            "player_footprint_symmetric_difference_pixels": 0,
             "probe_depth": (
                 self.config.human_prior_option_effect_controllability_depth
             ),
@@ -2213,13 +2216,35 @@ class VerifiedNeuralAgent:
             and factual_analysis.target_player_slot
             == control_analysis.target_player_slot
         )
+        player_pixel_mask = getattr(
+            self.goal_prior, "player_pixel_mask", None
+        )
+        factual_player_pixels: set[Tuple[int, int]] = set()
+        control_player_pixels: set[Tuple[int, int]] = set()
+        if endpoints_matched and callable(player_pixel_mask):
+            factual_player_pixels.update(
+                player_pixel_mask(
+                    factual_endpoint,
+                    factual_analysis.target_player_slot,
+                )
+            )
+            control_player_pixels.update(
+                player_pixel_mask(
+                    control_endpoint,
+                    control_analysis.target_player_slot,
+                )
+            )
+        player_footprint_matched = bool(
+            factual_player_pixels
+            and factual_player_pixels == control_player_pixels
+        )
         factual_slots: set[Tuple[int, int]] = set()
         control_slots: set[Tuple[int, int]] = set()
         factual_frames: List[Frame] = []
         control_frames: List[Frame] = []
         action_rows = []
         try:
-            if endpoints_matched:
+            if player_footprint_matched:
                 probe_depth = (
                     self.config.human_prior_option_effect_controllability_depth
                 )
@@ -2297,6 +2322,18 @@ class VerifiedNeuralAgent:
         newly_reachable = factual_slots - control_slots
         result = {
             "endpoint_matched": endpoints_matched,
+            "player_footprint_matched": player_footprint_matched,
+            "factual_player_footprint_pixels": len(
+                factual_player_pixels
+            ),
+            "control_player_footprint_pixels": len(
+                control_player_pixels
+            ),
+            "player_footprint_symmetric_difference_pixels": len(
+                factual_player_pixels.symmetric_difference(
+                    control_player_pixels
+                )
+            ),
             "probe_depth": (
                 self.config.human_prior_option_effect_controllability_depth
             ),
@@ -3119,6 +3156,11 @@ class VerifiedNeuralAgent:
                             int(control["replaced_action_index"])
                             for control in action_controls
                             if control["confirmed"]
+                            and bool(
+                                control["controllability"].get(
+                                    "player_footprint_matched", False
+                                )
+                            )
                             and int(
                                 control["controllability"].get(
                                     "reachable_player_position_gain", 0
@@ -3588,6 +3630,9 @@ class VerifiedNeuralAgent:
                     ),
                     human_prior_option_entity_state_signature=(
                         archived.confirmed_entity_state_signature
+                    ),
+                    human_prior_option_effect_frontier_reason=(
+                        archived.confirmed_effect_frontier_reason
                     ),
                     goal_milestone_checkpoint=(
                         archived_milestone_checkpoint
@@ -11418,8 +11463,15 @@ class VerifiedNeuralAgent:
                     for candidate in world_state_frontier_eligible
                     if candidate.human_prior_verified_option
                 ]
+                immediate_option_effect_frontier_eligible = [
+                    candidate
+                    for candidate in option_effect_frontier_eligible
+                    if candidate.human_prior_option_effect_frontier_reason
+                    == "immediate_reachability_gain"
+                ]
                 eligible = (
-                    physical_frontier_eligible
+                    immediate_option_effect_frontier_eligible
+                    or physical_frontier_eligible
                     or world_state_frontier_eligible
                     or local_control_frontier_eligible
                     or human_prior_unexpanded_eligible
@@ -11436,17 +11488,28 @@ class VerifiedNeuralAgent:
                     unexpanded_goal_edges=len(eligible),
                     physical_frontier_preferred=bool(
                         physical_frontier_eligible
+                        and not immediate_option_effect_frontier_eligible
                     ),
                     world_state_frontier_preferred=bool(
                         world_state_frontier_eligible
+                        and not immediate_option_effect_frontier_eligible
                         and not physical_frontier_eligible
                     ),
                     option_effect_frontier_preferred=bool(
                         option_effect_frontier_eligible
-                        and not physical_frontier_eligible
+                        and (
+                            immediate_option_effect_frontier_eligible
+                            or not physical_frontier_eligible
+                        )
+                    ),
+                    immediate_option_effect_frontier_preferred=bool(
+                        immediate_option_effect_frontier_eligible
                     ),
                     confirmed_option_effects=len(
                         option_effect_frontier_eligible
+                    ),
+                    immediate_reachability_option_effects=len(
+                        immediate_option_effect_frontier_eligible
                     ),
                     unvisited_player_positions=len(
                         physical_frontier_eligible
@@ -12070,6 +12133,9 @@ class VerifiedNeuralAgent:
             human_prior_option_entity_state_signature=(
                 branch.human_prior_option_entity_state_signature or None
             ),
+            human_prior_option_effect_frontier_reason=(
+                branch.human_prior_option_effect_frontier_reason or None
+            ),
             human_prior_graph_source_signature=(
                 branch.goal_source_signature or None
             ),
@@ -12230,6 +12296,9 @@ class VerifiedNeuralAgent:
             ),
             human_prior_option_entity_state_signature=(
                 branch.human_prior_option_entity_state_signature or None
+            ),
+            human_prior_option_effect_frontier_reason=(
+                branch.human_prior_option_effect_frontier_reason or None
             ),
             human_prior_graph_source_signature=(
                 branch.goal_source_signature or None

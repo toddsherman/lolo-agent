@@ -169,9 +169,10 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
 - `human_prior_world_source_context`,
   `human_prior_world_target_context`, and
   `human_prior_world_effect_signature` on verified, archived, restored, and
-  committed transitions. For ordinary single-step directional movement, a
-  changed detected player anchor is represented by the graph position and does
-  not also toggle adjacent coarse sprite-spill cells into the world context.
+  committed transitions. Ordinary single-step directional movement is
+  represented by the graph position and never also toggles adjacent coarse
+  sprite-spill cells into the world context, including blocked presses whose
+  detected anchor stays on the same tile but whose facing pixels change.
   Exact option search still receives the unfiltered multi-action observation
   for its stricter persistence, phase, player-mask, and action-control audits;
 - `human_prior_world_effect_confirmation`, which records the candidate coarse
@@ -226,12 +227,16 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   which intervention positions remain causally necessary for the compact
   nonlocal effect. When the effect frontier is enabled, each confirmed control
   also emits `human_prior_option_effect_controllability_probe`: the factual and
-  action-ablated endpoints must have the same detected player location, then
-  every directional action sequence through
+  action-ablated endpoints must have both the same detected player location
+  and the same nonempty pixel-level player footprint, then every directional
+  action sequence through
   `--human-prior-option-effect-controllability-depth` is branched from both.
-  The event records the configured depth, every exact action path, both
-  reachable-position sets, newly reachable positions, and factual/control
-  pixel-outcome spread. An effect enters the frontier only when factual state
+  The footprint gate prevents sub-tile movement or facing differences from
+  masquerading as a changed world affordance. The event records the coarse
+  endpoint match, footprint match, each footprint size and symmetric
+  difference, configured depth, every exact action path, both reachable-position
+  sets, newly reachable positions, and factual/control pixel-outcome spread.
+  An effect enters the frontier only when the matched-footprint factual state
   adds at least one reachable player position;
 - `--human-prior-option-causal-effect-frontier` is a separate opt-in assisted
   track for delayed consequences. It applies the same stability, phase,
@@ -299,6 +304,13 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   `human_prior_option_world_effect_action_control.entity_player_masked_pixels`
   records the final mask size, and each horizon observation records its own
   `entity_player_masked_pixels` count;
+- assisted best-first recovery prefers a confirmed
+  `immediate_reachability_gain` effect over an ordinary physical frontier, but
+  does not give the same precedence to a `delayed_causal_effect` hypothesis.
+  `human_prior_best_first_archives_filtered` records
+  `immediate_option_effect_frontier_preferred`, the number of
+  `immediate_reachability_option_effects`, and the selected archive's effect
+  reason so the distinction is auditable;
 - long-lived recovery and archive entries own independent emulator handles.
   In particular, `archive_affordance_checkpoint_added.state_id` identifies a
   cloned source state, while `parent_state_id` records the original decision

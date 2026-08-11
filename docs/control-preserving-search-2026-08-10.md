@@ -903,8 +903,58 @@ the next experiment—route from the preserved context toward that changed
 region or the remaining visible goal and test downstream behavior—without
 assigning a game-specific object type.
 
+That downstream test is now negative. From the preserved one-heart context,
+`spatial-v14-room3-causal-goal-route-v52-p8-d1` verified 14,729 exact option
+branches and restored a 14-edge route (`RIGHT` five times, then `DOWN` nine
+times) to `(192,176)`, four Manhattan tiles from the remaining lower heart.
+The learned context survived the entire route, but it opened no new position
+or stable effect; all 14,731 native handles were released. The anonymous
+`[7,6]` state therefore does not by itself open the lower-right route.
+
+The complementary pre-upper-heart search also failed to reveal a simple
+ordering solution. `spatial-v14-room3-lower-first-v53-p8-d1` began with both
+visible hearts, verified 22,759 exact branches through depth 20, and rejected
+34 duplicate upper-heart outcomes. It reached the central boundary at
+`(144,128)`, still four tiles from the lower heart, but never reached below
+that boundary. This falsifies the hypothesis that merely delaying the upper
+heart makes the lower route available. The run balanced 22,827/22,827 handles
+and preserved the frozen parameter hash.
+
+Follow-through exposed a second sprite bookkeeping leak. Ordinary blocked
+directional presses at the same detected tile changed facing and nearby
+goal-overlap pixels, which the world-context accumulator treated as state.
+All ordinary single-step directional transitions now leave world context
+unchanged, regardless of whether the detected player anchor moves. Exact
+multi-action effect audits retain their nonlocal signal. The native replay
+`spatial-v14-room3-directional-context-complete-v55-p8-d8` alternated movement,
+blocked/repeated presses, and neutral waits across eight decisions without
+creating a world effect. It kept one context, balanced 71/71 handles, and
+passed the frozen audit.
+
+The first causal ranking experiment then produced an instructive false
+positive. In `spatial-v14-room3-immediate-effect-priority-v56-p8-d4`, best-first
+correctly preferred an option labelled `immediate_reachability_gain`, but the
+factual `UP,LEFT,A` and ablated `UP,NOOP,A` endpoints only matched at the
+snapped `(128,32)` tile. Their subsequent reachable-position sets differed
+because the player occupied different sub-tile/facing states, not because the
+anonymous world effect had opened a route.
+
+Immediate controllability evidence now additionally requires equal, nonempty
+pixel-level player footprints at the factual and ablated endpoints. The
+production footprint is the same conservative blue/white sprite mask already
+used by effect controls; it remains assisted audit telemetry and is not added
+to the strict policy. `spatial-v14-room3-pixel-matched-effect-v57-p8-d4`
+repeated the identical 781-branch search. All six stable candidates remained
+valid delayed causal hypotheses, but zero qualified for immediate
+reachability. For the exact v56 control, the coarse endpoint still matched
+while its two footprints differed by 537 pixels, so no reachability probe was
+credited. Best-first consequently selected the real physical `DOWN,UP`
+frontier instead of `UP,LEFT,A`. The run balanced 839/839 handles and passed
+the frozen audit. This leaves the delayed effect available for later
+experimentation without allowing sprite pose to outrank demonstrated motion.
+
 ## Verification
 
-The complete test suite passes: 223 tests, with 4 expected skips when native
+The complete test suite passes: 224 tests, with 4 expected skips when native
 integration paths are not supplied. Every
 completed native run reported `frozen_evaluation_audit=pass`.

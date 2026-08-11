@@ -355,6 +355,18 @@ class OverlappingPlayerGoalPrior(PositionGoalPrior):
         return {(0, 0), (4, 0), (5, 0), (6, 0)}
 
 
+class FootprintPositionGoalPrior(PositionGoalPrior):
+    @staticmethod
+    def player_pixel_mask(
+        frame: Frame,
+        slot: tuple[int, int],
+        search_padding: int = 12,
+        dilation: int = 3,
+    ) -> set[tuple[int, int]]:
+        del frame, search_padding, dilation
+        return {slot}
+
+
 class RegressivePositionGoalPrior(PositionGoalPrior):
     def analyze(
         self,
@@ -516,6 +528,56 @@ class ControllabilityGainEnv:
         if self.world_active:
             pixels[63] = 128
         return Frame(8, 8, 1, bytes(pixels))
+
+
+class PoseControllabilityGainEnv:
+    """Expose a false coarse-slot gain caused only by a different pose."""
+
+    def __init__(self) -> None:
+        self.pose = 0
+        self.position = 0
+
+    def reset(self) -> Frame:
+        self.pose = 0
+        self.position = 0
+        return self._frame()
+
+    def step(self, action: Action, frames: int = 1) -> Frame:
+        del frames
+        if action == Action.LEFT:
+            self.pose = 1
+        elif action == Action.RIGHT and self.pose == 1:
+            self.position = 1
+        return self._frame()
+
+    def save_state(self) -> tuple[int, int]:
+        return self.pose, self.position
+
+    def load_state(self, state: tuple[int, int]) -> Frame:
+        self.pose, self.position = state
+        return self._frame()
+
+    def _frame(self) -> Frame:
+        pixels = bytearray(64)
+        pixels[self.position] = 255
+        pixels[10 + self.pose] = 255
+        return Frame(8, 8, 1, bytes(pixels))
+
+
+class PosePositionGoalPrior(PositionGoalPrior):
+    @staticmethod
+    def player_pixel_mask(
+        frame: Frame,
+        slot: tuple[int, int],
+        search_padding: int = 12,
+        dilation: int = 3,
+    ) -> set[tuple[int, int]]:
+        del slot, search_padding, dilation
+        return {
+            (index, 0)
+            for index, value in enumerate(frame.pixels)
+            if value == 255
+        }
 
 
 class LongPressMovementEnv:
@@ -2924,20 +2986,19 @@ class EnsemblePlannerTests(unittest.TestCase):
             for branch in agent.archive
             if branch.goal_world_effect_signature
         )
+        causal.human_prior_option_effect_frontier_reason = (
+            "immediate_reachability_gain"
+        )
         agent.frame = agent.env.load_state(primary.state)
         agent.goal_prior.restore(
             primary.goal_heart_slots,
             primary.frame,
             primary.goal_player_slot,
         )
-        agent.human_prior_player_position_visits[
-            primary.goal_player_slot
-        ] = 1
-        agent.human_prior_graph_state_visits[
-            primary.goal_target_signature
-        ] = 1
         # Reproduce a localized effect that is intentionally invisible to the
-        # generic coarse scene signature used by archive recovery.
+        # generic coarse scene signature used by archive recovery.  The
+        # primary movement remains an unvisited physical frontier; the
+        # experimentally confirmed immediate reachability gain takes priority.
         agent._signature = lambda frame: "same-coarse-scene"
         agent.human_prior_graph_recovery_pending = True
 
@@ -2949,6 +3010,16 @@ class EnsemblePlannerTests(unittest.TestCase):
             agent.current_human_prior_world_context_signature,
             causal.goal_target_world_context,
         )
+        filtered = next(
+            event
+            for event in logger.events
+            if event["event"]
+            == "human_prior_best_first_archives_filtered"
+        )
+        self.assertTrue(
+            filtered["immediate_option_effect_frontier_preferred"]
+        )
+        self.assertFalse(filtered["physical_frontier_preferred"])
 
     def test_option_effect_controllability_detects_new_reachable_slot(
         self,
@@ -2974,7 +3045,7 @@ class EnsemblePlannerTests(unittest.TestCase):
             event_logger=logger,
         )
         source = agent.reset()
-        agent.goal_prior = PositionGoalPrior()
+        agent.goal_prior = FootprintPositionGoalPrior()
         root = env.save_state()
 
         result = agent._probe_human_prior_option_controllability_gain(
@@ -2989,6 +3060,7 @@ class EnsemblePlannerTests(unittest.TestCase):
         )
 
         self.assertTrue(result["endpoint_matched"])
+        self.assertTrue(result["player_footprint_matched"])
         self.assertEqual(
             result["factual_reachable_player_slots"], ((1, 0),)
         )
@@ -3004,6 +3076,51 @@ class EnsemblePlannerTests(unittest.TestCase):
                 for event in logger.events
             )
         )
+
+    def test_option_effect_controllability_rejects_pose_only_gain(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = PoseControllabilityGainEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_option_effect_stability_steps=0,
+                human_prior_option_effect_frontier=True,
+                human_prior_option_effect_phase_offsets=1,
+            ),
+        )
+        source = agent.reset()
+        agent.goal_prior = PosePositionGoalPrior()
+        root = env.save_state()
+
+        result = agent._probe_human_prior_option_controllability_gain(
+            root,
+            source,
+            (Action.LEFT,),
+            (1,),
+            (Action.NOOP,),
+            1,
+            1,
+            0,
+        )
+
+        self.assertTrue(result["endpoint_matched"])
+        self.assertFalse(result["player_footprint_matched"])
+        self.assertEqual(
+            result["player_footprint_symmetric_difference_pixels"], 2
+        )
+        self.assertEqual(result["factual_reachable_player_slots"], ())
+        self.assertEqual(result["control_reachable_player_slots"], ())
+        self.assertEqual(result["reachable_player_position_gain"], 0)
 
     def test_option_effect_controllability_detects_two_step_gain(
         self,
@@ -3028,7 +3145,7 @@ class EnsemblePlannerTests(unittest.TestCase):
             ),
         )
         source = agent.reset()
-        agent.goal_prior = PositionGoalPrior()
+        agent.goal_prior = FootprintPositionGoalPrior()
         root = env.save_state()
 
         result = agent._probe_human_prior_option_controllability_gain(
@@ -4504,6 +4621,30 @@ class EnsemblePlannerTests(unittest.TestCase):
                 allow_nonlocal=True,
             ),
             bytes((0, 0, 1, 0)).hex(),
+        )
+        stationary = replace(
+            analysis,
+            target_player_slot=analysis.source_player_slot,
+        )
+        blocked_pose_spill = bytes((1, 1, 0, 0)).hex()
+        self.assertEqual(
+            agent._human_prior_world_effect_signature(
+                blocked_pose_spill,
+                stationary,
+                frame,
+                Action.RIGHT,
+            ),
+            "",
+        )
+        self.assertEqual(
+            agent._human_prior_world_effect_signature(
+                blocked_pose_spill,
+                stationary,
+                frame,
+                Action.RIGHT,
+                allow_nonlocal=True,
+            ),
+            bytes((0, 1, 0, 0)).hex(),
         )
         target_context = agent._next_human_prior_world_context(
             "human-prior-world-root",
