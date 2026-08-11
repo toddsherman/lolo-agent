@@ -172,6 +172,12 @@ class ChestNavigationEnv:
 
 
 class PixelHeartGoalPriorTests(unittest.TestCase):
+    def test_player_grid_snap_rounds_half_tile_forward(self) -> None:
+        self.assertEqual(
+            PixelHeartGoalPrior._snap_to_tile((104, 40)),
+            (112, 48),
+        )
+
     def test_discovers_and_rewards_a_heart_disappearance(self) -> None:
         source = room_frame(((48, 48),))
         target = room_frame()
@@ -285,6 +291,23 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
             prior.detect_player(moved, reference=(64, 64)),
             (80, 64),
         )
+
+    def test_branch_tracking_uses_parent_reference_beyond_root_radius(self) -> None:
+        source = room_frame(((160, 64),), player=(48, 64))
+        target = room_frame(((160, 64),), player=(96, 64))
+        prior = PixelHeartGoalPrior()
+        prior.observe_room(source)
+
+        root_anchored = prior.analyze(source, target)
+        branch_anchored = prior.analyze(
+            source,
+            target,
+            target_player_reference=(80, 64),
+        )
+
+        self.assertIsNone(root_anchored.target_player_slot)
+        self.assertEqual(branch_anchored.source_player_slot, (48, 64))
+        self.assertEqual(branch_anchored.target_player_slot, (96, 64))
 
     def test_player_pixel_mask_covers_palette_and_outline_halo(self) -> None:
         frame = room_frame(player=(80, 64))

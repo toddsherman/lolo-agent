@@ -229,7 +229,17 @@ class PixelHeartGoalPrior:
 
     @staticmethod
     def _snap_to_tile(slot: HeartSlot) -> HeartSlot:
-        return 16 * round(slot[0] / 16), 16 * round(slot[1] / 16)
+        # Screen coordinates are non-negative.  Integer half-up rounding keeps
+        # a detection whose best 16-pixel window begins exactly halfway
+        # between grid positions associated with the position in front of it.
+        # Python's round() uses ties-to-even, which made (104, y) snap back to
+        # 96 instead of forward to 112.  With a nearby temporal reference that
+        # two-tile apparent jump was then rejected even though the player was
+        # plainly visible one tile away.
+        return (
+            16 * ((slot[0] + 8) // 16),
+            16 * ((slot[1] + 8) // 16),
+        )
 
     def detect_player(
         self,
@@ -512,7 +522,13 @@ class PixelHeartGoalPrior:
             self.best_remaining_hearts = len(discovered)
         return tuple(sorted(discovered))
 
-    def analyze(self, source: Frame, target: Frame) -> HeartGoalAnalysis:
+    def analyze(
+        self,
+        source: Frame,
+        target: Frame,
+        *,
+        target_player_reference: Optional[HeartSlot] = None,
+    ) -> HeartGoalAnalysis:
         if not self.initialized:
             self.observe_room(source)
         target_intensity = self.mean_intensity(target)
@@ -554,7 +570,11 @@ class PixelHeartGoalPrior:
         target_player = (
             self.detect_player(
                 target,
-                reference=(source_player or self.current_player_slot),
+                reference=(
+                    target_player_reference
+                    or source_player
+                    or self.current_player_slot
+                ),
             )
             if target_intensity >= self.minimum_scene_intensity
             else None

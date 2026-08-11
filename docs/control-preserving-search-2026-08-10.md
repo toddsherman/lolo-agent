@@ -766,8 +766,71 @@ room-3 exploration should now shift from movement coverage to action effects
 at object boundaries. Fully covered semantic archive targets are removed and
 released instead of driving another restore tail.
 
+The first deeper exact-option searches appeared to show a hard topology limit,
+but that conclusion was a tracker artifact. The depth-11 global run
+`spatial-v14-room3-top-global-search-v36-p8-d1` retained only 267 semantic
+states after 2,937 exact option branches, while the long-press control
+`spatial-v14-room3-central-long32-v37-p8-d1` found no persistent object effect.
+Reviewing the exact pixel endpoints exposed two independent errors. Python's
+ties-to-even rounding mapped a best player window at `x=104` backward to 96,
+and every deeper node compared its target with the search root's player rather
+than its parent. A valid path more than one and a half tiles from the root was
+therefore guaranteed to lose its player observation. Player coordinates now
+use non-negative half-up tile snapping, while branch tracking follows the
+parent observation without changing the root-relative reward comparison.
+
+Beam search now also deduplicates states across all depths rather than only
+among siblings. Missing-player endpoints have no visual-novelty bonus, cannot
+form arbitrarily long tracker-gap chains, and occupy only a configured reserve
+after observed endpoints. Per-depth telemetry reports candidate, global-dedup,
+observed, missing, eligible, rejected, and retained counts so future apparent
+saturation can be diagnosed from the log instead of inferred from the endpoint.
+With the repaired tracker,
+`spatial-v14-room3-top-tracker-fixed-v38-p8-d1` verified 20,614 branches and
+retained 1,919 semantic states through depth 20. It reached endpoints four
+Manhattan tiles from the remaining heart while keeping the heart present and
+balanced all 20,642 native state handles. This falsifies the earlier claim that
+the reachable graph saturated near depth 11. The compact-beam control
+`spatial-v14-room3-goal-effect-priority-v39-p8-d1` stopped nine tiles away,
+showing that a width-64 beam pruned a necessary detour.
+
+Effect-probe ordering now prefers safe visible endpoints, localized nonlocal
+changes, smaller available goal distance, and unvisited semantic states before
+ordinary score or button artifacts. Positive root-relative goal progress is
+also eligible for archival even if the endpoint position was seen before. With
+the navigation term explicitly enabled,
+`spatial-v14-room3-goal-directed-v40-p8-d1` selected an exact 13-edge route
+from distance 11 to distance 4 (`RIGHT` four times, then `DOWN` nine times),
+while rejecting all eight near-goal visual-effect candidates under persistence
+and action controls. All 11,320 temporary handles were released.
+
+That run exposed a lifecycle delay: an option discovered after recovery had
+already been evaluated was archived but not consumed until another decision.
+Newly verified positive-progress options now re-arm recovery immediately.
+`spatial-v14-room3-immediate-option-restore-v41b-p8-d1` restored the exact
+distance-4 endpoint in the same decision, wrote a durable decision snapshot,
+balanced 11,310/11,310 handles, and preserved the frozen parameter hash. The
+similarly named `v41` directory is an intentionally interrupted configuration
+control and is not a completed result.
+
+A local depth-6 search from that lower boundary,
+`spatial-v14-room3-lower-boundary-v42-p8-d1`, tested 1,562 exact branches,
+including longer directional holds. It found neither the remaining heart nor
+an effect that survived stability, phase, action-ablation, and controllability
+checks; all 1,564 handles were balanced. It also revealed that immediate
+recovery could restore an ordinary regressive path. Option archives now retain
+signed total assisted goal progress, and only a newly added verified branch
+with positive progress may trigger same-decision recovery. Neutral or
+regressive branches remain available for later best-first exploration. The
+native gate run `spatial-v14-room3-regressive-option-gate-v43-p8-d1` logged
+`human_prior_option_recovery_deferred` for a distance-4-to-5 branch, performed
+no archive restore, completed its normal action, and released all 67 handles.
+These tests still do not encode a room solution or an object label: goal
+distance comes from the already declared pixel-heart prior, and every endpoint
+is produced and verified through emulator interaction.
+
 ## Verification
 
-The complete test suite passes: 214 tests, with 4 expected skips when native
+The complete test suite passes: 221 tests, with 4 expected skips when native
 integration paths are not supplied. Every
 completed native run reported `frozen_evaluation_audit=pass`.

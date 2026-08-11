@@ -444,6 +444,24 @@ def main() -> None:
         help="pixel endpoints retained at each assisted option-search depth",
     )
     parser.add_argument(
+        "--human-prior-option-search-missing-player-reserve",
+        type=int,
+        default=8,
+        help=(
+            "maximum tracker-gap endpoints reserved after detected endpoints "
+            "and milestones fill the assisted option-search beam"
+        ),
+    )
+    parser.add_argument(
+        "--human-prior-option-search-missing-player-max-streak",
+        type=int,
+        default=2,
+        help=(
+            "maximum consecutive tracker-gap endpoints retained in one "
+            "assisted option-search path"
+        ),
+    )
+    parser.add_argument(
         "--human-prior-option-search-action-frames",
         type=int,
         default=0,
@@ -715,6 +733,16 @@ def main() -> None:
         parser.error(
             "--human-prior-option-search-beam-width must be positive"
         )
+    if args.human_prior_option_search_missing_player_reserve < 0:
+        parser.error(
+            "--human-prior-option-search-missing-player-reserve must be "
+            "non-negative"
+        )
+    if args.human_prior_option_search_missing_player_max_streak < 0:
+        parser.error(
+            "--human-prior-option-search-missing-player-max-streak must be "
+            "non-negative"
+        )
     if args.human_prior_option_search_action_frames < 0:
         parser.error(
             "--human-prior-option-search-action-frames must be non-negative"
@@ -930,6 +958,12 @@ def main() -> None:
         ),
         human_prior_option_search_beam_width=(
             args.human_prior_option_search_beam_width
+        ),
+        human_prior_option_search_missing_player_reserve=(
+            args.human_prior_option_search_missing_player_reserve
+        ),
+        human_prior_option_search_missing_player_max_streak=(
+            args.human_prior_option_search_missing_player_max_streak
         ),
         human_prior_option_search_action_frames=(
             args.human_prior_option_search_action_frames

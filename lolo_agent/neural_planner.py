@@ -108,6 +108,8 @@ class NeuralPlanningConfig:
     human_prior_goal_exhaustion_rollback: bool = False
     human_prior_option_search_depth: int = 0
     human_prior_option_search_beam_width: int = 8
+    human_prior_option_search_missing_player_reserve: int = 8
+    human_prior_option_search_missing_player_max_streak: int = 2
     human_prior_option_search_action_frames: int = 0
     human_prior_option_search_long_direction_frames: int = 0
     human_prior_option_effect_stability_steps: int = 0
@@ -202,6 +204,7 @@ class _HumanPriorOptionNode:
     target_state_visits: int
     target_position_visits: int
     pose_action: Optional[Action] = None
+    missing_player_streak: int = 0
     world_effect_signature: str = ""
     world_effect_state_signature: str = ""
     world_effect_changed_pixels: int = 0
@@ -532,6 +535,19 @@ class VerifiedNeuralAgent:
         if self.config.human_prior_option_search_beam_width <= 0:
             raise ValueError(
                 "human-prior option search beam width must be positive"
+            )
+        if self.config.human_prior_option_search_missing_player_reserve < 0:
+            raise ValueError(
+                "human-prior option search missing-player reserve must be "
+                "non-negative"
+            )
+        if (
+            self.config.human_prior_option_search_missing_player_max_streak
+            < 0
+        ):
+            raise ValueError(
+                "human-prior option search missing-player max streak must "
+                "be non-negative"
             )
         if self.config.human_prior_option_search_action_frames < 0:
             raise ValueError(
@@ -2369,6 +2385,11 @@ class VerifiedNeuralAgent:
             target_state_visits=node.target_state_visits,
             target_position_visits=node.target_position_visits,
             pose_action=node.pose_action,
+            missing_player_streak=(
+                0
+                if settled_analysis.target_player_slot is not None
+                else node.missing_player_streak
+            ),
             world_effect_signature=node.world_effect_signature,
             world_effect_state_signature=(
                 self._human_prior_world_effect_state_signature(
@@ -2591,6 +2612,16 @@ class VerifiedNeuralAgent:
         parents = [root_node]
         endpoints: List[_HumanPriorOptionNode] = []
         effect_nodes: List[_HumanPriorOptionNode] = []
+        def option_state_key(
+            node: _HumanPriorOptionNode,
+        ) -> Tuple[str, Optional[Action], str]:
+            return (
+                node.target_signature or node.frame.digest,
+                node.pose_action,
+                node.world_effect_state_signature,
+            )
+
+        seen_option_states = {option_state_key(root_node)}
         branches_verified = 0
         active_failure = False
         self._emit(
@@ -2654,7 +2685,11 @@ class VerifiedNeuralAgent:
                         saved_states.append(state)
                         path = (*parent.path, action)
                         analysis = self.goal_prior.analyze(
-                            source_frame, target
+                            source_frame,
+                            target,
+                            target_player_reference=(
+                                parent.analysis.target_player_slot
+                            ),
                         )
                         _, target_signature = (
                             self._human_prior_graph_signatures(
@@ -2714,8 +2749,11 @@ class VerifiedNeuralAgent:
                         state_novelty = 1.0 / math.sqrt(
                             target_state_visits + 1
                         )
-                        position_novelty = 1.0 / math.sqrt(
-                            target_position_visits + 1
+                        position_novelty = (
+                            0.0
+                            if analysis.target_player_slot is None
+                            else 1.0
+                            / math.sqrt(target_position_visits + 1)
                         )
                         score = (
                             analysis.total_reward
@@ -2741,6 +2779,11 @@ class VerifiedNeuralAgent:
                             pose_action=self._resulting_pose_action(
                                 parent.pose_action, action
                             ),
+                            missing_player_streak=(
+                                0
+                                if analysis.target_player_slot is not None
+                                else parent.missing_player_streak + 1
+                            ),
                             world_effect_signature=(
                                 option_world_effect_signature
                             ),
@@ -2764,7 +2807,10 @@ class VerifiedNeuralAgent:
                                     target_signature
                                     and target_signature != source_signature
                                     and analysis.target_player_slot is not None
-                                    and target_position_visits == 0
+                                    and (
+                                        target_position_visits == 0
+                                        or analysis.total_reward > 0.0
+                                    )
                                 )
                             )
                         )
@@ -2794,6 +2840,9 @@ class VerifiedNeuralAgent:
                             ),
                             source_pose_action=parent.pose_action,
                             target_pose_action=node.pose_action,
+                            missing_player_streak=(
+                                node.missing_player_streak
+                            ),
                             option_path_visits_before=option_visits,
                             option_path_unexpanded=option_unexpanded,
                             human_prior_option_world_effect_signature=(
@@ -2824,25 +2873,96 @@ class VerifiedNeuralAgent:
                     _HumanPriorOptionNode,
                 ] = {}
                 for node in depth_candidates:
-                    key = (
-                        node.target_signature or node.frame.digest,
-                        node.pose_action,
-                        node.world_effect_state_signature,
-                    )
+                    key = option_state_key(node)
                     previous = deduplicated.get(key)
                     if previous is None or node.score > previous.score:
                         deduplicated[key] = node
-                parents = sorted(
-                    deduplicated.values(),
+                novel_candidates = [
+                    node
+                    for key, node in deduplicated.items()
+                    if key not in seen_option_states
+                ]
+                ranked_candidates = sorted(
+                    novel_candidates,
                     key=lambda node: (
                         node.analysis.milestone_reward,
-                        node.target_position_visits == 0,
+                        (
+                            node.analysis.target_player_slot is not None
+                            and node.target_position_visits == 0
+                        ),
                         node.target_state_visits == 0,
                         node.score,
                         -node.depth,
                     ),
                     reverse=True,
-                )[: self.config.human_prior_option_search_beam_width]
+                )
+                beam_width = (
+                    self.config.human_prior_option_search_beam_width
+                )
+                observed_candidates = [
+                    node
+                    for node in ranked_candidates
+                    if node.analysis.target_player_slot is not None
+                    or node.analysis.milestone_reward > 0.0
+                ]
+                all_missing_player_candidates = [
+                    node
+                    for node in ranked_candidates
+                    if node.analysis.target_player_slot is None
+                    and node.analysis.milestone_reward <= 0.0
+                ]
+                missing_player_candidates = [
+                    node
+                    for node in all_missing_player_candidates
+                    if node.missing_player_streak
+                    <= self.config.human_prior_option_search_missing_player_max_streak
+                ]
+                parents = observed_candidates[:beam_width]
+                missing_player_slots = min(
+                    self.config.human_prior_option_search_missing_player_reserve,
+                    beam_width - len(parents),
+                )
+                parents.extend(
+                    missing_player_candidates[:missing_player_slots]
+                )
+                seen_option_states.update(
+                    option_state_key(node) for node in parents
+                )
+                self._emit(
+                    "human_prior_option_search_depth_completed",
+                    decision=self.decision_index + 1,
+                    depth=depth,
+                    candidates=len(depth_candidates),
+                    deduplicated_candidates=len(deduplicated),
+                    novel_candidates=len(novel_candidates),
+                    observed_candidates=len(observed_candidates),
+                    missing_player_candidates=len(
+                        all_missing_player_candidates
+                    ),
+                    eligible_missing_player_candidates=len(
+                        missing_player_candidates
+                    ),
+                    missing_player_streak_rejections=(
+                        len(all_missing_player_candidates)
+                        - len(missing_player_candidates)
+                    ),
+                    retained_observed_parents=sum(
+                        node.analysis.target_player_slot is not None
+                        or node.analysis.milestone_reward > 0.0
+                        for node in parents
+                    ),
+                    retained_missing_player_parents=sum(
+                        node.analysis.target_player_slot is None
+                        and node.analysis.milestone_reward <= 0.0
+                        for node in parents
+                    ),
+                    retained_parents=len(parents),
+                    seen_option_states=len(seen_option_states),
+                    agent_visible=True,
+                    **self._frame_fields(source_frame),
+                )
+                if not parents:
+                    break
 
             if (
                 self.config.human_prior_option_effect_stability_steps > 0
@@ -2869,6 +2989,21 @@ class VerifiedNeuralAgent:
                     )
                     if previous is None or node.score > previous.score:
                         distinct_effect_nodes[effect_key] = node
+
+                def effect_goal_distance(
+                    node: _HumanPriorOptionNode,
+                ) -> Optional[float]:
+                    distances = (
+                        node.analysis.target_heart_distance,
+                        node.analysis.target_chest_distance,
+                    )
+                    available = [
+                        float(distance)
+                        for distance in distances
+                        if distance is not None
+                    ]
+                    return min(available) if available else None
+
                 effect_probe_candidates = sorted(
                     distinct_effect_nodes.values(),
                     key=lambda node: (
@@ -2882,7 +3017,15 @@ class VerifiedNeuralAgent:
                                 node.frame,
                             )
                         ),
-                        node.path[-1] in (Action.A, Action.B),
+                        effect_goal_distance(node) is not None,
+                        -(
+                            effect_goal_distance(node)
+                            if effect_goal_distance(node) is not None
+                            else math.inf
+                        ),
+                        node.target_position_visits == 0,
+                        node.target_state_visits == 0,
+                        node.score,
                         -len(
                             self._human_prior_nonlocal_world_effect_cells(
                                 node.world_effect_signature,
@@ -2890,7 +3033,7 @@ class VerifiedNeuralAgent:
                                 node.frame,
                             )
                         ),
-                        node.score,
+                        node.path[-1] in (Action.A, Action.B),
                     ),
                     reverse=True,
                 )[: self.config.human_prior_option_effect_probe_limit]
@@ -3227,8 +3370,8 @@ class VerifiedNeuralAgent:
             selection_endpoints = ordinary_endpoints or endpoints
             selection_key = lambda node: (
                 node.analysis.milestone_reward,
-                node.target_position_visits == 0,
                 node.analysis.total_reward,
+                node.target_position_visits == 0,
                 node.target_state_visits == 0,
                 node.score,
                 -node.depth,
@@ -3346,7 +3489,7 @@ class VerifiedNeuralAgent:
                     pose_action=archived.pose_action,
                     goal_heart_slots=archived.analysis.target_present,
                     goal_progress_reward=(
-                        archived.analysis.milestone_reward
+                        archived.analysis.total_reward
                     ),
                     goal_remaining_hearts=(
                         archived.analysis.remaining_hearts
@@ -7041,10 +7184,60 @@ class VerifiedNeuralAgent:
                     **self._frame_fields(self.frame),
                 )
             else:
+                option_search_added = (
+                    self._search_human_prior_options()
+                    if self.config.human_prior_option_search_depth >= 2
+                    else 0
+                )
                 option_search_exhausted = bool(
                     self.config.human_prior_option_search_depth >= 2
-                    and self._search_human_prior_options() == 0
+                    and option_search_added == 0
                 )
+                if option_search_added > 0:
+                    immediate_progress_options = [
+                        branch
+                        for branch in self.archive
+                        if branch.created == self.decision_index
+                        and branch.human_prior_verified_option
+                        and branch.goal_progress_reward > 0.0
+                    ]
+                    if immediate_progress_options:
+                        # Stagnation was detected before the exact option
+                        # search, when the archive could still be empty.  Arm
+                        # recovery again so a newly verified positive endpoint
+                        # is consumed in the same decision instead of being
+                        # stranded until a later unrelated stagnation event.
+                        self.human_prior_graph_recovery_pending = True
+                        self._emit(
+                            "human_prior_option_recovery_armed",
+                            decision=self.decision_index + 1,
+                            reason="positive_verified_goal_progress",
+                            archive_branches_added=option_search_added,
+                            immediate_progress_options=len(
+                                immediate_progress_options
+                            ),
+                            maximum_goal_progress=max(
+                                branch.goal_progress_reward
+                                for branch in immediate_progress_options
+                            ),
+                            archive_size=len(self.archive),
+                            source_graph_signature=(
+                                current_goal_graph_signature
+                            ),
+                            **self._frame_fields(self.frame),
+                        )
+                    else:
+                        self._emit(
+                            "human_prior_option_recovery_deferred",
+                            decision=self.decision_index + 1,
+                            reason="no_positive_verified_goal_progress",
+                            archive_branches_added=option_search_added,
+                            archive_size=len(self.archive),
+                            source_graph_signature=(
+                                current_goal_graph_signature
+                            ),
+                            **self._frame_fields(self.frame),
+                        )
         restored = self._restore_if_stagnant()
         if restored is not None:
             return restored

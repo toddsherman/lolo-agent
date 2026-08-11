@@ -1,5 +1,6 @@
 import unittest
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 
 import torch
@@ -273,6 +274,7 @@ class PositionGoalPrior:
         self.current_player_slot = (0, 0)
         self.best_remaining_hearts = 1
         self.navigation_reward = 1.0
+        self.chest_obtained = False
 
     @staticmethod
     def _position(frame: Frame) -> tuple[int, int]:
@@ -281,7 +283,14 @@ class PositionGoalPrior:
     def current_slots(self):
         return tuple(sorted(self.current_present))
 
-    def analyze(self, source: Frame, target: Frame) -> HeartGoalAnalysis:
+    def analyze(
+        self,
+        source: Frame,
+        target: Frame,
+        *,
+        target_player_reference=None,
+    ) -> HeartGoalAnalysis:
+        del target_player_reference
         source_player = self._position(source)
         target_player = self._position(target)
         navigation = float(target_player[0] - source_player[0])
@@ -320,6 +329,15 @@ class PositionGoalPrior:
         self.current_present = set(slots)
         self.current_player_slot = player_slot or self._position(frame)
 
+    def commit(self, analysis: HeartGoalAnalysis, frame: Frame) -> None:
+        del frame
+        self.current_present = set(analysis.target_present)
+        self.current_player_slot = analysis.target_player_slot
+        self.best_remaining_hearts = min(
+            self.best_remaining_hearts,
+            analysis.remaining_hearts,
+        )
+
     def distance_to_hearts(self, frame: Frame, slots) -> float:
         player = self._position(frame)
         return float(min(abs(player[0] - slot[0]) for slot in slots))
@@ -335,6 +353,30 @@ class OverlappingPlayerGoalPrior(PositionGoalPrior):
     ) -> set[tuple[int, int]]:
         del frame, slot, search_padding, dilation
         return {(0, 0), (4, 0), (5, 0), (6, 0)}
+
+
+class RegressivePositionGoalPrior(PositionGoalPrior):
+    def analyze(
+        self,
+        source: Frame,
+        target: Frame,
+        *,
+        target_player_reference=None,
+    ) -> HeartGoalAnalysis:
+        analysis = super().analyze(
+            source,
+            target,
+            target_player_reference=target_player_reference,
+        )
+        regression = -abs(
+            analysis.target_player_slot[0]
+            - analysis.source_player_slot[0]
+        )
+        return replace(
+            analysis,
+            navigation_reward=float(regression),
+            total_reward=float(regression),
+        )
 
 
 class WorldEffectEnv:
@@ -372,6 +414,40 @@ class WorldEffectEnv:
         if self.world_active:
             for world_index in self.world_indices:
                 pixels[world_index] = 128
+        return Frame(8, 8, 1, bytes(pixels))
+
+
+class GoalDirectedEffectPriorityEnv:
+    def __init__(self) -> None:
+        self.position = 0
+        self.effect = None
+
+    def reset(self) -> Frame:
+        self.position = 0
+        self.effect = None
+        return self._frame()
+
+    def step(self, action: Action, frames: int = 1) -> Frame:
+        del frames
+        if action == Action.A:
+            self.effect = 63
+        elif action == Action.RIGHT:
+            self.position = min(7, self.position + 1)
+            self.effect = 62
+        return self._frame()
+
+    def save_state(self) -> tuple[int, int | None]:
+        return self.position, self.effect
+
+    def load_state(self, state: tuple[int, int | None]) -> Frame:
+        self.position, self.effect = state
+        return self._frame()
+
+    def _frame(self) -> Frame:
+        pixels = bytearray(64)
+        pixels[self.position] = 255
+        if self.effect is not None:
+            pixels[self.effect] = 128
         return Frame(8, 8, 1, bytes(pixels))
 
 
@@ -612,7 +688,14 @@ class MovingMilestoneGoalPrior(PositionGoalPrior):
         except ValueError:
             return None
 
-    def analyze(self, source: Frame, target: Frame) -> HeartGoalAnalysis:
+    def analyze(
+        self,
+        source: Frame,
+        target: Frame,
+        *,
+        target_player_reference=None,
+    ) -> HeartGoalAnalysis:
+        del target_player_reference
         source_player = self._optional_position(source)
         target_player = self._optional_position(target)
         source_present = ((7, 0),) if source.pixels[7] == 128 else ()
@@ -2270,6 +2353,274 @@ class EnsemblePlannerTests(unittest.TestCase):
         ]
         self.assertEqual(len(skipped), 1)
         self.assertEqual(skipped[0]["reason"], "source_already_exhausted")
+        depth_events = [
+            event
+            for event in logger.events
+            if event["event"]
+            == "human_prior_option_search_depth_completed"
+        ]
+        self.assertEqual(
+            [event["retained_parents"] for event in depth_events],
+            [1, 0],
+        )
+        self.assertEqual(depth_events[-1]["novel_candidates"], 0)
+
+    def test_option_search_does_not_reward_missing_player_as_novel(
+        self,
+    ) -> None:
+        class MissingPlayerChoiceEnv:
+            def __init__(self) -> None:
+                self.mode = "source"
+
+            def _frame(self) -> Frame:
+                pixels = bytearray(64)
+                pixels[7] = 128
+                if self.mode == "source":
+                    pixels[0] = 255
+                elif self.mode == "detected":
+                    pixels[1] = 255
+                return Frame(8, 8, 1, bytes(pixels))
+
+            def reset(self) -> Frame:
+                self.mode = "source"
+                return self._frame()
+
+            def step(self, action: Action, frames: int = 1) -> Frame:
+                del frames
+                if action == Action.RIGHT:
+                    self.mode = "detected"
+                elif action == Action.LEFT:
+                    self.mode = "missing"
+                return self._frame()
+
+            def save_state(self) -> str:
+                return self.mode
+
+            def load_state(self, state: str) -> Frame:
+                self.mode = state
+                return self._frame()
+
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            MissingPlayerChoiceEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.LEFT),
+                planning_depth=1,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=1,
+                human_prior_option_search_action_frames=1,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.goal_prior = MovingMilestoneGoalPrior()
+
+        agent._search_human_prior_options()
+
+        depth_two = [
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_branch_verified"
+            and event["depth"] == 2
+        ]
+        self.assertTrue(depth_two)
+        self.assertTrue(
+            all(event["path"][0] == Action.RIGHT for event in depth_two)
+        )
+
+        streak_logger = RecordingLogger()
+        streak_agent = VerifiedNeuralAgent(
+            MissingPlayerChoiceEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.LEFT,),
+                planning_depth=1,
+                human_prior_option_search_depth=3,
+                human_prior_option_search_beam_width=1,
+                human_prior_option_search_missing_player_reserve=1,
+                human_prior_option_search_missing_player_max_streak=1,
+                human_prior_option_search_action_frames=1,
+            ),
+            event_logger=streak_logger,
+        )
+        streak_agent.reset()
+        streak_agent.goal_prior = MovingMilestoneGoalPrior()
+
+        streak_agent._search_human_prior_options()
+
+        streak_depths = [
+            event
+            for event in streak_logger.events
+            if event["event"]
+            == "human_prior_option_search_depth_completed"
+        ]
+        self.assertEqual(
+            [event["retained_parents"] for event in streak_depths],
+            [1, 0],
+        )
+
+    def test_option_search_archives_goal_progress_at_a_known_position(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        agent = VerifiedNeuralAgent(
+            ActionEffectEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=2,
+                human_prior_option_search_action_frames=1,
+            ),
+        )
+        agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        source_signature = agent._current_human_prior_graph_signature()
+        agent.human_prior_graph_state_visits[source_signature] = 1
+        agent.human_prior_player_position_visits[(0, 0)] = 1
+        agent.human_prior_player_position_visits[(2, 0)] = 1
+
+        added = agent._search_human_prior_options()
+
+        self.assertEqual(added, 1)
+        self.assertEqual(agent.archive[0].plan.path, (Action.RIGHT, Action.RIGHT))
+        self.assertEqual(agent.archive[0].goal_player_slot, (2, 0))
+        self.assertEqual(agent.archive[0].goal_progress_reward, 2.0)
+
+    def test_decide_immediately_restores_new_verified_option(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        logger = RecordingLogger()
+        env = ActionEffectEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                human_prior_best_first_archive=True,
+                human_prior_graph_stagnation_visits=1,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=2,
+                human_prior_option_search_action_frames=1,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        agent._calibrate_goal_prior = lambda _frame: None
+        source_signature = agent._current_human_prior_graph_signature()
+        agent.human_prior_graph_state_visits[source_signature] = 1
+        agent.human_prior_player_position_visits[(0, 0)] = 1
+
+        decision = agent.decide()
+
+        self.assertTrue(decision.restored_archive)
+        self.assertEqual(decision.planned_path, (Action.RIGHT, Action.RIGHT))
+        self.assertEqual(agent.goal_prior.current_player_slot, (2, 0))
+        self.assertEqual(env.position, 2)
+        self.assertTrue(
+            any(
+                event["event"] == "human_prior_option_recovery_armed"
+                for event in logger.events
+            )
+        )
+
+    def test_decide_defers_regressive_verified_option(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        logger = RecordingLogger()
+        env = ActionEffectEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                verify_actions=1,
+                human_prior_best_first_archive=True,
+                human_prior_graph_stagnation_visits=1,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=2,
+                human_prior_option_search_action_frames=1,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.goal_prior = RegressivePositionGoalPrior()
+        agent._calibrate_goal_prior = lambda _frame: None
+        source_signature = agent._current_human_prior_graph_signature()
+        agent.human_prior_graph_state_visits[source_signature] = 1
+        agent.human_prior_player_position_visits[(0, 0)] = 1
+
+        decision = agent.decide()
+
+        self.assertFalse(decision.restored_archive)
+        self.assertTrue(
+            any(branch.goal_progress_reward < 0.0 for branch in agent.archive)
+        )
+        self.assertTrue(
+            any(
+                event["event"] == "human_prior_option_recovery_deferred"
+                for event in logger.events
+            )
+        )
+
+    def test_option_effect_probe_prioritizes_closer_goal_state(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            GoalDirectedEffectPriorityEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.A, Action.RIGHT),
+                planning_depth=1,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=4,
+                human_prior_option_search_action_frames=1,
+                human_prior_option_effect_stability_steps=1,
+                human_prior_option_effect_probe_limit=1,
+                causal_spatial_columns=8,
+                causal_spatial_rows=8,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        source_signature = agent._current_human_prior_graph_signature()
+        agent.human_prior_graph_state_visits[source_signature] = 1
+        agent.human_prior_player_position_visits[(0, 0)] = 1
+
+        agent._search_human_prior_options()
+
+        probes = [
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_world_effect_stability"
+        ]
+        self.assertEqual(len(probes), 1)
+        self.assertEqual(probes[0]["path"], (Action.RIGHT, Action.RIGHT))
+        self.assertEqual(probes[0]["depth"], 2)
 
     def test_human_prior_option_effect_stability_rejects_transient(self) -> None:
         cases = (
@@ -2808,7 +3159,7 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(branch.state, (True, True, 2))
         self.assertEqual(branch.frame, env.load_state(branch.state))
         self.assertEqual(branch.goal_player_slot, (2, 0))
-        self.assertEqual(branch.goal_progress_reward, 25.0)
+        self.assertEqual(branch.goal_progress_reward, 27.0)
         settled = [
             event
             for event in logger.events
@@ -2882,8 +3233,10 @@ class EnsemblePlannerTests(unittest.TestCase):
             == "human_prior_option_milestone_duplicate_rejected"
         ]
         self.assertGreaterEqual(len(duplicates), 1)
+        # The already-recorded +25 milestone must not be archived again.
+        # Ordinary endpoints may retain their signed navigation progress.
         self.assertTrue(
-            all(branch.goal_progress_reward == 0.0 for branch in agent.archive)
+            all(branch.goal_progress_reward < 25.0 for branch in agent.archive)
         )
 
     def test_entity_state_hash_masks_overlapping_player_pose(self) -> None:
