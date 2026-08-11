@@ -563,7 +563,21 @@ direction was pressed. Committed decisions now record their target pose, and
 resume reconstructs it from legacy paths when that field is absent. A legacy
 restored-option regression verifies that `LEFT, RIGHT` resumes facing right.
 
+The pose-correct native continuation recovered the direct, upward-oriented,
+and downward-oriented causal alternatives and restored all three with four
+hearts intact. None opened a new player tile. Its stability telemetry revealed
+why: the causal audit followed each action for three additional four-frame
+NOOP horizons and observed the visible effect move across coarse cells, but
+entity promotion archived the save state from the instant the action sequence
+ended. Thus the evidence described a settled consequence while branch restore
+returned to an in-flight state. Entity promotion now replays the verified
+option through the configured settling horizon and archives that final frame
+and save state. Telemetry preserves the immediate frame and exact settling
+horizon so the distinction remains reconstructable. A moving-then-settled
+synthetic entity regression verifies that the archived frame matches its
+emulator state and differs from the immediate action frame.
+
 ## Verification
 
-The complete test suite passes: 199 tests, with 3 expected skips. Every
+The complete test suite passes: 200 tests, with 3 expected skips. Every
 completed native run reported `frozen_evaluation_audit=pass`.

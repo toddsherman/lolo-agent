@@ -245,7 +245,15 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   `human_prior_option_archive_added.selected_primary` distinguishes the
   ordinary primary choice from additional entity alternatives, while
   `human_prior_option_search_completed.distinct_entity_contexts_archived`
-  records the number preserved by that search;
+  records the number preserved by that search. Entity branches store the
+  post-settling frame and emulator state used by the persistence/control
+  audit, rather than the immediate possibly in-flight action frame.
+  `human_prior_option_archive_added` records
+  `human_prior_option_settling_steps`,
+  `human_prior_option_settling_frames`, and
+  `human_prior_option_immediate_frame`; the eligible event carries the same
+  horizon and immediate-frame link, while its normal `frame` is the settled
+  endpoint;
 - long-lived recovery and archive entries own independent emulator handles.
   In particular, `archive_affordance_checkpoint_added.state_id` identifies a
   cloned source state, while `parent_state_id` records the original decision

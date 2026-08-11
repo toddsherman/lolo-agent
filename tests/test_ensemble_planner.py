@@ -481,6 +481,51 @@ class UnlabeledEntityTransformEnv:
         return Frame(32, 32, 1, bytes(pixels))
 
 
+class MovingEntitySettlesEnv:
+    def __init__(self) -> None:
+        self.armed = False
+        self.transformed = False
+        self.motion_step = 0
+
+    def reset(self) -> Frame:
+        self.armed = False
+        self.transformed = False
+        self.motion_step = 0
+        return self._frame()
+
+    def step(self, action: Action, frames: int = 1) -> Frame:
+        del frames
+        if action == Action.RIGHT:
+            self.armed = True
+        elif action == Action.A and self.armed:
+            self.transformed = True
+            self.motion_step = 0
+        elif action == Action.NOOP and self.transformed:
+            self.motion_step = min(2, self.motion_step + 1)
+        return self._frame()
+
+    def save_state(self) -> tuple[bool, bool, int]:
+        return self.armed, self.transformed, self.motion_step
+
+    def load_state(self, state: tuple[bool, bool, int]) -> Frame:
+        self.armed, self.transformed, self.motion_step = state
+        return self._frame()
+
+    def _frame(self) -> Frame:
+        pixels = bytearray(32 * 32)
+        pixels[0] = 255
+        entity_value = 224 if self.transformed else 32
+        for y in range(4):
+            for x in range(4, 8):
+                pixels[y * 32 + x] = entity_value
+        if self.transformed and self.motion_step < 2:
+            moving_column = 2 + self.motion_step
+            for y in range(4):
+                for x in range(moving_column * 4, moving_column * 4 + 4):
+                    pixels[y * 32 + x] = 128
+        return Frame(32, 32, 1, bytes(pixels))
+
+
 class TemporalUnlabeledEntityTransformEnv:
     def __init__(self) -> None:
         self.armed = False
@@ -2273,6 +2318,73 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertTrue(eligible[0]["eligible"])
         self.assertEqual(eligible[0]["entity_effect_cells"], ((1, 0),))
         self.assertEqual(eligible[0]["confirmed_action_indices"], (0, 1))
+
+    def test_unlabeled_entity_frontier_archives_settled_state(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        logger = RecordingLogger()
+        env = MovingEntitySettlesEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.A),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=4,
+                human_prior_option_search_action_frames=1,
+                human_prior_option_effect_stability_steps=2,
+                human_prior_option_effect_probe_limit=4,
+                human_prior_option_effect_phase_offsets=1,
+                human_prior_option_effect_local_controls=True,
+                human_prior_option_entity_frontier=True,
+                causal_spatial_columns=8,
+                causal_spatial_rows=8,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        source_signature = agent._current_human_prior_graph_signature()
+        agent.human_prior_graph_state_visits[source_signature] = 1
+        agent.human_prior_player_position_visits[(0, 0)] = 1
+
+        added = agent._search_human_prior_options()
+
+        self.assertEqual(added, 1)
+        self.assertEqual(len(agent.archive), 1)
+        branch = agent.archive[0]
+        self.assertEqual(branch.plan.path, (Action.RIGHT, Action.A))
+        self.assertEqual(branch.state, (True, True, 2))
+        self.assertEqual(branch.frame, env.load_state(branch.state))
+        eligible = [
+            event
+            for event in logger.events
+            if event["event"]
+            == "human_prior_option_entity_frontier_eligible"
+        ]
+        self.assertEqual(len(eligible), 1)
+        self.assertEqual(eligible[0]["settling_steps"], 2)
+        self.assertEqual(eligible[0]["settling_frames"], 2)
+        self.assertNotEqual(
+            eligible[0]["immediate_frame"], eligible[0]["frame"]
+        )
+        archived = [
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_archive_added"
+        ]
+        self.assertEqual(archived[0]["human_prior_option_settling_steps"], 2)
+        self.assertEqual(archived[0]["human_prior_option_settling_frames"], 2)
+        self.assertEqual(
+            archived[0]["human_prior_option_immediate_frame"],
+            eligible[0]["immediate_frame"],
+        )
 
     def test_unlabeled_entity_frontier_rejects_remote_display_change(
         self,

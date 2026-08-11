@@ -207,6 +207,9 @@ class _HumanPriorOptionNode:
     confirmed_world_context: str = ""
     confirmed_action_indices: Tuple[int, ...] = ()
     confirmed_entity_state_signature: str = ""
+    settling_steps: int = 0
+    settling_frames: int = 0
+    immediate_frame_digest: str = ""
 
 
 @dataclass(frozen=True)
@@ -2125,10 +2128,12 @@ class VerifiedNeuralAgent:
         root: object,
         source_frame: Frame,
         node: _HumanPriorOptionNode,
+        future_duration: int,
         candidate_rank: int,
         source_signature: str,
         action_controls: Sequence[Dict[str, Any]],
         endpoints: List[_HumanPriorOptionNode],
+        saved_states: List[object],
     ) -> bool:
         """Promote a causal local appearance change as an entity state."""
 
@@ -2173,6 +2178,49 @@ class VerifiedNeuralAgent:
                 }
             )
         )
+        immediate_frame = node.frame
+        self.env.load_state(root)
+        settled_frame = source_frame
+        for action, duration in zip(node.path, node.durations):
+            settled_frame = self.env.step(action, duration)
+        for _ in range(
+            self.config.human_prior_option_effect_stability_steps
+        ):
+            settled_frame = self.env.step(Action.NOOP, future_duration)
+        settled_state = self.env.save_state()
+        saved_states.append(settled_state)
+        settled_analysis = self.goal_prior.analyze(
+            source_frame, settled_frame
+        )
+        node = _HumanPriorOptionNode(
+            state=settled_state,
+            frame=settled_frame,
+            path=node.path,
+            durations=node.durations,
+            analysis=settled_analysis,
+            source_signature=node.source_signature,
+            target_signature=node.target_signature,
+            score=node.score,
+            depth=node.depth,
+            target_state_visits=node.target_state_visits,
+            target_position_visits=node.target_position_visits,
+            pose_action=node.pose_action,
+            world_effect_signature=node.world_effect_signature,
+            world_effect_state_signature=(
+                self._human_prior_world_effect_state_signature(
+                    settled_frame, entity_effect_signature
+                )
+            ),
+            world_effect_changed_pixels=node.world_effect_changed_pixels,
+            settling_steps=(
+                self.config.human_prior_option_effect_stability_steps
+            ),
+            settling_frames=(
+                self.config.human_prior_option_effect_stability_steps
+                * future_duration
+            ),
+            immediate_frame_digest=immediate_frame.digest,
+        )
         state_payload = (
             self.current_human_prior_world_context_signature
             + "|"
@@ -2216,6 +2264,13 @@ class VerifiedNeuralAgent:
         )
         node.target_signature = target_signature
         node.target_state_visits = target_state_visits
+        node.target_position_visits = (
+            0
+            if node.analysis.target_player_slot is None
+            else self._human_prior_position_visits(
+                target_signature, node.analysis.target_player_slot
+            )
+        )
         if eligible and not any(candidate is node for candidate in endpoints):
             endpoints.append(node)
         self._emit(
@@ -2248,6 +2303,14 @@ class VerifiedNeuralAgent:
             target_graph_signature=target_signature or None,
             target_graph_state_visits=target_state_visits,
             option_path_unexpanded=option_unexpanded,
+            immediate_frame=immediate_frame.digest,
+            settling_steps=(
+                self.config.human_prior_option_effect_stability_steps
+            ),
+            settling_frames=(
+                self.config.human_prior_option_effect_stability_steps
+                * future_duration
+            ),
             eligible=eligible,
             agent_visible=True,
             **self._frame_fields(node.frame),
@@ -2783,10 +2846,12 @@ class VerifiedNeuralAgent:
                                 root,
                                 source_frame,
                                 node,
+                                duration,
                                 candidate_rank,
                                 source_signature,
                                 action_controls,
                                 endpoints,
+                                saved_states,
                             )
                     if (
                         self.config.human_prior_option_effect_local_controls
@@ -2809,10 +2874,12 @@ class VerifiedNeuralAgent:
                             root,
                             source_frame,
                             node,
+                            duration,
                             candidate_rank,
                             source_signature,
                             local_action_controls,
                             endpoints,
+                            saved_states,
                         )
 
             if not endpoints:
@@ -2988,6 +3055,15 @@ class VerifiedNeuralAgent:
                     ),
                     human_prior_option_effect_confirmed_action_indices=(
                         archived.confirmed_action_indices
+                    ),
+                    human_prior_option_settling_steps=(
+                        archived.settling_steps
+                    ),
+                    human_prior_option_settling_frames=(
+                        archived.settling_frames
+                    ),
+                    human_prior_option_immediate_frame=(
+                        archived.immediate_frame_digest or None
                     ),
                     human_prior_world_source_context=(
                         self.current_human_prior_world_context_signature
