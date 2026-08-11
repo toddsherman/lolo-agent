@@ -588,6 +588,13 @@ object pixels are still required. A synthetic overlapping-player regression
 confirms that multiple poses collapse to one entity context while the local
 transformation remains action-controlled.
 
+The focused native validation confirmed the correction. Four independently
+verified paths (`A`, `RIGHT,A`, `A,UP,A`, and `A,DOWN,A`) all produced the same
+masked anonymous entity signature, `3f3fb0348b23d2e8`, despite retaining their
+distinct settled frames and facing. The search archived one entity context
+instead of three, released all 284 save states, and passed the frozen-checkpoint
+audit.
+
 The exact option verifier previously used one four-frame press for every
 controller action. That is appropriate for testing a button interaction and
 directional facing, but it cannot represent a sustained movement or push even
@@ -599,6 +606,24 @@ compared with an all-`NOOP` reference having the same total elapsed frames, and
 the exact per-edge durations remain part of coverage, archive, and telemetry
 identity. A synthetic long-press environment verifies that a 16-frame movement
 endpoint is discovered while four-frame button edges remain available.
+
+The first native mixed-duration continuation found an outcome that the
+four-frame verifier could not represent. From the one-tile-right frontier it
+verified `A(4), RIGHT(16), DOWN(16), DOWN(16)`, reduced the pixel-detected
+remaining-heart count from four to three, and selected that milestone over
+ordinary movement (`31.05` versus approximately `7`). After restoring the
+branch, normal verification recovered a visible player at `(128,112)` and the
+run ended at a new controllable position `(144,128)` with three hearts
+remaining. Across 13,526 telemetry events, all 1,357 save states were released
+and the frozen-checkpoint audit passed.
+
+Continuing from that state, best-first recovery reached `(160,128)` and then
+`(192,128)` on the far side of the previously blocking water. Exact option
+search verified four successive 16-frame downward presses, selected the new
+milestone at `31.05`, and reduced the remaining-heart count from three to two.
+The eight-decision continuation ended at `(192,144)` with 21,519 telemetry
+events, balanced release of all 2,700 save states, and another frozen audit
+pass.
 
 ## Verification
 
