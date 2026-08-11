@@ -3,7 +3,15 @@ from __future__ import annotations
 import math
 from collections import Counter
 from dataclasses import dataclass
-from typing import Counter as CounterType, Dict, List, Optional, Sequence, Tuple
+from typing import (
+    AbstractSet,
+    Counter as CounterType,
+    Dict,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 from .environment import Action
 from .pixels import Frame
@@ -115,9 +123,18 @@ class UnlabeledEntityMemory:
         return self._frame_index
 
     def feature_at(
-        self, frame: Frame, column: int, row: int
+        self,
+        frame: Frame,
+        column: int,
+        row: int,
+        ignored_pixels: Optional[AbstractSet[Cell]] = None,
     ) -> PatchFeature:
-        """Return the unlabeled pooled appearance at one grid cell."""
+        """Return the unlabeled pooled appearance at one grid cell.
+
+        Ignored pixels contribute no samples. A fully masked pool is encoded
+        as zeroes so action-controlled entity state can remain independent of
+        a detected player sprite overlapping the same coarse cell.
+        """
 
         if not 0 <= column < self.columns or not 0 <= row < self.rows:
             raise IndexError("entity-grid cell out of range")
@@ -136,6 +153,10 @@ class UnlabeledEntityMemory:
                 samples = 0
                 for y in range(py0, max(py0 + 1, py1)):
                     for x in range(px0, max(px0 + 1, px1)):
+                        if ignored_pixels is not None and (
+                            x, y
+                        ) in ignored_pixels:
+                            continue
                         offset = (y * frame.width + x) * frame.channels
                         for channel in range(frame.channels):
                             totals[channel] += frame.pixels[offset + channel]

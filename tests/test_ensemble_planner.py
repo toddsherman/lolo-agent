@@ -325,6 +325,18 @@ class PositionGoalPrior:
         return float(min(abs(player[0] - slot[0]) for slot in slots))
 
 
+class OverlappingPlayerGoalPrior(PositionGoalPrior):
+    @staticmethod
+    def player_pixel_mask(
+        frame: Frame,
+        slot: tuple[int, int],
+        search_padding: int = 12,
+        dilation: int = 3,
+    ) -> set[tuple[int, int]]:
+        del frame, slot, search_padding, dilation
+        return {(0, 0), (4, 0), (5, 0), (6, 0)}
+
+
 class WorldEffectEnv:
     def __init__(
         self, persistent: bool, world_index: int | tuple[int, ...] = 63
@@ -523,6 +535,51 @@ class MovingEntitySettlesEnv:
             for y in range(4):
                 for x in range(moving_column * 4, moving_column * 4 + 4):
                     pixels[y * 32 + x] = 128
+        return Frame(32, 32, 1, bytes(pixels))
+
+
+class PlayerOverlapEntityEnv:
+    def __init__(self) -> None:
+        self.armed = False
+        self.transformed = False
+        self.pose = Action.RIGHT
+
+    def reset(self) -> Frame:
+        self.armed = False
+        self.transformed = False
+        self.pose = Action.RIGHT
+        return self._frame()
+
+    def step(self, action: Action, frames: int = 1) -> Frame:
+        del frames
+        if action in (Action.UP, Action.DOWN, Action.RIGHT):
+            self.pose = action
+        if action == Action.RIGHT:
+            self.armed = True
+        elif action == Action.A and self.armed:
+            self.transformed = True
+        return self._frame()
+
+    def save_state(self) -> tuple[bool, bool, Action]:
+        return self.armed, self.transformed, self.pose
+
+    def load_state(self, state: tuple[bool, bool, Action]) -> Frame:
+        self.armed, self.transformed, self.pose = state
+        return self._frame()
+
+    def _frame(self) -> Frame:
+        pixels = bytearray(32 * 32)
+        pixels[0] = 255
+        entity_value = 224 if self.transformed else 32
+        for y in range(4):
+            for x in range(4, 8):
+                pixels[y * 32 + x] = entity_value
+        pose_x = {
+            Action.UP: 4,
+            Action.DOWN: 5,
+            Action.RIGHT: 6,
+        }[self.pose]
+        pixels[pose_x] = 255
         return Frame(32, 32, 1, bytes(pixels))
 
 
@@ -2385,6 +2442,75 @@ class EnsemblePlannerTests(unittest.TestCase):
             archived[0]["human_prior_option_immediate_frame"],
             eligible[0]["immediate_frame"],
         )
+
+    def test_entity_state_hash_masks_overlapping_player_pose(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            PlayerOverlapEntityEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.UP, Action.DOWN, Action.RIGHT, Action.A),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=3,
+                human_prior_option_search_beam_width=16,
+                human_prior_option_search_action_frames=1,
+                human_prior_option_effect_stability_steps=2,
+                human_prior_option_effect_probe_limit=16,
+                human_prior_option_effect_phase_offsets=1,
+                human_prior_option_effect_local_controls=True,
+                human_prior_option_entity_frontier=True,
+                causal_spatial_columns=8,
+                causal_spatial_rows=8,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.goal_prior = OverlappingPlayerGoalPrior()
+        source_signature = agent._current_human_prior_graph_signature()
+        agent.human_prior_graph_state_visits[source_signature] = 1
+        agent.human_prior_player_position_visits[(0, 0)] = 1
+
+        added = agent._search_human_prior_options()
+
+        eligible = [
+            event
+            for event in logger.events
+            if event["event"]
+            == "human_prior_option_entity_frontier_eligible"
+            and event["eligible"]
+        ]
+        self.assertGreaterEqual(len(eligible), 2)
+        self.assertEqual(
+            len(
+                {
+                    signature
+                    for event in eligible
+                    for signature in event["entity_state_signatures"]
+                }
+            ),
+            1,
+        )
+        self.assertTrue(
+            all(
+                event["entity_entries"][0][
+                    "factual_control_feature_distance"
+                ]
+                > 0.08
+                for event in eligible
+            )
+        )
+        self.assertTrue(
+            all(event["settling_steps"] == 2 for event in eligible)
+        )
+        self.assertEqual(added, 1)
+        self.assertEqual(len(agent.archive), 1)
 
     def test_unlabeled_entity_frontier_rejects_remote_display_change(
         self,

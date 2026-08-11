@@ -253,7 +253,12 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   `human_prior_option_settling_frames`, and
   `human_prior_option_immediate_frame`; the eligible event carries the same
   horizon and immediate-frame link, while its normal `frame` is the settled
-  endpoint;
+  endpoint. Anonymous entity appearance features exclude the union of the
+  detected factual/control player footprints before hashing, so facing pixels
+  that overlap an affected coarse cell do not create false object states.
+  `human_prior_option_world_effect_action_control.entity_player_masked_pixels`
+  records the final mask size, and each horizon observation records its own
+  `entity_player_masked_pixels` count;
 - long-lived recovery and archive entries own independent emulator handles.
   In particular, `archive_affordance_checkpoint_added.state_id` identifies a
   cloned source state, while `parent_state_id` records the original decision

@@ -1621,6 +1621,7 @@ class VerifiedNeuralAgent:
         endpoint_matched_all = True
         final_factual = node.frame
         final_control = source_frame
+        final_entity_player_pixels: set[Tuple[int, int]] = set()
         before_intervention, interaction_direction, interaction_ray = (
             self._human_prior_option_interaction_ray(
                 root, source_frame, node, action_index
@@ -1655,24 +1656,27 @@ class VerifiedNeuralAgent:
                 == control_analysis.target_player_slot
             )
             ignored_player_pixels: set[Tuple[int, int]] = set()
+            entity_player_pixels: set[Tuple[int, int]] = set()
             player_pixel_mask = getattr(
                 self.goal_prior, "player_pixel_mask", None
             )
             if (
-                allow_endpoint_matched_local
-                and endpoint_matched
+                endpoint_matched
                 and callable(player_pixel_mask)
             ):
-                ignored_player_pixels.update(
+                entity_player_pixels.update(
                     player_pixel_mask(
                         factual, factual_analysis.target_player_slot
                     )
                 )
-                ignored_player_pixels.update(
+                entity_player_pixels.update(
                     player_pixel_mask(
                         control, control_analysis.target_player_slot
                     )
                 )
+                if allow_endpoint_matched_local:
+                    ignored_player_pixels.update(entity_player_pixels)
+            final_entity_player_pixels = entity_player_pixels
             spatial_signature, changed_pixels, _centroid = (
                 self._causal_spatial_effect(
                     factual,
@@ -1745,6 +1749,9 @@ class VerifiedNeuralAgent:
                     "endpoint_matched": endpoint_matched,
                     "ignored_player_pixels": len(
                         ignored_player_pixels
+                    ),
+                    "entity_player_masked_pixels": len(
+                        entity_player_pixels
                     ),
                     "changed_pixels": changed_pixels,
                     "factual_player_slot": (
@@ -1846,10 +1853,16 @@ class VerifiedNeuralAgent:
                 common_cells.intersection(interaction_ray)
             ):
                 factual_feature = memory.feature_at(
-                    final_factual, column, row
+                    final_factual,
+                    column,
+                    row,
+                    final_entity_player_pixels,
                 )
                 control_feature = memory.feature_at(
-                    final_control, column, row
+                    final_control,
+                    column,
+                    row,
+                    final_entity_player_pixels,
                 )
                 appearance_distance = memory.feature_distance(
                     factual_feature, control_feature
@@ -1881,7 +1894,10 @@ class VerifiedNeuralAgent:
                     + ",".join(
                         str(value)
                         for value in memory.feature_at(
-                            final_factual, column, row
+                            final_factual,
+                            column,
+                            row,
+                            final_entity_player_pixels,
                         )
                     )
                     for column, row in sorted(entity_effect_cells)
@@ -1941,6 +1957,9 @@ class VerifiedNeuralAgent:
             ),
             "entity_state_signature": entity_state_signature or None,
             "entity_effect_confirmed": entity_effect_confirmed,
+            "entity_player_masked_pixels": len(
+                final_entity_player_pixels
+            ),
             "entity_entries": entity_entries,
             "controllability": controllability,
             "observations": observations,

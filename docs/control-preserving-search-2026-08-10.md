@@ -577,7 +577,18 @@ horizon so the distinction remains reconstructable. A moving-then-settled
 synthetic entity regression verifies that the archived frame matches its
 emulator state and differs from the immediate action frame.
 
+The settled native frames exposed one more representational contaminant. The
+upward- and downward-oriented endpoints had the same visible room consequence,
+but differed in an 80-pixel bounding box spanning the player sprite; because
+that sprite overlapped an affected coarse cell, its pose entered the anonymous
+entity hash and produced two apparent object states. Entity features now omit
+the union of the pixel-detected factual and control player footprints before
+computing appearance distance and the state hash. The causal cell and remaining
+object pixels are still required. A synthetic overlapping-player regression
+confirms that multiple poses collapse to one entity context while the local
+transformation remains action-controlled.
+
 ## Verification
 
-The complete test suite passes: 200 tests, with 3 expected skips. Every
+The complete test suite passes: 202 tests, with 3 expected skips. Every
 completed native run reported `frozen_evaluation_audit=pass`.
