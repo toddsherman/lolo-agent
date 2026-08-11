@@ -93,6 +93,11 @@ class StableSceneChangeDetectorTests(unittest.TestCase):
                             "marker": "child-1",
                         },
                         {
+                            "event": "pixel_novel_room_started",
+                            "decision": 1,
+                            "marker": "child-room-boundary",
+                        },
+                        {
                             "event": "goal_milestone_exhaustion_learned",
                             "decision": 1,
                             "marker": "child-hazard",
@@ -107,7 +112,12 @@ class StableSceneChangeDetectorTests(unittest.TestCase):
 
         self.assertEqual(
             [event["marker"] for event in events],
-            ["parent-1", "child-1", "child-hazard"],
+            [
+                "parent-1",
+                "child-1",
+                "child-room-boundary",
+                "child-hazard",
+            ],
         )
 
 

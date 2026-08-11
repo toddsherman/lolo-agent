@@ -188,6 +188,7 @@ def load_episodic_decision_events(
         in {
             "decision_committed",
             "goal_milestone_exhaustion_learned",
+            "pixel_novel_room_started",
         }
         and int(event.get("decision", 0)) <= through_decision
     )
