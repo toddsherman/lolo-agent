@@ -487,13 +487,26 @@ A subsequent controlled effect-frontier ablation showed that persistence and
 action causality are still insufficient: decrementing the visible shot counter
 survived stability, phase, player-footprint, and leave-one-action-out controls.
 That is a real persistent effect but not evidence of puzzle progress. Effect
-frontier admission now additionally requires one-step controllability gain.
+frontier admission now additionally requires bounded controllability gain.
 From factual and action-ablated endpoints with the same detected player tile,
-the evaluator branches every directional action and requires the factual state
-to reach at least one player position unavailable from control. Both reachable
-sets and pixel-outcome spreads are logged.
+the evaluator branches every directional action sequence through a configured
+depth and requires the factual state to reach at least one player position
+unavailable from control. Both reachable sets, exact action paths, and
+pixel-outcome spreads are logged. The default remains one step; Room 3 uses two
+steps to test effects whose navigational consequence is not immediately
+adjacent.
+
+The native Room 3 depth-two audit verified 180 option branches and tested
+three persistent effects. In every case the factual and action-ablated states
+had the same bounded reachable player tiles: `(96,96)`, `(96,112)`, and
+`(96,128)`. No effect entered the frontier. The run released all 198 save
+states and passed the frozen-checkpoint audit. This rules out both a deeper
+option horizon and a delayed two-move navigation benefit at the tested
+post-interaction state; the next representation must distinguish recurring
+unlabelled entity state rather than treating every compact screen change as an
+undifferentiated effect.
 
 ## Verification
 
-The complete test suite passes: 193 tests, with 3 expected skips. Every
+The complete test suite passes: 194 tests, with 3 expected skips. Every
 completed native run reported `frozen_evaluation_audit=pass`.

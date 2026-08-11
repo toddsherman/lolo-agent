@@ -501,6 +501,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--human-prior-option-effect-controllability-depth",
+        type=int,
+        default=1,
+        help=(
+            "directional sequence depth used to compare reachability after "
+            "factual and action-ablated persistent effects (1-4)"
+        ),
+    )
+    parser.add_argument(
         "--human-prior-option-effect-local-controls",
         action="store_true",
         help=(
@@ -715,6 +724,11 @@ def main() -> None:
             "--human-prior-option-effect-frontier requires "
             "--human-prior-option-effect-phase-offsets"
         )
+    if not 1 <= args.human_prior_option_effect_controllability_depth <= 4:
+        parser.error(
+            "--human-prior-option-effect-controllability-depth must be "
+            "between 1 and 4"
+        )
     if args.human_prior_intrinsic_clip <= 0.0:
         parser.error("--human-prior-intrinsic-clip must be positive")
 
@@ -898,6 +912,9 @@ def main() -> None:
             args.human_prior_option_effect_frontier
             if args.human_prior_hearts
             else False
+        ),
+        human_prior_option_effect_controllability_depth=(
+            args.human_prior_option_effect_controllability_depth
         ),
         human_prior_option_effect_local_controls=(
             args.human_prior_option_effect_local_controls

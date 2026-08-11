@@ -203,7 +203,9 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   nonlocal effect. When the effect frontier is enabled, each confirmed control
   also emits `human_prior_option_effect_controllability_probe`: the factual and
   action-ablated endpoints must have the same detected player location, then
-  every directional action is branched from both. The event records both
+  every directional action sequence through
+  `--human-prior-option-effect-controllability-depth` is branched from both.
+  The event records the configured depth, every exact action path, both
   reachable-position sets, newly reachable positions, and factual/control
   pixel-outcome spread. An effect enters the frontier only when factual state
   adds at least one reachable player position;

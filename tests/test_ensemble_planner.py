@@ -397,6 +397,43 @@ class ControllabilityGainEnv:
         return Frame(8, 8, 1, bytes(pixels))
 
 
+class DelayedControllabilityGainEnv:
+    def __init__(self) -> None:
+        self.world_active = False
+        self.right_steps = 0
+        self.position = 0
+
+    def reset(self) -> Frame:
+        self.world_active = False
+        self.right_steps = 0
+        self.position = 0
+        return self._frame()
+
+    def step(self, action: Action, frames: int = 1) -> Frame:
+        del frames
+        if action == Action.A:
+            self.world_active = True
+        elif action == Action.RIGHT and self.world_active:
+            self.right_steps += 1
+            if self.right_steps >= 2:
+                self.position = 1
+        return self._frame()
+
+    def save_state(self) -> tuple[bool, int, int]:
+        return self.world_active, self.right_steps, self.position
+
+    def load_state(self, state: tuple[bool, int, int]) -> Frame:
+        self.world_active, self.right_steps, self.position = state
+        return self._frame()
+
+    def _frame(self) -> Frame:
+        pixels = bytearray(64)
+        pixels[self.position] = 255
+        if self.world_active:
+            pixels[63] = 128
+        return Frame(8, 8, 1, bytes(pixels))
+
+
 class PhaseShiftWorldEffectEnv:
     def __init__(self) -> None:
         self.tick = 0
@@ -1929,6 +1966,60 @@ class EnsemblePlannerTests(unittest.TestCase):
                 event["event"]
                 == "human_prior_option_effect_controllability_probe"
                 for event in logger.events
+            )
+        )
+
+    def test_option_effect_controllability_detects_two_step_gain(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = DelayedControllabilityGainEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.A),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_option_effect_stability_steps=0,
+                human_prior_option_effect_frontier=True,
+                human_prior_option_effect_phase_offsets=1,
+                human_prior_option_effect_controllability_depth=2,
+            ),
+        )
+        source = agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        root = env.save_state()
+
+        result = agent._probe_human_prior_option_controllability_gain(
+            root,
+            source,
+            (Action.A,),
+            (1,),
+            (Action.NOOP,),
+            1,
+            1,
+            0,
+        )
+
+        self.assertEqual(result["probe_depth"], 2)
+        self.assertEqual(
+            result["factual_reachable_player_slots"], ((0, 0), (1, 0))
+        )
+        self.assertEqual(
+            result["control_reachable_player_slots"], ((0, 0),)
+        )
+        self.assertEqual(result["newly_reachable_player_slots"], ((1, 0),))
+        self.assertEqual(result["reachable_player_position_gain"], 1)
+        self.assertTrue(
+            any(
+                row["path"] == (Action.RIGHT, Action.RIGHT)
+                and row["factual_player_slot"] == (1, 0)
+                for row in result["actions"]
             )
         )
 

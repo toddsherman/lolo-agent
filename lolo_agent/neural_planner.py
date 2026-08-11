@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from collections import Counter
 from dataclasses import dataclass, field
+from itertools import product
 from typing import Any, Counter as CounterType, Dict, List, Optional, Sequence, Tuple, Union
 
 import torch
@@ -114,6 +115,7 @@ class NeuralPlanningConfig:
     human_prior_option_effect_local_controls: bool = False
     human_prior_option_effect_local_minimum_cell_pixels: int = 12
     human_prior_option_effect_frontier: bool = False
+    human_prior_option_effect_controllability_depth: int = 1
     human_prior_intrinsic_clip: float = 10.0
     spatial_selection_weight: float = 0.0
     returnability_probe_depth: int = 0
@@ -556,6 +558,15 @@ class VerifiedNeuralAgent:
         ):
             raise ValueError(
                 "human-prior option effect frontier requires phase offsets"
+            )
+        if not (
+            1
+            <= self.config.human_prior_option_effect_controllability_depth
+            <= 4
+        ):
+            raise ValueError(
+                "human-prior option effect controllability depth must be "
+                "between one and four"
             )
         if self.config.human_prior_intrinsic_clip <= 0.0:
             raise ValueError("human-prior intrinsic clip must be positive")
@@ -1665,6 +1676,9 @@ class VerifiedNeuralAgent:
         )
         controllability = {
             "endpoint_matched": False,
+            "probe_depth": (
+                self.config.human_prior_option_effect_controllability_depth
+            ),
             "factual_player_slot": None,
             "control_player_slot": None,
             "factual_reachable_player_slots": (),
@@ -1753,7 +1767,7 @@ class VerifiedNeuralAgent:
         candidate_rank: int,
         action_index: int,
     ) -> Dict[str, Any]:
-        """Compare one-step reachability after factual and ablated effects."""
+        """Compare bounded reachability after factual and ablated effects."""
 
         assert self.goal_prior is not None
         probe_actions = tuple(
@@ -1802,42 +1816,64 @@ class VerifiedNeuralAgent:
         action_rows = []
         try:
             if endpoints_matched:
-                for action in probe_actions:
-                    self.env.load_state(factual_state)
-                    factual = self.env.step(action, future_duration)
-                    factual_result = self.goal_prior.analyze(
-                        factual_endpoint, factual
-                    )
-                    self.env.load_state(control_state)
-                    control = self.env.step(action, future_duration)
-                    control_result = self.goal_prior.analyze(
-                        control_endpoint, control
-                    )
-                    if factual_result.target_player_slot is not None:
-                        factual_slots.add(
-                            factual_result.target_player_slot
-                        )
-                    if control_result.target_player_slot is not None:
-                        control_slots.add(control_result.target_player_slot)
-                    factual_frames.append(factual)
-                    control_frames.append(control)
-                    action_rows.append(
-                        {
-                            "action": action,
-                            "action_frames": future_duration,
-                            "factual_frame": factual.digest,
-                            "control_frame": control.digest,
-                            "factual_player_slot": (
+                probe_depth = (
+                    self.config.human_prior_option_effect_controllability_depth
+                )
+                for depth in range(1, probe_depth + 1):
+                    for action_path in product(probe_actions, repeat=depth):
+                        self.env.load_state(factual_state)
+                        factual = factual_endpoint
+                        factual_result = None
+                        for action in action_path:
+                            previous = factual
+                            factual = self.env.step(action, future_duration)
+                            factual_result = self.goal_prior.analyze(
+                                previous, factual
+                            )
+                        self.env.load_state(control_state)
+                        control = control_endpoint
+                        control_result = None
+                        for action in action_path:
+                            previous = control
+                            control = self.env.step(action, future_duration)
+                            control_result = self.goal_prior.analyze(
+                                previous, control
+                            )
+                        assert factual_result is not None
+                        assert control_result is not None
+                        if factual_result.target_player_slot is not None:
+                            factual_slots.add(
                                 factual_result.target_player_slot
-                            ),
-                            "control_player_slot": (
+                            )
+                        if control_result.target_player_slot is not None:
+                            control_slots.add(
                                 control_result.target_player_slot
-                            ),
-                            "factual_control_pixel_l1": (
-                                factual.mean_absolute_difference(control)
-                            ),
-                        }
-                    )
+                            )
+                        factual_frames.append(factual)
+                        control_frames.append(control)
+                        action_rows.append(
+                            {
+                                "action": (
+                                    action_path[0]
+                                    if len(action_path) == 1
+                                    else None
+                                ),
+                                "path": action_path,
+                                "depth": depth,
+                                "action_frames": future_duration,
+                                "factual_frame": factual.digest,
+                                "control_frame": control.digest,
+                                "factual_player_slot": (
+                                    factual_result.target_player_slot
+                                ),
+                                "control_player_slot": (
+                                    control_result.target_player_slot
+                                ),
+                                "factual_control_pixel_l1": (
+                                    factual.mean_absolute_difference(control)
+                                ),
+                            }
+                        )
         finally:
             if release_state is not None:
                 for state in endpoint_states:
@@ -1857,6 +1893,9 @@ class VerifiedNeuralAgent:
         newly_reachable = factual_slots - control_slots
         result = {
             "endpoint_matched": endpoints_matched,
+            "probe_depth": (
+                self.config.human_prior_option_effect_controllability_depth
+            ),
             "factual_player_slot": factual_analysis.target_player_slot,
             "control_player_slot": control_analysis.target_player_slot,
             "factual_reachable_player_slots": tuple(
