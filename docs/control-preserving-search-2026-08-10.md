@@ -475,7 +475,15 @@ graph. It should retain exact options and milestone rollback as safety
 mechanisms, without increasing reward or adding a room-specific action
 sequence.
 
+Room 3 exposed one additional symmetry bug in this mechanism. An immediately
+selected action branch used its duration-matched `NOOP` contrast to arm a
+follow-through observation, but the same branch lost that evidence when first
+stored in the archive. Restoring a short interaction-button effect could
+therefore move away before its delayed visual consequence resolved. Archived
+branches now retain the same matched-neutral option eligibility, contrast, and
+counterfactual count as immediately selected branches.
+
 ## Verification
 
-The complete test suite passes: 191 tests, with 3 expected skips. Every
+The complete test suite passes: 192 tests, with 3 expected skips. Every
 completed native run reported `frozen_evaluation_audit=pass`.

@@ -2415,6 +2415,31 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(agent._human_prior_position_visits(obtained, player), 0)
         self.assertEqual(agent.human_prior_player_position_visits[player], 1)
 
+    def test_matched_effect_arms_archived_option_follow_through(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        agent = VerifiedNeuralAgent(
+            ActionEffectEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(action_equivalence_threshold=0.01),
+        )
+
+        eligible, contrast, counterfactuals = (
+            agent._include_matched_effect_option_evidence(
+                Action.A,
+                {"contrast": 0.025},
+                False,
+                0.0,
+                0,
+            )
+        )
+
+        self.assertTrue(eligible)
+        self.assertEqual(contrast, 0.025)
+        self.assertEqual(counterfactuals, 1)
+
     def test_human_prior_world_effect_masks_player_motion(self) -> None:
         model = EnsembleVisualDynamicsModel(
             latent_size=32, action_size=8, ensemble_size=2

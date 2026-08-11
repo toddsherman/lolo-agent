@@ -5438,6 +5438,23 @@ class VerifiedNeuralAgent:
             len(counterfactuals),
         )
 
+    def _include_matched_effect_option_evidence(
+        self,
+        action: Action,
+        effect: Optional[Dict[str, Any]],
+        eligible: bool,
+        contrast: float,
+        counterfactuals: int,
+    ) -> Tuple[bool, float, int]:
+        if (
+            action == Action.NOOP
+            or effect is None
+            or effect["contrast"]
+            <= self.config.action_equivalence_threshold
+        ):
+            return eligible, contrast, counterfactuals
+        return True, max(contrast, effect["contrast"]), counterfactuals + 1
+
     def _delayed_option_counterfactual(
         self,
         candidate: Tuple[Any, ...],
@@ -7075,18 +7092,17 @@ class VerifiedNeuralAgent:
             chosen_matched_effect = observed_action_effects.get(
                 (plan.path[0], plan.durations[0])
             )
-            if (
-                plan.path[0] != Action.NOOP
-                and chosen_matched_effect is not None
-                and chosen_matched_effect["contrast"]
-                > self.config.action_equivalence_threshold
-            ):
-                option_initiation_eligible = True
-                option_counterfactual_contrast = max(
-                    option_counterfactual_contrast,
-                    chosen_matched_effect["contrast"],
-                )
-                option_counterfactuals += 1
+            (
+                option_initiation_eligible,
+                option_counterfactual_contrast,
+                option_counterfactuals,
+            ) = self._include_matched_effect_option_evidence(
+                plan.path[0],
+                chosen_matched_effect,
+                option_initiation_eligible,
+                option_counterfactual_contrast,
+                option_counterfactuals,
+            )
             delayed_counterfactual_branch = (
                 None
                 if option_initiation_eligible
@@ -7667,6 +7683,17 @@ class VerifiedNeuralAgent:
                         alternative_plan.path[0],
                         alternative_plan.durations[0],
                     )
+                )
+                (
+                    alternative_option_eligible,
+                    alternative_option_contrast,
+                    alternative_option_counterfactuals,
+                ) = self._include_matched_effect_option_evidence(
+                    alternative_plan.path[0],
+                    alternative_effect,
+                    alternative_option_eligible,
+                    alternative_option_contrast,
+                    alternative_option_counterfactuals,
                 )
                 alternative_context = branch_causal_contexts[
                     id(alternative_state)
