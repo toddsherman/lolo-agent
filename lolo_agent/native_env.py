@@ -76,6 +76,7 @@ class NativeLibretroEnv:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             bufsize=0,
+            start_new_session=True,
         )
         if self._process.stdin is None or self._process.stdout is None:
             raise NativeHostError("failed to open native host protocol pipes")

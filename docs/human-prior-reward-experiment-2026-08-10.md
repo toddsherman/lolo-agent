@@ -246,3 +246,46 @@ This supports the current plan of record: keep the reward weights fixed and
 improve verified multi-action planning over the richer context. The strict
 rule-free evaluation track remains separate and receives none of the heart,
 chest, player, or life prototypes used by this assisted diagnostic.
+
+## Physical-frontier and exact-option ablation
+
+The reversible-context policy was extended to decision 503. Although it grew
+from 101 to 181 assisted graph states after decision 300, it never exceeded 36
+detected player positions and produced no chest, life, or scene milestone. This
+confirmed that the remaining growth was dominated by dynamic context variants.
+
+The assisted archive now ranks globally unseen detected player positions ahead
+of context-only edges. A bounded exact option search is available only after
+the current source has no cheaper unseen one-step endpoint. It verifies real
+emulator action sequences from opaque save states, caches exhausted sources,
+and archives only a positive milestone or a globally unseen endpoint.
+
+At 120 matched frozen decisions from the same strict decision-100 state:
+
+| Treatment | Positions | Restores | Option branches | Option commits |
+|---|---:|---:|---:|---:|
+| Prior reversible-context policy | 22 | 48 | 0 | 0 |
+| Unseen-position priority only | 45 | 20 | 0 | 0 |
+| Unbounded depth-3/beam-8 options | 46 | 20 | 1,092 | 1 |
+| Local-gated depth-3/beam-8 options | 46 | 20 | 666 | 1 |
+
+The option commit was the exact sequence `UP, UP`, which reached detected
+`(96,96)` from `(96,112)`. The position-only ablation reached the other 45
+positions. Thus archive ordering produced nearly all of the improvement, while
+multi-action verification added one real endpoint and local gating cut its
+rollout cost by 39%. None of these runs improved on chest distance 4 or cleared
+Room 2, so further reward increases remain unsupported.
+
+An endurance extension was stopped at decision 187 after 60 decisions without
+a new player position. It reached 49 positions and 62 graph states, committed
+four exact options, and verified 2,004 option paths, but still produced no
+chest, life-loss, or room-transition event. The next assisted experiment should
+therefore target longer options or persistent non-player changes from the
+distance-4 boundary rather than repeat broad depth-3 search.
+
+The targeted longer-option hypothesis was tested directly from the local
+decision-89 distance-4 state. A depth-5/beam-16 run verified 1,656 exact paths
+across nine searches and committed seven endpoints, but found zero endpoints
+closer than distance 4 and zero chest completions. The frozen audit passed.
+The next assisted mechanism should therefore value stable, matched-NOOP
+non-player transformations rather than extend the movement horizon again.

@@ -266,6 +266,65 @@ class UniqueStateEnv(ActionEffectEnv):
         self.active_states.remove(state)
 
 
+class PositionGoalPrior:
+    def __init__(self) -> None:
+        self.known_slots = {(7, 0)}
+        self.current_present = {(7, 0)}
+        self.current_player_slot = (0, 0)
+        self.best_remaining_hearts = 1
+        self.navigation_reward = 1.0
+
+    @staticmethod
+    def _position(frame: Frame) -> tuple[int, int]:
+        return frame.pixels.index(255), 0
+
+    def current_slots(self):
+        return tuple(sorted(self.current_present))
+
+    def analyze(self, source: Frame, target: Frame) -> HeartGoalAnalysis:
+        source_player = self._position(source)
+        target_player = self._position(target)
+        navigation = float(target_player[0] - source_player[0])
+        return HeartGoalAnalysis(
+            reliable=True,
+            known_slots=((7, 0),),
+            source_present=((7, 0),),
+            target_present=((7, 0),),
+            collected=(),
+            target_similarities=(),
+            heart_reward=0.0,
+            all_hearts_reward=0.0,
+            chest_reward=0.0,
+            navigation_reward=navigation,
+            life_loss_penalty=0.0,
+            total_reward=navigation,
+            global_visual_change=source.mean_absolute_difference(target),
+            target_intensity=1.0,
+            source_player_slot=source_player,
+            target_player_slot=target_player,
+            source_heart_distance=float(7 - source_player[0]),
+            target_heart_distance=float(7 - target_player[0]),
+            source_chest_slot=None,
+            target_chest_slot=None,
+            source_chest_distance=None,
+            target_chest_distance=None,
+            chest_completed=False,
+            source_life_signature="life",
+            target_life_signature="life",
+            life_counter_changed=False,
+            dark_transition_started=False,
+            life_loss_confirmed=False,
+        )
+
+    def restore(self, slots, frame: Frame, player_slot) -> None:
+        self.current_present = set(slots)
+        self.current_player_slot = player_slot or self._position(frame)
+
+    def distance_to_hearts(self, frame: Frame, slots) -> float:
+        player = self._position(frame)
+        return float(min(abs(player[0] - slot[0]) for slot in slots))
+
+
 class RecordingLogger:
     def __init__(self) -> None:
         self.events = []
@@ -1305,6 +1364,267 @@ class EnsemblePlannerTests(unittest.TestCase):
                 "source-tile", "new-target-tile", Action.UP, 16
             )
         )
+
+    def test_human_prior_option_search_verifies_and_restores_sequence(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = UniqueStateEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=3,
+                human_prior_option_search_beam_width=1,
+                human_prior_option_search_action_frames=1,
+                visual_stagnation_visits=99,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        source_signature = agent._current_human_prior_graph_signature()
+        agent.human_prior_graph_state_visits.clear()
+        agent.human_prior_graph_state_visits[source_signature] = 1
+        agent.human_prior_player_position_visits.clear()
+        agent.human_prior_player_position_visits[(0, 0)] = 1
+
+        added = agent._search_human_prior_options()
+
+        self.assertEqual(added, 1)
+        self.assertEqual(env.position, 0)
+        self.assertEqual(len(agent.archive), 1)
+        branch = agent.archive[0]
+        self.assertTrue(branch.human_prior_verified_option)
+        self.assertEqual(branch.plan.path, (Action.RIGHT,) * 3)
+        self.assertEqual(branch.plan.durations, (1, 1, 1))
+        self.assertEqual(branch.goal_player_slot, (3, 0))
+        self.assertIn(branch.state, env.active_states)
+        verified = [
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_branch_verified"
+        ]
+        self.assertEqual(len(verified), 3)
+        self.assertTrue(all(event["agent_visible"] for event in verified))
+
+        agent.human_prior_graph_recovery_pending = True
+        restored = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(restored)
+        assert restored is not None
+        self.assertTrue(restored.restored_archive)
+        self.assertEqual(restored.planned_path, (Action.RIGHT,) * 3)
+        self.assertEqual(env.position, 3)
+        option_key = agent._human_prior_option_key(
+            source_signature,
+            (Action.RIGHT,) * 3,
+            (1, 1, 1),
+        )
+        self.assertEqual(agent.human_prior_option_visits[option_key], 1)
+        committed = [
+            event
+            for event in logger.events
+            if event["event"] == "decision_committed"
+        ][-1]
+        self.assertTrue(committed["human_prior_verified_option"])
+        self.assertEqual(committed["human_prior_option_depth"], 3)
+
+    def test_human_prior_option_archive_uses_whole_path_coverage(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        agent = VerifiedNeuralAgent(
+            ActionEffectEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(actions=(Action.RIGHT,), planning_depth=1),
+        )
+        agent.reset()
+        branch = _ArchivedBranch(
+            state=0,
+            frame=Frame(8, 8, 1, bytes([255]) + bytes(63)),
+            plan=NeuralPlan(
+                (Action.RIGHT, Action.RIGHT), (1, 1), 0.0, 0.0
+            ),
+            score=0.0,
+            scene="scene",
+            created=0,
+            goal_source_signature="source",
+            human_prior_verified_option=True,
+        )
+        agent.human_prior_graph_edge_visits[
+            ("source", Action.RIGHT, 1)
+        ] = 10
+
+        self.assertEqual(
+            agent._human_prior_archive_edge_coverage(branch), (0, True)
+        )
+        agent._record_human_prior_archive_edge(branch)
+        self.assertEqual(
+            agent._human_prior_archive_edge_coverage(branch), (1, False)
+        )
+
+    def test_human_prior_option_search_caches_exhausted_source(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = UniqueStateEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.LEFT,),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=1,
+                human_prior_option_search_action_frames=1,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        source_signature = agent._current_human_prior_graph_signature()
+        agent.human_prior_graph_state_visits[source_signature] = 1
+        agent.human_prior_player_position_visits[(0, 0)] = 1
+
+        first = agent._search_human_prior_options()
+        verified_after_first = len(
+            [
+                event
+                for event in logger.events
+                if event["event"]
+                == "human_prior_option_branch_verified"
+            ]
+        )
+        second = agent._search_human_prior_options()
+
+        self.assertEqual(first, 0)
+        self.assertEqual(second, 0)
+        self.assertEqual(verified_after_first, 2)
+        self.assertEqual(
+            len(
+                [
+                    event
+                    for event in logger.events
+                    if event["event"]
+                    == "human_prior_option_branch_verified"
+                ]
+            ),
+            verified_after_first,
+        )
+        skipped = [
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_search_skipped"
+        ]
+        self.assertEqual(len(skipped), 1)
+        self.assertEqual(skipped[0]["reason"], "source_already_exhausted")
+
+    def test_human_prior_restore_prefers_unvisited_player_position(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = UniqueStateEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                visual_stagnation_visits=99,
+            ),
+            event_logger=logger,
+        )
+        source_frame = agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        source_signature = agent._current_human_prior_graph_signature()
+        root = env.save_state()
+        seen_frame = env.step(Action.RIGHT, 1)
+        seen_state = env.save_state()
+        novel_frame = env.step(Action.RIGHT, 1)
+        novel_state = env.save_state()
+        env.load_state(root)
+        agent.frame = source_frame
+        agent.human_prior_player_position_visits[(0, 0)] = 1
+        agent.human_prior_player_position_visits[(1, 0)] = 1
+        seen = _ArchivedBranch(
+            state=seen_state,
+            frame=seen_frame,
+            plan=NeuralPlan((Action.RIGHT,), (1,), 100.0, 0.0),
+            score=100.0,
+            scene=agent._scene_signature(seen_frame),
+            created=1,
+            goal_heart_slots=((7, 0),),
+            goal_remaining_hearts=1,
+            goal_total_hearts=1,
+            goal_player_slot=(1, 0),
+            goal_source_signature=source_signature,
+            goal_target_signature="seen-target",
+        )
+        novel = _ArchivedBranch(
+            state=novel_state,
+            frame=novel_frame,
+            plan=NeuralPlan(
+                (Action.RIGHT, Action.RIGHT), (1, 1), 1.0, 0.0
+            ),
+            score=1.0,
+            scene=agent._scene_signature(novel_frame),
+            created=1,
+            goal_heart_slots=((7, 0),),
+            goal_remaining_hearts=1,
+            goal_total_hearts=1,
+            goal_player_slot=(2, 0),
+            goal_source_signature=source_signature,
+            goal_target_signature="novel-target",
+            human_prior_verified_option=True,
+        )
+        agent.archive = [seen, novel]
+        agent._archive_frontier_score = lambda branch: branch.score
+        agent.human_prior_graph_recovery_pending = True
+        self.assertEqual(
+            agent._human_prior_unvisited_archive_endpoints(), 1
+        )
+        self.assertEqual(
+            agent._human_prior_unvisited_archive_endpoints(
+                "unrelated-source"
+            ),
+            0,
+        )
+
+        restored = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(restored)
+        assert restored is not None
+        self.assertEqual(restored.planned_path, (Action.RIGHT, Action.RIGHT))
+        self.assertEqual(env.position, 2)
+        filtered = [
+            event
+            for event in logger.events
+            if event["event"]
+            == "human_prior_best_first_archives_filtered"
+        ][-1]
+        self.assertTrue(filtered["physical_frontier_preferred"])
+        self.assertEqual(filtered["unvisited_player_positions"], 1)
 
     def test_human_prior_world_effect_masks_player_motion(self) -> None:
         model = EnsembleVisualDynamicsModel(

@@ -111,6 +111,13 @@ class RunLoggingTests(unittest.TestCase):
                 "human_prior_best_first_frontier_exhaustions", summary
             )
             self.assertIn("human_prior_graph_stagnation_events", summary)
+            self.assertIn("human_prior_option_searches", summary)
+            self.assertIn("human_prior_option_search_deferrals", summary)
+            self.assertIn("human_prior_option_search_skips", summary)
+            self.assertIn("human_prior_option_cleanup_failures", summary)
+            self.assertIn("human_prior_option_branches_verified", summary)
+            self.assertIn("human_prior_option_archives_added", summary)
+            self.assertIn("human_prior_options_committed", summary)
             self.assertIn("life_hazard_checkpoints_created", summary)
             self.assertIn("life_hazard_checkpoint_restores", summary)
             self.assertIn("goal_milestone_checkpoints_created", summary)

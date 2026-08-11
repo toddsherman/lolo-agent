@@ -371,6 +371,30 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--human-prior-option-search-depth",
+        type=int,
+        default=0,
+        help=(
+            "exact save-state action-sequence depth searched when the "
+            "assisted semantic graph stagnates; zero disables search"
+        ),
+    )
+    parser.add_argument(
+        "--human-prior-option-search-beam-width",
+        type=int,
+        default=8,
+        help="pixel endpoints retained at each assisted option-search depth",
+    )
+    parser.add_argument(
+        "--human-prior-option-search-action-frames",
+        type=int,
+        default=0,
+        help=(
+            "press length for assisted option search; zero uses the longest "
+            "configured gameplay duration"
+        ),
+    )
+    parser.add_argument(
         "--human-prior-life-loss-penalty",
         type=float,
         default=100.0,
@@ -514,6 +538,18 @@ def main() -> None:
         parser.error(
             "--human-prior-graph-stagnation-visits must be non-negative"
         )
+    if args.human_prior_option_search_depth < 0:
+        parser.error(
+            "--human-prior-option-search-depth must be non-negative"
+        )
+    if args.human_prior_option_search_beam_width <= 0:
+        parser.error(
+            "--human-prior-option-search-beam-width must be positive"
+        )
+    if args.human_prior_option_search_action_frames < 0:
+        parser.error(
+            "--human-prior-option-search-action-frames must be non-negative"
+        )
     if args.human_prior_intrinsic_clip <= 0.0:
         parser.error("--human-prior-intrinsic-clip must be positive")
 
@@ -656,6 +692,17 @@ def main() -> None:
             args.human_prior_graph_stagnation_visits
             if args.human_prior_hearts
             else 0
+        ),
+        human_prior_option_search_depth=(
+            args.human_prior_option_search_depth
+            if args.human_prior_hearts
+            else 0
+        ),
+        human_prior_option_search_beam_width=(
+            args.human_prior_option_search_beam_width
+        ),
+        human_prior_option_search_action_frames=(
+            args.human_prior_option_search_action_frames
         ),
         human_prior_intrinsic_clip=args.human_prior_intrinsic_clip,
         spatial_selection_weight=args.spatial_selection_weight,

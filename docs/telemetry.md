@@ -170,14 +170,29 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
 - `human_prior_best_first_archives_filtered`,
   `human_prior_best_first_frontier_exhausted`, and
   `human_prior_graph_stagnation_detected`, which make every semantic
-  backtracking decision reconstructable.
+  backtracking decision reconstructable;
+- `human_prior_option_search_started`,
+  `human_prior_option_branch_verified`, and
+  `human_prior_option_search_completed`, which preserve every exact
+  save-state sequence rollout, its action/duration path, parent and endpoint
+  state IDs, pixel-derived goal analysis, novelty counts, score, and selection;
+- `human_prior_option_search_deferred` and
+  `human_prior_option_search_skipped`, which distinguish a cheaper unseen
+  local archive endpoint from an already exhausted sequence-search source;
+  and
+- `human_prior_option_archive_added`, plus
+  `human_prior_verified_option`, `human_prior_option_depth`, and
+  `human_prior_option_path_visits_before` on restore/commit events, which make
+  whole-sequence selection and replay explicit.
 
 These fields are experimental assisted-track telemetry. They do not expose ROM
 memory and are not present in the strict policy state. `summary.json` rolls up
 confirmation/acceptance counts, unique effect signatures, committed world
 contexts, graph states, player positions, semantic overrides, best-first
-filter/exhaustion events, and graph-stagnation events. `decisions.csv` carries
-the graph and world-context keys on every commit.
+filter/exhaustion events, graph-stagnation events, sequence searches,
+deferrals, cached skips, verified option branches, archived endpoints, and
+committed options. `decisions.csv` carries the graph/world-context keys and
+selected-option fields on every commit.
 
 ## Frozen spatial-model telemetry
 

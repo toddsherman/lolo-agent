@@ -548,6 +548,15 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                     "human_prior_best_first_applied": event.get(
                         "human_prior_best_first_applied", False
                     ),
+                    "human_prior_verified_option": event.get(
+                        "human_prior_verified_option", False
+                    ),
+                    "human_prior_option_depth": event.get(
+                        "human_prior_option_depth", 0
+                    ),
+                    "human_prior_option_path_visits_before": event.get(
+                        "human_prior_option_path_visits_before", 0
+                    ),
                     "human_prior_graph_source_signature": event.get(
                         "human_prior_graph_source_signature"
                     ),
@@ -688,6 +697,9 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "human_prior_life_loss_penalty",
         "human_prior_life_loss_confirmed",
         "human_prior_best_first_applied",
+        "human_prior_verified_option",
+        "human_prior_option_depth",
+        "human_prior_option_path_visits_before",
         "human_prior_graph_source_signature",
         "human_prior_graph_target_signature",
         "human_prior_world_source_context",
@@ -1001,6 +1013,28 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         ),
         "human_prior_graph_stagnation_events": event_counts.get(
             "human_prior_graph_stagnation_detected", 0
+        ),
+        "human_prior_option_searches": event_counts.get(
+            "human_prior_option_search_started", 0
+        ),
+        "human_prior_option_search_deferrals": event_counts.get(
+            "human_prior_option_search_deferred", 0
+        ),
+        "human_prior_option_search_skips": event_counts.get(
+            "human_prior_option_search_skipped", 0
+        ),
+        "human_prior_option_cleanup_failures": event_counts.get(
+            "human_prior_option_cleanup_failed", 0
+        ),
+        "human_prior_option_branches_verified": event_counts.get(
+            "human_prior_option_branch_verified", 0
+        ),
+        "human_prior_option_archives_added": event_counts.get(
+            "human_prior_option_archive_added", 0
+        ),
+        "human_prior_options_committed": sum(
+            bool(row.get("human_prior_verified_option"))
+            for row in decision_rows
         ),
         "life_hazard_checkpoints_created": event_counts.get(
             "life_hazard_checkpoint_created", 0

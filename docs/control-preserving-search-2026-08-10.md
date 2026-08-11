@@ -245,6 +245,62 @@ branches and investigates more action-conditioned puzzle states, at the cost
 of deferring nine positions in the far upper-right corridor within this fixed
 budget.
 
+## Physical frontier and verified action sequences
+
+The reversible-context run was extended to decision 503. It reached 181
+goal-plus-world graph states and retained 419 archived alternatives, but it
+still had only the same 36 player positions seen at decision 300. It produced
+no goal milestone, life loss, or scene transition. The extra graph growth was
+therefore context churn rather than physical reachability progress.
+
+Archive recovery now gives first priority to any unexpanded endpoint at a
+globally unseen detected player position. This is still an assisted-track
+pixel key; it does not assign names or traversability rules to room objects.
+When the current semantic source has no such one-step endpoint, an optional
+bounded search restores the exact source save state and verifies short action
+sequences in the emulator. The sequence is tracked as one graph edge so an
+already tried first action does not suppress an untried multi-action option.
+Only a goal milestone or a globally unseen player endpoint can be archived.
+Search is deferred while a cheaper unseen endpoint exists locally, and an
+exhausted source is cached to prevent identical rollout work.
+
+Matched 120-decision frozen runs from the same strict Room 2 decision-100
+state isolate the effects:
+
+| Treatment | Player positions | Graph states | Restores | One-step branches | Option branches | Options committed |
+|---|---:|---:|---:|---:|---:|---:|
+| Reversible-context baseline | 22 | 40 | 48 | 612 | 0 | 0 |
+| Physical frontier only | 45 | 47 | 20 | 855 | 0 | 0 |
+| Unbounded depth-3/beam-8 options | 46 | 48 | 20 | 855 | 1,092 | 1 |
+| Local-gated depth-3/beam-8 options | 46 | 48 | 20 | 855 | 666 | 1 |
+
+The selected exact option was `UP, UP` from detected `(96,112)` to the new
+endpoint `(96,96)`. The physical-only run reached every other position in the
+option run, so unseen-position archive ordering accounts for 23 of the 24
+additional positions and verified sequence search accounts for one. Local
+gating preserved that endpoint while reducing sequence rollouts by 39% from
+the unbounded treatment. All four runs reached chest distance 4; none opened
+the chest or changed rooms within 120 decisions.
+
+The local-gated configuration was then extended and stopped at decision 187
+after no new position had appeared since decision 127. It reached 49 player
+positions and 62 assisted graph states, committed four exact options, restored
+70 branches, and verified 2,004 option paths. It still reached only chest
+distance 4 and produced no chest, life-loss, or scene-transition event. This
+is a substantially broader physical frontier than the prior 36-position
+reversible-context run, but depth-3 reachability has now exposed its own clean
+plateau. Longer search should be targeted at the distance-4 boundary or score
+persistent non-player transformations; repeating depth-3 search elsewhere is
+not justified by these data.
+
+A bounded depth-5/beam-16 diagnostic resumed the exact distance-4 state at
+local decision 89. Across nine searches it verified 1,656 exact option paths
+and committed seven endpoints. None was closer than distance 4, none completed
+the chest, and no life or scene event occurred. The frozen audit passed. This
+falsifies a modest increase in movement horizon at that boundary; the next
+search signal must distinguish a lasting non-player room transformation from
+ordinary reachability and animation.
+
 ## Telemetry
 
 New events preserve every diagnostic and recovery decision:
@@ -296,13 +352,15 @@ verified save states, with controllability as a hard constraint and persistent
 pixel changes as the progress value. Increasing a semantic reward would not
 address the demonstrated timing and lineage failures.
 
-The semantic-frontier comparison has now reached that gate. The next experiment
-should plan short, verified multi-action options inside each assisted world
-context and prefer options that reach a new context or a new player position
-without losing immediate control. It should not increase the heart/chest reward
-or add a room-specific action sequence.
+The semantic-frontier comparison has now passed that gate. Short exact options
+work, but the ablation shows that physical archive ordering is the dominant
+gain and depth-3 search adds only one endpoint at appreciable cost. The next
+experiment should retain local-gated options as a fallback, extend the broader
+physical frontier, and determine whether the distance-4 chest basin requires a
+longer verified option or a persistent world transformation. It should not
+increase the heart/chest reward or add a room-specific action sequence.
 
 ## Verification
 
-The complete test suite passes: 168 tests, with 3 expected skips. Every
+The complete test suite passes: 172 tests, with 3 expected skips. Every
 completed native run reported `frozen_evaluation_audit=pass`.

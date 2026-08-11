@@ -101,6 +101,9 @@ class NeuralPlanningConfig:
     human_prior_navigation_recovery_grace: int = 0
     human_prior_best_first_archive: bool = False
     human_prior_graph_stagnation_visits: int = 0
+    human_prior_option_search_depth: int = 0
+    human_prior_option_search_beam_width: int = 8
+    human_prior_option_search_action_frames: int = 0
     human_prior_intrinsic_clip: float = 10.0
     spatial_selection_weight: float = 0.0
     returnability_probe_depth: int = 0
@@ -162,6 +165,22 @@ class _ArchivedBranch:
     goal_source_world_context: str = "human-prior-world-root"
     goal_target_world_context: str = "human-prior-world-root"
     goal_world_effect_signature: str = ""
+    human_prior_verified_option: bool = False
+
+
+@dataclass
+class _HumanPriorOptionNode:
+    state: object
+    frame: Frame
+    path: Tuple[Action, ...]
+    durations: Tuple[int, ...]
+    analysis: HeartGoalAnalysis
+    source_signature: str
+    target_signature: str
+    score: float
+    depth: int
+    target_state_visits: int
+    target_position_visits: int
 
 
 @dataclass(frozen=True)
@@ -464,6 +483,18 @@ class VerifiedNeuralAgent:
         if self.config.human_prior_graph_stagnation_visits < 0:
             raise ValueError(
                 "human-prior graph stagnation visits must be non-negative"
+            )
+        if self.config.human_prior_option_search_depth < 0:
+            raise ValueError(
+                "human-prior option search depth must be non-negative"
+            )
+        if self.config.human_prior_option_search_beam_width <= 0:
+            raise ValueError(
+                "human-prior option search beam width must be positive"
+            )
+        if self.config.human_prior_option_search_action_frames < 0:
+            raise ValueError(
+                "human-prior option search action frames must be non-negative"
             )
         if self.config.human_prior_intrinsic_clip <= 0.0:
             raise ValueError("human-prior intrinsic clip must be positive")
@@ -862,6 +893,465 @@ class VerifiedNeuralAgent:
                 (signature, action, duration)
             ] += 1
 
+    @staticmethod
+    def _human_prior_option_key(
+        source_signature: str,
+        path: Sequence[Action],
+        durations: Sequence[int],
+    ) -> Tuple[str, Tuple[Tuple[Action, int], ...]]:
+        return (
+            source_signature,
+            tuple(zip(tuple(path), tuple(durations))),
+        )
+
+    def _human_prior_option_coverage(
+        self,
+        source_signature: str,
+        path: Sequence[Action],
+        durations: Sequence[int],
+    ) -> Tuple[int, bool]:
+        if not source_signature or not path:
+            return 0, False
+        visits = self.human_prior_option_visits[
+            self._human_prior_option_key(
+                source_signature, path, durations
+            )
+        ]
+        return visits, visits == 0
+
+    def _human_prior_archive_edge_coverage(
+        self, branch: _ArchivedBranch
+    ) -> Tuple[int, bool]:
+        if branch.human_prior_verified_option:
+            return self._human_prior_option_coverage(
+                branch.goal_source_signature,
+                branch.plan.path,
+                branch.plan.durations,
+            )
+        return self._human_prior_graph_edge_coverage(
+            branch.goal_source_signature,
+            branch.plan.path[0],
+            branch.plan.durations[0],
+        )
+
+    def _record_human_prior_archive_edge(
+        self, branch: _ArchivedBranch
+    ) -> None:
+        if branch.human_prior_verified_option:
+            self.human_prior_option_visits[
+                self._human_prior_option_key(
+                    branch.goal_source_signature,
+                    branch.plan.path,
+                    branch.plan.durations,
+                )
+            ] += 1
+            return
+        self._record_human_prior_graph_edge(
+            branch.goal_source_signature,
+            branch.plan.path[0],
+            branch.plan.durations[0],
+        )
+
+    def _human_prior_unvisited_archive_endpoints(
+        self, source_signature: str = ""
+    ) -> int:
+        return sum(
+            branch.plan.path[0] != Action.NOOP
+            and bool(branch.goal_source_signature)
+            and (
+                not source_signature
+                or branch.goal_source_signature == source_signature
+            )
+            and branch.goal_player_slot is not None
+            and self.human_prior_player_position_visits[
+                branch.goal_player_slot
+            ]
+            == 0
+            and self._human_prior_archive_edge_coverage(branch)[1]
+            for branch in self.archive
+        )
+
+    def _search_human_prior_options(self) -> int:
+        """Verify short action sequences from the current emulator state.
+
+        This is an assisted-track escape hatch for a specific failure mode:
+        every one-step edge is known, but a previously visited intermediate
+        position must be traversed before a new endpoint becomes visible.
+        Search nodes contain only opaque save-state capabilities and pixels.
+        """
+
+        assert self.frame is not None
+        if (
+            self.goal_prior is None
+            or self.config.human_prior_option_search_depth < 2
+        ):
+            return 0
+        actions = tuple(
+            action
+            for action in self.config.actions
+            if action
+            in (
+                Action.UP,
+                Action.DOWN,
+                Action.LEFT,
+                Action.RIGHT,
+                Action.A,
+                Action.B,
+            )
+        )
+        if not actions:
+            return 0
+        duration = self.config.human_prior_option_search_action_frames
+        if duration <= 0:
+            duration = max(
+                self.config.action_durations
+                or (self.config.action_frames,)
+            )
+        source_frame = self.frame
+        source_analysis = self.goal_prior.analyze(
+            source_frame, source_frame
+        )
+        source_signature = self._human_prior_graph_signatures(
+            source_analysis
+        )[1]
+        if not source_signature:
+            return 0
+        if source_signature in self.human_prior_option_exhausted_sources:
+            self._emit(
+                "human_prior_option_search_skipped",
+                decision=self.decision_index + 1,
+                reason="source_already_exhausted",
+                source_graph_signature=source_signature,
+                **self._frame_fields(source_frame),
+            )
+            return 0
+
+        root = self.env.save_state()
+        saved_states = [root]
+        retained_state: Optional[object] = None
+        release_state = getattr(self.env, "release_state", None)
+        root_node = _HumanPriorOptionNode(
+            state=root,
+            frame=source_frame,
+            path=(),
+            durations=(),
+            analysis=source_analysis,
+            source_signature=source_signature,
+            target_signature=source_signature,
+            score=0.0,
+            depth=0,
+            target_state_visits=self.human_prior_graph_state_visits[
+                source_signature
+            ],
+            target_position_visits=(
+                0
+                if source_analysis.target_player_slot is None
+                else self.human_prior_player_position_visits[
+                    source_analysis.target_player_slot
+                ]
+            ),
+        )
+        parents = [root_node]
+        endpoints: List[_HumanPriorOptionNode] = []
+        branches_verified = 0
+        active_failure = False
+        self._emit(
+            "human_prior_option_search_started",
+            decision=self.decision_index + 1,
+            source_state_id=self._state_id(root),
+            source_graph_signature=source_signature,
+            maximum_depth=self.config.human_prior_option_search_depth,
+            beam_width=self.config.human_prior_option_search_beam_width,
+            actions=actions,
+            action_frames=duration,
+            **self._frame_fields(source_frame),
+        )
+        try:
+            for depth in range(
+                1, self.config.human_prior_option_search_depth + 1
+            ):
+                depth_candidates: List[_HumanPriorOptionNode] = []
+                for parent in parents:
+                    for action in actions:
+                        self.env.load_state(parent.state)
+                        target = self.env.step(action, duration)
+                        state = self.env.save_state()
+                        saved_states.append(state)
+                        path = (*parent.path, action)
+                        durations = (*parent.durations, duration)
+                        analysis = self.goal_prior.analyze(
+                            source_frame, target
+                        )
+                        _, target_signature = (
+                            self._human_prior_graph_signatures(
+                                analysis,
+                                self.current_human_prior_world_context_signature,
+                                self.current_human_prior_world_context_signature,
+                            )
+                        )
+                        target_state_visits = (
+                            0
+                            if not target_signature
+                            else self.human_prior_graph_state_visits[
+                                target_signature
+                            ]
+                        )
+                        target_position_visits = (
+                            0
+                            if analysis.target_player_slot is None
+                            else self.human_prior_player_position_visits[
+                                analysis.target_player_slot
+                            ]
+                        )
+                        option_visits, option_unexpanded = (
+                            self._human_prior_option_coverage(
+                                source_signature, path, durations
+                            )
+                        )
+                        state_novelty = 1.0 / math.sqrt(
+                            target_state_visits + 1
+                        )
+                        position_novelty = 1.0 / math.sqrt(
+                            target_position_visits + 1
+                        )
+                        score = (
+                            analysis.total_reward
+                            + 4.0 * position_novelty
+                            + 2.0 * state_novelty
+                            + 0.25
+                            * self.novelty.score(self._signature(target))
+                            - 0.05 * depth
+                            - 2.0 * option_visits
+                        )
+                        node = _HumanPriorOptionNode(
+                            state=state,
+                            frame=target,
+                            path=path,
+                            durations=durations,
+                            analysis=analysis,
+                            source_signature=source_signature,
+                            target_signature=target_signature,
+                            score=score,
+                            depth=depth,
+                            target_state_visits=target_state_visits,
+                            target_position_visits=target_position_visits,
+                        )
+                        depth_candidates.append(node)
+                        branches_verified += 1
+                        endpoint_eligible = bool(
+                            depth >= 2
+                            and option_unexpanded
+                            and not analysis.life_counter_changed
+                            and not analysis.dark_transition_started
+                            and (
+                                analysis.milestone_reward > 0.0
+                                or (
+                                    target_signature
+                                    and target_signature != source_signature
+                                    and analysis.target_player_slot is not None
+                                    and target_position_visits == 0
+                                )
+                            )
+                        )
+                        if endpoint_eligible:
+                            endpoints.append(node)
+                        self._emit(
+                            "human_prior_option_branch_verified",
+                            decision=self.decision_index + 1,
+                            branch_index=branches_verified,
+                            depth=depth,
+                            path=path,
+                            durations=durations,
+                            source_state_id=self._state_id(root),
+                            parent_state_id=self._state_id(parent.state),
+                            state_id=self._state_id(state),
+                            source_graph_signature=source_signature,
+                            target_graph_signature=(
+                                target_signature or None
+                            ),
+                            target_graph_state_visits=(
+                                target_state_visits
+                            ),
+                            target_player_position_visits=(
+                                target_position_visits
+                            ),
+                            option_path_visits_before=option_visits,
+                            option_path_unexpanded=option_unexpanded,
+                            endpoint_eligible=endpoint_eligible,
+                            score=score,
+                            agent_visible=True,
+                            **analysis.telemetry(),
+                            **self._frame_fields(target),
+                        )
+                if not depth_candidates:
+                    break
+                deduplicated: Dict[str, _HumanPriorOptionNode] = {}
+                for node in depth_candidates:
+                    key = node.target_signature or node.frame.digest
+                    previous = deduplicated.get(key)
+                    if previous is None or node.score > previous.score:
+                        deduplicated[key] = node
+                parents = sorted(
+                    deduplicated.values(),
+                    key=lambda node: (
+                        node.analysis.milestone_reward,
+                        node.target_position_visits == 0,
+                        node.target_state_visits == 0,
+                        node.score,
+                        -node.depth,
+                    ),
+                    reverse=True,
+                )[: self.config.human_prior_option_search_beam_width]
+
+            if not endpoints:
+                self.human_prior_option_exhausted_sources.add(
+                    source_signature
+                )
+                self._emit(
+                    "human_prior_option_search_completed",
+                    decision=self.decision_index + 1,
+                    branches_verified=branches_verified,
+                    eligible_endpoints=0,
+                    archive_branches_added=0,
+                    reason="no_unexpanded_endpoint",
+                    **self._frame_fields(source_frame),
+                )
+                return 0
+            selected = max(
+                endpoints,
+                key=lambda node: (
+                    node.analysis.milestone_reward,
+                    node.target_position_visits == 0,
+                    node.target_state_visits == 0,
+                    node.analysis.total_reward,
+                    node.score,
+                    -node.depth,
+                ),
+            )
+            retained_state = selected.state
+            selected_frontier_signature = self._new_provisional_signature()
+            selected_pose_action = self.current_pose_action
+            for action in selected.path:
+                selected_pose_action = self._resulting_pose_action(
+                    selected_pose_action, action
+                )
+            branch = _ArchivedBranch(
+                state=selected.state,
+                frame=selected.frame,
+                plan=NeuralPlan(
+                    selected.path,
+                    selected.durations,
+                    selected.score,
+                    0.0,
+                ),
+                score=selected.score,
+                scene=self._scene_signature(selected.frame),
+                created=self.decision_index,
+                origin_signature=self.current_frontier_signature,
+                frontier_signature=selected_frontier_signature,
+                causal_context_signature=(
+                    self.current_causal_context_signature
+                ),
+                target_causal_context_signature=(
+                    self.current_causal_context_signature
+                ),
+                pose_action=selected_pose_action,
+                goal_heart_slots=selected.analysis.target_present,
+                goal_progress_reward=(
+                    selected.analysis.milestone_reward
+                ),
+                goal_remaining_hearts=(
+                    selected.analysis.remaining_hearts
+                ),
+                goal_total_hearts=len(selected.analysis.known_slots),
+                goal_chest_slot=(
+                    selected.analysis.target_chest_slot
+                    or selected.analysis.source_chest_slot
+                ),
+                goal_player_slot=selected.analysis.target_player_slot,
+                parent_state_id=self._state_id(root),
+                parent_frame_digest=source_frame.digest,
+                parent_decision=self.decision_index,
+                search_depth=self.current_search_depth + selected.depth,
+                goal_source_signature=selected.source_signature,
+                goal_target_signature=selected.target_signature,
+                goal_source_world_context=(
+                    self.current_human_prior_world_context_signature
+                ),
+                goal_target_world_context=(
+                    self.current_human_prior_world_context_signature
+                ),
+                human_prior_verified_option=True,
+            )
+            self.archive.append(branch)
+            self._emit(
+                "human_prior_option_archive_added",
+                decision=self.decision_index + 1,
+                state_id=self._state_id(selected.state),
+                parent_state_id=self._state_id(root),
+                search_depth=branch.search_depth,
+                option_depth=selected.depth,
+                path=selected.path,
+                durations=selected.durations,
+                source_graph_signature=selected.source_signature,
+                target_graph_signature=(
+                    selected.target_signature or None
+                ),
+                target_graph_state_visits=(
+                    selected.target_state_visits
+                ),
+                target_player_position_visits=(
+                    selected.target_position_visits
+                ),
+                score=selected.score,
+                archive_size=len(self.archive),
+                agent_visible=True,
+                **selected.analysis.telemetry(),
+                **self._frame_fields(selected.frame),
+            )
+            self._emit(
+                "human_prior_option_search_completed",
+                decision=self.decision_index + 1,
+                branches_verified=branches_verified,
+                eligible_endpoints=len(endpoints),
+                archive_branches_added=1,
+                selected_depth=selected.depth,
+                selected_path=selected.path,
+                selected_durations=selected.durations,
+                selected_score=selected.score,
+                **self._frame_fields(selected.frame),
+            )
+            return 1
+        except BaseException:
+            active_failure = True
+            raise
+        finally:
+            try:
+                self.env.load_state(root)
+                if release_state is not None:
+                    released: set[int] = set()
+                    for state in reversed(saved_states):
+                        state_identity = id(state)
+                        if state_identity in released:
+                            continue
+                        released.add(state_identity)
+                        if (
+                            retained_state is not None
+                            and state is retained_state
+                        ):
+                            continue
+                        release_state(state)
+            except Exception as cleanup_error:
+                self._emit(
+                    "human_prior_option_cleanup_failed",
+                    decision=self.decision_index + 1,
+                    error_type=type(cleanup_error).__name__,
+                    error=str(cleanup_error),
+                    active_failure=active_failure,
+                )
+                if not active_failure:
+                    raise
+
     def _human_prior_semantic_frontier_novel(
         self,
         source_signature: str,
@@ -1116,6 +1606,9 @@ class VerifiedNeuralAgent:
         self.causal_spatial_visits = Counter()
         self.human_prior_graph_edge_visits = Counter()
         self.human_prior_graph_state_visits = Counter()
+        self.human_prior_option_visits = Counter()
+        self.human_prior_player_position_visits = Counter()
+        self.human_prior_option_exhausted_sources: set[str] = set()
         self.human_prior_graph_recovery_pending = False
         self.current_human_prior_world_context_signature = (
             "human-prior-world-root"
@@ -1215,6 +1708,13 @@ class VerifiedNeuralAgent:
         if initial_goal_signature:
             self.human_prior_graph_state_visits[
                 initial_goal_signature
+            ] += 1
+        if (
+            self.goal_prior is not None
+            and self.goal_prior.current_player_slot is not None
+        ):
+            self.human_prior_player_position_visits[
+                self.goal_prior.current_player_slot
             ] += 1
         known_scene_state = self.env.save_state()
         self.known_scene_recovery_checkpoint = _LifeHazardCheckpoint(
@@ -3647,6 +4147,30 @@ class VerifiedNeuralAgent:
                 archive_size=len(self.archive),
                 **self._frame_fields(self.frame),
             )
+            unvisited_archive_endpoints = (
+                self._human_prior_unvisited_archive_endpoints(
+                    current_goal_graph_signature
+                )
+            )
+            if (
+                self.config.human_prior_option_search_depth >= 2
+                and unvisited_archive_endpoints > 0
+            ):
+                self._emit(
+                    "human_prior_option_search_deferred",
+                    decision=self.decision_index + 1,
+                    reason="unvisited_local_archive_endpoint_available",
+                    source_graph_signature=(
+                        current_goal_graph_signature
+                    ),
+                    unvisited_archive_endpoints=(
+                        unvisited_archive_endpoints
+                    ),
+                    archive_size=len(self.archive),
+                    **self._frame_fields(self.frame),
+                )
+            else:
+                self._search_human_prior_options()
         restored = self._restore_if_stagnant()
         if restored is not None:
             return restored
@@ -5262,6 +5786,13 @@ class VerifiedNeuralAgent:
             if committed_goal_target_signature:
                 self.human_prior_graph_state_visits[
                     committed_goal_target_signature
+                ] += 1
+            if (
+                committed_goal_analysis is not None
+                and committed_goal_analysis.target_player_slot is not None
+            ):
+                self.human_prior_player_position_visits[
+                    committed_goal_analysis.target_player_slot
                 ] += 1
             self.action_counts[action] += 1
             self.duration_counts[duration] += 1
@@ -7282,15 +7813,23 @@ class VerifiedNeuralAgent:
             human_prior_unexpanded_eligible = [
                 candidate
                 for candidate in human_prior_intervention_eligible
-                if self._human_prior_graph_edge_coverage(
-                    candidate.goal_source_signature,
-                    candidate.plan.path[0],
-                    candidate.plan.durations[0],
-                )[1]
+                if self._human_prior_archive_edge_coverage(candidate)[1]
             ]
             if human_prior_unexpanded_eligible:
                 alternatives_before = len(behavioral_frontier_candidates)
-                eligible = human_prior_unexpanded_eligible
+                physical_frontier_eligible = [
+                    candidate
+                    for candidate in human_prior_unexpanded_eligible
+                    if candidate.goal_player_slot is not None
+                    and self.human_prior_player_position_visits[
+                        candidate.goal_player_slot
+                    ]
+                    == 0
+                ]
+                eligible = (
+                    physical_frontier_eligible
+                    or human_prior_unexpanded_eligible
+                )
                 human_prior_best_first_applied = True
                 self._emit(
                     "human_prior_best_first_archives_filtered",
@@ -7301,6 +7840,12 @@ class VerifiedNeuralAgent:
                     ),
                     alternatives_remaining=len(eligible),
                     unexpanded_goal_edges=len(eligible),
+                    physical_frontier_preferred=bool(
+                        physical_frontier_eligible
+                    ),
+                    unvisited_player_positions=len(
+                        physical_frontier_eligible
+                    ),
                     recovery_reason=recovery_reason,
                 )
             else:
@@ -7517,16 +8062,10 @@ class VerifiedNeuralAgent:
         (
             restored_goal_graph_edge_visits_before,
             restored_goal_graph_edge_unexpanded,
-        ) = self._human_prior_graph_edge_coverage(
-            branch.goal_source_signature,
-            branch.plan.path[0],
-            branch.plan.durations[0],
+        ) = self._human_prior_archive_edge_coverage(
+            branch
         )
-        self._record_human_prior_graph_edge(
-            branch.goal_source_signature,
-            branch.plan.path[0],
-            branch.plan.durations[0],
-        )
+        self._record_human_prior_archive_edge(branch)
         restored_goal_graph_state_visits_before = (
             0
             if not branch.goal_target_signature
@@ -7537,6 +8076,10 @@ class VerifiedNeuralAgent:
         if branch.goal_target_signature:
             self.human_prior_graph_state_visits[
                 branch.goal_target_signature
+            ] += 1
+        if branch.goal_player_slot is not None:
+            self.human_prior_player_position_visits[
+                branch.goal_player_slot
             ] += 1
         restored_visual_cluster = self._abstract_signature(branch.frame)
         restored_frontier_signature = (
@@ -7719,6 +8262,19 @@ class VerifiedNeuralAgent:
             human_prior_best_first_applied=(
                 human_prior_best_first_applied
             ),
+            human_prior_verified_option=(
+                branch.human_prior_verified_option
+            ),
+            human_prior_option_depth=(
+                len(branch.plan.path)
+                if branch.human_prior_verified_option
+                else 0
+            ),
+            human_prior_option_path_visits_before=(
+                restored_goal_graph_edge_visits_before
+                if branch.human_prior_verified_option
+                else 0
+            ),
             human_prior_graph_source_signature=(
                 branch.goal_source_signature or None
             ),
@@ -7845,6 +8401,19 @@ class VerifiedNeuralAgent:
             ),
             human_prior_best_first_applied=(
                 human_prior_best_first_applied
+            ),
+            human_prior_verified_option=(
+                branch.human_prior_verified_option
+            ),
+            human_prior_option_depth=(
+                len(branch.plan.path)
+                if branch.human_prior_verified_option
+                else 0
+            ),
+            human_prior_option_path_visits_before=(
+                restored_goal_graph_edge_visits_before
+                if branch.human_prior_verified_option
+                else 0
             ),
             human_prior_graph_source_signature=(
                 branch.goal_source_signature or None
