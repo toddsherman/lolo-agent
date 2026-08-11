@@ -363,6 +363,40 @@ class WorldEffectEnv:
         return Frame(8, 8, 1, bytes(pixels))
 
 
+class ControllabilityGainEnv:
+    def __init__(self) -> None:
+        self.world_active = False
+        self.position = 0
+
+    def reset(self) -> Frame:
+        self.world_active = False
+        self.position = 0
+        return self._frame()
+
+    def step(self, action: Action, frames: int = 1) -> Frame:
+        del frames
+        if action == Action.RIGHT:
+            if self.world_active:
+                self.position = 1
+            else:
+                self.world_active = True
+        return self._frame()
+
+    def save_state(self) -> tuple[bool, int]:
+        return self.world_active, self.position
+
+    def load_state(self, state: tuple[bool, int]) -> Frame:
+        self.world_active, self.position = state
+        return self._frame()
+
+    def _frame(self) -> Frame:
+        pixels = bytearray(64)
+        pixels[self.position] = 255
+        if self.world_active:
+            pixels[63] = 128
+        return Frame(8, 8, 1, bytes(pixels))
+
+
 class PhaseShiftWorldEffectEnv:
     def __init__(self) -> None:
         self.tick = 0
@@ -1782,7 +1816,7 @@ class EnsemblePlannerTests(unittest.TestCase):
                             1,
                         )
 
-    def test_human_prior_option_effect_frontier_archives_confirmed_effect(
+    def test_human_prior_option_effect_frontier_rejects_effect_without_gain(
         self,
     ) -> None:
         model = EnsembleVisualDynamicsModel(
@@ -1819,35 +1853,83 @@ class EnsemblePlannerTests(unittest.TestCase):
 
         added = agent._search_human_prior_options()
 
-        self.assertEqual(added, 1)
-        self.assertEqual(len(agent.archive), 1)
-        branch = agent.archive[0]
-        self.assertNotEqual(
-            branch.goal_target_world_context,
-            "human-prior-world-root",
-        )
-        self.assertTrue(branch.goal_world_effect_signature)
-        self.assertEqual(
-            branch.human_prior_option_world_effect_signature,
-            branch.goal_world_effect_signature,
-        )
+        self.assertEqual(added, 0)
+        self.assertEqual(len(agent.archive), 0)
         eligible = [
             event
             for event in logger.events
             if event["event"]
             == "human_prior_option_effect_frontier_eligible"
         ]
-        self.assertEqual(len(eligible), 1)
-        self.assertTrue(eligible[0]["eligible"])
-        self.assertEqual(eligible[0]["confirmed_action_indices"], (0,))
-        archived = [
+        self.assertEqual(eligible, [])
+        controls = [
             event
             for event in logger.events
-            if event["event"] == "human_prior_option_archive_added"
+            if event["event"]
+            == "human_prior_option_world_effect_action_control"
         ]
-        self.assertEqual(len(archived), 1)
+        self.assertEqual(len(controls), 1)
+        self.assertTrue(controls[0]["confirmed"])
+        self.assertEqual(
+            controls[0]["controllability"][
+                "reachable_player_position_gain"
+            ],
+            0,
+        )
+
+    def test_option_effect_controllability_detects_new_reachable_slot(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = ControllabilityGainEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_option_effect_stability_steps=0,
+                human_prior_option_effect_frontier=True,
+                human_prior_option_effect_phase_offsets=1,
+            ),
+            event_logger=logger,
+        )
+        source = agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        root = env.save_state()
+
+        result = agent._probe_human_prior_option_controllability_gain(
+            root,
+            source,
+            (Action.RIGHT,),
+            (1,),
+            (Action.NOOP,),
+            1,
+            1,
+            0,
+        )
+
+        self.assertTrue(result["endpoint_matched"])
+        self.assertEqual(
+            result["factual_reachable_player_slots"], ((1, 0),)
+        )
+        self.assertEqual(
+            result["control_reachable_player_slots"], ((0, 0),)
+        )
+        self.assertEqual(result["newly_reachable_player_slots"], ((1, 0),))
+        self.assertEqual(result["reachable_player_position_gain"], 1)
         self.assertTrue(
-            archived[0]["human_prior_option_effect_frontier"]
+            any(
+                event["event"]
+                == "human_prior_option_effect_controllability_probe"
+                for event in logger.events
+            )
         )
 
     def test_human_prior_option_local_control_uses_matched_endpoint(

@@ -1164,6 +1164,17 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             and bool(event.get("confirmed"))
             for event in events
         ),
+        "human_prior_option_effect_controllability_probes": (
+            event_counts.get(
+                "human_prior_option_effect_controllability_probe", 0
+            )
+        ),
+        "human_prior_option_effect_controllability_gains": sum(
+            event["event"]
+            == "human_prior_option_effect_controllability_probe"
+            and int(event.get("reachable_player_position_gain", 0)) > 0
+            for event in events
+        ),
         "human_prior_option_effect_frontier_evaluations": event_counts.get(
             "human_prior_option_effect_frontier_eligible", 0
         ),

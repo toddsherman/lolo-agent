@@ -483,7 +483,17 @@ therefore move away before its delayed visual consequence resolved. Archived
 branches now retain the same matched-neutral option eligibility, contrast, and
 counterfactual count as immediately selected branches.
 
+A subsequent controlled effect-frontier ablation showed that persistence and
+action causality are still insufficient: decrementing the visible shot counter
+survived stability, phase, player-footprint, and leave-one-action-out controls.
+That is a real persistent effect but not evidence of puzzle progress. Effect
+frontier admission now additionally requires one-step controllability gain.
+From factual and action-ablated endpoints with the same detected player tile,
+the evaluator branches every directional action and requires the factual state
+to reach at least one player position unavailable from control. Both reachable
+sets and pixel-outcome spreads are logged.
+
 ## Verification
 
-The complete test suite passes: 192 tests, with 3 expected skips. Every
+The complete test suite passes: 193 tests, with 3 expected skips. Every
 completed native run reported `frozen_evaluation_audit=pass`.

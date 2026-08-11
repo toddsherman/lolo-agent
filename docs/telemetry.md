@@ -200,7 +200,13 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   a safe, localized persistent candidate and replays the sequence while
   replacing each action in turn with an equal-duration `NOOP`. It records
   which intervention positions remain causally necessary for the compact
-  nonlocal effect;
+  nonlocal effect. When the effect frontier is enabled, each confirmed control
+  also emits `human_prior_option_effect_controllability_probe`: the factual and
+  action-ablated endpoints must have the same detected player location, then
+  every directional action is branched from both. The event records both
+  reachable-position sets, newly reachable positions, and factual/control
+  pixel-outcome spread. An effect enters the frontier only when factual state
+  adds at least one reachable player position;
 - with `--human-prior-option-effect-local-controls`, compact persistent effects
   rejected only by the conservative player-neighborhood mask also receive
   telemetry-only action ablations. Nearby cells are admitted only at horizons

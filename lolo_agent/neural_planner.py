@@ -1663,6 +1663,31 @@ class VerifiedNeuralAgent:
                 or endpoint_matched_all
             )
         )
+        controllability = {
+            "endpoint_matched": False,
+            "factual_player_slot": None,
+            "control_player_slot": None,
+            "factual_reachable_player_slots": (),
+            "control_reachable_player_slots": (),
+            "newly_reachable_player_slots": (),
+            "reachable_player_position_gain": 0,
+            "factual_outcome_spread": 0.0,
+            "control_outcome_spread": 0.0,
+            "actions": (),
+        }
+        if confirmed and self.config.human_prior_option_effect_frontier:
+            controllability = (
+                self._probe_human_prior_option_controllability_gain(
+                    root,
+                    source_frame,
+                    node.path,
+                    node.durations,
+                    control_path,
+                    future_duration,
+                    candidate_rank,
+                    action_index,
+                )
+            )
         columns = self.config.causal_spatial_columns
         rows = self.config.causal_spatial_rows
         common_signature = bytearray(columns * rows)
@@ -1705,6 +1730,7 @@ class VerifiedNeuralAgent:
             ),
             "safe": safe,
             "confirmed": confirmed,
+            "controllability": controllability,
             "observations": observations,
         }
         self._emit(
@@ -1713,6 +1739,150 @@ class VerifiedNeuralAgent:
             agent_visible=True,
             **result,
             **self._frame_fields(final_factual),
+        )
+        return result
+
+    def _probe_human_prior_option_controllability_gain(
+        self,
+        root: object,
+        source_frame: Frame,
+        factual_path: Sequence[Action],
+        durations: Sequence[int],
+        control_path: Sequence[Action],
+        future_duration: int,
+        candidate_rank: int,
+        action_index: int,
+    ) -> Dict[str, Any]:
+        """Compare one-step reachability after factual and ablated effects."""
+
+        assert self.goal_prior is not None
+        probe_actions = tuple(
+            action
+            for action in self.config.actions
+            if action in (
+                Action.UP,
+                Action.DOWN,
+                Action.LEFT,
+                Action.RIGHT,
+            )
+        )
+        release_state = getattr(self.env, "release_state", None)
+        endpoint_states: List[object] = []
+
+        def replay_endpoint(path: Sequence[Action]) -> Tuple[Frame, object]:
+            self.env.load_state(root)
+            endpoint = source_frame
+            for action, duration in zip(path, durations):
+                endpoint = self.env.step(action, duration)
+            for _ in range(
+                self.config.human_prior_option_effect_stability_steps
+            ):
+                endpoint = self.env.step(Action.NOOP, future_duration)
+            state = self.env.save_state()
+            endpoint_states.append(state)
+            return endpoint, state
+
+        factual_endpoint, factual_state = replay_endpoint(factual_path)
+        control_endpoint, control_state = replay_endpoint(control_path)
+        factual_analysis = self.goal_prior.analyze(
+            source_frame, factual_endpoint
+        )
+        control_analysis = self.goal_prior.analyze(
+            source_frame, control_endpoint
+        )
+        endpoints_matched = bool(
+            factual_analysis.target_player_slot is not None
+            and factual_analysis.target_player_slot
+            == control_analysis.target_player_slot
+        )
+        factual_slots: set[Tuple[int, int]] = set()
+        control_slots: set[Tuple[int, int]] = set()
+        factual_frames: List[Frame] = []
+        control_frames: List[Frame] = []
+        action_rows = []
+        try:
+            if endpoints_matched:
+                for action in probe_actions:
+                    self.env.load_state(factual_state)
+                    factual = self.env.step(action, future_duration)
+                    factual_result = self.goal_prior.analyze(
+                        factual_endpoint, factual
+                    )
+                    self.env.load_state(control_state)
+                    control = self.env.step(action, future_duration)
+                    control_result = self.goal_prior.analyze(
+                        control_endpoint, control
+                    )
+                    if factual_result.target_player_slot is not None:
+                        factual_slots.add(
+                            factual_result.target_player_slot
+                        )
+                    if control_result.target_player_slot is not None:
+                        control_slots.add(control_result.target_player_slot)
+                    factual_frames.append(factual)
+                    control_frames.append(control)
+                    action_rows.append(
+                        {
+                            "action": action,
+                            "action_frames": future_duration,
+                            "factual_frame": factual.digest,
+                            "control_frame": control.digest,
+                            "factual_player_slot": (
+                                factual_result.target_player_slot
+                            ),
+                            "control_player_slot": (
+                                control_result.target_player_slot
+                            ),
+                            "factual_control_pixel_l1": (
+                                factual.mean_absolute_difference(control)
+                            ),
+                        }
+                    )
+        finally:
+            if release_state is not None:
+                for state in endpoint_states:
+                    release_state(state)
+            self.env.load_state(root)
+
+        def maximum_spread(frames: Sequence[Frame]) -> float:
+            return max(
+                (
+                    first.mean_absolute_difference(second)
+                    for index, first in enumerate(frames)
+                    for second in frames[index + 1 :]
+                ),
+                default=0.0,
+            )
+
+        newly_reachable = factual_slots - control_slots
+        result = {
+            "endpoint_matched": endpoints_matched,
+            "factual_player_slot": factual_analysis.target_player_slot,
+            "control_player_slot": control_analysis.target_player_slot,
+            "factual_reachable_player_slots": tuple(
+                sorted(factual_slots)
+            ),
+            "control_reachable_player_slots": tuple(
+                sorted(control_slots)
+            ),
+            "newly_reachable_player_slots": tuple(
+                sorted(newly_reachable)
+            ),
+            "reachable_player_position_gain": len(newly_reachable),
+            "factual_outcome_spread": maximum_spread(factual_frames),
+            "control_outcome_spread": maximum_spread(control_frames),
+            "actions": tuple(action_rows),
+        }
+        self._emit(
+            "human_prior_option_effect_controllability_probe",
+            decision=self.decision_index + 1,
+            candidate_rank=candidate_rank,
+            action_index=action_index,
+            path=tuple(factual_path),
+            durations=tuple(durations),
+            control_path=tuple(control_path),
+            **result,
+            **self._frame_fields(factual_endpoint),
         )
         return result
 
@@ -2103,6 +2273,12 @@ class VerifiedNeuralAgent:
                             int(control["replaced_action_index"])
                             for control in action_controls
                             if control["confirmed"]
+                            and int(
+                                control["controllability"].get(
+                                    "reachable_player_position_gain", 0
+                                )
+                            )
+                            > 0
                         )
                         if (
                             self.config.human_prior_option_effect_frontier
