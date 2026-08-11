@@ -173,6 +173,15 @@ class RunLoggingTests(unittest.TestCase):
             self.assertIn(
                 "human_prior_option_effect_frontier_archives", summary
             )
+            self.assertIn(
+                "human_prior_option_entity_frontier_evaluations", summary
+            )
+            self.assertIn(
+                "human_prior_option_entity_frontier_eligible", summary
+            )
+            self.assertIn(
+                "human_prior_option_entity_frontier_archives", summary
+            )
             self.assertIn("episodic_human_prior_memory_seeds", summary)
             self.assertIn(
                 "episodic_human_prior_seeded_graph_states", summary

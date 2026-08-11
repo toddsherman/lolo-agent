@@ -222,6 +222,24 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   assisted effect frontier is enabled, records the confirmed action indices
   and the reversible learned world-context transition. Only safe, localized,
   persistent, action-ablation-confirmed effects can enter this frontier;
+- with `--human-prior-option-entity-frontier`, the same controlled rollouts
+  also maintain temporary room-local appearance prototypes. For each
+  intervention, telemetry records the pre-action facing ray, intersected
+  effect cells, pooled factual/control appearance distance, and anonymous
+  before/factual/control prototype IDs. A candidate emits
+  `human_prior_option_entity_frontier_eligible` only when a persistent,
+  phase-checked, leave-one-action-out-confirmed appearance change lies on that
+  interaction ray. The resulting anonymous appearance hash becomes a new
+  reversible graph context even when bounded player reachability has not yet
+  changed. Remote display changes do not intersect the ray and cannot enter.
+  Option-beam and effect-candidate deduplication preserve the action-derived
+  facing direction, so visually similar same-tile states remain distinct long
+  enough to test direction-dependent interactions. Anonymous absolute
+  appearance hashes at action-changed cells also remain in the temporary
+  option key, and `NOOP` becomes an allowed exact-option action on this
+  opt-in track. This lets an interaction or display change survive long enough
+  to test a later interaction without treating the intermediate change as
+  reward;
 - `human_prior_option_search_deferred` and
   `human_prior_option_search_skipped`, which distinguish a cheaper unseen
   local archive endpoint from an already exhausted sequence-search source;

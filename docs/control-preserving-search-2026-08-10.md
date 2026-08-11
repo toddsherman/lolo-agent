@@ -506,7 +506,36 @@ post-interaction state; the next representation must distinguish recurring
 unlabelled entity state rather than treating every compact screen change as an
 undifferentiated effect.
 
+The next opt-in frontier implements that distinction without object names or
+room rules. It learns quantized local appearance prototypes from pixels during
+the room, reconstructs the facing direction before each controlled option
+action, and intersects the persistent factual/control change with the forward
+interaction ray. Admission requires endpoint-safe persistence, exact
+leave-one-action-out causality, a changed anonymous patch appearance, and
+failure to match a nearby neutral animation phase. The anonymous appearance
+hash becomes part of the reversible graph state even before movement changes.
+A synthetic control confirms that a two-action local transformation is
+archived, while an equally persistent remote display change is rejected.
+Native telemetry then exposed a planning-state alias: same-tile option nodes
+were deduplicated without their action-derived facing, and effect candidates
+were later deduplicated by changed cells without player endpoint or facing.
+Both stages now preserve facing. This keeps a direction-setting action followed
+by an interaction button distinct across orientations without supplying an
+object label or a room solution.
+
+The next native audit showed that facing alone was not enough: the first
+interaction changed a remote visible state, but option deduplication collapsed
+that state before a later interaction could be tested. Temporary option nodes
+now include an anonymous absolute appearance hash over action-changed cells,
+and the entity-search track admits neutral waits. With four-frame actions and
+depth four, the frozen Room 3 agent discovered and archived
+`RIGHT, A, RIGHT, A`. The final `A` was causally necessary for persistent
+appearance changes at coarse cells `(7,6)` and `(8,6)`; both changed anonymous
+prototype assignments, failed the neutral phase match, and created an unseen
+reversible graph context. The audit verified 273 option branches, released all
+285 save states, and passed the frozen-checkpoint audit.
+
 ## Verification
 
-The complete test suite passes: 194 tests, with 3 expected skips. Every
+The complete test suite passes: 197 tests, with 3 expected skips. Every
 completed native run reported `frozen_evaluation_audit=pass`.

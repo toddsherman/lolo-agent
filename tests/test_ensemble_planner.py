@@ -434,6 +434,103 @@ class DelayedControllabilityGainEnv:
         return Frame(8, 8, 1, bytes(pixels))
 
 
+class UnlabeledEntityTransformEnv:
+    def __init__(
+        self,
+        entity_cell: tuple[int, int] = (1, 0),
+        remote_display: bool = False,
+    ) -> None:
+        self.armed = False
+        self.transformed = False
+        self.entity_cell = entity_cell
+        self.remote_display = remote_display
+
+    def reset(self) -> Frame:
+        self.armed = False
+        self.transformed = False
+        return self._frame()
+
+    def step(self, action: Action, frames: int = 1) -> Frame:
+        del frames
+        if action == Action.RIGHT:
+            self.armed = True
+        elif action == Action.A and self.armed:
+            self.transformed = True
+        return self._frame()
+
+    def save_state(self) -> tuple[bool, bool]:
+        return self.armed, self.transformed
+
+    def load_state(self, state: tuple[bool, bool]) -> Frame:
+        self.armed, self.transformed = state
+        return self._frame()
+
+    def _frame(self) -> Frame:
+        pixels = bytearray(32 * 32)
+        pixels[0] = 255
+        entity_value = 224 if self.transformed else 32
+        x_start = self.entity_cell[0] * 4
+        y_start = self.entity_cell[1] * 4
+        for y in range(y_start, y_start + 4):
+            for x in range(x_start, x_start + 4):
+                pixels[y * 32 + x] = entity_value
+        if self.remote_display and self.transformed:
+            for y in range(28, 32):
+                for x in range(28, 32):
+                    pixels[y * 32 + x] = 128
+        return Frame(32, 32, 1, bytes(pixels))
+
+
+class TemporalUnlabeledEntityTransformEnv:
+    def __init__(self) -> None:
+        self.armed = False
+        self.primed = False
+        self.ready = False
+        self.transformed = False
+
+    def reset(self) -> Frame:
+        self.armed = False
+        self.primed = False
+        self.ready = False
+        self.transformed = False
+        return self._frame()
+
+    def step(self, action: Action, frames: int = 1) -> Frame:
+        del frames
+        if action == Action.RIGHT:
+            self.armed = True
+        elif action == Action.NOOP and self.primed:
+            self.ready = True
+        elif action == Action.A and self.ready:
+            self.transformed = True
+        elif action == Action.A and self.armed:
+            self.primed = True
+        return self._frame()
+
+    def save_state(self) -> tuple[bool, bool, bool, bool]:
+        return self.armed, self.primed, self.ready, self.transformed
+
+    def load_state(
+        self, state: tuple[bool, bool, bool, bool]
+    ) -> Frame:
+        self.armed, self.primed, self.ready, self.transformed = state
+        return self._frame()
+
+    def _frame(self) -> Frame:
+        pixels = bytearray(32 * 32)
+        pixels[0] = 255
+        entity_value = 224 if self.transformed else 32
+        for y in range(4):
+            for x in range(4, 8):
+                pixels[y * 32 + x] = entity_value
+        display_value = 192 if self.transformed else 128 if self.ready else 64
+        if self.primed:
+            for y in range(28, 32):
+                for x in range(28, 32):
+                    pixels[y * 32 + x] = display_value
+        return Frame(32, 32, 1, bytes(pixels))
+
+
 class PhaseShiftWorldEffectEnv:
     def __init__(self) -> None:
         self.tick = 0
@@ -2085,6 +2182,162 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(
             controls[0]["observations"][0]["ignored_player_pixels"],
             0,
+        )
+
+    def test_unlabeled_entity_frontier_archives_local_transformation(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        logger = RecordingLogger()
+        env = UnlabeledEntityTransformEnv(remote_display=True)
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.LEFT, Action.RIGHT, Action.A),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=4,
+                human_prior_option_search_action_frames=1,
+                human_prior_option_effect_stability_steps=2,
+                human_prior_option_effect_probe_limit=4,
+                human_prior_option_effect_phase_offsets=1,
+                human_prior_option_effect_local_controls=True,
+                human_prior_option_entity_frontier=True,
+                causal_spatial_columns=8,
+                causal_spatial_rows=8,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        source_signature = agent._current_human_prior_graph_signature()
+        agent.human_prior_graph_state_visits[source_signature] = 1
+        agent.human_prior_player_position_visits[(0, 0)] = 1
+
+        added = agent._search_human_prior_options()
+
+        self.assertEqual(added, 1)
+        self.assertEqual(len(agent.archive), 1)
+        branch = agent.archive[0]
+        self.assertEqual(branch.plan.path, (Action.RIGHT, Action.A))
+        self.assertTrue(branch.human_prior_option_entity_state_signature)
+        eligible = [
+            event
+            for event in logger.events
+            if event["event"]
+            == "human_prior_option_entity_frontier_eligible"
+        ]
+        self.assertEqual(len(eligible), 1)
+        self.assertTrue(eligible[0]["eligible"])
+        self.assertEqual(eligible[0]["entity_effect_cells"], ((1, 0),))
+        self.assertEqual(eligible[0]["confirmed_action_indices"], (0, 1))
+
+    def test_unlabeled_entity_frontier_rejects_remote_display_change(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            UnlabeledEntityTransformEnv((7, 7)),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.A),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=4,
+                human_prior_option_search_action_frames=1,
+                human_prior_option_effect_stability_steps=2,
+                human_prior_option_effect_probe_limit=4,
+                human_prior_option_effect_phase_offsets=1,
+                human_prior_option_effect_local_controls=True,
+                human_prior_option_entity_frontier=True,
+                causal_spatial_columns=8,
+                causal_spatial_rows=8,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        source_signature = agent._current_human_prior_graph_signature()
+        agent.human_prior_graph_state_visits[source_signature] = 1
+        agent.human_prior_player_position_visits[(0, 0)] = 1
+
+        added = agent._search_human_prior_options()
+
+        self.assertEqual(added, 0)
+        self.assertEqual(len(agent.archive), 0)
+        self.assertFalse(
+            any(
+                event["event"]
+                == "human_prior_option_entity_frontier_eligible"
+                for event in logger.events
+            )
+        )
+
+    def test_unlabeled_entity_frontier_preserves_waiting_option_state(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            TemporalUnlabeledEntityTransformEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.A, Action.NOOP),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=4,
+                human_prior_option_search_beam_width=16,
+                human_prior_option_search_action_frames=1,
+                human_prior_option_effect_stability_steps=2,
+                human_prior_option_effect_probe_limit=16,
+                human_prior_option_effect_phase_offsets=1,
+                human_prior_option_effect_local_controls=True,
+                human_prior_option_entity_frontier=True,
+                causal_spatial_columns=8,
+                causal_spatial_rows=8,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        source_signature = agent._current_human_prior_graph_signature()
+        agent.human_prior_graph_state_visits[source_signature] = 1
+        agent.human_prior_player_position_visits[(0, 0)] = 1
+
+        added = agent._search_human_prior_options()
+
+        self.assertEqual(added, 1)
+        self.assertEqual(len(agent.archive), 1)
+        self.assertEqual(
+            agent.archive[0].plan.path,
+            (Action.RIGHT, Action.A, Action.NOOP, Action.A),
+        )
+        self.assertTrue(
+            any(
+                event["event"]
+                == "human_prior_option_entity_frontier_eligible"
+                and event["eligible"]
+                for event in logger.events
+            )
         )
 
     def test_goal_milestone_exhaustion_rolls_back_exact_choice(self) -> None:

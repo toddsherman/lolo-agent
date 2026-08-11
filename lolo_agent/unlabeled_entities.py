@@ -114,7 +114,13 @@ class UnlabeledEntityMemory:
     def frame_count(self) -> int:
         return self._frame_index
 
-    def _feature(self, frame: Frame, column: int, row: int) -> PatchFeature:
+    def feature_at(
+        self, frame: Frame, column: int, row: int
+    ) -> PatchFeature:
+        """Return the unlabeled pooled appearance at one grid cell."""
+
+        if not 0 <= column < self.columns or not 0 <= row < self.rows:
+            raise IndexError("entity-grid cell out of range")
         x0 = column * frame.width // self.columns
         x1 = (column + 1) * frame.width // self.columns
         y0 = row * frame.height // self.rows
@@ -171,7 +177,7 @@ class UnlabeledEntityMemory:
         assignments: List[Tuple[int, PatchFeature]] = []
         for row in range(self.rows):
             for column in range(self.columns):
-                feature = self._feature(frame, column, row)
+                feature = self.feature_at(frame, column, row)
                 prototype_id, distance = self._assign(feature)
                 patches.append(
                     PatchObservation(

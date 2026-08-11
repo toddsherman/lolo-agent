@@ -1189,6 +1189,20 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             and bool(event.get("human_prior_option_effect_frontier"))
             for event in events
         ),
+        "human_prior_option_entity_frontier_evaluations": event_counts.get(
+            "human_prior_option_entity_frontier_eligible", 0
+        ),
+        "human_prior_option_entity_frontier_eligible": sum(
+            event["event"]
+            == "human_prior_option_entity_frontier_eligible"
+            and bool(event.get("eligible"))
+            for event in events
+        ),
+        "human_prior_option_entity_frontier_archives": sum(
+            event["event"] == "human_prior_option_archive_added"
+            and bool(event.get("human_prior_option_entity_frontier"))
+            for event in events
+        ),
         "human_prior_option_archives_added": event_counts.get(
             "human_prior_option_archive_added", 0
         ),

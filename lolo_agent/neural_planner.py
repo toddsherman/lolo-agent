@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import math
 from collections import Counter
 from dataclasses import dataclass, field
@@ -18,6 +19,7 @@ from .memory import VisualNovelty
 from .neural_world_model import ACTION_TO_INDEX, frame_tensor
 from .pixels import Frame, signature_key
 from .spatial_shadow import SpatialShadowEvaluator
+from .unlabeled_entities import UnlabeledEntityMemory
 
 
 @dataclass(frozen=True)
@@ -116,6 +118,7 @@ class NeuralPlanningConfig:
     human_prior_option_effect_local_minimum_cell_pixels: int = 12
     human_prior_option_effect_frontier: bool = False
     human_prior_option_effect_controllability_depth: int = 1
+    human_prior_option_entity_frontier: bool = False
     human_prior_intrinsic_clip: float = 10.0
     spatial_selection_weight: float = 0.0
     returnability_probe_depth: int = 0
@@ -179,6 +182,7 @@ class _ArchivedBranch:
     goal_world_effect_signature: str = ""
     human_prior_verified_option: bool = False
     human_prior_option_world_effect_signature: str = ""
+    human_prior_option_entity_state_signature: str = ""
     goal_chest_obtained: bool = False
 
 
@@ -195,11 +199,14 @@ class _HumanPriorOptionNode:
     depth: int
     target_state_visits: int
     target_position_visits: int
+    pose_action: Optional[Action] = None
     world_effect_signature: str = ""
+    world_effect_state_signature: str = ""
     world_effect_changed_pixels: int = 0
     confirmed_world_effect_signature: str = ""
     confirmed_world_context: str = ""
     confirmed_action_indices: Tuple[int, ...] = ()
+    confirmed_entity_state_signature: str = ""
 
 
 @dataclass(frozen=True)
@@ -568,6 +575,15 @@ class VerifiedNeuralAgent:
                 "human-prior option effect controllability depth must be "
                 "between one and four"
             )
+        if self.config.human_prior_option_entity_frontier and (
+            not self.config.human_prior_option_effect_local_controls
+            or self.config.human_prior_option_effect_stability_steps <= 0
+            or self.config.human_prior_option_effect_phase_offsets <= 0
+        ):
+            raise ValueError(
+                "human-prior option entity frontier requires local controls, "
+                "effect stability, and phase offsets"
+            )
         if self.config.human_prior_intrinsic_clip <= 0.0:
             raise ValueError("human-prior intrinsic clip must be positive")
         if self.config.spatial_selection_weight < 0.0:
@@ -688,6 +704,9 @@ class VerifiedNeuralAgent:
             )
         )
         self.goal_prior: Optional[PixelHeartGoalPrior] = None
+        self.unlabeled_entity_memory: Optional[
+            UnlabeledEntityMemory
+        ] = None
         self.human_prior_graph_edge_visits: CounterType[
             Tuple[str, Action, int]
         ] = Counter()
@@ -730,6 +749,24 @@ class VerifiedNeuralAgent:
             )
             if enabled
             else None
+        )
+
+    def _reset_unlabeled_entity_memory(self, frame: Frame) -> None:
+        if not self.config.human_prior_option_entity_frontier:
+            self.unlabeled_entity_memory = None
+            return
+        self.unlabeled_entity_memory = UnlabeledEntityMemory(
+            columns=self.config.causal_spatial_columns,
+            rows=self.config.causal_spatial_rows,
+        )
+        observation = self.unlabeled_entity_memory.observe(frame)
+        self._emit(
+            "human_prior_unlabeled_entity_memory_reset",
+            decision=self.decision_index,
+            prototype_count=self.unlabeled_entity_memory.prototype_count,
+            entity_grid_signature=observation.signature(),
+            agent_visible=True,
+            **self._frame_fields(frame),
         )
 
     def _calibrate_goal_prior(self, frame: Frame) -> None:
@@ -917,6 +954,25 @@ class VerifiedNeuralAgent:
         if not any(occupied):
             return ""
         return occupied.hex()
+
+    def _human_prior_world_effect_state_signature(
+        self, frame: Frame, world_effect_signature: str
+    ) -> str:
+        """Hash anonymous absolute appearances at action-changed cells."""
+
+        memory = self.unlabeled_entity_memory
+        cells = self._causal_spatial_cells(world_effect_signature)
+        if memory is None or not cells:
+            return ""
+        payload = ";".join(
+            f"{column},{row}="
+            + ",".join(
+                str(value)
+                for value in memory.feature_at(frame, column, row)
+            )
+            for column, row in sorted(cells)
+        )
+        return hashlib.sha256(payload.encode("ascii")).hexdigest()[:16]
 
     def _human_prior_nonlocal_world_effect_cells(
         self,
@@ -1330,7 +1386,7 @@ class VerifiedNeuralAgent:
             and len(common_cells)
             <= self.config.human_prior_option_effect_max_stable_cells
             and raw_persistence_ratio >= 0.5
-            and not stable
+            and bool(common_cells - common_nonlocal_cells)
         )
         columns = self.config.causal_spatial_columns
         rows = self.config.causal_spatial_rows
@@ -1471,6 +1527,66 @@ class VerifiedNeuralAgent:
         )
         return result
 
+    def _human_prior_option_interaction_ray(
+        self,
+        root: object,
+        source_frame: Frame,
+        node: _HumanPriorOptionNode,
+        action_index: int,
+    ) -> Tuple[Frame, Optional[Action], Tuple[Tuple[int, int], ...]]:
+        """Locate the pixel-only action ray before one option intervention."""
+
+        assert self.goal_prior is not None
+        memory = self.unlabeled_entity_memory
+        if memory is None:
+            return source_frame, None, ()
+        pose = self.current_pose_action
+        before = source_frame
+        self.env.load_state(root)
+        for index, (action, duration) in enumerate(
+            zip(node.path, node.durations)
+        ):
+            if index == action_index:
+                break
+            before = self.env.step(action, duration)
+            pose = self._resulting_pose_action(pose, action)
+        intervention = node.path[action_index]
+        direction = (
+            intervention
+            if intervention
+            in (Action.UP, Action.DOWN, Action.LEFT, Action.RIGHT)
+            else pose if intervention in (Action.A, Action.B) else None
+        )
+        if direction is None:
+            return before, None, ()
+        analysis = self.goal_prior.analyze(source_frame, before)
+        player = analysis.target_player_slot
+        if player is None:
+            return before, direction, ()
+        column = min(
+            memory.columns - 1,
+            max(0, player[0] * memory.columns // before.width),
+        )
+        row = min(
+            memory.rows - 1,
+            max(0, player[1] * memory.rows // before.height),
+        )
+        offsets = {
+            Action.UP: (0, -1),
+            Action.DOWN: (0, 1),
+            Action.LEFT: (-1, 0),
+            Action.RIGHT: (1, 0),
+        }
+        dx, dy = offsets[direction]
+        cells = []
+        column += dx
+        row += dy
+        while 0 <= column < memory.columns and 0 <= row < memory.rows:
+            cells.append((column, row))
+            column += dx
+            row += dy
+        return before, direction, tuple(cells)
+
     def _probe_human_prior_option_action_control(
         self,
         root: object,
@@ -1501,6 +1617,12 @@ class VerifiedNeuralAgent:
         safe = True
         endpoint_matched_all = True
         final_factual = node.frame
+        final_control = source_frame
+        before_intervention, interaction_direction, interaction_ray = (
+            self._human_prior_option_interaction_ray(
+                root, source_frame, node, action_index
+            )
+        )
         for future_step in range(
             self.config.human_prior_option_effect_stability_steps + 1
         ):
@@ -1643,6 +1765,7 @@ class VerifiedNeuralAgent:
                 }
             )
             final_factual = factual
+            final_control = control
 
         initial_cells = (
             audited_cell_sets[0] if audited_cell_sets else set()
@@ -1708,6 +1831,67 @@ class VerifiedNeuralAgent:
         for column, row in common_cells:
             if 0 <= column < columns and 0 <= row < rows:
                 common_signature[row * columns + column] = 1
+        entity_entries = []
+        entity_effect_cells: set[Tuple[int, int]] = set()
+        entity_state_signature = ""
+        memory = self.unlabeled_entity_memory
+        if memory is not None and interaction_ray:
+            before_observation = memory.observe(before_intervention)
+            factual_observation = memory.observe(final_factual)
+            control_observation = memory.observe(final_control)
+            for column, row in sorted(
+                common_cells.intersection(interaction_ray)
+            ):
+                factual_feature = memory.feature_at(
+                    final_factual, column, row
+                )
+                control_feature = memory.feature_at(
+                    final_control, column, row
+                )
+                appearance_distance = memory.feature_distance(
+                    factual_feature, control_feature
+                )
+                changed = appearance_distance > memory.match_threshold
+                if changed:
+                    entity_effect_cells.add((column, row))
+                entity_entries.append(
+                    {
+                        "cell": (column, row),
+                        "before_prototype": before_observation.prototype_at(
+                            column, row
+                        ),
+                        "factual_prototype": factual_observation.prototype_at(
+                            column, row
+                        ),
+                        "control_prototype": control_observation.prototype_at(
+                            column, row
+                        ),
+                        "factual_control_feature_distance": (
+                            appearance_distance
+                        ),
+                        "appearance_changed": changed,
+                    }
+                )
+            if entity_effect_cells:
+                payload = ";".join(
+                    f"{column},{row}="
+                    + ",".join(
+                        str(value)
+                        for value in memory.feature_at(
+                            final_factual, column, row
+                        )
+                    )
+                    for column, row in sorted(entity_effect_cells)
+                )
+                entity_state_signature = hashlib.sha256(
+                    payload.encode("ascii")
+                ).hexdigest()[:16]
+        entity_effect_signature = bytearray(columns * rows)
+        for column, row in entity_effect_cells:
+            entity_effect_signature[row * columns + column] = 1
+        entity_effect_confirmed = bool(
+            confirmed and entity_effect_cells and entity_state_signature
+        )
         result = {
             "candidate_rank": candidate_rank,
             "depth": node.depth,
@@ -1744,6 +1928,17 @@ class VerifiedNeuralAgent:
             ),
             "safe": safe,
             "confirmed": confirmed,
+            "interaction_direction": interaction_direction,
+            "interaction_ray_cells": interaction_ray,
+            "entity_effect_cells": tuple(sorted(entity_effect_cells)),
+            "entity_effect_signature": (
+                bytes(entity_effect_signature).hex()
+                if entity_effect_cells
+                else None
+            ),
+            "entity_state_signature": entity_state_signature or None,
+            "entity_effect_confirmed": entity_effect_confirmed,
+            "entity_entries": entity_entries,
             "controllability": controllability,
             "observations": observations,
         }
@@ -1925,6 +2120,140 @@ class VerifiedNeuralAgent:
         )
         return result
 
+    def _promote_human_prior_option_entity_frontier(
+        self,
+        root: object,
+        source_frame: Frame,
+        node: _HumanPriorOptionNode,
+        candidate_rank: int,
+        source_signature: str,
+        action_controls: Sequence[Dict[str, Any]],
+        endpoints: List[_HumanPriorOptionNode],
+    ) -> bool:
+        """Promote a causal local appearance change as an entity state."""
+
+        if not self.config.human_prior_option_entity_frontier:
+            return False
+        confirmed = [
+            control
+            for control in action_controls
+            if bool(control.get("entity_effect_confirmed"))
+            and control.get("entity_effect_signature")
+            and control.get("entity_state_signature")
+        ]
+        if not confirmed:
+            return False
+        accepted = []
+        phase_results = []
+        for control in confirmed:
+            phase = self._probe_human_prior_option_phase_alignment(
+                root,
+                source_frame,
+                node,
+                str(control["entity_effect_signature"]),
+                candidate_rank,
+            )
+            phase_results.append(phase)
+            if not phase["phase_equivalent"]:
+                accepted.append(control)
+        if not accepted:
+            return False
+        columns = self.config.causal_spatial_columns
+        rows = self.config.causal_spatial_rows
+        combined = bytearray(columns * rows)
+        for control in accepted:
+            for column, row in control["entity_effect_cells"]:
+                combined[row * columns + column] = 1
+        entity_effect_signature = bytes(combined).hex()
+        entity_state_signatures = tuple(
+            sorted(
+                {
+                    str(control["entity_state_signature"])
+                    for control in accepted
+                }
+            )
+        )
+        state_payload = (
+            self.current_human_prior_world_context_signature
+            + "|"
+            + "|".join(entity_state_signatures)
+        )
+        target_world_context = hashlib.sha256(
+            state_payload.encode("ascii")
+        ).hexdigest()
+        _, target_signature = self._human_prior_graph_signatures(
+            node.analysis,
+            self.current_human_prior_world_context_signature,
+            target_world_context,
+        )
+        target_state_visits = (
+            0
+            if not target_signature
+            else self.human_prior_graph_state_visits[target_signature]
+        )
+        _, option_unexpanded = self._human_prior_option_coverage(
+            source_signature, node.path, node.durations
+        )
+        eligible = bool(
+            target_signature
+            and target_signature != source_signature
+            and target_state_visits == 0
+            and option_unexpanded
+        )
+        confirmed_indices = tuple(
+            sorted(
+                {
+                    int(control["replaced_action_index"])
+                    for control in accepted
+                }
+            )
+        )
+        node.confirmed_world_effect_signature = entity_effect_signature
+        node.confirmed_world_context = target_world_context
+        node.confirmed_action_indices = confirmed_indices
+        node.confirmed_entity_state_signature = ":".join(
+            entity_state_signatures
+        )
+        node.target_signature = target_signature
+        node.target_state_visits = target_state_visits
+        if eligible and not any(candidate is node for candidate in endpoints):
+            endpoints.append(node)
+        self._emit(
+            "human_prior_option_entity_frontier_eligible",
+            decision=self.decision_index + 1,
+            candidate_rank=candidate_rank,
+            depth=node.depth,
+            path=node.path,
+            durations=node.durations,
+            confirmed_action_indices=confirmed_indices,
+            entity_effect_signature=entity_effect_signature,
+            entity_effect_cells=tuple(
+                (index % columns, index // columns)
+                for index, changed in enumerate(combined)
+                if changed
+            ),
+            entity_state_signatures=entity_state_signatures,
+            entity_entries=tuple(
+                entry
+                for control in accepted
+                for entry in control["entity_entries"]
+                if entry["appearance_changed"]
+            ),
+            phase_alignments=tuple(phase_results),
+            source_world_context=(
+                self.current_human_prior_world_context_signature
+            ),
+            target_world_context=target_world_context,
+            source_graph_signature=source_signature,
+            target_graph_signature=target_signature or None,
+            target_graph_state_visits=target_state_visits,
+            option_path_unexpanded=option_unexpanded,
+            eligible=eligible,
+            agent_visible=True,
+            **self._frame_fields(node.frame),
+        )
+        return eligible
+
     def _search_human_prior_options(self) -> int:
         """Verify short action sequences from the current emulator state.
 
@@ -1951,6 +2280,11 @@ class VerifiedNeuralAgent:
                 Action.RIGHT,
                 Action.A,
                 Action.B,
+                *(
+                    (Action.NOOP,)
+                    if self.config.human_prior_option_entity_frontier
+                    else ()
+                ),
             )
         )
         if not actions:
@@ -2005,6 +2339,7 @@ class VerifiedNeuralAgent:
                     source_analysis.target_player_slot,
                 )
             ),
+            pose_action=self.current_pose_action,
         )
         parents = [root_node]
         endpoints: List[_HumanPriorOptionNode] = []
@@ -2099,6 +2434,11 @@ class VerifiedNeuralAgent:
                                 allow_nonlocal=True,
                             )
                         )
+                        option_world_effect_state_signature = (
+                            self._human_prior_world_effect_state_signature(
+                                target, option_world_effect_signature
+                            )
+                        )
                         option_nonlocal_world_effect_cells = (
                             self._human_prior_nonlocal_world_effect_cells(
                                 option_world_effect_signature,
@@ -2133,8 +2473,14 @@ class VerifiedNeuralAgent:
                             depth=depth,
                             target_state_visits=target_state_visits,
                             target_position_visits=target_position_visits,
+                            pose_action=self._resulting_pose_action(
+                                parent.pose_action, action
+                            ),
                             world_effect_signature=(
                                 option_world_effect_signature
+                            ),
+                            world_effect_state_signature=(
+                                option_world_effect_state_signature
                             ),
                             world_effect_changed_pixels=(
                                 option_changed_pixels
@@ -2181,10 +2527,15 @@ class VerifiedNeuralAgent:
                             target_player_position_visits=(
                                 target_position_visits
                             ),
+                            source_pose_action=parent.pose_action,
+                            target_pose_action=node.pose_action,
                             option_path_visits_before=option_visits,
                             option_path_unexpanded=option_unexpanded,
                             human_prior_option_world_effect_signature=(
                                 option_world_effect_signature or None
+                            ),
+                            human_prior_option_world_effect_state_signature=(
+                                option_world_effect_state_signature or None
                             ),
                             human_prior_option_world_effect_changed_pixels=(
                                 option_changed_pixels
@@ -2203,9 +2554,16 @@ class VerifiedNeuralAgent:
                         )
                 if not depth_candidates:
                     break
-                deduplicated: Dict[str, _HumanPriorOptionNode] = {}
+                deduplicated: Dict[
+                    Tuple[str, Optional[Action], str],
+                    _HumanPriorOptionNode,
+                ] = {}
                 for node in depth_candidates:
-                    key = node.target_signature or node.frame.digest
+                    key = (
+                        node.target_signature or node.frame.digest,
+                        node.pose_action,
+                        node.world_effect_state_signature,
+                    )
                     previous = deduplicated.get(key)
                     if previous is None or node.score > previous.score:
                         deduplicated[key] = node
@@ -2226,16 +2584,26 @@ class VerifiedNeuralAgent:
                 and effect_nodes
             ):
                 distinct_effect_nodes: Dict[
-                    str, _HumanPriorOptionNode
+                    Tuple[
+                        str,
+                        str,
+                        Optional[Tuple[int, int]],
+                        Optional[Action],
+                    ],
+                    _HumanPriorOptionNode,
                 ] = {}
                 for node in effect_nodes:
+                    effect_key = (
+                        node.world_effect_signature,
+                        node.world_effect_state_signature,
+                        node.analysis.target_player_slot,
+                        node.pose_action,
+                    )
                     previous = distinct_effect_nodes.get(
-                        node.world_effect_signature
+                        effect_key
                     )
                     if previous is None or node.score > previous.score:
-                        distinct_effect_nodes[
-                            node.world_effect_signature
-                        ] = node
+                        distinct_effect_nodes[effect_key] = node
                 effect_probe_candidates = sorted(
                     distinct_effect_nodes.values(),
                     key=lambda node: (
@@ -2410,20 +2778,42 @@ class VerifiedNeuralAgent:
                                 agent_visible=True,
                                 **self._frame_fields(node.frame),
                             )
-                    elif (
-                        self.config.human_prior_option_effect_local_controls
-                        and stability["local_candidate"]
-                    ):
-                        for action_index in range(len(node.path)):
-                            self._probe_human_prior_option_action_control(
+                        if not stability["local_candidate"]:
+                            self._promote_human_prior_option_entity_frontier(
                                 root,
                                 source_frame,
                                 node,
-                                duration,
                                 candidate_rank,
-                                action_index,
-                                allow_endpoint_matched_local=True,
+                                source_signature,
+                                action_controls,
+                                endpoints,
                             )
+                    if (
+                        self.config.human_prior_option_effect_local_controls
+                        and stability["local_candidate"]
+                    ):
+                        local_action_controls = []
+                        for action_index in range(len(node.path)):
+                            local_action_controls.append(
+                                self._probe_human_prior_option_action_control(
+                                    root,
+                                    source_frame,
+                                    node,
+                                    duration,
+                                    candidate_rank,
+                                    action_index,
+                                    allow_endpoint_matched_local=True,
+                                )
+                            )
+                        self._promote_human_prior_option_entity_frontier(
+                            root,
+                            source_frame,
+                            node,
+                            candidate_rank,
+                            source_signature,
+                            local_action_controls,
+                            endpoints,
+                        )
 
             if not endpoints:
                 self.human_prior_option_exhausted_sources.add(
@@ -2458,11 +2848,7 @@ class VerifiedNeuralAgent:
             )
             retained_state = selected.state
             selected_frontier_signature = self._new_provisional_signature()
-            selected_pose_action = self.current_pose_action
-            for action in selected.path:
-                selected_pose_action = self._resulting_pose_action(
-                    selected_pose_action, action
-                )
+            selected_pose_action = selected.pose_action
             selected_target_world_context = (
                 selected.confirmed_world_context
                 or self.current_human_prior_world_context_signature
@@ -2525,6 +2911,9 @@ class VerifiedNeuralAgent:
                 human_prior_option_world_effect_signature=(
                     selected_world_effect_signature
                 ),
+                human_prior_option_entity_state_signature=(
+                    selected.confirmed_entity_state_signature
+                ),
             )
             self.archive.append(branch)
             self._emit(
@@ -2551,6 +2940,12 @@ class VerifiedNeuralAgent:
                 ),
                 human_prior_option_effect_frontier=bool(
                     selected.confirmed_world_effect_signature
+                ),
+                human_prior_option_entity_frontier=bool(
+                    selected.confirmed_entity_state_signature
+                ),
+                human_prior_option_entity_state_signature=(
+                    selected.confirmed_entity_state_signature or None
                 ),
                 human_prior_option_effect_confirmed_action_indices=(
                     selected.confirmed_action_indices
@@ -2970,6 +3365,7 @@ class VerifiedNeuralAgent:
         self.pending_recovery_cause = None
         self.pending_goal_milestone_checkpoint = None
         self._reset_goal_prior()
+        self._reset_unlabeled_entity_memory(self.frame)
         self._calibrate_goal_prior(self.frame)
         initial_goal_signature = self._current_human_prior_graph_signature()
         if initial_goal_signature:
@@ -3398,6 +3794,7 @@ class VerifiedNeuralAgent:
         discovered: Tuple[Tuple[int, int], ...] = ()
         if self.goal_prior is not None:
             discovered = self.goal_prior.reset_room(frame)
+        self._reset_unlabeled_entity_memory(frame)
         graph_signature = self._current_human_prior_graph_signature()
         if graph_signature:
             self.human_prior_graph_state_visits[graph_signature] += 1
@@ -7330,6 +7727,8 @@ class VerifiedNeuralAgent:
             )
             self.env.load_state(state)
             self.frame = target
+            if self.unlabeled_entity_memory is not None:
+                self.unlabeled_entity_memory.observe(target)
             self.current_search_depth = source_search_depth + 1
             if self.goal_prior is not None and committed_goal_analysis is not None:
                 committed_goal_analysis = self._commit_goal_prior(
@@ -9763,6 +10162,8 @@ class VerifiedNeuralAgent:
         if release_state is not None:
             release_state(branch.state)
         self.frame = branch.frame
+        if self.unlabeled_entity_memory is not None:
+            self.unlabeled_entity_memory.observe(branch.frame)
         self.current_search_depth = branch.search_depth
         self.last_navigation_change_decision = None
         self.pending_life_hazard_choice = None
@@ -10028,6 +10429,9 @@ class VerifiedNeuralAgent:
             human_prior_option_world_effect_signature=(
                 branch.human_prior_option_world_effect_signature or None
             ),
+            human_prior_option_entity_state_signature=(
+                branch.human_prior_option_entity_state_signature or None
+            ),
             human_prior_graph_source_signature=(
                 branch.goal_source_signature or None
             ),
@@ -10171,6 +10575,9 @@ class VerifiedNeuralAgent:
             ),
             human_prior_option_world_effect_signature=(
                 branch.human_prior_option_world_effect_signature or None
+            ),
+            human_prior_option_entity_state_signature=(
+                branch.human_prior_option_entity_state_signature or None
             ),
             human_prior_graph_source_signature=(
                 branch.goal_source_signature or None

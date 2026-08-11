@@ -518,6 +518,14 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--human-prior-option-entity-frontier",
+        action="store_true",
+        help=(
+            "archive persistent action-controlled unlabeled patch changes "
+            "along the current interaction direction"
+        ),
+    )
+    parser.add_argument(
         "--human-prior-option-effect-local-minimum-cell-pixels",
         type=int,
         default=12,
@@ -729,6 +737,15 @@ def main() -> None:
             "--human-prior-option-effect-controllability-depth must be "
             "between 1 and 4"
         )
+    if args.human_prior_option_entity_frontier and (
+        not args.human_prior_option_effect_local_controls
+        or args.human_prior_option_effect_stability_steps <= 0
+        or args.human_prior_option_effect_phase_offsets <= 0
+    ):
+        parser.error(
+            "--human-prior-option-entity-frontier requires local controls, "
+            "positive effect stability, and phase offsets"
+        )
     if args.human_prior_intrinsic_clip <= 0.0:
         parser.error("--human-prior-intrinsic-clip must be positive")
 
@@ -918,6 +935,11 @@ def main() -> None:
         ),
         human_prior_option_effect_local_controls=(
             args.human_prior_option_effect_local_controls
+            if args.human_prior_hearts
+            else False
+        ),
+        human_prior_option_entity_frontier=(
+            args.human_prior_option_entity_frontier
             if args.human_prior_hearts
             else False
         ),
