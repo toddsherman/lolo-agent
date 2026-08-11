@@ -1025,9 +1025,10 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
 
         fully_expanded_restore = agent._restore_if_stagnant()
 
-        self.assertIsNotNone(fully_expanded_restore)
-        self.assertEqual(agent.goal_prior.current_player_slot, (96, 64))
+        self.assertIsNone(fully_expanded_restore)
+        self.assertEqual(agent.goal_prior.current_player_slot, (80, 64))
         self.assertIsNone(agent.last_navigation_change_decision)
+        self.assertEqual(agent.archive, [])
 
     def test_verified_planner_prioritizes_a_real_heart_event(self) -> None:
         model = EnsembleVisualDynamicsModel(

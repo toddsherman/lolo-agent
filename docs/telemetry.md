@@ -337,7 +337,15 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   `human_prior_navigation_grace_armed`,
   `human_prior_target_position_visits_before`, and
   `human_prior_target_unexpanded_actions` distinguish a useful local frontier
-  from a position change back to an already verified endpoint;
+  from a position change back to an already verified endpoint.
+  `human_prior_best_first_archives_filtered` separately reports physical,
+  unseen-world-state, and target-control frontiers. A stable action-dependent
+  world change remains eligible even when sprite overlap prevents the assisted
+  player tracker from reporting movement. Deep option search logs
+  `global_semantic_archive_frontier_available` when it defers to such a saved
+  branch. Once an endpoint's position, world state, and outgoing controls are
+  all covered, `human_prior_semantic_archives_exhausted` records removal and
+  release of that now-terminal save-state capability;
 - `human_prior_option_archive_added`, plus
   `human_prior_verified_option`, `human_prior_option_depth`, and
   `human_prior_option_path_visits_before` on restore/commit events, which make

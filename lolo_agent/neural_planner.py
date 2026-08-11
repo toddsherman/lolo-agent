@@ -1348,6 +1348,66 @@ class VerifiedNeuralAgent:
             for branch in self.archive
         )
 
+    def _human_prior_archive_frontier_flags(
+        self, branch: _ArchivedBranch
+    ) -> Tuple[bool, bool, bool]:
+        """Return physical, world-state, and local-control frontier flags.
+
+        Player detection can fail when the sprite overlaps another tile.  A
+        stable action-dependent world-context change must therefore remain a
+        first-class archive frontier even when the detected player coordinate
+        does not move.
+        """
+
+        if (
+            branch.plan.path[0] == Action.NOOP
+            or not branch.goal_source_signature
+        ):
+            return False, False, False
+        physical_frontier = bool(
+            branch.goal_player_slot is not None
+            and not (
+                branch.human_prior_verified_option
+                and branch.goal_world_effect_signature
+            )
+            and self._human_prior_position_visits(
+                branch.goal_target_signature,
+                branch.goal_player_slot,
+            )
+            == 0
+        )
+        world_state_frontier = bool(
+            branch.goal_world_effect_signature
+            and branch.goal_target_signature
+            and self.human_prior_graph_state_visits[
+                branch.goal_target_signature
+            ]
+            == 0
+        )
+        local_control_frontier = bool(
+            branch.goal_target_signature
+            and self._human_prior_unexpanded_control_actions(
+                branch.goal_target_signature
+            )
+        )
+        return (
+            physical_frontier,
+            world_state_frontier,
+            local_control_frontier,
+        )
+
+    def _human_prior_archive_frontiers(
+        self, source_signature: str = ""
+    ) -> int:
+        return sum(
+            (
+                not source_signature
+                or branch.goal_source_signature == source_signature
+            )
+            and any(self._human_prior_archive_frontier_flags(branch))
+            for branch in self.archive
+        )
+
     def _probe_human_prior_option_world_effect(
         self,
         root: object,
@@ -5540,6 +5600,62 @@ class VerifiedNeuralAgent:
         branch.goal_milestone_checkpoint = None
         self._release_life_hazard_checkpoint(checkpoint, reason)
 
+    def _remove_archive_branches(
+        self,
+        branches: Sequence[_ArchivedBranch],
+        reason: str,
+    ) -> int:
+        """Remove and release independently owned archive capabilities."""
+
+        archive_ids = {id(branch) for branch in self.archive}
+        removed = [
+            branch for branch in branches if id(branch) in archive_ids
+        ]
+        if not removed:
+            return 0
+        removed_ids = {id(branch) for branch in removed}
+        retained_state_ids = {
+            self._state_id(branch.state)
+            for branch in self.archive
+            if id(branch) not in removed_ids
+            and self._state_id(branch.state) is not None
+        }
+        self.archive = [
+            branch
+            for branch in self.archive
+            if id(branch) not in removed_ids
+        ]
+        release_state = getattr(self.env, "release_state", None)
+        released_state_keys = set()
+        for branch in removed:
+            branch_state_id = self._state_id(branch.state)
+            self._emit(
+                "archive_branch_removed",
+                decision=self.decision_index + 1,
+                reason=reason,
+                state_id=branch_state_id,
+                created_decision=branch.created,
+                score=branch.score,
+                **self._frame_fields(branch.frame),
+            )
+            self._release_archived_goal_milestone_checkpoint(
+                branch, reason
+            )
+            release_key = (
+                branch_state_id
+                if branch_state_id is not None
+                else f"object-{id(branch.state)}"
+            )
+            if (
+                release_state is None
+                or branch_state_id in retained_state_ids
+                or release_key in released_state_keys
+            ):
+                continue
+            released_state_keys.add(release_key)
+            release_state(branch.state)
+        return len(removed)
+
     def _discard_pending_temporal_option(self, reason: str) -> None:
         counterfactual = getattr(self, "pending_option_counterfactual", None)
         if counterfactual is not None:
@@ -6896,20 +7012,31 @@ class VerifiedNeuralAgent:
                     current_goal_graph_signature
                 )
             )
+            global_archive_frontiers = (
+                self._human_prior_archive_frontiers()
+            )
             if (
                 self.config.human_prior_option_search_depth >= 2
-                and unvisited_archive_endpoints > 0
+                and (
+                    unvisited_archive_endpoints > 0
+                    or global_archive_frontiers > 0
+                )
             ):
                 self._emit(
                     "human_prior_option_search_deferred",
                     decision=self.decision_index + 1,
-                    reason="unvisited_local_archive_endpoint_available",
+                    reason=(
+                        "unvisited_local_archive_endpoint_available"
+                        if unvisited_archive_endpoints > 0
+                        else "global_semantic_archive_frontier_available"
+                    ),
                     source_graph_signature=(
                         current_goal_graph_signature
                     ),
                     unvisited_archive_endpoints=(
                         unvisited_archive_endpoints
                     ),
+                    global_archive_frontiers=global_archive_frontiers,
                     archive_size=len(self.archive),
                     **self._frame_fields(self.frame),
                 )
@@ -10736,6 +10863,38 @@ class VerifiedNeuralAgent:
                         filtered_branches=removed,
                         alternatives_remaining=len(eligible),
                     )
+        if human_prior_graph_stagnation:
+            exhausted_semantic_branches = [
+                branch
+                for branch in eligible
+                if branch.goal_source_signature
+                and branch.goal_target_signature
+                and branch.goal_progress_reward <= 0.0
+                and not any(
+                    self._human_prior_archive_frontier_flags(branch)
+                )
+            ]
+            if exhausted_semantic_branches:
+                exhausted_ids = {
+                    id(branch) for branch in exhausted_semantic_branches
+                }
+                eligible = [
+                    branch
+                    for branch in eligible
+                    if id(branch) not in exhausted_ids
+                ]
+                removed = self._remove_archive_branches(
+                    exhausted_semantic_branches,
+                    "human_prior_semantic_frontier_exhausted",
+                )
+                self._emit(
+                    "human_prior_semantic_archives_exhausted",
+                    decision=self.decision_index + 1,
+                    removed_branches=removed,
+                    alternatives_remaining=len(eligible),
+                    recovery_reason=recovery_reason,
+                    **self._frame_fields(self.frame),
+                )
         if self.persistent_change_cells:
             persistent_change_eligible = [
                 branch
@@ -10939,40 +11098,53 @@ class VerifiedNeuralAgent:
             self.config.human_prior_best_first_archive
             and human_prior_intervention_eligible
         ):
+            human_prior_frontier_eligible = [
+                candidate
+                for candidate in human_prior_intervention_eligible
+                if any(
+                    self._human_prior_archive_frontier_flags(candidate)
+                )
+            ]
             human_prior_unexpanded_eligible = [
                 candidate
                 for candidate in human_prior_intervention_eligible
                 if self._human_prior_archive_edge_coverage(candidate)[1]
             ]
-            if human_prior_unexpanded_eligible:
+            if (
+                human_prior_frontier_eligible
+                or human_prior_unexpanded_eligible
+            ):
                 alternatives_before = len(behavioral_frontier_candidates)
                 physical_frontier_eligible = [
                     candidate
-                    for candidate in human_prior_unexpanded_eligible
-                    if candidate.goal_player_slot is not None
-                    and not (
-                        candidate.human_prior_verified_option
-                        and candidate.goal_world_effect_signature
-                    )
-                    and self._human_prior_position_visits(
-                        candidate.goal_target_signature,
-                        candidate.goal_player_slot,
-                    ) == 0
+                    for candidate in human_prior_frontier_eligible
+                    if self._human_prior_archive_frontier_flags(
+                        candidate
+                    )[0]
+                ]
+                world_state_frontier_eligible = [
+                    candidate
+                    for candidate in human_prior_frontier_eligible
+                    if self._human_prior_archive_frontier_flags(
+                        candidate
+                    )[1]
+                ]
+                local_control_frontier_eligible = [
+                    candidate
+                    for candidate in human_prior_frontier_eligible
+                    if self._human_prior_archive_frontier_flags(
+                        candidate
+                    )[2]
                 ]
                 option_effect_frontier_eligible = [
                     candidate
-                    for candidate in human_prior_unexpanded_eligible
+                    for candidate in world_state_frontier_eligible
                     if candidate.human_prior_verified_option
-                    and bool(candidate.goal_world_effect_signature)
-                    and bool(candidate.goal_target_signature)
-                    and self.human_prior_graph_state_visits[
-                        candidate.goal_target_signature
-                    ]
-                    == 0
                 ]
                 eligible = (
                     physical_frontier_eligible
-                    or option_effect_frontier_eligible
+                    or world_state_frontier_eligible
+                    or local_control_frontier_eligible
                     or human_prior_unexpanded_eligible
                 )
                 human_prior_best_first_applied = True
@@ -10988,6 +11160,10 @@ class VerifiedNeuralAgent:
                     physical_frontier_preferred=bool(
                         physical_frontier_eligible
                     ),
+                    world_state_frontier_preferred=bool(
+                        world_state_frontier_eligible
+                        and not physical_frontier_eligible
+                    ),
                     option_effect_frontier_preferred=bool(
                         option_effect_frontier_eligible
                         and not physical_frontier_eligible
@@ -10997,6 +11173,12 @@ class VerifiedNeuralAgent:
                     ),
                     unvisited_player_positions=len(
                         physical_frontier_eligible
+                    ),
+                    unvisited_world_states=len(
+                        world_state_frontier_eligible
+                    ),
+                    target_control_frontiers=len(
+                        local_control_frontier_eligible
                     ),
                     recovery_reason=recovery_reason,
                 )

@@ -740,8 +740,34 @@ audit. This establishes that sibling frontiers can be revisited during one
 process; a longer uninterrupted run is the next test of whether coverage alone
 reaches the unexplored left side and remaining lower heart.
 
+That uninterrupted test succeeded at the topology objective. The 50-decision
+`spatial-v14-room3-verified-recovery-long-v29-p8-d50` restored the previously
+unchosen left fork at decision 32 and traversed from `(112,32)` to `(32,32)`.
+It covered 30 committed player positions, performed 13 archive restores,
+balanced all 4,362 native state handles, and passed the frozen audit. The last
+eight decisions then exposed a sharper distinction: a source action can be
+verified but never committed even though its target has already had every
+future control verified. Such a target is exhausted, not an exploration
+frontier.
+
+Pixel inspection of the left corner found a complementary tracker failure.
+`DOWN` visibly moved the controlled sprite into a one-cell vertical pocket,
+but overlap with a green tile left the assisted coordinate unchanged. The
+generic matched pixel comparison had nevertheless retained a stable new world
+context. Archive ranking now treats an unseen action-dependent world state as
+a first-class frontier and defers another deep search while any such saved
+state exists. In
+`spatial-v14-room3-left-world-frontier-v30-p8-d20`, the first option search
+archived a stable `(32,48)` endpoint and decision 7 logged
+`world_state_frontier_preferred=true` before restoring the ambiguous `DOWN`
+branch. The run balanced 2,246/2,246 states and passed the frozen audit. The
+pocket did not lead to the final heart, which is useful negative evidence:
+room-3 exploration should now shift from movement coverage to action effects
+at object boundaries. Fully covered semantic archive targets are removed and
+released instead of driving another restore tail.
+
 ## Verification
 
-The complete test suite passes: 212 tests, with 4 expected skips when native
+The complete test suite passes: 214 tests, with 4 expected skips when native
 integration paths are not supplied. Every
 completed native run reported `frozen_evaluation_audit=pass`.

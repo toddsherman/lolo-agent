@@ -1938,6 +1938,117 @@ class EnsemblePlannerTests(unittest.TestCase):
             "human_prior_graph_stagnation",
         )
 
+    def test_human_prior_restore_prefers_unseen_world_state_frontier(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = UniqueStateEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.LEFT),
+                planning_depth=1,
+                behavioral_best_first_archive=True,
+                human_prior_best_first_archive=True,
+            ),
+            event_logger=logger,
+        )
+        current = agent.reset()
+        scene = agent._scene_signature(current)
+        mundane_frame = Frame(8, 8, 1, bytes([10]) + bytes(63))
+        effect_frame = Frame(8, 8, 1, bytes([20]) + bytes(63))
+        mundane = _ArchivedBranch(
+            state=env.save_state(),
+            frame=mundane_frame,
+            plan=NeuralPlan((Action.RIGHT,), (4,), 0.0, 0.0),
+            score=100.0,
+            scene=scene,
+            created=1,
+            goal_player_slot=(0, 0),
+            goal_source_signature="stable-goal-state",
+            goal_target_signature="seen-target",
+        )
+        effect = _ArchivedBranch(
+            state=env.save_state(),
+            frame=effect_frame,
+            plan=NeuralPlan((Action.LEFT,), (4,), 0.0, 0.0),
+            score=1.0,
+            scene=scene,
+            created=2,
+            goal_player_slot=(0, 0),
+            goal_source_signature="stable-goal-state",
+            goal_target_signature="unseen-world-target",
+            goal_world_effect_signature="01",
+        )
+        agent.archive = [mundane, effect]
+        agent._archive_frontier_score = lambda branch: branch.score
+        agent.human_prior_player_position_visits[(0, 0)] = 3
+        agent.human_prior_graph_recovery_pending = True
+
+        restored = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(restored)
+        assert restored is not None
+        self.assertEqual(restored.frame.digest, effect_frame.digest)
+        filtered = [
+            event
+            for event in logger.events
+            if event["event"]
+            == "human_prior_best_first_archives_filtered"
+        ][-1]
+        self.assertTrue(filtered["world_state_frontier_preferred"])
+        self.assertEqual(filtered["unvisited_world_states"], 1)
+
+    def test_human_prior_recovery_releases_fully_expanded_target(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = UniqueStateEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.LEFT),
+                planning_depth=1,
+                behavioral_best_first_archive=True,
+                human_prior_best_first_archive=True,
+            ),
+        )
+        current = agent.reset()
+        branch_state = env.save_state()
+        target = Frame(8, 8, 1, bytes([30]) + bytes(63))
+        agent.archive = [
+            _ArchivedBranch(
+                state=branch_state,
+                frame=target,
+                plan=NeuralPlan((Action.RIGHT,), (4,), 0.0, 0.0),
+                score=1.0,
+                scene=agent._scene_signature(current),
+                created=1,
+                goal_player_slot=(0, 0),
+                goal_source_signature="source-state",
+                goal_target_signature="fully-expanded-target",
+            )
+        ]
+        agent.human_prior_player_position_visits[(0, 0)] = 1
+        for action in (Action.RIGHT, Action.LEFT):
+            agent._record_human_prior_graph_edge_verification(
+                "fully-expanded-target", action, 4
+            )
+        agent.human_prior_graph_recovery_pending = True
+
+        restored = agent._restore_if_stagnant()
+
+        self.assertIsNone(restored)
+        self.assertEqual(agent.archive, [])
+        self.assertNotIn(branch_state, env.active_states)
+
     def test_new_semantic_target_overrides_coarse_frontier_deduplication(
         self,
     ) -> None:
