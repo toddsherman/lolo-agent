@@ -120,6 +120,7 @@ class HeartGoalAnalysis:
     life_counter_changed: bool
     dark_transition_started: bool
     life_loss_confirmed: bool
+    chest_obtained: bool = False
 
     @property
     def remaining_hearts(self) -> int:
@@ -137,7 +138,7 @@ class HeartGoalAnalysis:
     def goal_phase(self) -> str:
         if self.target_present:
             return "hearts"
-        if self.chest_completed:
+        if self.chest_obtained:
             return "chest_completed"
         if self.source_chest_slot is not None or self.target_chest_slot is not None:
             return "open_chest"
@@ -175,6 +176,7 @@ class HeartGoalAnalysis:
             "human_prior_source_chest_distance": self.source_chest_distance,
             "human_prior_target_chest_distance": self.target_chest_distance,
             "human_prior_chest_completed": self.chest_completed,
+            "human_prior_chest_obtained": self.chest_obtained,
             "human_prior_source_life_signature": self.source_life_signature,
             "human_prior_target_life_signature": self.target_life_signature,
             "human_prior_life_counter_changed": self.life_counter_changed,
@@ -219,6 +221,7 @@ class PixelHeartGoalPrior:
         self.best_remaining_hearts: Optional[int] = None
         self.current_life_signature: Optional[str] = None
         self.current_player_slot: Optional[HeartSlot] = None
+        self.chest_obtained = False
         self.dark_transition_observed = False
         self._player_cache: OrderedDict[
             Tuple[str, Optional[HeartSlot]], Optional[HeartSlot]
@@ -581,7 +584,11 @@ class PixelHeartGoalPrior:
                 and target_chest is None
                 and source_chest_distance is not None
                 and source_chest_distance <= 1.0
-                and (target_dark or visual_change > self.maximum_event_visual_change)
+                and (
+                    target_dark
+                    or visual_change > self.maximum_event_visual_change
+                    or target_player == source_chest
+                )
             )
         awarded_chest_reward = self.chest_reward if chest_completed else 0.0
         navigation_reward = 0.0
@@ -653,6 +660,7 @@ class PixelHeartGoalPrior:
             life_counter_changed=life_counter_changed,
             dark_transition_started=target_dark,
             life_loss_confirmed=life_loss_confirmed,
+            chest_obtained=(self.chest_obtained or chest_completed),
         )
 
     def commit(self, analysis: HeartGoalAnalysis, frame: Frame) -> None:
@@ -674,12 +682,15 @@ class PixelHeartGoalPrior:
             self.dark_transition_observed = False
         if analysis.target_player_slot is not None:
             self.current_player_slot = analysis.target_player_slot
+        if analysis.chest_obtained:
+            self.chest_obtained = True
 
     def restore(
         self,
         present: Sequence[HeartSlot],
         frame: Frame,
         player_slot: Optional[HeartSlot] = None,
+        chest_obtained: bool = False,
     ) -> None:
         discovered = set(self.discover(frame))
         if discovered and not self.initialized:
@@ -694,6 +705,7 @@ class PixelHeartGoalPrior:
             else self.detect_player(frame)
         )
         self.dark_transition_observed = False
+        self.chest_obtained = bool(chest_obtained)
 
     def seed_episodic_memory(
         self,
@@ -701,6 +713,7 @@ class PixelHeartGoalPrior:
         present_slots: Sequence[HeartSlot],
         life_signature: Optional[str],
         player_slot: Optional[HeartSlot],
+        chest_obtained: bool = False,
     ) -> None:
         """Restore temporary pixel-derived goal memory across a save-state resume."""
 
@@ -712,8 +725,23 @@ class PixelHeartGoalPrior:
         )
         self.current_life_signature = life_signature
         self.current_player_slot = player_slot
+        self.chest_obtained = bool(chest_obtained)
         self.dark_transition_observed = False
         self._player_cache.clear()
+
+    def reset_room(self, frame: Frame) -> Tuple[HeartSlot, ...]:
+        """Start fresh temporary goal memory after a pixel-confirmed room change."""
+
+        self.known_slots.clear()
+        self.current_present.clear()
+        self.initialized = False
+        self.best_remaining_hearts = None
+        self.current_life_signature = self._life_signature(frame)
+        self.current_player_slot = None
+        self.chest_obtained = False
+        self.dark_transition_observed = False
+        self._player_cache.clear()
+        return self.observe_room(frame)
 
     def current_slots(self) -> Tuple[HeartSlot, ...]:
         return tuple(sorted(self.current_present))

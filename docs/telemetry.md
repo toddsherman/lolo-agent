@@ -158,6 +158,9 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   `human_prior_graph_target_signature`, stable keys containing the visible
   goal state, detected player tile, HUD life glyph, and reversible world
   context;
+- `human_prior_chest_obtained`, which persists the directly observed treasure
+  contact milestone across later commits, archive restores, and episodic
+  resumes;
 - `human_prior_world_source_context`,
   `human_prior_world_target_context`, and
   `human_prior_world_effect_signature` on verified, archived, restored, and
@@ -236,6 +239,31 @@ filter/exhaustion events, graph-stagnation events, sequence searches,
 deferrals, cached skips, verified option branches, archived endpoints, and
 committed options. `decisions.csv` carries the graph/world-context keys and
 selected-option fields on every commit.
+
+`pixel_novel_room_started` marks the first planning boundary after the generic
+pixel-only dark-transition detector resolves to a visually novel bright scene.
+It records the frame, newly discovered assisted heart slots, reset graph
+signature, and new known-scene checkpoint. Screen-coordinate coverage,
+persistent-change evidence, and assisted per-room graph counters are reset at
+this boundary; frozen model parameters and reusable learned dynamics are not.
+`summary.json` reports `pixel_novel_rooms_started`.
+
+## Unlabelled entity audit
+
+`lolo-entity-audit` derives a telemetry-only patch representation from stored
+committed frames:
+
+```bash
+lolo-entity-audit runs/<run-id> --output entity-audit.json
+```
+
+It partitions each 256×240 screen into a 16×15 grid, pools each cell into a
+quantized 4×4 RGB feature, and incrementally clusters similar patches. The
+output preserves the prototype grid per decision, prototype occupancy and
+spatial rarity, persistent rare-patch state, state transitions, directional
+action-target patches, and repeated interaction-edge counts. Prototype IDs
+carry no object names or rules and never enter the policy unless a later
+experiment explicitly enables that use.
 
 ## Frozen spatial-model telemetry
 

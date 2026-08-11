@@ -409,6 +409,14 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--human-prior-phase-position-novelty",
+        action="store_true",
+        help=(
+            "on the assisted track, count player-position novelty separately "
+            "for each visible heart configuration and treasure phase"
+        ),
+    )
+    parser.add_argument(
         "--human-prior-goal-exhaustion-rollback",
         action="store_true",
         help=(
@@ -841,6 +849,11 @@ def main() -> None:
         ),
         human_prior_best_first_archive=(
             args.human_prior_best_first_archive
+            if args.human_prior_hearts
+            else False
+        ),
+        human_prior_phase_position_novelty=(
+            args.human_prior_phase_position_novelty
             if args.human_prior_hearts
             else False
         ),

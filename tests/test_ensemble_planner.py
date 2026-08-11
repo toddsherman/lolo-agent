@@ -1233,6 +1233,50 @@ class EnsemblePlannerTests(unittest.TestCase):
 
         self.assertFalse(agent.known_scene_return_recovery_pending)
         self.assertEqual(len(agent.bright_scene_memory), 2)
+        self.assertEqual(agent.pending_novel_room_frame, novel)
+
+    def test_novel_room_boundary_resets_coordinate_local_memory(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            ActionEffectEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,), planning_depth=1
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        novel = Frame(32, 32, 3, bytes([224]) * (32 * 32 * 3))
+        agent.frame = novel
+        agent.causal_spatial_cell_visits[(2, 3)] = 4
+        agent.last_causal_cell_progress_decision = 7
+        agent.persistent_change_cells[0] = 0
+        agent.persistent_change_candidates[1] = (2, 3)
+        agent.persistent_change_mismatches[2] = 1
+        agent.pending_novel_room_frame = novel
+
+        agent._apply_pending_novel_room_reset()
+
+        self.assertIsNone(agent.pending_novel_room_frame)
+        self.assertEqual(agent.causal_spatial_cell_visits, {})
+        self.assertIsNone(agent.last_causal_cell_progress_decision)
+        self.assertEqual(agent.persistent_change_cells, {})
+        self.assertEqual(agent.persistent_change_candidates, {})
+        self.assertEqual(agent.persistent_change_mismatches, {})
+        self.assertEqual(
+            agent.persistent_change_baseline,
+            list(agent._persistent_cell_values(novel)),
+        )
+        self.assertTrue(
+            any(
+                event["event"] == "pixel_novel_room_started"
+                for event in logger.events
+            )
+        )
 
     def test_behavioral_best_first_restore_prefers_unexpanded_edge(self) -> None:
         model = EnsembleVisualDynamicsModel(
@@ -2271,6 +2315,29 @@ class EnsemblePlannerTests(unittest.TestCase):
         ][-1]
         self.assertTrue(filtered["physical_frontier_preferred"])
         self.assertEqual(filtered["unvisited_player_positions"], 1)
+
+    def test_human_prior_position_novelty_can_be_phase_conditioned(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        agent = VerifiedNeuralAgent(
+            ActionEffectEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(human_prior_phase_position_novelty=True),
+        )
+        player = (176, 96)
+        pending = (
+            "hearts=|player=176,96|chest=none|treasure=pending|"
+            "life=life|world=human-prior-world-root"
+        )
+        obtained = pending.replace("treasure=pending", "treasure=obtained")
+
+        agent._record_human_prior_player_position(pending, player)
+
+        self.assertEqual(agent._human_prior_position_visits(pending, player), 1)
+        self.assertEqual(agent._human_prior_position_visits(obtained, player), 0)
+        self.assertEqual(agent.human_prior_player_position_visits[player], 1)
 
     def test_human_prior_world_effect_masks_player_motion(self) -> None:
         model = EnsembleVisualDynamicsModel(

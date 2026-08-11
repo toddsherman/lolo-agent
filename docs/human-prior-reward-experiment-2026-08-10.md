@@ -333,3 +333,45 @@ clear Room 2. The next assisted experiment should learn an unlabelled local
 entity representation from pixels and track verified changes in entity
 position or controllability. Reward weights and the strict rule-free track
 remain unchanged.
+
+## Unlabelled audit correction and Room 2 completion
+
+The proposed unlabelled representation was first used as an offline diagnostic
+rather than promoted directly into reward. Each screen is divided into a
+16×15 grid; every cell is pooled into a quantized 4×4 RGB feature and assigned
+to an incrementally learned prototype. The audit tracks prototype occupancy,
+spatial rarity, frame persistence, action-target patches, and interaction-edge
+visits without object names, ROM memory, or game rules.
+
+That audit falsified the previous conclusion that preparation had not changed
+the lower-left entity. In the all-heart v3 run, a persistent pink patch changed
+at decision 75 and returned after the later save-state rollback. Frame-by-frame
+inspection showed that decision 74 had already put Lolo on the open treasure
+tile; the next frame showed the emptied treasure and the pink patch gone. The
+agent succeeded, but the semantic detector failed to credit it because the
+contact animation was neither dark nor an immediate whole-scene change.
+
+The detector now recognizes the pixel-observed contact transition and persists
+the acquired-treasure phase across restores and resumes. The 120-decision run
+`spatial-v14-room2-treasure-contact-fix-from-v3-d73-d120` credited the contact
+on its first decision, explored 52 committed player positions, restored 18
+archives, lost no life, and retained the completed phase for the full run.
+
+Post-treasure patch comparison identified a stable changed boundary cell at
+the upper right. The agent's own archive history contained a controllable
+right-ladder state. Starting a fresh branch search from that committed opaque
+save state produced
+`spatial-v14-room2-right-ladder-local-branch-from-d17-d40`. The policy climbed
+the ladder, reached the upper-right opening, selected `UP 16`, passed through a
+dark transition, and entered Room 3. The evaluator stopped after two stable
+novel observations at decision 31; scene distance was `0.1455488` versus the
+`0.05` threshold. The run used six archive restores, lost no life, balanced all
+594 saves and releases, and passed the frozen-parameter audit.
+
+This is a verified assisted Room 2 clear, not a strict-track clear. No room
+solution or action sequence was injected: the successful start state and exit
+actions were states and choices the agent had discovered. A matched 40-decision
+phase-position-novelty A/B was exactly identical to control, so the optional
+feature remains off by default. New-room detection now resets only temporary
+room-coordinate memories and re-discovers visible assisted goals; learned
+neural parameters remain frozen and reusable across the boundary.

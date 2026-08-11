@@ -960,6 +960,9 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "generic_dark_transitions_resolved": event_counts.get(
             "generic_dark_transition_resolved", 0
         ),
+        "pixel_novel_rooms_started": event_counts.get(
+            "pixel_novel_room_started", 0
+        ),
         "generic_dark_returns_to_known_scene": sum(
             event["event"] == "generic_dark_transition_resolved"
             and bool(event.get("returned_to_known_scene"))

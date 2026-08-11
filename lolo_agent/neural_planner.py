@@ -100,6 +100,7 @@ class NeuralPlanningConfig:
     human_prior_life_loss_penalty: float = 0.0
     human_prior_navigation_recovery_grace: int = 0
     human_prior_best_first_archive: bool = False
+    human_prior_phase_position_novelty: bool = False
     human_prior_graph_stagnation_visits: int = 0
     human_prior_goal_exhaustion_rollback: bool = False
     human_prior_option_search_depth: int = 0
@@ -176,6 +177,7 @@ class _ArchivedBranch:
     goal_world_effect_signature: str = ""
     human_prior_verified_option: bool = False
     human_prior_option_world_effect_signature: str = ""
+    goal_chest_obtained: bool = False
 
 
 @dataclass
@@ -272,6 +274,7 @@ class _LifeHazardCheckpoint:
     human_prior_world_context_signature: str = "human-prior-world-root"
     kind: str = "causal_option"
     state_id: Optional[str] = None
+    goal_chest_obtained: bool = False
 
 
 @dataclass
@@ -615,6 +618,7 @@ class VerifiedNeuralAgent:
         )
         self.dark_transition_active = False
         self.dark_transition_start_decision: Optional[int] = None
+        self.pending_novel_room_frame: Optional[Frame] = None
         self.known_scene_return_recovery_pending = False
         self.bright_scene_memory: List[Tuple[int, ...]] = []
         self.known_scene_recovery_checkpoint: Optional[
@@ -677,6 +681,12 @@ class VerifiedNeuralAgent:
             Tuple[str, Action, int]
         ] = Counter()
         self.human_prior_graph_state_visits: CounterType[str] = Counter()
+        self.human_prior_player_position_visits: CounterType[
+            Tuple[int, int]
+        ] = Counter()
+        self.human_prior_phase_player_position_visits: CounterType[
+            Tuple[str, Tuple[int, int]]
+        ] = Counter()
         self.human_prior_graph_recovery_pending = False
         self.current_human_prior_world_context_signature = (
             "human-prior-world-root"
@@ -774,6 +784,21 @@ class VerifiedNeuralAgent:
             )
         return analysis
 
+    def _restore_goal_prior(
+        self,
+        present: Sequence[Tuple[int, int]],
+        frame: Frame,
+        player_slot: Optional[Tuple[int, int]],
+        chest_obtained: bool,
+    ) -> None:
+        if self.goal_prior is None:
+            return
+        # Test and research sidecars may implement the original three-argument
+        # restore protocol without the assisted chest state.
+        self.goal_prior.restore(present, frame, player_slot)
+        if hasattr(self.goal_prior, "chest_obtained"):
+            self.goal_prior.chest_obtained = bool(chest_obtained)
+
     def _human_prior_fields(
         self, analysis: Optional[HeartGoalAnalysis],
     ) -> Dict[str, Any]:
@@ -800,6 +825,7 @@ class VerifiedNeuralAgent:
         chest: Optional[Tuple[int, int]],
         life_signature: Optional[str],
         world_context: str = "human-prior-world-root",
+        chest_obtained: bool = False,
     ) -> str:
         """Stable assisted-track state key derived only from labelled pixels.
 
@@ -816,9 +842,11 @@ class VerifiedNeuralAgent:
         )
         chest_key = "none" if chest is None else f"{chest[0]},{chest[1]}"
         life_key = life_signature or "unknown"
+        treasure_key = "obtained" if chest_obtained else "pending"
         return (
             f"hearts={hearts}|player={player[0]},{player[1]}|"
-            f"chest={chest_key}|life={life_key}|world={world_context}"
+            f"chest={chest_key}|treasure={treasure_key}|"
+            f"life={life_key}|world={world_context}"
         )
 
     def _human_prior_world_effect_signature(
@@ -1012,13 +1040,25 @@ class VerifiedNeuralAgent:
                 analysis.source_chest_slot,
                 analysis.source_life_signature,
                 source_context,
+                bool(
+                    analysis.chest_obtained
+                    and not analysis.chest_completed
+                ),
             ),
             self._human_prior_graph_signature(
                 analysis.target_present,
                 analysis.target_player_slot,
-                analysis.target_chest_slot or analysis.source_chest_slot,
+                (
+                    analysis.target_chest_slot
+                    if analysis.chest_obtained
+                    else (
+                        analysis.target_chest_slot
+                        or analysis.source_chest_slot
+                    )
+                ),
                 analysis.target_life_signature,
                 target_context,
+                analysis.chest_obtained,
             ),
         )
 
@@ -1027,6 +1067,35 @@ class VerifiedNeuralAgent:
             return ""
         analysis = self.goal_prior.analyze(self.frame, self.frame)
         return self._human_prior_graph_signatures(analysis)[1]
+
+    @staticmethod
+    def _human_prior_position_phase(signature: str) -> str:
+        fields = {
+            item.split("=", 1)[0]: item.split("=", 1)[1]
+            for item in signature.split("|")
+            if "=" in item
+        }
+        return (
+            f"hearts={fields.get('hearts', '')}|"
+            f"treasure={fields.get('treasure', 'pending')}"
+        )
+
+    def _human_prior_position_visits(
+        self, signature: str, player_slot: Tuple[int, int]
+    ) -> int:
+        if not self.config.human_prior_phase_position_novelty:
+            return self.human_prior_player_position_visits[player_slot]
+        return self.human_prior_phase_player_position_visits[
+            (self._human_prior_position_phase(signature), player_slot)
+        ]
+
+    def _record_human_prior_player_position(
+        self, signature: str, player_slot: Tuple[int, int]
+    ) -> None:
+        self.human_prior_player_position_visits[player_slot] += 1
+        self.human_prior_phase_player_position_visits[
+            (self._human_prior_position_phase(signature), player_slot)
+        ] += 1
 
     def _human_prior_graph_edge_coverage(
         self, signature: str, action: Action, duration: int
@@ -1116,10 +1185,10 @@ class VerifiedNeuralAgent:
                 or branch.goal_source_signature == source_signature
             )
             and branch.goal_player_slot is not None
-            and self.human_prior_player_position_visits[
-                branch.goal_player_slot
-            ]
-            == 0
+            and self._human_prior_position_visits(
+                branch.goal_target_signature,
+                branch.goal_player_slot,
+            ) == 0
             and self._human_prior_archive_edge_coverage(branch)[1]
             for branch in self.archive
         )
@@ -1722,9 +1791,10 @@ class VerifiedNeuralAgent:
             target_position_visits=(
                 0
                 if source_analysis.target_player_slot is None
-                else self.human_prior_player_position_visits[
-                    source_analysis.target_player_slot
-                ]
+                else self._human_prior_position_visits(
+                    source_signature,
+                    source_analysis.target_player_slot,
+                )
             ),
         )
         parents = [root_node]
@@ -1794,9 +1864,10 @@ class VerifiedNeuralAgent:
                         target_position_visits = (
                             0
                             if analysis.target_player_slot is None
-                            else self.human_prior_player_position_visits[
-                                analysis.target_player_slot
-                            ]
+                            else self._human_prior_position_visits(
+                                target_signature,
+                                analysis.target_player_slot,
+                            )
                         )
                         option_visits, option_unexpanded = (
                             self._human_prior_option_coverage(
@@ -2219,6 +2290,7 @@ class VerifiedNeuralAgent:
                     or selected.analysis.source_chest_slot
                 ),
                 goal_player_slot=selected.analysis.target_player_slot,
+                goal_chest_obtained=selected.analysis.chest_obtained,
                 parent_state_id=self._state_id(root),
                 parent_frame_digest=source_frame.digest,
                 parent_decision=self.decision_index,
@@ -2586,6 +2658,7 @@ class VerifiedNeuralAgent:
         self.human_prior_graph_state_visits = Counter()
         self.human_prior_option_visits = Counter()
         self.human_prior_player_position_visits = Counter()
+        self.human_prior_phase_player_position_visits = Counter()
         self.human_prior_option_exhausted_sources: set[str] = set()
         self.human_prior_graph_recovery_pending = False
         self.current_human_prior_world_context_signature = (
@@ -2633,6 +2706,7 @@ class VerifiedNeuralAgent:
         )
         self.dark_transition_active = False
         self.dark_transition_start_decision = None
+        self.pending_novel_room_frame: Optional[Frame] = None
         self.known_scene_return_recovery_pending = False
         self.bright_scene_memory = (
             [self._persistent_cell_values(self.frame)]
@@ -2691,9 +2765,10 @@ class VerifiedNeuralAgent:
             self.goal_prior is not None
             and self.goal_prior.current_player_slot is not None
         ):
-            self.human_prior_player_position_visits[
-                self.goal_prior.current_player_slot
-            ] += 1
+            self._record_human_prior_player_position(
+                initial_goal_signature,
+                self.goal_prior.current_player_slot,
+            )
         known_scene_state = self.env.save_state()
         self.known_scene_recovery_checkpoint = _LifeHazardCheckpoint(
             state=known_scene_state,
@@ -2716,6 +2791,11 @@ class VerifiedNeuralAgent:
                 None
                 if self.goal_prior is None
                 else self.goal_prior.current_player_slot
+            ),
+            goal_chest_obtained=(
+                False
+                if self.goal_prior is None
+                else self.goal_prior.chest_obtained
             ),
             human_prior_world_context_signature=(
                 self.current_human_prior_world_context_signature
@@ -3044,6 +3124,7 @@ class VerifiedNeuralAgent:
             self.anticipated_transition_observations_remaining = 0
             if not returned_to_known_scene:
                 self.dark_transition_start_decision = None
+                self.pending_novel_room_frame = frame
             self._emit(
                 "generic_dark_transition_resolved",
                 decision=self.decision_index,
@@ -3072,6 +3153,86 @@ class VerifiedNeuralAgent:
             self.bright_scene_memory.append(signature)
             if len(self.bright_scene_memory) > self.config.archive_capacity:
                 self.bright_scene_memory.pop()
+
+    def _apply_pending_novel_room_reset(self) -> None:
+        frame = self.pending_novel_room_frame
+        if frame is None:
+            return
+        self.pending_novel_room_frame = None
+        self.clear_archive()
+        self.human_prior_graph_edge_visits = Counter()
+        self.human_prior_graph_state_visits = Counter()
+        self.human_prior_option_visits = Counter()
+        self.human_prior_player_position_visits = Counter()
+        self.human_prior_phase_player_position_visits = Counter()
+        self.human_prior_option_exhausted_sources = set()
+        self.human_prior_graph_recovery_pending = False
+        self.current_human_prior_world_context_signature = (
+            "human-prior-world-root"
+        )
+        self.last_causal_cell_progress_decision = None
+        self.causal_spatial_cell_visits = Counter()
+        persistent_values = self._persistent_cell_values(frame)
+        self.persistent_change_baseline = list(persistent_values)
+        self.persistent_change_value_counts = [
+            Counter({value: 1}) for value in persistent_values
+        ]
+        self.persistent_change_candidates = {}
+        self.persistent_change_cells = {}
+        self.persistent_change_mismatches = Counter()
+        discovered: Tuple[Tuple[int, int], ...] = ()
+        if self.goal_prior is not None:
+            discovered = self.goal_prior.reset_room(frame)
+        graph_signature = self._current_human_prior_graph_signature()
+        if graph_signature:
+            self.human_prior_graph_state_visits[graph_signature] += 1
+        if (
+            self.goal_prior is not None
+            and self.goal_prior.current_player_slot is not None
+        ):
+            self._record_human_prior_player_position(
+                graph_signature,
+                self.goal_prior.current_player_slot,
+            )
+        self.current_scene = self._scene_signature(frame)
+        checkpoint_state = self.env.save_state()
+        self.known_scene_recovery_checkpoint = _LifeHazardCheckpoint(
+            state=checkpoint_state,
+            frame=frame,
+            choice=(self.current_frontier_signature, Action.NOOP, 0),
+            decision=self.decision_index,
+            frontier_signature=self.current_frontier_signature,
+            causal_context_signature=self.current_causal_context_signature,
+            scene=self.current_scene,
+            pose_action=self.current_pose_action,
+            last_action=self.last_action,
+            last_duration=self.last_duration,
+            action_streak=self.action_streak,
+            goal_heart_slots=(
+                ()
+                if self.goal_prior is None
+                else self.goal_prior.current_slots()
+            ),
+            goal_player_slot=(
+                None
+                if self.goal_prior is None
+                else self.goal_prior.current_player_slot
+            ),
+            goal_chest_obtained=False,
+            human_prior_world_context_signature=(
+                self.current_human_prior_world_context_signature
+            ),
+            kind="known_scene_root",
+            state_id=self._state_id(checkpoint_state),
+        )
+        self._emit(
+            "pixel_novel_room_started",
+            decision=self.decision_index,
+            discovered_heart_slots=discovered,
+            human_prior_graph_signature=graph_signature or None,
+            checkpoint_state_id=self._state_id(checkpoint_state),
+            **self._frame_fields(frame),
+        )
 
     def seed_bright_scene_memory(self, frames: Sequence[Frame]) -> None:
         remembered_before = len(self.bright_scene_memory)
@@ -3122,6 +3283,9 @@ class VerifiedNeuralAgent:
             return
         graph_states: CounterType[str] = Counter()
         player_positions: CounterType[Tuple[int, int]] = Counter()
+        phase_player_positions: CounterType[
+            Tuple[str, Tuple[int, int]]
+        ] = Counter()
         graph_edges: CounterType[Tuple[str, Action, int]] = Counter()
         option_paths: CounterType[
             Tuple[str, Tuple[Tuple[Action, int], ...]]
@@ -3141,10 +3305,12 @@ class VerifiedNeuralAgent:
         observed_world_context = (
             self.current_human_prior_world_context_signature
         )
+        observed_chest_obtained = self.goal_prior.chest_obtained
         event_present_slots = observed_present_slots
         event_life_signature = observed_life_signature
         event_player_slot = observed_player_slot
         event_world_context = observed_world_context
+        event_chest_obtained = observed_chest_obtained
         latest_decision_has_semantic_state = False
         decisions = 0
         for event in events:
@@ -3190,6 +3356,12 @@ class VerifiedNeuralAgent:
                     int(target_player[1]),
                 )
                 player_positions[event_player_slot] += 1
+                phase_player_positions[
+                    (
+                        self._human_prior_position_phase(target_signature),
+                        event_player_slot,
+                    )
+                ] += 1
             if "human_prior_target_hearts" in event:
                 event_present_slots = tuple(
                     (int(slot[0]), int(slot[1]))
@@ -3205,6 +3377,10 @@ class VerifiedNeuralAgent:
             )
             if target_context:
                 event_world_context = str(target_context)
+            if "human_prior_chest_obtained" in event:
+                event_chest_obtained = bool(
+                    event.get("human_prior_chest_obtained")
+                )
             path_values = tuple(event.get("path") or ())
             duration_values = tuple(event.get("durations") or ())
             if event.get("human_prior_verified_option") and source_signature:
@@ -3246,6 +3422,9 @@ class VerifiedNeuralAgent:
             self.human_prior_graph_state_visits = graph_states
         if player_positions:
             self.human_prior_player_position_visits = player_positions
+        self.human_prior_phase_player_position_visits = (
+            phase_player_positions
+        )
         self.human_prior_graph_edge_visits = graph_edges
         self.human_prior_option_visits = option_paths
         self.temporal_option_values.update(temporal_option_values)
@@ -3255,12 +3434,14 @@ class VerifiedNeuralAgent:
             life_signature = event_life_signature
             player_slot = event_player_slot
             world_context = event_world_context
+            chest_obtained = event_chest_obtained
             current_state_source = "latest_assisted_decision"
         else:
             present_slots = observed_present_slots
             life_signature = observed_life_signature
             player_slot = observed_player_slot
             world_context = observed_world_context
+            chest_obtained = observed_chest_obtained
             current_state_source = "resume_frame"
         self.current_human_prior_world_context_signature = world_context
         self.goal_prior.seed_episodic_memory(
@@ -3268,6 +3449,7 @@ class VerifiedNeuralAgent:
             present_slots,
             life_signature,
             player_slot,
+            chest_obtained,
         )
         self._emit(
             "episodic_human_prior_memory_seeded",
@@ -3278,6 +3460,10 @@ class VerifiedNeuralAgent:
             graph_state_visits=sum(graph_states.values()),
             player_positions=len(player_positions),
             player_position_visits=sum(player_positions.values()),
+            phase_player_positions=len(phase_player_positions),
+            phase_player_position_visits=sum(
+                phase_player_positions.values()
+            ),
             graph_edges=len(graph_edges),
             graph_edge_visits=sum(graph_edges.values()),
             verified_option_paths=len(option_paths),
@@ -3288,6 +3474,7 @@ class VerifiedNeuralAgent:
             present_heart_slots=present_slots,
             player_slot=player_slot,
             world_context=world_context,
+            chest_obtained=chest_obtained,
             current_state_source=current_state_source,
         )
 
@@ -5261,6 +5448,7 @@ class VerifiedNeuralAgent:
         if self.frame is None:
             self.reset()
         assert self.frame is not None
+        self._apply_pending_novel_room_reset()
         self._calibrate_goal_prior(self.frame)
         self._emit(
             "decision_started",
@@ -5477,6 +5665,10 @@ class VerifiedNeuralAgent:
             None
             if self.goal_prior is None
             else self.goal_prior.current_player_slot
+        )
+        source_goal_chest_obtained = bool(
+            self.goal_prior is not None
+            and self.goal_prior.chest_obtained
         )
         best_by_button: Dict[Action, NeuralPlan] = {}
         for plan in best_by_action.values():
@@ -6976,9 +7168,10 @@ class VerifiedNeuralAgent:
                 committed_goal_analysis is not None
                 and committed_goal_analysis.target_player_slot is not None
             ):
-                self.human_prior_player_position_visits[
-                    committed_goal_analysis.target_player_slot
-                ] += 1
+                self._record_human_prior_player_position(
+                    committed_goal_target_signature,
+                    committed_goal_analysis.target_player_slot,
+                )
             self.action_counts[action] += 1
             self.duration_counts[duration] += 1
             self.action_duration_counts[(action, duration)] += 1
@@ -7094,6 +7287,9 @@ class VerifiedNeuralAgent:
                             action_streak=source_action_streak,
                             goal_heart_slots=source_goal_heart_slots,
                             goal_player_slot=source_goal_player_slot,
+                            goal_chest_obtained=(
+                                source_goal_chest_obtained
+                            ),
                             human_prior_world_context_signature=(
                                 source_human_prior_world_context_signature
                             ),
@@ -7135,6 +7331,9 @@ class VerifiedNeuralAgent:
                             action_streak=source_action_streak,
                             goal_heart_slots=source_goal_heart_slots,
                             goal_player_slot=source_goal_player_slot,
+                            goal_chest_obtained=(
+                                source_goal_chest_obtained
+                            ),
                             human_prior_world_context_signature=(
                                 source_human_prior_world_context_signature
                             ),
@@ -7308,6 +7507,10 @@ class VerifiedNeuralAgent:
                         ),
                         goal_world_effect_signature=(
                             committed_goal_world_effect_signature
+                        ),
+                        goal_chest_obtained=bool(
+                            committed_goal_analysis is not None
+                            and committed_goal_analysis.chest_obtained
                         ),
                     )
                 )
@@ -7695,6 +7898,10 @@ class VerifiedNeuralAgent:
                         goal_world_effect_signature=(
                             alternative_goal_world_effect_signature
                         ),
+                        goal_chest_obtained=bool(
+                            alternative_goal_analysis is not None
+                            and alternative_goal_analysis.chest_obtained
+                        ),
                     )
                 )
                 added += 1
@@ -7914,6 +8121,9 @@ class VerifiedNeuralAgent:
                             ),
                             goal_target_world_context=(
                                 source_human_prior_world_context_signature
+                            ),
+                            goal_chest_obtained=(
+                                source_goal_chest_obtained
                             ),
                         )
                     )
@@ -8404,12 +8614,12 @@ class VerifiedNeuralAgent:
         self.anticipated_transition_observations_remaining = 0
         self.last_navigation_change_decision = None
         self.pending_life_hazard_choice = None
-        if self.goal_prior is not None:
-            self.goal_prior.restore(
-                checkpoint.goal_heart_slots,
-                checkpoint.frame,
-                checkpoint.goal_player_slot,
-            )
+        self._restore_goal_prior(
+            checkpoint.goal_heart_slots,
+            checkpoint.frame,
+            checkpoint.goal_player_slot,
+            checkpoint.goal_chest_obtained,
+        )
         self.novelty.observe(self._signature(checkpoint.frame))
         self.decision_index += 1
         self.visual_last_visit[
@@ -8555,12 +8765,12 @@ class VerifiedNeuralAgent:
         self.anticipated_transition_observations_remaining = 0
         self.last_navigation_change_decision = None
         self.pending_life_hazard_choice = None
-        if self.goal_prior is not None:
-            self.goal_prior.restore(
-                checkpoint.goal_heart_slots,
-                checkpoint.frame,
-                checkpoint.goal_player_slot,
-            )
+        self._restore_goal_prior(
+            checkpoint.goal_heart_slots,
+            checkpoint.frame,
+            checkpoint.goal_player_slot,
+            checkpoint.goal_chest_obtained,
+        )
         self.novelty.observe(self._signature(checkpoint.frame))
         self.decision_index += 1
         self.visual_last_visit = {
@@ -9077,10 +9287,10 @@ class VerifiedNeuralAgent:
                         candidate.human_prior_verified_option
                         and candidate.goal_world_effect_signature
                     )
-                    and self.human_prior_player_position_visits[
-                        candidate.goal_player_slot
-                    ]
-                    == 0
+                    and self._human_prior_position_visits(
+                        candidate.goal_target_signature,
+                        candidate.goal_player_slot,
+                    ) == 0
                 ]
                 option_effect_frontier_eligible = [
                     candidate
@@ -9295,12 +9505,12 @@ class VerifiedNeuralAgent:
         self.autonomous_intervention_pending = False
         self.causal_observation_intervention_pending = False
         self.anticipated_transition_observations_remaining = 0
-        if self.goal_prior is not None:
-            self.goal_prior.restore(
-                branch.goal_heart_slots,
-                branch.frame,
-                branch.goal_player_slot,
-            )
+        self._restore_goal_prior(
+            branch.goal_heart_slots,
+            branch.frame,
+            branch.goal_player_slot,
+            branch.goal_chest_obtained,
+        )
         self.novelty.observe(self._signature(branch.frame))
         self.scene_visits[branch.scene] += 1
         self.current_scene = branch.scene
@@ -9353,9 +9563,10 @@ class VerifiedNeuralAgent:
                 branch.goal_target_signature
             ] += 1
         if branch.goal_player_slot is not None:
-            self.human_prior_player_position_visits[
-                branch.goal_player_slot
-            ] += 1
+            self._record_human_prior_player_position(
+                branch.goal_target_signature,
+                branch.goal_player_slot,
+            )
         restored_visual_cluster = self._abstract_signature(branch.frame)
         restored_frontier_signature = (
             branch.frontier_signature
@@ -9627,6 +9838,7 @@ class VerifiedNeuralAgent:
             human_prior_total_hearts=branch.goal_total_hearts,
             human_prior_target_chest_slot=branch.goal_chest_slot,
             human_prior_target_player_slot=branch.goal_player_slot,
+            human_prior_chest_obtained=branch.goal_chest_obtained,
             human_prior_best_remaining_hearts=(
                 None
                 if self.goal_prior is None
@@ -9776,6 +9988,7 @@ class VerifiedNeuralAgent:
             human_prior_total_hearts=branch.goal_total_hearts,
             human_prior_target_chest_slot=branch.goal_chest_slot,
             human_prior_target_player_slot=branch.goal_player_slot,
+            human_prior_chest_obtained=branch.goal_chest_obtained,
             human_prior_best_remaining_hearts=(
                 None
                 if self.goal_prior is None

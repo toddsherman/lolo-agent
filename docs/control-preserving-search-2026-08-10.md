@@ -4,10 +4,12 @@ Date: 2026-08-10
 
 ## Result
 
-The strict pixel-only agent collected all four Room 2 hearts for the first
+The strict pixel-only track collected all four Room 2 hearts for the first
 time, retained the resulting persistent screen changes, and reached both the
-upper and lower halves of the room. It has not yet opened the chest or cleared
-Room 2.
+upper and lower halves of the room. A later assisted positive-control run
+collected the treasure and cleared Room 2 using only pixels, controller
+outcomes, and agent-discovered save-state branches. The strict rule-free track
+has not yet reproduced that completion.
 
 The run also exposed the first repeatable death mechanism. A controller action
 could produce a distinct immediate frame while every action from its endpoint
@@ -404,6 +406,39 @@ invalidations, dark transitions, known-scene returns, and post-dark filters.
 All frames, save/load operations, branch parentage, action durations, and
 restores remain available for replay and visualization.
 
+## Assisted Room 2 completion
+
+An offline, unlabelled 16×15 visual-patch audit changed the diagnosis of the
+all-heart frontier. It found that the lower-left pink patch disappeared after
+the agent contacted the treasure at decision 74 of
+`spatial-v14-room2-goal-exhaustion-rollback-v3-from-pre-final-heart-d37-d150`.
+Stored frames confirmed Lolo entering the open treasure tile, the treasure
+emptying, and the moving patch disappearing. The assisted detector had missed
+the event because it required a dark or scene-changing target frame.
+
+Treasure acquisition now also accepts the directly observed contact
+transition: the source contains the open treasure, the target does not, and
+the target player location equals the source treasure location. The acquired
+state persists across archive restores and episodic resume. A 120-decision
+frozen validation recognized the event immediately and retained
+`human_prior_chest_obtained=true` throughout.
+
+Patch comparison then isolated a persistent post-treasure change at coarse
+cell `(11,1)`, the upper-right room boundary. The agent had already discovered
+a controllable branch on the right ladder. Resuming that opaque committed save
+state at `(176,96)`—without forcing any action—let fresh best-first branching
+climb to `(176,32)`. At decision 23 the selected `UP 16` entered the changed
+boundary. A dark transition began at decision 24 and resolved to the visibly
+novel Room 3 at decision 27. The evaluator confirmed a stable scene distance
+of `0.1455488` at decision 31, above its `0.05` room-change threshold.
+
+The proof run is
+`spatial-v14-room2-right-ladder-local-branch-from-d17-d40`: 31 committed
+decisions, six archive restores, no life loss, balanced save-state ownership,
+and a passing frozen-parameter audit. A matched phase-conditioned position
+novelty ablation was identical to control for 40 decisions, so that optional
+signal remains disabled by default and is not credited for the result.
+
 ## Assessment and next experiment
 
 The approach is still viable, but Room 2 is no longer mainly a reward problem.
@@ -442,5 +477,5 @@ sequence.
 
 ## Verification
 
-The complete test suite passes: 182 tests, with 3 expected skips. Every
+The complete test suite passes: 190 tests, with 3 expected skips. Every
 completed native run reported `frozen_evaluation_audit=pass`.

@@ -372,6 +372,59 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
         self.assertEqual(analysis.chest_reward, 100.0)
         self.assertEqual(analysis.total_reward, 100.0)
 
+    def test_player_contact_collects_chest_and_persists_completed_phase(self) -> None:
+        source = room_frame(
+            player=(48, 112),
+            open_chest=(32, 112),
+            life_glyph=LIFE_FIVE,
+        )
+        contact = room_frame(
+            player=(32, 112),
+            life_glyph=LIFE_FIVE,
+        )
+        departed = room_frame(
+            player=(32, 128),
+            life_glyph=LIFE_FIVE,
+        )
+        prior = PixelHeartGoalPrior(chest_reward=100.0)
+        prior.known_slots = {(176, 48)}
+        prior.current_present = set()
+        prior.initialized = True
+        prior.current_player_slot = (48, 112)
+
+        collected = prior.analyze(source, contact)
+
+        self.assertTrue(collected.chest_completed)
+        self.assertTrue(collected.chest_obtained)
+        self.assertEqual(collected.chest_reward, 100.0)
+        prior.commit(collected, contact)
+
+        after = prior.analyze(contact, departed)
+
+        self.assertFalse(after.chest_completed)
+        self.assertTrue(after.chest_obtained)
+        self.assertEqual(after.chest_reward, 0.0)
+        self.assertEqual(after.goal_phase, "chest_completed")
+
+    def test_novel_room_reset_discovers_new_hearts_and_clears_chest(self) -> None:
+        prior = PixelHeartGoalPrior()
+        prior.known_slots = {(176, 48)}
+        prior.current_present = set()
+        prior.initialized = True
+        prior.chest_obtained = True
+        next_room = room_frame(
+            hearts=((96, 128), (144, 192)),
+            player=(128, 160),
+            life_glyph=LIFE_FIVE,
+        )
+
+        discovered = prior.reset_room(next_room)
+
+        self.assertEqual(discovered, ((96, 128), (144, 192)))
+        self.assertEqual(prior.current_slots(), discovered)
+        self.assertFalse(prior.chest_obtained)
+        self.assertEqual(prior.current_player_slot, (128, 160))
+
     def test_life_change_requires_a_dark_transition_and_penalizes_loss(self) -> None:
         source = room_frame(((48, 48),), life_glyph=LIFE_FIVE)
         dark = Frame(256, 240, 3, bytes(256 * 240 * 3))
