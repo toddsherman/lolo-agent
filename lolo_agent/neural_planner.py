@@ -3974,11 +3974,13 @@ class VerifiedNeuralAgent:
         observed_world_context = (
             self.current_human_prior_world_context_signature
         )
+        observed_pose_action = self.current_pose_action
         observed_chest_obtained = self.goal_prior.chest_obtained
         event_present_slots = observed_present_slots
         event_life_signature = observed_life_signature
         event_player_slot = observed_player_slot
         event_world_context = observed_world_context
+        event_pose_action = observed_pose_action
         event_chest_obtained = observed_chest_obtained
         latest_decision_has_semantic_state = False
         decisions = 0
@@ -4001,6 +4003,7 @@ class VerifiedNeuralAgent:
                 event_life_signature = observed_life_signature
                 event_player_slot = observed_player_slot
                 event_world_context = "human-prior-world-root"
+                event_pose_action = None
                 event_chest_obtained = False
                 latest_decision_has_semantic_state = False
                 continue
@@ -4073,6 +4076,26 @@ class VerifiedNeuralAgent:
                 )
             path_values = tuple(event.get("path") or ())
             duration_values = tuple(event.get("durations") or ())
+            target_pose_value = event.get("target_pose_action")
+            if target_pose_value is not None:
+                try:
+                    event_pose_action = Action(str(target_pose_value))
+                except ValueError:
+                    pass
+            else:
+                pose_values = (
+                    path_values
+                    if event.get("restored_archive")
+                    else (event.get("action"),)
+                )
+                for pose_value in pose_values:
+                    try:
+                        pose_action = Action(str(pose_value))
+                    except (TypeError, ValueError):
+                        continue
+                    event_pose_action = self._resulting_pose_action(
+                        event_pose_action, pose_action
+                    )
             if event.get("human_prior_verified_option") and source_signature:
                 if len(path_values) == len(duration_values) and path_values:
                     try:
@@ -4124,6 +4147,7 @@ class VerifiedNeuralAgent:
             life_signature = event_life_signature
             player_slot = event_player_slot
             world_context = event_world_context
+            pose_action = event_pose_action
             chest_obtained = event_chest_obtained
             current_state_source = "latest_assisted_decision"
         else:
@@ -4131,9 +4155,11 @@ class VerifiedNeuralAgent:
             life_signature = observed_life_signature
             player_slot = observed_player_slot
             world_context = observed_world_context
+            pose_action = observed_pose_action
             chest_obtained = observed_chest_obtained
             current_state_source = "resume_frame"
         self.current_human_prior_world_context_signature = world_context
+        self.current_pose_action = pose_action
         self.goal_prior.seed_episodic_memory(
             tuple(sorted(known_slots)),
             present_slots,
@@ -4165,6 +4191,7 @@ class VerifiedNeuralAgent:
             present_heart_slots=present_slots,
             player_slot=player_slot,
             world_context=world_context,
+            pose_action=pose_action,
             chest_obtained=chest_obtained,
             current_state_source=current_state_source,
         )
@@ -8957,6 +8984,7 @@ class VerifiedNeuralAgent:
                 action_frames=duration,
                 path=plan.path,
                 durations=plan.durations,
+                target_pose_action=self.current_pose_action,
                 score=score,
                 model_score=plan.score,
                 model_uncertainty=plan.uncertainty,
@@ -9421,6 +9449,7 @@ class VerifiedNeuralAgent:
             action_frames=checkpoint.choice[2],
             path=(checkpoint.choice[1],),
             durations=(checkpoint.choice[2],),
+            target_pose_action=self.current_pose_action,
             score=learned_value,
             branches_examined=0,
             restored_archive=True,
@@ -9525,6 +9554,7 @@ class VerifiedNeuralAgent:
             action_frames=0,
             path=(Action.NOOP,),
             durations=(0,),
+            target_pose_action=self.current_pose_action,
             score=0.0,
             branches_examined=0,
             restored_archive=True,
@@ -10450,6 +10480,7 @@ class VerifiedNeuralAgent:
             action_frames=branch.plan.durations[0],
             path=branch.plan.path,
             durations=branch.plan.durations,
+            target_pose_action=self.current_pose_action,
             score=branch.score,
             persistent_frontier_value=selected_frontier_value,
             causal_spatial_archive_bonus=(
@@ -10601,6 +10632,7 @@ class VerifiedNeuralAgent:
             action_frames=branch.plan.durations[0],
             path=branch.plan.path,
             durations=branch.plan.durations,
+            target_pose_action=self.current_pose_action,
             score=branch.score,
             branches_examined=0,
             restored_archive=True,

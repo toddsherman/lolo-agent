@@ -251,6 +251,12 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   cloned source state, while `parent_state_id` records the original decision
   root. This prevents a life-hazard checkpoint release from invalidating an
   affordance archive that describes the same visual source;
+- `decision_committed.target_pose_action` records the action-derived facing
+  associated with the committed emulator state. Episodic resume restores this
+  temporary pose directly when present; older logs are supported by replaying
+  the executed action for live decisions and the full path for restored
+  archive decisions. `episodic_human_prior_memory_seeded.pose_action` exposes
+  the reconstructed value used by the resumed interaction planner;
 - `human_prior_option_search_deferred` and
   `human_prior_option_search_skipped`, which distinguish a cheaper unseen
   local archive endpoint from an already exhausted sequence-search source;

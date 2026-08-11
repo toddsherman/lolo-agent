@@ -2625,6 +2625,7 @@ class EnsemblePlannerTests(unittest.TestCase):
                 "action_frames": 1,
                 "path": ["left", "right"],
                 "durations": [1, 1],
+                "restored_archive": True,
                 "human_prior_verified_option": True,
                 "human_prior_graph_source_signature": "state-1",
                 "human_prior_graph_target_signature": "state-2",
@@ -2669,6 +2670,7 @@ class EnsemblePlannerTests(unittest.TestCase):
             agent.current_human_prior_world_context_signature,
             "context-2",
         )
+        self.assertEqual(agent.current_pose_action, Action.RIGHT)
         self.assertEqual(
             agent.temporal_option_values[
                 ("state-2", Action.LEFT, 1)
@@ -2694,6 +2696,7 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(len(seeded), 1)
         self.assertEqual(seeded[0]["player_positions"], 2)
         self.assertEqual(seeded[0]["verified_option_paths"], 1)
+        self.assertEqual(seeded[0]["pose_action"], Action.RIGHT)
 
     def test_seed_human_prior_memory_anchors_strict_resume_to_pixels(
         self,

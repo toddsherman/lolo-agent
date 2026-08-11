@@ -555,6 +555,14 @@ state and restore the live endpoint immediately, so each long-lived owner has
 one handle. A release-after-clone regression verifies that releasing the
 original owner cannot invalidate the archived clone.
 
+Resuming directly into a direction-dependent entity state revealed a second
+temporary-state omission: the emulator snapshot was exact, but assisted
+episodic reconstruction did not restore the planner's action-derived facing.
+Consequently an immediate interaction had no forward ray until another
+direction was pressed. Committed decisions now record their target pose, and
+resume reconstructs it from legacy paths when that field is absent. A legacy
+restored-option regression verifies that `LEFT, RIGHT` resumes facing right.
+
 ## Verification
 
 The complete test suite passes: 199 tests, with 3 expected skips. Every
