@@ -325,11 +325,19 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   `human_prior_navigation_reward_suppressed`, plus target graph-state visits,
   phase-position visits, and unexpanded controller actions. A repeated
   position therefore cannot earn the same geometric distance reward forever.
+  Every verified source/action edge is also reconstructed from the resume
+  chain, whether or not that branch was committed. Thus "unexpanded" means
+  that a controller action has not yet been tested from the semantic source,
+  rather than merely that it has not won selection.
   `human_prior_semantic_frontier_choice` records when a repeated graph state
   selects a new player endpoint or a least-visited endpoint whose outgoing
   actions still need expansion. `human_prior_graph_recovery_suppressed` records
   the configured local-expansion grace after navigation, and archive restores
-  report whether the detected player position changed and armed that grace;
+  report whether the detected player position changed and armed that grace.
+  `human_prior_navigation_grace_armed`,
+  `human_prior_target_position_visits_before`, and
+  `human_prior_target_unexpanded_actions` distinguish a useful local frontier
+  from a position change back to an already verified endpoint;
 - `human_prior_option_archive_added`, plus
   `human_prior_verified_option`, `human_prior_option_depth`, and
   `human_prior_option_path_visits_before` on restore/commit events, which make

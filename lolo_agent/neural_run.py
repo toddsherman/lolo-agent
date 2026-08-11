@@ -186,6 +186,7 @@ def load_episodic_decision_events(
         for event in read_events(run_dir)
         if event.get("event")
         in {
+            "branch_verified",
             "decision_committed",
             "goal_milestone_exhaustion_learned",
             "human_prior_milestone_outcome_recorded",

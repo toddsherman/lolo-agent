@@ -720,6 +720,9 @@ class VerifiedNeuralAgent:
         self.human_prior_graph_edge_visits: CounterType[
             Tuple[str, Action, int]
         ] = Counter()
+        self.human_prior_graph_edge_verifications: CounterType[
+            Tuple[str, Action, int]
+        ] = Counter()
         self.human_prior_graph_state_visits: CounterType[str] = Counter()
         self.human_prior_player_position_visits: CounterType[
             Tuple[int, int]
@@ -1238,7 +1241,10 @@ class VerifiedNeuralAgent:
         visited_actions = {
             action
             for (source, action, _duration), visits in (
-                self.human_prior_graph_edge_visits.items()
+                (
+                    self.human_prior_graph_edge_visits
+                    + self.human_prior_graph_edge_verifications
+                ).items()
             )
             if source == signature and visits > 0
         }
@@ -1253,6 +1259,14 @@ class VerifiedNeuralAgent:
     ) -> None:
         if signature:
             self.human_prior_graph_edge_visits[
+                (signature, action, duration)
+            ] += 1
+
+    def _record_human_prior_graph_edge_verification(
+        self, signature: str, action: Action, duration: int
+    ) -> None:
+        if signature:
+            self.human_prior_graph_edge_verifications[
                 (signature, action, duration)
             ] += 1
 
@@ -3705,6 +3719,7 @@ class VerifiedNeuralAgent:
         self.action_effect_samples = Counter()
         self.causal_spatial_visits = Counter()
         self.human_prior_graph_edge_visits = Counter()
+        self.human_prior_graph_edge_verifications = Counter()
         self.human_prior_graph_state_visits = Counter()
         self.human_prior_option_visits = Counter()
         self.human_prior_player_position_visits = Counter()
@@ -4216,6 +4231,7 @@ class VerifiedNeuralAgent:
         self.pending_novel_room_frame = None
         self.clear_archive()
         self.human_prior_graph_edge_visits = Counter()
+        self.human_prior_graph_edge_verifications = Counter()
         self.human_prior_graph_state_visits = Counter()
         self.human_prior_option_visits = Counter()
         self.human_prior_player_position_visits = Counter()
@@ -4344,6 +4360,9 @@ class VerifiedNeuralAgent:
             Tuple[str, Tuple[int, int]]
         ] = Counter()
         graph_edges: CounterType[Tuple[str, Action, int]] = Counter()
+        graph_edge_verifications: CounterType[
+            Tuple[str, Action, int]
+        ] = Counter()
         option_paths: CounterType[
             Tuple[str, Tuple[Tuple[Action, int], ...]]
         ] = Counter()
@@ -4383,6 +4402,7 @@ class VerifiedNeuralAgent:
                 player_positions.clear()
                 phase_player_positions.clear()
                 graph_edges.clear()
+                graph_edge_verifications.clear()
                 option_paths.clear()
                 milestone_outcomes_by_decision.clear()
                 known_slots = {
@@ -4462,6 +4482,28 @@ class VerifiedNeuralAgent:
                         )
                     except (KeyError, TypeError, ValueError):
                         pass
+            if event.get("event") == "branch_verified":
+                source_signature = str(
+                    event.get("human_prior_graph_source_signature") or ""
+                )
+                action_value = event.get("action")
+                duration_value = event.get("action_frames")
+                if (
+                    source_signature
+                    and action_value is not None
+                    and duration_value is not None
+                ):
+                    try:
+                        graph_edge_verifications[
+                            (
+                                source_signature,
+                                Action(str(action_value)),
+                                int(duration_value),
+                            )
+                        ] += 1
+                    except (TypeError, ValueError):
+                        pass
+                continue
             if event.get("event") != "decision_committed":
                 continue
             decisions += 1
@@ -4590,6 +4632,9 @@ class VerifiedNeuralAgent:
             phase_player_positions
         )
         self.human_prior_graph_edge_visits = graph_edges
+        self.human_prior_graph_edge_verifications = (
+            graph_edge_verifications
+        )
         self.human_prior_option_visits = option_paths
         self.human_prior_milestone_outcomes = set(
             milestone_outcomes_by_decision.values()
@@ -4637,6 +4682,10 @@ class VerifiedNeuralAgent:
             ),
             graph_edges=len(graph_edges),
             graph_edge_visits=sum(graph_edges.values()),
+            graph_edge_verifications=len(graph_edge_verifications),
+            graph_edge_verification_visits=sum(
+                graph_edge_verifications.values()
+            ),
             verified_option_paths=len(option_paths),
             verified_option_path_visits=sum(option_paths.values()),
             milestone_outcomes=len(self.human_prior_milestone_outcomes),
@@ -7261,9 +7310,11 @@ class VerifiedNeuralAgent:
             branch_action_penalties: Dict[int, Dict[str, float]] = {}
             branch_goal_analyses: Dict[int, Optional[HeartGoalAnalysis]] = {}
             branch_goal_signatures: Dict[int, Tuple[str, str]] = {}
+            branch_goal_target_position_visits: Dict[int, int] = {}
             branch_goal_world_contexts: Dict[
                 int, Tuple[str, str, str]
             ] = {}
+            verified_goal_edges: List[Tuple[str, Action, int]] = []
             for (
                 plan,
                 state,
@@ -7530,6 +7581,10 @@ class VerifiedNeuralAgent:
                     goal_source_signature,
                     goal_target_signature,
                 )
+                if goal_source_signature:
+                    verified_goal_edges.append(
+                        (goal_source_signature, plan.path[0], duration)
+                    )
                 goal_target_state_visits = (
                     0
                     if not goal_target_signature
@@ -7545,6 +7600,9 @@ class VerifiedNeuralAgent:
                         goal_target_signature,
                         goal_analysis.target_player_slot,
                     )
+                )
+                branch_goal_target_position_visits[id(state)] = (
+                    goal_target_position_visits
                 )
                 goal_target_unexpanded_actions = (
                     self._human_prior_unexpanded_control_actions(
@@ -7783,6 +7841,16 @@ class VerifiedNeuralAgent:
                     combined_score=score,
                     state_id=self._state_id(state),
                     **self._frame_fields(target),
+                )
+            for (
+                verified_goal_source,
+                verified_goal_action,
+                verified_goal_duration,
+            ) in verified_goal_edges:
+                self._record_human_prior_graph_edge_verification(
+                    verified_goal_source,
+                    verified_goal_action,
+                    verified_goal_duration,
                 )
             selection_verified, filtered_hazards = (
                 self._verified_without_learned_hazards(
@@ -8593,6 +8661,9 @@ class VerifiedNeuralAgent:
                 target_frontier_signature,
             ) = chosen
             committed_goal_analysis = branch_goal_analyses[id(state)]
+            committed_goal_target_position_visits_before = (
+                branch_goal_target_position_visits[id(state)]
+            )
             (
                 committed_goal_source_signature,
                 committed_goal_target_signature,
@@ -8771,6 +8842,7 @@ class VerifiedNeuralAgent:
             if (
                 committed_goal_analysis is not None
                 and committed_goal_analysis.navigation_reward != 0.0
+                and committed_goal_target_position_visits_before == 0
             ):
                 self.last_navigation_change_decision = self.decision_index
             frontier_reward = (
@@ -11201,6 +11273,26 @@ class VerifiedNeuralAgent:
             and restored_goal_player_slot is not None
             and source_goal_player_slot != restored_goal_player_slot
         )
+        restored_target_position_visits_before = (
+            0
+            if restored_goal_player_slot is None
+            else self._human_prior_position_visits(
+                branch.goal_target_signature,
+                restored_goal_player_slot,
+            )
+        )
+        restored_target_unexpanded_actions = (
+            self._human_prior_unexpanded_control_actions(
+                branch.goal_target_signature
+            )
+        )
+        restored_navigation_grace_armed = bool(
+            restored_navigation_changed
+            and (
+                restored_target_position_visits_before == 0
+                or restored_target_unexpanded_actions
+            )
+        )
         if archive_goal_milestone:
             assert self.goal_prior is not None
             resolved_target_player_slot = (
@@ -11248,7 +11340,9 @@ class VerifiedNeuralAgent:
         self.autonomous_grace_remaining = 0
         self.decision_index += 1
         self.last_navigation_change_decision = (
-            self.decision_index if restored_navigation_changed else None
+            self.decision_index
+            if restored_navigation_grace_armed
+            else None
         )
         if milestone_checkpoint_source is not None:
             assert self.pending_goal_milestone_checkpoint is not None
@@ -11545,6 +11639,15 @@ class VerifiedNeuralAgent:
                 self.config.human_prior_graph_stagnation_visits
             ),
             human_prior_navigation_changed=restored_navigation_changed,
+            human_prior_navigation_grace_armed=(
+                restored_navigation_grace_armed
+            ),
+            human_prior_target_position_visits_before=(
+                restored_target_position_visits_before
+            ),
+            human_prior_target_unexpanded_actions=(
+                restored_target_unexpanded_actions
+            ),
             human_prior_navigation_recovery_grace=(
                 self.config.human_prior_navigation_recovery_grace
             ),

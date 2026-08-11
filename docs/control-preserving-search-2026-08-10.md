@@ -722,6 +722,24 @@ frozen-model audit. This maps the reachable movement topology without encoding
 a room solution; blocked lower routes now leave object-changing actions as the
 next experimental frontier.
 
+A further audit found that verified-but-rejected alternatives were missing
+from this edge coverage. Consequently, every position looked perpetually
+unexpanded even after its directional and button branches had all been tested.
+`branch_verified` events now persist source/action coverage and resume-chain
+reconstruction restores it alongside committed graph visits. Archive recovery
+grace is also progress-gated: a changed player position receives grace only if
+the endpoint is unseen or still has an unverified control. Returning to a fully
+verified endpoint no longer delays the next recovery.
+
+The 30-decision native validation
+`spatial-v14-room3-progress-gated-grace-v28-p8-d30` performed three distinct
+best-first recoveries, to `(176,128)`, `(192,112)`, and `(160,96)`, instead of
+cycling indefinitely in the lower-right cul-de-sac. It verified 243 one-step
+branches, balanced all 2,046 native state handles, and passed the frozen-model
+audit. This establishes that sibling frontiers can be revisited during one
+process; a longer uninterrupted run is the next test of whether coverage alone
+reaches the unexplored left side and remaining lower heart.
+
 ## Verification
 
 The complete test suite passes: 212 tests, with 4 expected skips when native

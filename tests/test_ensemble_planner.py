@@ -3334,6 +3334,13 @@ class EnsemblePlannerTests(unittest.TestCase):
         agent.reset()
         events = [
             {
+                "event": "branch_verified",
+                "decision": 1,
+                "action": "up",
+                "action_frames": 4,
+                "human_prior_graph_source_signature": "state-0",
+            },
+            {
                 "event": "decision_committed",
                 "decision": 1,
                 "action": "right",
@@ -3393,6 +3400,12 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(
             agent.human_prior_graph_edge_visits[
                 ("state-0", Action.RIGHT, 1)
+            ],
+            1,
+        )
+        self.assertEqual(
+            agent.human_prior_graph_edge_verifications[
+                ("state-0", Action.UP, 4)
             ],
             1,
         )

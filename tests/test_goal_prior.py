@@ -1014,6 +1014,21 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
         self.assertEqual(agent.goal_prior.current_player_slot, (80, 64))
         self.assertFalse(agent.human_prior_graph_recovery_pending)
 
+        agent.last_navigation_change_decision = None
+        agent._record_human_prior_player_position(
+            "alternate-goal", (96, 64)
+        )
+        agent._record_human_prior_graph_edge_verification(
+            "alternate-goal", Action.UP, 1
+        )
+        agent.human_prior_graph_recovery_pending = True
+
+        fully_expanded_restore = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(fully_expanded_restore)
+        self.assertEqual(agent.goal_prior.current_player_slot, (96, 64))
+        self.assertIsNone(agent.last_navigation_change_decision)
+
     def test_verified_planner_prioritizes_a_real_heart_event(self) -> None:
         model = EnsembleVisualDynamicsModel(
             latent_size=32, action_size=8, ensemble_size=2

@@ -88,6 +88,11 @@ class StableSceneChangeDetectorTests(unittest.TestCase):
                     json.dumps(event)
                     for event in (
                         {
+                            "event": "branch_verified",
+                            "decision": 1,
+                            "marker": "child-branch",
+                        },
+                        {
                             "event": "decision_committed",
                             "decision": 1,
                             "marker": "child-1",
@@ -119,6 +124,7 @@ class StableSceneChangeDetectorTests(unittest.TestCase):
             [event["marker"] for event in events],
             [
                 "parent-1",
+                "child-branch",
                 "child-1",
                 "child-room-boundary",
                 "child-hazard",
