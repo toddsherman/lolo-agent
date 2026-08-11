@@ -246,6 +246,11 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   ordinary primary choice from additional entity alternatives, while
   `human_prior_option_search_completed.distinct_entity_contexts_archived`
   records the number preserved by that search;
+- long-lived recovery and archive entries own independent emulator handles.
+  In particular, `archive_affordance_checkpoint_added.state_id` identifies a
+  cloned source state, while `parent_state_id` records the original decision
+  root. This prevents a life-hazard checkpoint release from invalidating an
+  affordance archive that describes the same visual source;
 - `human_prior_option_search_deferred` and
   `human_prior_option_search_skipped`, which distinguish a cheaper unseen
   local archive endpoint from an already exhausted sequence-search source;

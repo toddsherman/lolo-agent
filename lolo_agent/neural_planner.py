@@ -3258,6 +3258,22 @@ class VerifiedNeuralAgent:
         state_id = getattr(self.env, "state_id", None)
         return None if state_id is None else state_id(state)
 
+    def _clone_state_for_independent_owner(
+        self, source_state: object, restore_state: object
+    ) -> object:
+        """Clone a save state so two long-lived owners never share a handle."""
+
+        release_state = getattr(self.env, "release_state", None)
+        self.env.load_state(source_state)
+        cloned_state = self.env.save_state()
+        try:
+            self.env.load_state(restore_state)
+        except BaseException:
+            if release_state is not None:
+                release_state(cloned_state)
+            raise
+        return cloned_state
+
     @staticmethod
     def _signature(frame: Frame) -> str:
         return signature_key(frame.coarse_signature())
@@ -8766,9 +8782,14 @@ class VerifiedNeuralAgent:
                         max(item[1].score for item in verified),
                         0.0,
                     )
+                    affordance_checkpoint_state = (
+                        self._clone_state_for_independent_owner(
+                            root, state
+                        )
+                    )
                     self.archive.append(
                         _ArchivedBranch(
-                            root,
+                            affordance_checkpoint_state,
                             source_frame,
                             checkpoint_plan,
                             max(item[0] for item in verified),
@@ -8835,7 +8856,9 @@ class VerifiedNeuralAgent:
                     self._emit(
                         "archive_affordance_checkpoint_added",
                         decision=self.decision_index,
-                        state_id=self._state_id(root),
+                        state_id=self._state_id(
+                            affordance_checkpoint_state
+                        ),
                         parent_state_id=self._state_id(root),
                         parent_frame=source_frame.digest,
                         parent_decision=self.decision_index - 1,

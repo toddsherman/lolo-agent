@@ -546,7 +546,16 @@ distinct verified anonymous entity context. A synthetic two-stage transform
 confirms that both intermediate and final states remain branchable without
 assigning either a name or a game-specific value.
 
+The first longer native continuation exposed an independent save-state
+ownership defect: a causal-affordance archive entry and a pending life-hazard
+recovery checkpoint could both reference the same emulator handle. Restoring
+another archive correctly released the hazard checkpoint, but left the
+affordance entry dangling. Affordance checkpoints now clone the source save
+state and restore the live endpoint immediately, so each long-lived owner has
+one handle. A release-after-clone regression verifies that releasing the
+original owner cannot invalidate the archived clone.
+
 ## Verification
 
-The complete test suite passes: 198 tests, with 3 expected skips. Every
+The complete test suite passes: 199 tests, with 3 expected skips. Every
 completed native run reported `frozen_evaluation_audit=pass`.

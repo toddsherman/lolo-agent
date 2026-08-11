@@ -4181,6 +4181,34 @@ class EnsemblePlannerTests(unittest.TestCase):
         agent.reset()
         self.assertEqual(agent.archive_branch_restores[key], 0)
 
+    def test_independent_state_owner_survives_source_release(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = UniqueStateEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(actions=(Action.RIGHT,), planning_depth=1),
+        )
+        agent.reset()
+        source_state = env.save_state()
+        env.step(Action.RIGHT, 1)
+        restore_state = env.save_state()
+
+        independent_state = agent._clone_state_for_independent_owner(
+            source_state, restore_state
+        )
+
+        self.assertNotEqual(independent_state, source_state)
+        self.assertEqual(env.position, 1)
+        env.release_state(source_state)
+        env.load_state(independent_state)
+        self.assertEqual(env.position, 0)
+        env.load_state(restore_state)
+        self.assertEqual(env.position, 1)
+
     def test_disconnected_causal_effect_starts_a_new_frontier_context(self) -> None:
         model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
         agent = VerifiedNeuralAgent(
