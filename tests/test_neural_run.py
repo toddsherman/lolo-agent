@@ -102,6 +102,11 @@ class StableSceneChangeDetectorTests(unittest.TestCase):
                             "decision": 1,
                             "marker": "child-hazard",
                         },
+                        {
+                            "event": "human_prior_milestone_outcome_recorded",
+                            "decision": 1,
+                            "marker": "child-milestone-outcome",
+                        },
                     )
                 )
                 + "\n",
@@ -117,6 +122,7 @@ class StableSceneChangeDetectorTests(unittest.TestCase):
                 "child-1",
                 "child-room-boundary",
                 "child-hazard",
+                "child-milestone-outcome",
             ],
         )
 

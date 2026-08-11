@@ -72,9 +72,14 @@ criteria. The same fields remain available at branch/decision granularity in
 materialized in `decisions.csv`.
 
 Frame pixels are stored once under their digest, even if thousands of events
-refer to the same screen. Save-state bytes and native state tokens are never
-serialized. State lifecycle records use run-local aliases such as
-`state-00000042`.
+refer to the same screen. Short-lived planning save-state tokens are never
+serialized; their lifecycle records use run-local aliases such as
+`state-00000042`. After each committed decision, the evaluator also writes one
+opaque, content-addressed core snapshot under `states/` and records it with
+`decision_snapshot_stored`. The agent cannot read or parse those bytes. They
+exist solely to make cross-session restoration constant-time, which preserves
+the pixel-only observation boundary while avoiding replay of every rejected
+planning branch.
 
 ## Evaluator bootstrap boundary
 
@@ -279,6 +284,10 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   `human_prior_option_search_skipped`, which distinguish a cheaper unseen
   local archive endpoint from an already exhausted sequence-search source;
 - with `--human-prior-goal-exhaustion-rollback`,
+  `goal_milestone_checkpoint_created.checkpoint_source` distinguishes an exact
+  retained `archive_parent` from a `matching_current_parent`. An old archive
+  whose parent was not retained emits
+  `goal_milestone_checkpoint_unavailable` and cannot become a rollback target;
   `goal_milestone_exhaustion_learned` and
   `goal_milestone_exhaustion_state_restored` record the opt-in assisted
   preparation loop. Rollback requires a repeated semantic state, no
@@ -287,6 +296,18 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   negative value, graph/position coverage, exhausted option sources,
   pre-milestone state ID, descendant invalidations, and restored pixel goal
   state. It does not infer or label the reason the milestone state is blocked;
+- `human_prior_option_milestone_settled` links the immediate action endpoint
+  to the stable frame and state used for milestone analysis and archival.
+  `human_prior_option_milestone_candidates_collapsed` reports the reduction in
+  equivalent candidates before that replay cost is paid.
+  `human_prior_option_milestone_settlement_rejected` records a transient goal
+  signal that did not survive settling, while
+  `human_prior_option_milestone_duplicate_rejected` records a later path to an
+  already committed semantic outcome. `human_prior_milestone_outcome_recorded`
+  identifies the first committed transition or archive restore that established
+  that outcome for the current room. These outcome records are included in
+  resume-chain memory; `episodic_human_prior_memory_seeded.milestone_outcomes`
+  reports how many were reconstructed;
 - `human_prior_option_archive_added`, plus
   `human_prior_verified_option`, `human_prior_option_depth`, and
   `human_prior_option_path_visits_before` on restore/commit events, which make
@@ -477,9 +498,16 @@ lolo-neural-run \
 
 The child run records `episodic_resume_completed` and stores the parent run ID,
 decision, source location, and source-event SHA-256 in its manifest. Replay
-validates that hash and reconstructs the parent decision before applying the
-child event stream. Gameplay-only resumes exclude `START` and `SELECT` from the
-agent action set.
+validates that hash and imports the decision's content-hashed opaque snapshot;
+legacy runs without snapshots retain the exact full-event reconstruction
+fallback. Gameplay-only resumes exclude `START` and `SELECT` from the agent
+action set.
+
+If a legacy run was recorded by a protocol-compatible older native host,
+`--allow-compatible-resume-host` permits a one-time migration despite the host
+file digest changing. It does not relax ROM or core validation, and the legacy
+fallback still verifies every replayed frame before the first new snapshot is
+written. Normal resumes keep strict host-digest validation.
 
 `episodic_human_prior_memory_seeded` records reconstruction of the assisted
 track's temporary graph-state visits, player-position visits, graph-edge and

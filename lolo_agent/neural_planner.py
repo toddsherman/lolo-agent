@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import math
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import product
 from typing import Any, Counter as CounterType, Dict, List, Optional, Sequence, Tuple, Union
 
@@ -185,6 +185,7 @@ class _ArchivedBranch:
     human_prior_option_world_effect_signature: str = ""
     human_prior_option_entity_state_signature: str = ""
     goal_chest_obtained: bool = False
+    goal_milestone_checkpoint: Optional["_LifeHazardCheckpoint"] = None
 
 
 @dataclass
@@ -726,6 +727,7 @@ class VerifiedNeuralAgent:
         self.human_prior_phase_player_position_visits: CounterType[
             Tuple[str, Tuple[int, int]]
         ] = Counter()
+        self.human_prior_milestone_outcomes: set[tuple] = set()
         self.human_prior_graph_recovery_pending = False
         self.current_human_prior_world_context_signature = (
             "human-prior-world-root"
@@ -2945,6 +2947,127 @@ class VerifiedNeuralAgent:
                             saved_states,
                         )
 
+            pre_settlement_endpoints: List[_HumanPriorOptionNode] = []
+            pre_settlement_milestones: Dict[
+                tuple, _HumanPriorOptionNode
+            ] = {}
+            milestone_candidates_before = 0
+            for endpoint in endpoints:
+                if endpoint.analysis.milestone_reward <= 0.0:
+                    pre_settlement_endpoints.append(endpoint)
+                    continue
+                milestone_candidates_before += 1
+                outcome_key = self._human_prior_milestone_outcome_key(
+                    endpoint.analysis
+                )
+                previous = pre_settlement_milestones.get(outcome_key)
+                if previous is None or (
+                    endpoint.target_state_visits == 0,
+                    endpoint.target_position_visits == 0,
+                    endpoint.score,
+                    -endpoint.depth,
+                ) > (
+                    previous.target_state_visits == 0,
+                    previous.target_position_visits == 0,
+                    previous.score,
+                    -previous.depth,
+                ):
+                    pre_settlement_milestones[outcome_key] = endpoint
+            pre_settlement_endpoints.extend(
+                pre_settlement_milestones.values()
+            )
+            if milestone_candidates_before > len(
+                pre_settlement_milestones
+            ):
+                self._emit(
+                    "human_prior_option_milestone_candidates_collapsed",
+                    decision=self.decision_index + 1,
+                    candidates_before=milestone_candidates_before,
+                    representatives_after=len(
+                        pre_settlement_milestones
+                    ),
+                    reason="pre_settlement_semantic_outcome",
+                    agent_visible=True,
+                    **self._frame_fields(source_frame),
+                )
+
+            processed_endpoints: List[_HumanPriorOptionNode] = []
+            milestone_representatives: Dict[
+                tuple, _HumanPriorOptionNode
+            ] = {}
+            for endpoint in pre_settlement_endpoints:
+                was_milestone = endpoint.analysis.milestone_reward > 0.0
+                if (
+                    was_milestone
+                    and self.config.human_prior_option_effect_stability_steps > 0
+                    and endpoint.settling_steps == 0
+                ):
+                    endpoint = self._settle_human_prior_milestone_endpoint(
+                        root,
+                        source_frame,
+                        endpoint,
+                        duration,
+                        saved_states,
+                    )
+                if not was_milestone:
+                    processed_endpoints.append(endpoint)
+                    continue
+                if endpoint.analysis.milestone_reward <= 0.0:
+                    self._emit(
+                        "human_prior_option_milestone_settlement_rejected",
+                        decision=self.decision_index + 1,
+                        reason="milestone_not_persistent_after_settling",
+                        path=endpoint.path,
+                        durations=endpoint.durations,
+                        settling_steps=endpoint.settling_steps,
+                        settling_frames=endpoint.settling_frames,
+                        immediate_frame=(
+                            endpoint.immediate_frame_digest or None
+                        ),
+                        agent_visible=True,
+                        **endpoint.analysis.telemetry(),
+                        **self._frame_fields(endpoint.frame),
+                    )
+                    continue
+                outcome_key = self._human_prior_milestone_outcome_key(
+                    endpoint.analysis
+                )
+                if outcome_key in self.human_prior_milestone_outcomes:
+                    self._emit(
+                        "human_prior_option_milestone_duplicate_rejected",
+                        decision=self.decision_index + 1,
+                        reason="milestone_outcome_already_committed",
+                        path=endpoint.path,
+                        durations=endpoint.durations,
+                        target_graph_signature=(
+                            endpoint.target_signature or None
+                        ),
+                        settling_steps=endpoint.settling_steps,
+                        settling_frames=endpoint.settling_frames,
+                        immediate_frame=(
+                            endpoint.immediate_frame_digest or None
+                        ),
+                        agent_visible=True,
+                        **endpoint.analysis.telemetry(),
+                        **self._frame_fields(endpoint.frame),
+                    )
+                    continue
+                previous = milestone_representatives.get(outcome_key)
+                if previous is None or (
+                    endpoint.target_state_visits == 0,
+                    endpoint.target_position_visits == 0,
+                    endpoint.score,
+                    -endpoint.depth,
+                ) > (
+                    previous.target_state_visits == 0,
+                    previous.target_position_visits == 0,
+                    previous.score,
+                    -previous.depth,
+                ):
+                    milestone_representatives[outcome_key] = endpoint
+            processed_endpoints.extend(milestone_representatives.values())
+            endpoints = processed_endpoints
+
             if not endpoints:
                 self.human_prior_option_exhausted_sources.add(
                     source_signature
@@ -3025,6 +3148,44 @@ class VerifiedNeuralAgent:
                     archived.confirmed_world_effect_signature
                     or archived.world_effect_signature
                 )
+                archived_milestone_checkpoint = None
+                if (
+                    archived.analysis.milestone_reward > 0.0
+                    and not archived.analysis.chest_completed
+                    and self.config.human_prior_life_loss_penalty > 0.0
+                ):
+                    milestone_state = self._clone_state_for_independent_owner(
+                        root, root
+                    )
+                    archived_milestone_checkpoint = _LifeHazardCheckpoint(
+                        state=milestone_state,
+                        frame=source_frame,
+                        choice=(
+                            self.current_frontier_signature,
+                            archived.path[0],
+                            archived.durations[0],
+                        ),
+                        decision=self.decision_index + 1,
+                        frontier_signature=self.current_frontier_signature,
+                        causal_context_signature=(
+                            self.current_causal_context_signature
+                        ),
+                        scene=self._scene_signature(source_frame),
+                        pose_action=self.current_pose_action,
+                        last_action=self.last_action,
+                        last_duration=self.last_duration,
+                        action_streak=self.action_streak,
+                        goal_heart_slots=archived.analysis.source_present,
+                        goal_player_slot=archived.analysis.source_player_slot,
+                        goal_chest_obtained=bool(
+                            getattr(self.goal_prior, "chest_obtained", False)
+                        ),
+                        human_prior_world_context_signature=(
+                            self.current_human_prior_world_context_signature
+                        ),
+                        kind="goal_milestone",
+                        state_id=self._state_id(milestone_state),
+                    )
                 branch = _ArchivedBranch(
                     state=archived.state,
                     frame=archived.frame,
@@ -3081,6 +3242,9 @@ class VerifiedNeuralAgent:
                     ),
                     human_prior_option_entity_state_signature=(
                         archived.confirmed_entity_state_signature
+                    ),
+                    goal_milestone_checkpoint=(
+                        archived_milestone_checkpoint
                     ),
                 )
                 self.archive.append(branch)
@@ -3225,6 +3389,23 @@ class VerifiedNeuralAgent:
         source_frame: Frame,
         target_frame: Frame,
     ) -> None:
+        if analysis.milestone_reward > 0.0:
+            outcome_key = self._human_prior_milestone_outcome_key(analysis)
+            outcome_was_new = (
+                outcome_key not in self.human_prior_milestone_outcomes
+            )
+            self.human_prior_milestone_outcomes.add(outcome_key)
+            if outcome_was_new:
+                self._emit(
+                    "human_prior_milestone_outcome_recorded",
+                    decision=self.decision_index + 1,
+                    source="committed_transition",
+                    action=action,
+                    action_frames=duration,
+                    agent_visible=True,
+                    **analysis.telemetry(),
+                    **self._frame_fields(target_frame),
+                )
         if analysis.chest_completed:
             self._emit(
                 "human_prior_chest_completed",
@@ -3465,6 +3646,7 @@ class VerifiedNeuralAgent:
         self.human_prior_option_visits = Counter()
         self.human_prior_player_position_visits = Counter()
         self.human_prior_phase_player_position_visits = Counter()
+        self.human_prior_milestone_outcomes = set()
         self.human_prior_option_exhausted_sources: set[str] = set()
         self.human_prior_graph_recovery_pending = False
         self.current_human_prior_world_context_signature = (
@@ -3660,6 +3842,9 @@ class VerifiedNeuralAgent:
                         reason="agent_reset_or_close",
                         state_id=self._state_id(branch.state),
                         created_decision=branch.created,
+                    )
+                    self._release_archived_goal_milestone_checkpoint(
+                        branch, "agent_reset_or_close"
                     )
                     release_state(branch.state)
                 except Exception:
@@ -3972,6 +4157,7 @@ class VerifiedNeuralAgent:
         self.human_prior_option_visits = Counter()
         self.human_prior_player_position_visits = Counter()
         self.human_prior_phase_player_position_visits = Counter()
+        self.human_prior_milestone_outcomes = set()
         self.human_prior_option_exhausted_sources = set()
         self.human_prior_graph_recovery_pending = False
         self.current_human_prior_world_context_signature = (
@@ -4102,6 +4288,7 @@ class VerifiedNeuralAgent:
         temporal_option_samples: CounterType[
             Tuple[str, Action, int]
         ] = Counter()
+        milestone_outcomes_by_decision: Dict[int, tuple] = {}
         known_slots: set[Tuple[int, int]] = set(
             self.goal_prior.known_slots
         )
@@ -4132,6 +4319,7 @@ class VerifiedNeuralAgent:
                 phase_player_positions.clear()
                 graph_edges.clear()
                 option_paths.clear()
+                milestone_outcomes_by_decision.clear()
                 known_slots = {
                     (int(slot[0]), int(slot[1]))
                     for slot in (
@@ -4146,6 +4334,47 @@ class VerifiedNeuralAgent:
                 event_chest_obtained = False
                 latest_decision_has_semantic_state = False
                 continue
+            if event.get("event") == "human_prior_milestone_outcome_recorded":
+                try:
+                    milestone_decision = int(event.get("decision", 0))
+                    source_slots = tuple(
+                        (int(slot[0]), int(slot[1]))
+                        for slot in (
+                            event.get("source_heart_slots")
+                            or event.get("human_prior_source_hearts")
+                            or ()
+                        )
+                    )
+                    target_slots = tuple(
+                        (int(slot[0]), int(slot[1]))
+                        for slot in (
+                            event.get("target_heart_slots")
+                            or event.get("human_prior_target_hearts")
+                            or ()
+                        )
+                    )
+                    target_player_value = (
+                        event.get("target_player_slot")
+                        if "target_player_slot" in event
+                        else event.get("human_prior_target_player_slot")
+                    )
+                    target_player_slot = (
+                        None
+                        if target_player_value is None
+                        else (
+                            int(target_player_value[0]),
+                            int(target_player_value[1]),
+                        )
+                    )
+                    milestone_outcomes_by_decision[milestone_decision] = (
+                        source_slots,
+                        target_slots,
+                        target_player_slot,
+                        bool(event.get("human_prior_chest_completed", False)),
+                        bool(event.get("human_prior_chest_obtained", False)),
+                    )
+                except (TypeError, ValueError):
+                    pass
             for slot in event.get("human_prior_known_heart_slots") or ():
                 known_slots.add((int(slot[0]), int(slot[1])))
             if event.get("event") == "goal_milestone_exhaustion_learned":
@@ -4194,6 +4423,18 @@ class VerifiedNeuralAgent:
                         event_player_slot,
                     )
                 ] += 1
+                milestone_decision = int(event.get("decision", 0))
+                milestone_outcome = milestone_outcomes_by_decision.get(
+                    milestone_decision
+                )
+                if milestone_outcome is not None:
+                    milestone_outcomes_by_decision[milestone_decision] = (
+                        milestone_outcome[0],
+                        milestone_outcome[1],
+                        event_player_slot,
+                        milestone_outcome[3],
+                        milestone_outcome[4],
+                    )
             if "human_prior_target_hearts" in event:
                 event_present_slots = tuple(
                     (int(slot[0]), int(slot[1]))
@@ -4279,6 +4520,9 @@ class VerifiedNeuralAgent:
         )
         self.human_prior_graph_edge_visits = graph_edges
         self.human_prior_option_visits = option_paths
+        self.human_prior_milestone_outcomes = set(
+            milestone_outcomes_by_decision.values()
+        )
         self.temporal_option_values.update(temporal_option_values)
         self.temporal_option_samples.update(temporal_option_samples)
         if latest_decision_has_semantic_state:
@@ -4324,6 +4568,7 @@ class VerifiedNeuralAgent:
             graph_edge_visits=sum(graph_edges.values()),
             verified_option_paths=len(option_paths),
             verified_option_path_visits=sum(option_paths.values()),
+            milestone_outcomes=len(self.human_prior_milestone_outcomes),
             temporal_option_values=len(temporal_option_values),
             temporal_option_samples=sum(temporal_option_samples.values()),
             known_heart_slots=tuple(sorted(known_slots)),
@@ -5166,6 +5411,15 @@ class VerifiedNeuralAgent:
         if release_state is not None:
             release_state(checkpoint.state)
 
+    def _release_archived_goal_milestone_checkpoint(
+        self, branch: _ArchivedBranch, reason: str
+    ) -> None:
+        checkpoint = branch.goal_milestone_checkpoint
+        if checkpoint is None:
+            return
+        branch.goal_milestone_checkpoint = None
+        self._release_life_hazard_checkpoint(checkpoint, reason)
+
     def _discard_pending_temporal_option(self, reason: str) -> None:
         counterfactual = getattr(self, "pending_option_counterfactual", None)
         if counterfactual is not None:
@@ -5234,6 +5488,108 @@ class VerifiedNeuralAgent:
             reason="new_action_with_counterfactual",
         )
         return True
+
+    @staticmethod
+    def _human_prior_milestone_outcome_key(
+        analysis: HeartGoalAnalysis,
+    ) -> tuple:
+        return (
+            analysis.source_present,
+            analysis.target_present,
+            analysis.target_player_slot,
+            analysis.chest_completed,
+            analysis.chest_obtained,
+        )
+
+    def _settle_human_prior_milestone_endpoint(
+        self,
+        root: object,
+        source_frame: Frame,
+        node: _HumanPriorOptionNode,
+        future_duration: int,
+        saved_states: List[object],
+    ) -> _HumanPriorOptionNode:
+        """Archive a milestone only after its action animation settles."""
+
+        assert self.goal_prior is not None
+        immediate_frame = node.frame
+        self.env.load_state(root)
+        settled_frame = source_frame
+        for action, duration in zip(node.path, node.durations):
+            settled_frame = self.env.step(action, duration)
+        settling_steps = self.config.human_prior_option_effect_stability_steps
+        for _ in range(settling_steps):
+            settled_frame = self.env.step(Action.NOOP, future_duration)
+        settled_state = self.env.save_state()
+        saved_states.append(settled_state)
+        settled_analysis = self.goal_prior.analyze(
+            source_frame, settled_frame
+        )
+        target_world_context = (
+            node.confirmed_world_context
+            or self.current_human_prior_world_context_signature
+        )
+        _, target_signature = self._human_prior_graph_signatures(
+            settled_analysis,
+            self.current_human_prior_world_context_signature,
+            target_world_context,
+        )
+        target_state_visits = (
+            0
+            if not target_signature
+            else self.human_prior_graph_state_visits[target_signature]
+        )
+        target_position_visits = (
+            0
+            if settled_analysis.target_player_slot is None
+            else self._human_prior_position_visits(
+                target_signature,
+                settled_analysis.target_player_slot,
+            )
+        )
+        option_visits, _ = self._human_prior_option_coverage(
+            node.source_signature, node.path, node.durations
+        )
+        score = (
+            settled_analysis.total_reward
+            + 4.0 / math.sqrt(target_position_visits + 1)
+            + 2.0 / math.sqrt(target_state_visits + 1)
+            + 0.25 * self.novelty.score(self._signature(settled_frame))
+            - 0.05 * node.depth
+            - 2.0 * option_visits
+        )
+        settled = replace(
+            node,
+            state=settled_state,
+            frame=settled_frame,
+            analysis=settled_analysis,
+            target_signature=target_signature,
+            score=score,
+            target_state_visits=target_state_visits,
+            target_position_visits=target_position_visits,
+            settling_steps=settling_steps,
+            settling_frames=settling_steps * future_duration,
+            immediate_frame_digest=immediate_frame.digest,
+        )
+        self._emit(
+            "human_prior_option_milestone_settled",
+            decision=self.decision_index + 1,
+            path=node.path,
+            durations=node.durations,
+            source_state_id=self._state_id(root),
+            settled_state_id=self._state_id(settled_state),
+            source_graph_signature=node.source_signature,
+            target_graph_signature=target_signature or None,
+            target_graph_state_visits=target_state_visits,
+            target_player_position_visits=target_position_visits,
+            settling_steps=settling_steps,
+            settling_frames=settling_steps * future_duration,
+            immediate_frame=immediate_frame.digest,
+            agent_visible=True,
+            **settled_analysis.telemetry(),
+            **self._frame_fields(settled_frame),
+        )
+        return settled
 
     def _advance_option_counterfactual(
         self,
@@ -9429,6 +9785,9 @@ class VerifiedNeuralAgent:
                     ),
                     **self._frame_fields(branch.frame),
                 )
+                self._release_archived_goal_milestone_checkpoint(
+                    branch, rollback_reason
+                )
                 release_key = (
                     branch_state_id
                     if branch_state_id is not None
@@ -10387,6 +10746,82 @@ class VerifiedNeuralAgent:
         )
         causal_context_preferred = branch in same_context_eligible
         self.archive.remove(branch)
+        archived_checkpoint = branch.goal_milestone_checkpoint
+        source_goal_heart_slots = (
+            archived_checkpoint.goal_heart_slots
+            if archived_checkpoint is not None
+            else (
+                ()
+                if self.goal_prior is None
+                else self.goal_prior.current_slots()
+            )
+        )
+        archive_goal_milestone = bool(
+            self.goal_prior is not None
+            and self.config.human_prior_life_loss_penalty > 0.0
+            and branch.goal_total_hearts > 0
+            and branch.goal_progress_reward > 0.0
+            and branch.goal_remaining_hearts < len(source_goal_heart_slots)
+            and not branch.goal_chest_obtained
+        )
+        milestone_checkpoint_source = None
+        if archive_goal_milestone:
+            checkpoint = archived_checkpoint
+            if checkpoint is not None:
+                branch.goal_milestone_checkpoint = None
+                checkpoint.decision = self.decision_index + 1
+                milestone_checkpoint_source = "archive_parent"
+            elif branch.parent_frame_digest == self.frame.digest:
+                milestone_state = self.env.save_state()
+                checkpoint = _LifeHazardCheckpoint(
+                    state=milestone_state,
+                    frame=self.frame,
+                    choice=(
+                        branch.origin_signature,
+                        branch.plan.path[0],
+                        branch.plan.durations[0],
+                    ),
+                    decision=self.decision_index + 1,
+                    frontier_signature=self.current_frontier_signature,
+                    causal_context_signature=(
+                        self.current_causal_context_signature
+                    ),
+                    scene=current_scene,
+                    pose_action=self.current_pose_action,
+                    last_action=self.last_action,
+                    last_duration=self.last_duration,
+                    action_streak=self.action_streak,
+                    goal_heart_slots=source_goal_heart_slots,
+                    goal_player_slot=self.goal_prior.current_player_slot,
+                    goal_chest_obtained=bool(
+                        getattr(self.goal_prior, "chest_obtained", False)
+                    ),
+                    human_prior_world_context_signature=(
+                        self.current_human_prior_world_context_signature
+                    ),
+                    kind="goal_milestone",
+                    state_id=self._state_id(milestone_state),
+                )
+                milestone_checkpoint_source = "matching_current_parent"
+            else:
+                checkpoint = None
+                self._emit(
+                    "goal_milestone_checkpoint_unavailable",
+                    decision=self.decision_index + 1,
+                    reason="archive_parent_state_not_retained",
+                    parent_state_id=branch.parent_state_id,
+                    parent_frame=branch.parent_frame_digest,
+                    current_frame=self.frame.digest,
+                    path=branch.plan.path,
+                    durations=branch.plan.durations,
+                )
+            if checkpoint is not None:
+                if self.pending_goal_milestone_checkpoint is not None:
+                    self._release_life_hazard_checkpoint(
+                        self.pending_goal_milestone_checkpoint,
+                        "superseded_by_new_goal_milestone",
+                    )
+                self.pending_goal_milestone_checkpoint = checkpoint
         self._discard_temporal_option("archive_restore")
         self._discard_pending_temporal_option("archive_restore")
         restored_state_id = self._state_id(branch.state)
@@ -10394,6 +10829,9 @@ class VerifiedNeuralAgent:
         release_state = getattr(self.env, "release_state", None)
         if release_state is not None:
             release_state(branch.state)
+        self._release_archived_goal_milestone_checkpoint(
+            branch, "archive_restored_without_milestone_transfer"
+        )
         self.frame = branch.frame
         if self.unlabeled_entity_memory is not None:
             self.unlabeled_entity_memory.observe(branch.frame)
@@ -10409,6 +10847,45 @@ class VerifiedNeuralAgent:
             branch.goal_player_slot,
             branch.goal_chest_obtained,
         )
+        if archive_goal_milestone:
+            assert self.goal_prior is not None
+            resolved_target_player_slot = (
+                self.goal_prior.current_player_slot
+                or branch.goal_player_slot
+            )
+            milestone_outcome_key = (
+                tuple(source_goal_heart_slots),
+                tuple(branch.goal_heart_slots),
+                resolved_target_player_slot,
+                False,
+                branch.goal_chest_obtained,
+            )
+            milestone_outcome_was_new = (
+                milestone_outcome_key
+                not in self.human_prior_milestone_outcomes
+            )
+            self.human_prior_milestone_outcomes.add(
+                milestone_outcome_key
+            )
+            if milestone_outcome_was_new:
+                self._emit(
+                    "human_prior_milestone_outcome_recorded",
+                    decision=self.decision_index + 1,
+                    source="archive_restore",
+                    path=branch.plan.path,
+                    durations=branch.plan.durations,
+                    source_heart_slots=source_goal_heart_slots,
+                    target_heart_slots=branch.goal_heart_slots,
+                    target_player_slot=resolved_target_player_slot,
+                    target_player_slot_source=(
+                        "restored_goal_prior"
+                        if resolved_target_player_slot
+                        != branch.goal_player_slot
+                        else "archive_metadata"
+                    ),
+                    agent_visible=True,
+                    **self._frame_fields(branch.frame),
+                )
         self.novelty.observe(self._signature(branch.frame))
         self.scene_visits[branch.scene] += 1
         self.current_scene = branch.scene
@@ -10416,6 +10893,23 @@ class VerifiedNeuralAgent:
         self.visual_stagnation_streak = 0
         self.autonomous_grace_remaining = 0
         self.decision_index += 1
+        if milestone_checkpoint_source is not None:
+            assert self.pending_goal_milestone_checkpoint is not None
+            self._emit(
+                "goal_milestone_checkpoint_created",
+                decision=self.decision_index,
+                choice=self.pending_goal_milestone_checkpoint.choice,
+                state_id=self.pending_goal_milestone_checkpoint.state_id,
+                milestone_reward=branch.goal_progress_reward,
+                remaining_hearts=branch.goal_remaining_hearts,
+                source_behavioral_signature=branch.origin_signature,
+                checkpoint_source=milestone_checkpoint_source,
+                parent_state_id=branch.parent_state_id,
+                parent_frame=branch.parent_frame_digest,
+                **self._frame_fields(
+                    self.pending_goal_milestone_checkpoint.frame
+                ),
+            )
         self._reset_persistent_change_observation_window(
             "archive_restore",
             preserve_candidates=speculative_persistence_applied,
@@ -10971,6 +11465,9 @@ class VerifiedNeuralAgent:
                     state_id=self._state_id(branch.state),
                     created_decision=branch.created,
                     score=branch.score,
+                )
+                self._release_archived_goal_milestone_checkpoint(
+                    branch, "capacity_prune"
                 )
                 release_state(branch.state)
 

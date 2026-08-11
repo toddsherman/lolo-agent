@@ -225,9 +225,11 @@ keyboard control, and playback from 5 to 240 frames per second.
 
 A later local session can continue from a decision the agent reached itself by
 passing `--resume-run runs/<parent-run> --resume-decision <n>` to
-`lolo-neural-run`. The child manifest hashes that parent telemetry, replay
-reconstructs both logs as one provenance chain, and gameplay resumes exclude
-the title-screen `START`/`SELECT` controls.
+`lolo-neural-run`. Each committed decision has a content-addressed, opaque
+emulator snapshot, so a child can validate the parent telemetry and restore in
+constant time. The agent never observes the snapshot bytes. Legacy logs still
+use deterministic full-event replay, and gameplay resumes exclude the
+title-screen `START`/`SELECT` controls.
 
 ## Durable learning experiments
 

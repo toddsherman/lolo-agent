@@ -90,6 +90,7 @@ class RunLogger:
         self.run_id = run_id or f"run-{stamp}"
         self.run_dir = Path(root).expanduser().resolve() / self.run_id
         self.frames_dir = self.run_dir / "frames"
+        self.states_dir = self.run_dir / "states"
         self.run_dir.mkdir(parents=True, exist_ok=False)
         if store_frames:
             self.frames_dir.mkdir()
@@ -102,6 +103,7 @@ class RunLogger:
         self._events = self._events_path.open("a", encoding="utf-8", buffering=1)
         self._closed = False
         self._stored_frames: set[str] = set()
+        self._stored_states: set[str] = set()
         self._event_counts: Counter[str] = Counter()
         self.manifest: Dict[str, Any] = {
             "schema_version": SCHEMA_VERSION,
@@ -177,6 +179,34 @@ class RunLogger:
             "scene_signature": signature_key(frame.coarse_signature(columns=3, rows=3)),
         }
 
+    def store_decision_snapshot(
+        self, decision: int, state: bytes, frame: Frame
+    ) -> Dict[str, Any]:
+        """Persist an opaque emulator checkpoint for constant-time episodic resume."""
+
+        if decision <= 0:
+            raise ValueError("snapshot decision must be positive")
+        if not state:
+            raise ValueError("snapshot state must not be empty")
+        digest = sha256(state).hexdigest()
+        relative = Path("states") / f"{digest}.state"
+        if digest not in self._stored_states:
+            self.states_dir.mkdir(exist_ok=True)
+            destination = self.run_dir / relative
+            if not destination.exists():
+                temporary = self.states_dir / f".{digest}.tmp"
+                temporary.write_bytes(state)
+                os.replace(temporary, destination)
+            self._stored_states.add(digest)
+        return self.log(
+            "decision_snapshot_stored",
+            decision=decision,
+            state_file=str(relative),
+            state_sha256=digest,
+            state_bytes=len(state),
+            **self.frame_fields(frame),
+        )
+
     def close(self, status: str = "complete", error: Optional[str] = None) -> None:
         if self._closed:
             return
@@ -191,6 +221,7 @@ class RunLogger:
                 "event_counts": dict(sorted(self._event_counts.items())),
                 "attempt_count": self.attempt,
                 "unique_frame_count": len(self._stored_frames),
+                "unique_state_count": len(self._stored_states),
             }
         )
         if error is not None:

@@ -26,6 +26,8 @@ enum class Command : std::uint16_t {
   Load = 5,
   Drop = 6,
   Close = 7,
+  Export = 8,
+  Import = 9,
 };
 
 #pragma pack(push, 1)
@@ -63,11 +65,17 @@ struct HelloHeader {
   std::uint32_t base_height;
   double fps;
 };
+
+struct ImportHeader {
+  std::uint64_t state_size;
+  FrameHeader frame;
+};
 #pragma pack(pop)
 
 static_assert(sizeof(RequestHeader) == 12, "request protocol layout changed");
 static_assert(sizeof(ResponseHeader) == 16, "response protocol layout changed");
 static_assert(sizeof(HelloHeader) == 24, "hello protocol layout changed");
+static_assert(sizeof(ImportHeader) == 20, "import protocol layout changed");
 
 using retro_environment_t = bool (*)(unsigned, void *);
 using retro_video_refresh_t = void (*)(const void *, unsigned, unsigned, std::size_t);
@@ -511,6 +519,49 @@ private:
         throw std::runtime_error("unknown save-state handle");
       }
       send_response(command, 0, {});
+      return false;
+    }
+    case Command::Export: {
+      require_empty(payload);
+      const std::size_t size = retro_serialize_size_();
+      if (size == 0) {
+        throw std::runtime_error("core does not support exported save states");
+      }
+      std::vector<std::uint8_t> state(size);
+      if (!retro_serialize_(state.data(), state.size())) {
+        throw std::runtime_error("core failed to export state");
+      }
+      send_response(command, 0, state);
+      return false;
+    }
+    case Command::Import: {
+      if (payload.size() < sizeof(ImportHeader)) {
+        throw std::runtime_error("import payload is truncated");
+      }
+      ImportHeader header{};
+      std::memcpy(&header, payload.data(), sizeof(header));
+      if (header.frame.channels != 3 || header.frame.width == 0 ||
+          header.frame.height == 0) {
+        throw std::runtime_error("import payload has an invalid framebuffer");
+      }
+      const std::uint64_t rgb_size =
+          static_cast<std::uint64_t>(header.frame.width) * header.frame.height *
+          header.frame.channels;
+      const std::uint64_t expected_size = sizeof(ImportHeader) +
+                                          header.state_size + rgb_size;
+      if (expected_size != payload.size()) {
+        throw std::runtime_error("import payload size mismatch");
+      }
+      const auto *state = payload.data() + sizeof(ImportHeader);
+      if (!retro_unserialize_(state, static_cast<std::size_t>(header.state_size))) {
+        throw std::runtime_error("core rejected imported save state");
+      }
+      const auto *rgb = state + header.state_size;
+      current_frame_.width = header.frame.width;
+      current_frame_.height = header.frame.height;
+      current_frame_.rgb.assign(rgb, rgb + rgb_size);
+      button_mask_ = 0;
+      send_response(command, 0, frame_payload());
       return false;
     }
     case Command::Close:

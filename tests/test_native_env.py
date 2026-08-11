@@ -52,3 +52,22 @@ class NativeEnvironmentTests(unittest.TestCase):
             agent.reset()
             decision = agent.decide()
             self.assertEqual(decision.branches_examined, 12)
+
+    def test_exported_state_imports_into_a_new_host_session(self) -> None:
+        with self.make_env() as source:
+            source.reset()
+            for _ in range(300):
+                source.step(Action.NOOP)
+            checkpoint_frame = source.observe()
+            checkpoint = source.export_state()
+            expected = source.step(Action.START, 2)
+            for _ in range(15):
+                expected = source.step(Action.NOOP)
+
+        with self.make_env() as target:
+            restored = target.import_state(checkpoint, checkpoint_frame)
+            self.assertEqual(restored, checkpoint_frame)
+            actual = target.step(Action.START, 2)
+            for _ in range(15):
+                actual = target.step(Action.NOOP)
+            self.assertEqual(actual, expected)

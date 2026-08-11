@@ -625,7 +625,62 @@ The eight-decision continuation ended at `(192,144)` with 21,519 telemetry
 events, balanced release of all 2,700 save states, and another frozen audit
 pass.
 
+A later upper-route continuation reached `(192,32)`, traversed left to
+`(144,32)`, and verified `LEFT(16), DOWN(16), DOWN(16)`. That option collected
+the upper heart and reduced the remaining count from two to one. The following
+search mapped the top corridor as far as `(64,32)`, where both the left edge and
+the vegetation below were blocked. Button and mixed directional probes did not
+open another player tile, and best-first recovery eventually returned east.
+The sole remaining heart stayed pixel-visible at `(144,192)`. This establishes
+that straight-line navigation reward is no longer the limiting signal: the
+agent can collect a third heart and deliberately traverse away from the fourth,
+but must preserve and revisit the pre-third-heart alternative when the upper
+milestone proves exhausted.
+
+Repeated continuations exposed a harness scalability issue while investigating
+that alternative. Restoring a decision replayed every rejected planning branch,
+so chained runs repeatedly moved gigabytes of verified frame data through the
+native protocol. The host now supports evaluator-only export/import of opaque
+core states. Every committed decision writes a content-addressed snapshot and
+`decision_snapshot_stored` event; its child validates the parent event-stream
+hash, snapshot hash, and restored frame before planning. The agent cannot read
+the bytes. A cross-process native regression verifies identical future frames,
+and the first native child restored in 55 ms rather than several minutes. Old
+logs retain full replay as a frame-verified migration fallback.
+
+The first constant-time continuation then exposed a rollback-provenance error.
+An option endpoint that collected a heart remained correctly branchable, but
+when selected later its recovery checkpoint was cloned from the agent's
+currently visible state rather than the option's actual parent. Milestone
+archive entries now retain a separately owned clone of that exact parent state
+when the option is verified. Selection transfers that clone to the exhaustion
+rollback checkpoint; legacy entries without a retained and matching parent log
+`goal_milestone_checkpoint_unavailable` instead of inventing provenance. Clear,
+capacity-prune, restore, and rollback-invalidation paths all release the extra
+owner. Synthetic regressions distinguish the live frame, archived endpoint,
+and archived parent, and verify restoration of the parent across that mismatch.
+
+The corrected rollback run exposed a related endpoint-quality problem. Ten of
+eleven archived variants of the same upper-heart transition had no detected
+target player because the option state was captured during movement animation.
+This prevented semantic outcome deduplication and repeatedly promoted the same
+heart under phase- and path-different frames. Milestone endpoints now replay
+through the configured settling horizon, are re-analyzed at that stable frame,
+and are collapsed by source hearts, target hearts, detected target player, and
+treasure phase. Equivalent immediate outcomes are collapsed before replaying
+the settling horizon. If archive metadata still lacks a player, the loaded
+stable frame's recovered player becomes the committed outcome key. Once such an
+outcome is committed in a room, later paths to the same outcome are rejected as
+duplicates; genuinely different target positions remain separate. The first
+native search collapsed 133 milestone candidates to two representatives. A
+later child reconstructed four committed endpoint classes from its resume chain,
+rejected all five matching candidates, and committed only non-milestone moves.
+All 910 temporary states in that child were released, and its frozen audit
+passed. A moving-milestone regression verifies stable player recovery,
+settled-state archival, duplicate rejection, and resume reconstruction.
+
 ## Verification
 
-The complete test suite passes: 203 tests, with 3 expected skips. Every
+The complete test suite passes: 208 tests, with 4 expected skips when native
+integration paths are not supplied. Every
 completed native run reported `frozen_evaluation_audit=pass`.

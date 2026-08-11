@@ -18,6 +18,7 @@ _FRAME = struct.Struct("<III")
 _STEP = struct.Struct("<II")
 _HELLO = struct.Struct("<IIIId")
 _HANDLE = struct.Struct("<Q")
+_IMPORT = struct.Struct("<QIII")
 
 _HELLO_COMMAND = 1
 _RESET_COMMAND = 2
@@ -26,6 +27,8 @@ _SAVE_COMMAND = 4
 _LOAD_COMMAND = 5
 _DROP_COMMAND = 6
 _CLOSE_COMMAND = 7
+_EXPORT_COMMAND = 8
+_IMPORT_COMMAND = 9
 
 _BUTTON_IDS = {
     Action.B: 0,
@@ -129,6 +132,26 @@ class NativeLibretroEnv:
     def release_state(self, state: object) -> None:
         handle = self._validate_handle(state)
         self._request(_DROP_COMMAND, _HANDLE.pack(handle._token))
+
+    def export_state(self) -> bytes:
+        """Export an opaque cross-session checkpoint for evaluator persistence."""
+
+        return self._request(_EXPORT_COMMAND)
+
+    def import_state(self, state: bytes, frame: Frame) -> Frame:
+        """Restore an evaluator-owned checkpoint without exposing it to the agent."""
+
+        if not state:
+            raise ValueError("imported state must not be empty")
+        if frame.channels != 3:
+            raise ValueError("imported framebuffer must have three channels")
+        payload = (
+            _IMPORT.pack(len(state), frame.width, frame.height, frame.channels)
+            + state
+            + frame.pixels
+        )
+        self._frame = self._decode_frame(self._request(_IMPORT_COMMAND, payload))
+        return self._frame
 
     def close(self) -> None:
         if self._closed:

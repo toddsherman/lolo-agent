@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .environment import Action
+from .experience_import import decode_logged_png
 from .native_env import NativeLibretroEnv
 from .pixels import Frame
 from .run_logging import encode_png, read_events, sha256_file, utc_now
@@ -67,13 +68,16 @@ def validate_replay_inputs(
     host_path: Path,
     core_path: Path,
     rom_path: Path,
+    *,
+    allow_host_mismatch: bool = False,
 ) -> Dict[str, Any]:
     run_dir = Path(run_dir).expanduser().resolve()
     manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
     inputs = manifest.get("metadata", {}).get("inputs", {})
     _verify_input(rom_path, inputs.get("rom", {}), "ROM")
     _verify_input(core_path, inputs.get("core", {}), "core")
-    _verify_input(host_path, inputs.get("host", {}), "native host")
+    if not allow_host_mismatch:
+        _verify_input(host_path, inputs.get("host", {}), "native host")
     return manifest
 
 
@@ -88,6 +92,30 @@ def restore_logged_decision(
         raise ValueError("resume decision must be positive")
     run_dir = Path(run_dir).expanduser().resolve()
     manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    for event in read_events(run_dir):
+        if (
+            event.get("event") != "decision_snapshot_stored"
+            or int(event.get("decision", 0)) != decision
+        ):
+            continue
+        relative = Path(str(event["state_file"]))
+        state_path = (run_dir / relative).resolve()
+        if not state_path.is_relative_to(run_dir):
+            raise RuntimeError("decision snapshot escapes its telemetry run")
+        state = state_path.read_bytes()
+        expected_state = str(event["state_sha256"])
+        if sha256_file(state_path) != expected_state:
+            raise RuntimeError("decision snapshot digest mismatch")
+        frame_digest = str(event["frame"])
+        frame = decode_logged_png(run_dir / "frames" / f"{frame_digest}.png")
+        current = env.import_state(state, frame)
+        _check_frame(current, event)
+        return RestoredDecision(
+            current,
+            decision,
+            int(event["seq"]),
+            str(manifest.get("run_id", run_dir.name)),
+        )
     handles: Dict[str, object] = {}
     current: Optional[Frame] = None
     resume = manifest.get("metadata", {}).get("episodic_resume")

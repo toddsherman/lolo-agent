@@ -188,6 +188,7 @@ def load_episodic_decision_events(
         in {
             "decision_committed",
             "goal_milestone_exhaustion_learned",
+            "human_prior_milestone_outcome_recorded",
             "pixel_novel_room_started",
         }
         and int(event.get("decision", 0)) <= through_decision
@@ -561,6 +562,14 @@ def main() -> None:
         "--resume-decision",
         type=int,
         help="committed decision to reconstruct from --resume-run",
+    )
+    parser.add_argument(
+        "--allow-compatible-resume-host",
+        action="store_true",
+        help=(
+            "permit a native-host digest mismatch while migrating old telemetry; "
+            "every replayed frame is still verified"
+        ),
     )
     parser.add_argument("--no-frame-images", action="store_true")
     parser.add_argument(
@@ -976,7 +985,11 @@ def main() -> None:
     resume_reward_track = None
     if args.resume_run is not None:
         source_manifest = validate_replay_inputs(
-            args.resume_run, args.host, args.core, args.rom
+            args.resume_run,
+            args.host,
+            args.core,
+            args.rom,
+            allow_host_mismatch=args.allow_compatible_resume_host,
         )
         source_events = args.resume_run.expanduser().resolve() / "events.jsonl"
         resume_reward_track = classify_reward_track(source_manifest)
@@ -986,6 +999,7 @@ def main() -> None:
             "source_decision": args.resume_decision,
             "source_events_sha256": sha256_file(source_events),
             "source_reward_track": resume_reward_track,
+            "compatible_host_migration": args.allow_compatible_resume_host,
         }
     inputs = {
         "rom": {"name": args.rom.name, "sha256": rom_sha256},
@@ -1129,6 +1143,14 @@ def main() -> None:
                 for decision_index in range(1, args.decisions + 1):
                     decision = agent.decide()
                     decisions.append(decision)
+                    current = native_env.observe()
+                    if current.digest != decision.frame.digest:
+                        raise RuntimeError(
+                            "emulator state diverged from the committed decision before snapshot"
+                        )
+                    logger.store_decision_snapshot(
+                        decision_index, native_env.export_state(), current
+                    )
                     stop = (
                         None
                         if detector is None

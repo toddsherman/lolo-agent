@@ -4,10 +4,40 @@ import unittest
 from pathlib import Path
 
 from lolo_agent.pixels import Frame
-from lolo_agent.replay import ReplayCapture, committed_timeline, write_player
+from lolo_agent.replay import (
+    ReplayCapture,
+    committed_timeline,
+    restore_logged_decision,
+    write_player,
+)
+from lolo_agent.run_logging import RunLogger
 
 
 class ReplayTests(unittest.TestCase):
+    def test_decision_snapshot_restores_without_replaying_event_history(self) -> None:
+        class SnapshotEnvironment:
+            def __init__(self) -> None:
+                self.imported = None
+
+            def import_state(self, state: bytes, frame: Frame) -> Frame:
+                self.imported = (state, frame)
+                return frame
+
+        with tempfile.TemporaryDirectory() as directory:
+            logger = RunLogger(Path(directory), run_id="snapshot-run")
+            frame = Frame(2, 2, 3, bytes(range(12)))
+            logger.log("decision_committed", decision=7, **logger.frame_fields(frame))
+            snapshot = b"opaque-emulator-state"
+            stored = logger.store_decision_snapshot(7, snapshot, frame)
+            logger.close()
+
+            env = SnapshotEnvironment()
+            restored = restore_logged_decision(env, logger.run_dir, 7)
+
+            self.assertEqual(restored.frame, frame)
+            self.assertEqual(restored.event_seq, stored["seq"])
+            self.assertEqual(env.imported, (snapshot, frame))
+
     def test_committed_timeline_excludes_rejected_branches(self) -> None:
         chosen = [{"frame": "chosen", "kind": "action_frame", "event_seq": 10}]
         rejected = [{"frame": "rejected", "kind": "action_frame", "event_seq": 11}]
