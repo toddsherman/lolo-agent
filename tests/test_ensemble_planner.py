@@ -531,6 +531,41 @@ class TemporalUnlabeledEntityTransformEnv:
         return Frame(32, 32, 1, bytes(pixels))
 
 
+class MultiStateUnlabeledEntityTransformEnv:
+    def __init__(self) -> None:
+        self.armed = False
+        self.entity_state = 0
+
+    def reset(self) -> Frame:
+        self.armed = False
+        self.entity_state = 0
+        return self._frame()
+
+    def step(self, action: Action, frames: int = 1) -> Frame:
+        del frames
+        if action == Action.RIGHT:
+            self.armed = True
+        elif action == Action.A and self.armed:
+            self.entity_state = min(2, self.entity_state + 1)
+        return self._frame()
+
+    def save_state(self) -> tuple[bool, int]:
+        return self.armed, self.entity_state
+
+    def load_state(self, state: tuple[bool, int]) -> Frame:
+        self.armed, self.entity_state = state
+        return self._frame()
+
+    def _frame(self) -> Frame:
+        pixels = bytearray(32 * 32)
+        pixels[0] = 255
+        entity_value = (32, 128, 224)[self.entity_state]
+        for y in range(4):
+            for x in range(4, 8):
+                pixels[y * 32 + x] = entity_value
+        return Frame(32, 32, 1, bytes(pixels))
+
+
 class PhaseShiftWorldEffectEnv:
     def __init__(self) -> None:
         self.tick = 0
@@ -2339,6 +2374,77 @@ class EnsemblePlannerTests(unittest.TestCase):
                 for event in logger.events
             )
         )
+
+    def test_unlabeled_entity_frontier_archives_distinct_entity_states(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            MultiStateUnlabeledEntityTransformEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.A),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=3,
+                human_prior_option_search_beam_width=8,
+                human_prior_option_search_action_frames=1,
+                human_prior_option_effect_stability_steps=2,
+                human_prior_option_effect_probe_limit=8,
+                human_prior_option_effect_phase_offsets=1,
+                human_prior_option_effect_local_controls=True,
+                human_prior_option_entity_frontier=True,
+                causal_spatial_columns=8,
+                causal_spatial_rows=8,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        source_signature = agent._current_human_prior_graph_signature()
+        agent.human_prior_graph_state_visits[source_signature] = 1
+        agent.human_prior_player_position_visits[(0, 0)] = 1
+
+        added = agent._search_human_prior_options()
+
+        self.assertEqual(added, 2)
+        self.assertEqual(len(agent.archive), 2)
+        self.assertEqual(
+            {branch.plan.path for branch in agent.archive},
+            {
+                (Action.RIGHT, Action.A),
+                (Action.RIGHT, Action.A, Action.A),
+            },
+        )
+        self.assertEqual(
+            len(
+                {
+                    branch.human_prior_option_entity_state_signature
+                    for branch in agent.archive
+                }
+            ),
+            2,
+        )
+        archived = [
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_archive_added"
+        ]
+        self.assertEqual(len(archived), 2)
+        self.assertEqual(sum(event["selected_primary"] for event in archived), 1)
+        completed = [
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_search_completed"
+        ][-1]
+        self.assertEqual(completed["archive_branches_added"], 2)
+        self.assertEqual(completed["distinct_entity_contexts_archived"], 2)
 
     def test_goal_milestone_exhaustion_rolls_back_exact_choice(self) -> None:
         model = EnsembleVisualDynamicsModel(

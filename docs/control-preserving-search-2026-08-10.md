@@ -535,7 +535,18 @@ prototype assignments, failed the neutral phase match, and created an unseen
 reversible graph context. The audit verified 273 option branches, released all
 285 save states, and passed the frozen-checkpoint audit.
 
+An exhaustive 64-candidate audit then exposed a second loss of information.
+The previously selected `RIGHT, A, RIGHT, A` state reappeared at rank 17, but
+ranks 46--51 revealed a different persistent local appearance after only one
+interaction, represented by `RIGHT, A, RIGHT`. Both states affected the same
+anonymous cells but had different appearance signatures. The earlier search
+retained only its highest-scoring endpoint and released the other verified save
+state. Option search now keeps one capacity-bounded representative for every
+distinct verified anonymous entity context. A synthetic two-stage transform
+confirms that both intermediate and final states remain branchable without
+assigning either a name or a game-specific value.
+
 ## Verification
 
-The complete test suite passes: 197 tests, with 3 expected skips. Every
+The complete test suite passes: 198 tests, with 3 expected skips. Every
 completed native run reported `frozen_evaluation_audit=pass`.

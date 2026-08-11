@@ -239,7 +239,13 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   option key, and `NOOP` becomes an allowed exact-option action on this
   opt-in track. This lets an interaction or display change survive long enough
   to test a later interaction without treating the intermediate change as
-  reward;
+  reward. When one search verifies multiple distinct anonymous entity states,
+  it retains one bounded save-state representative for each distinct learned
+  world context instead of discarding all but the highest-scoring endpoint.
+  `human_prior_option_archive_added.selected_primary` distinguishes the
+  ordinary primary choice from additional entity alternatives, while
+  `human_prior_option_search_completed.distinct_entity_contexts_archived`
+  records the number preserved by that search;
 - `human_prior_option_search_deferred` and
   `human_prior_option_search_skipped`, which distinguish a cheaper unseen
   local archive endpoint from an already exhausted sequence-search source;

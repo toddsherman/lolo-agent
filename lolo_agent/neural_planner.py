@@ -2316,7 +2316,7 @@ class VerifiedNeuralAgent:
 
         root = self.env.save_state()
         saved_states = [root]
-        retained_state: Optional[object] = None
+        retained_state_ids: set[int] = set()
         release_state = getattr(self.env, "release_state", None)
         root_node = _HumanPriorOptionNode(
             state=root,
@@ -2835,136 +2835,176 @@ class VerifiedNeuralAgent:
                 if not node.confirmed_world_effect_signature
             ]
             selection_endpoints = ordinary_endpoints or endpoints
+            selection_key = lambda node: (
+                node.analysis.milestone_reward,
+                node.target_position_visits == 0,
+                node.analysis.total_reward,
+                node.target_state_visits == 0,
+                node.score,
+                -node.depth,
+            )
             selected = max(
                 selection_endpoints,
-                key=lambda node: (
-                    node.analysis.milestone_reward,
-                    node.target_position_visits == 0,
-                    node.analysis.total_reward,
-                    node.target_state_visits == 0,
-                    node.score,
-                    -node.depth,
-                ),
+                key=selection_key,
             )
-            retained_state = selected.state
-            selected_frontier_signature = self._new_provisional_signature()
-            selected_pose_action = selected.pose_action
-            selected_target_world_context = (
-                selected.confirmed_world_context
-                or self.current_human_prior_world_context_signature
+            entity_representatives: Dict[
+                str, _HumanPriorOptionNode
+            ] = {}
+            for node in endpoints:
+                if not (
+                    node.confirmed_entity_state_signature
+                    and node.confirmed_world_context
+                ):
+                    continue
+                previous = entity_representatives.get(
+                    node.confirmed_world_context
+                )
+                if previous is None or selection_key(node) > selection_key(
+                    previous
+                ):
+                    entity_representatives[
+                        node.confirmed_world_context
+                    ] = node
+            additional_entity_endpoints = sorted(
+                (
+                    node
+                    for node in entity_representatives.values()
+                    if node is not selected
+                    and node.confirmed_world_context
+                    != selected.confirmed_world_context
+                ),
+                key=selection_key,
+                reverse=True,
             )
-            selected_world_effect_signature = (
-                selected.confirmed_world_effect_signature
-                or selected.world_effect_signature
+            available_slots = max(
+                1, self.config.archive_capacity - len(self.archive)
             )
-            branch = _ArchivedBranch(
-                state=selected.state,
-                frame=selected.frame,
-                plan=NeuralPlan(
-                    selected.path,
-                    selected.durations,
-                    selected.score,
-                    0.0,
-                ),
-                score=selected.score,
-                scene=self._scene_signature(selected.frame),
-                created=self.decision_index,
-                origin_signature=self.current_frontier_signature,
-                frontier_signature=selected_frontier_signature,
-                causal_context_signature=(
-                    self.current_causal_context_signature
-                ),
-                target_causal_context_signature=(
-                    self.current_causal_context_signature
-                ),
-                pose_action=selected_pose_action,
-                goal_heart_slots=selected.analysis.target_present,
-                goal_progress_reward=(
-                    selected.analysis.milestone_reward
-                ),
-                goal_remaining_hearts=(
-                    selected.analysis.remaining_hearts
-                ),
-                goal_total_hearts=len(selected.analysis.known_slots),
-                goal_chest_slot=(
-                    selected.analysis.target_chest_slot
-                    or selected.analysis.source_chest_slot
-                ),
-                goal_player_slot=selected.analysis.target_player_slot,
-                goal_chest_obtained=selected.analysis.chest_obtained,
-                parent_state_id=self._state_id(root),
-                parent_frame_digest=source_frame.digest,
-                parent_decision=self.decision_index,
-                search_depth=self.current_search_depth + selected.depth,
-                goal_source_signature=selected.source_signature,
-                goal_target_signature=selected.target_signature,
-                goal_source_world_context=(
-                    self.current_human_prior_world_context_signature
-                ),
-                goal_target_world_context=(
-                    selected_target_world_context
-                ),
-                goal_world_effect_signature=(
-                    selected.confirmed_world_effect_signature
-                ),
-                human_prior_verified_option=True,
-                human_prior_option_world_effect_signature=(
-                    selected_world_effect_signature
-                ),
-                human_prior_option_entity_state_signature=(
-                    selected.confirmed_entity_state_signature
-                ),
+            archived_endpoints = [selected]
+            archived_endpoints.extend(
+                additional_entity_endpoints[: max(0, available_slots - 1)]
             )
-            self.archive.append(branch)
-            self._emit(
-                "human_prior_option_archive_added",
-                decision=self.decision_index + 1,
-                state_id=self._state_id(selected.state),
-                parent_state_id=self._state_id(root),
-                search_depth=branch.search_depth,
-                option_depth=selected.depth,
-                path=selected.path,
-                durations=selected.durations,
-                source_graph_signature=selected.source_signature,
-                target_graph_signature=(
-                    selected.target_signature or None
-                ),
-                target_graph_state_visits=(
-                    selected.target_state_visits
-                ),
-                target_player_position_visits=(
-                    selected.target_position_visits
-                ),
-                human_prior_option_world_effect_signature=(
-                    selected_world_effect_signature or None
-                ),
-                human_prior_option_effect_frontier=bool(
-                    selected.confirmed_world_effect_signature
-                ),
-                human_prior_option_entity_frontier=bool(
-                    selected.confirmed_entity_state_signature
-                ),
-                human_prior_option_entity_state_signature=(
-                    selected.confirmed_entity_state_signature or None
-                ),
-                human_prior_option_effect_confirmed_action_indices=(
-                    selected.confirmed_action_indices
-                ),
-                human_prior_world_source_context=(
-                    self.current_human_prior_world_context_signature
-                ),
-                human_prior_world_target_context=(
-                    selected_target_world_context
-                ),
-                human_prior_option_world_effect_changed_pixels=(
-                    selected.world_effect_changed_pixels
-                ),
-                score=selected.score,
-                archive_size=len(self.archive),
-                agent_visible=True,
-                **selected.analysis.telemetry(),
-                **self._frame_fields(selected.frame),
-            )
+            for archived in archived_endpoints:
+                archived_frontier_signature = (
+                    self._new_provisional_signature()
+                )
+                archived_target_world_context = (
+                    archived.confirmed_world_context
+                    or self.current_human_prior_world_context_signature
+                )
+                archived_world_effect_signature = (
+                    archived.confirmed_world_effect_signature
+                    or archived.world_effect_signature
+                )
+                branch = _ArchivedBranch(
+                    state=archived.state,
+                    frame=archived.frame,
+                    plan=NeuralPlan(
+                        archived.path,
+                        archived.durations,
+                        archived.score,
+                        0.0,
+                    ),
+                    score=archived.score,
+                    scene=self._scene_signature(archived.frame),
+                    created=self.decision_index,
+                    origin_signature=self.current_frontier_signature,
+                    frontier_signature=archived_frontier_signature,
+                    causal_context_signature=(
+                        self.current_causal_context_signature
+                    ),
+                    target_causal_context_signature=(
+                        self.current_causal_context_signature
+                    ),
+                    pose_action=archived.pose_action,
+                    goal_heart_slots=archived.analysis.target_present,
+                    goal_progress_reward=(
+                        archived.analysis.milestone_reward
+                    ),
+                    goal_remaining_hearts=(
+                        archived.analysis.remaining_hearts
+                    ),
+                    goal_total_hearts=len(archived.analysis.known_slots),
+                    goal_chest_slot=(
+                        archived.analysis.target_chest_slot
+                        or archived.analysis.source_chest_slot
+                    ),
+                    goal_player_slot=archived.analysis.target_player_slot,
+                    goal_chest_obtained=archived.analysis.chest_obtained,
+                    parent_state_id=self._state_id(root),
+                    parent_frame_digest=source_frame.digest,
+                    parent_decision=self.decision_index,
+                    search_depth=self.current_search_depth + archived.depth,
+                    goal_source_signature=archived.source_signature,
+                    goal_target_signature=archived.target_signature,
+                    goal_source_world_context=(
+                        self.current_human_prior_world_context_signature
+                    ),
+                    goal_target_world_context=(
+                        archived_target_world_context
+                    ),
+                    goal_world_effect_signature=(
+                        archived.confirmed_world_effect_signature
+                    ),
+                    human_prior_verified_option=True,
+                    human_prior_option_world_effect_signature=(
+                        archived_world_effect_signature
+                    ),
+                    human_prior_option_entity_state_signature=(
+                        archived.confirmed_entity_state_signature
+                    ),
+                )
+                self.archive.append(branch)
+                retained_state_ids.add(id(archived.state))
+                self._emit(
+                    "human_prior_option_archive_added",
+                    decision=self.decision_index + 1,
+                    state_id=self._state_id(archived.state),
+                    parent_state_id=self._state_id(root),
+                    search_depth=branch.search_depth,
+                    option_depth=archived.depth,
+                    path=archived.path,
+                    durations=archived.durations,
+                    source_graph_signature=archived.source_signature,
+                    target_graph_signature=(
+                        archived.target_signature or None
+                    ),
+                    target_graph_state_visits=(
+                        archived.target_state_visits
+                    ),
+                    target_player_position_visits=(
+                        archived.target_position_visits
+                    ),
+                    human_prior_option_world_effect_signature=(
+                        archived_world_effect_signature or None
+                    ),
+                    human_prior_option_effect_frontier=bool(
+                        archived.confirmed_world_effect_signature
+                    ),
+                    human_prior_option_entity_frontier=bool(
+                        archived.confirmed_entity_state_signature
+                    ),
+                    human_prior_option_entity_state_signature=(
+                        archived.confirmed_entity_state_signature or None
+                    ),
+                    human_prior_option_effect_confirmed_action_indices=(
+                        archived.confirmed_action_indices
+                    ),
+                    human_prior_world_source_context=(
+                        self.current_human_prior_world_context_signature
+                    ),
+                    human_prior_world_target_context=(
+                        archived_target_world_context
+                    ),
+                    human_prior_option_world_effect_changed_pixels=(
+                        archived.world_effect_changed_pixels
+                    ),
+                    selected_primary=(archived is selected),
+                    score=archived.score,
+                    archive_size=len(self.archive),
+                    agent_visible=True,
+                    **archived.analysis.telemetry(),
+                    **self._frame_fields(archived.frame),
+                )
             self._emit(
                 "human_prior_option_search_completed",
                 decision=self.decision_index + 1,
@@ -2974,14 +3014,18 @@ class VerifiedNeuralAgent:
                 confirmed_effect_fallback_used=bool(
                     selected.confirmed_world_effect_signature
                 ),
-                archive_branches_added=1,
+                archive_branches_added=len(archived_endpoints),
+                distinct_entity_contexts_archived=sum(
+                    bool(node.confirmed_entity_state_signature)
+                    for node in archived_endpoints
+                ),
                 selected_depth=selected.depth,
                 selected_path=selected.path,
                 selected_durations=selected.durations,
                 selected_score=selected.score,
                 **self._frame_fields(selected.frame),
             )
-            return 1
+            return len(archived_endpoints)
         except BaseException:
             active_failure = True
             raise
@@ -2995,10 +3039,7 @@ class VerifiedNeuralAgent:
                         if state_identity in released:
                             continue
                         released.add(state_identity)
-                        if (
-                            retained_state is not None
-                            and state is retained_state
-                        ):
+                        if state_identity in retained_state_ids:
                             continue
                         release_state(state)
             except Exception as cleanup_error:
