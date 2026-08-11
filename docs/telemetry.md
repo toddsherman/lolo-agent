@@ -424,6 +424,8 @@ agent action set.
 track's temporary graph-state visits, player-position visits, graph-edge and
 verified-option coverage, learned world context, exact milestone-exhaustion
 values, and pixel-derived goal memory across the recursive resume chain.
+Logged `pixel_novel_room_started` boundaries discard earlier rooms' temporary
+graph, position, edge, and option counters during reconstruction.
 Current hearts, player, and life are anchored to the resumed pixels whenever
 the latest source decision is strict; stale semantic fields from an older
 assisted ancestor cannot overwrite the current save state. These are

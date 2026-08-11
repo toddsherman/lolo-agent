@@ -477,5 +477,5 @@ sequence.
 
 ## Verification
 
-The complete test suite passes: 190 tests, with 3 expected skips. Every
+The complete test suite passes: 191 tests, with 3 expected skips. Every
 completed native run reported `frozen_evaluation_audit=pass`.

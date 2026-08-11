@@ -2225,6 +2225,82 @@ class EnsemblePlannerTests(unittest.TestCase):
         ][0]
         self.assertEqual(seeded["current_state_source"], "resume_frame")
 
+    def test_seed_human_prior_memory_respects_novel_room_boundary(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            WorldEffectEnv(True),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        events = [
+            {
+                "event": "decision_committed",
+                "action": "right",
+                "action_frames": 1,
+                "human_prior_graph_source_signature": "room-2-source",
+                "human_prior_graph_target_signature": "room-2-target",
+                "human_prior_target_player_slot": [176, 32],
+                "human_prior_known_heart_slots": [[176, 48]],
+                "human_prior_target_hearts": [],
+                "human_prior_chest_obtained": True,
+            },
+            {
+                "event": "pixel_novel_room_started",
+                "discovered_heart_slots": [[96, 128], [128, 64]],
+            },
+            {
+                "event": "decision_committed",
+                "action": "left",
+                "action_frames": 1,
+                "human_prior_graph_source_signature": "room-3-source",
+                "human_prior_graph_target_signature": "room-3-target",
+                "human_prior_target_player_slot": [112, 160],
+                "human_prior_known_heart_slots": [[96, 128], [128, 64]],
+                "human_prior_target_hearts": [[96, 128], [128, 64]],
+                "human_prior_chest_obtained": False,
+            },
+        ]
+
+        agent.seed_human_prior_episodic_memory(events)
+
+        self.assertEqual(
+            agent.human_prior_graph_state_visits,
+            {"room-3-target": 1},
+        )
+        self.assertEqual(
+            agent.human_prior_player_position_visits,
+            {(112, 160): 1},
+        )
+        self.assertEqual(
+            agent.human_prior_graph_edge_visits,
+            {("room-3-source", Action.LEFT, 1): 1},
+        )
+        assert agent.goal_prior is not None
+        self.assertEqual(
+            agent.goal_prior.known_slots,
+            {(96, 128), (128, 64)},
+        )
+        self.assertFalse(agent.goal_prior.chest_obtained)
+        seeded = [
+            event
+            for event in logger.events
+            if event["event"] == "episodic_human_prior_memory_seeded"
+        ][0]
+        self.assertEqual(seeded["room_boundaries"], 1)
+
     def test_human_prior_restore_prefers_unvisited_player_position(self) -> None:
         model = EnsembleVisualDynamicsModel(
             latent_size=32, action_size=8, ensemble_size=2

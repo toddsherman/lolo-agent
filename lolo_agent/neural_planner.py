@@ -3313,7 +3313,28 @@ class VerifiedNeuralAgent:
         event_chest_obtained = observed_chest_obtained
         latest_decision_has_semantic_state = False
         decisions = 0
+        room_boundaries = 0
         for event in events:
+            if event.get("event") == "pixel_novel_room_started":
+                room_boundaries += 1
+                graph_states.clear()
+                player_positions.clear()
+                phase_player_positions.clear()
+                graph_edges.clear()
+                option_paths.clear()
+                known_slots = {
+                    (int(slot[0]), int(slot[1]))
+                    for slot in (
+                        event.get("discovered_heart_slots") or ()
+                    )
+                }
+                event_present_slots = tuple(sorted(known_slots))
+                event_life_signature = observed_life_signature
+                event_player_slot = observed_player_slot
+                event_world_context = "human-prior-world-root"
+                event_chest_obtained = False
+                latest_decision_has_semantic_state = False
+                continue
             for slot in event.get("human_prior_known_heart_slots") or ():
                 known_slots.add((int(slot[0]), int(slot[1])))
             if event.get("event") == "goal_milestone_exhaustion_learned":
@@ -3456,6 +3477,7 @@ class VerifiedNeuralAgent:
             decision=self.decision_index,
             source_events=len(events),
             committed_decisions=decisions,
+            room_boundaries=room_boundaries,
             graph_states=len(graph_states),
             graph_state_visits=sum(graph_states.values()),
             player_positions=len(player_positions),
