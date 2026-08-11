@@ -307,7 +307,9 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   identifies the first committed transition or archive restore that established
   that outcome for the current room. These outcome records are included in
   resume-chain memory; `episodic_human_prior_memory_seeded.milestone_outcomes`
-  reports how many were reconstructed;
+  reports how many were reconstructed. Reconstruction pairs each outcome with
+  `(run_id, decision)` so local decision numbers cannot collide across chained
+  runs;
 - `human_prior_option_archive_added`, plus
   `human_prior_verified_option`, `human_prior_option_depth`, and
   `human_prior_option_path_visits_before` on restore/commit events, which make

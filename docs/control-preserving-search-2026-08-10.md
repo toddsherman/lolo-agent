@@ -677,10 +677,12 @@ later child reconstructed four committed endpoint classes from its resume chain,
 rejected all five matching candidates, and committed only non-milestone moves.
 All 910 temporary states in that child were released, and its frozen audit
 passed. A moving-milestone regression verifies stable player recovery,
-settled-state archival, duplicate rejection, and resume reconstruction.
+settled-state archival, duplicate rejection, and resume reconstruction. Resume
+records are paired by run ID and decision because each chained run restarts its
+local decision counter.
 
 ## Verification
 
-The complete test suite passes: 208 tests, with 4 expected skips when native
+The complete test suite passes: 209 tests, with 4 expected skips when native
 integration paths are not supplied. Every
 completed native run reported `frozen_evaluation_audit=pass`.

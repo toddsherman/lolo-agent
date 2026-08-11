@@ -4288,7 +4288,9 @@ class VerifiedNeuralAgent:
         temporal_option_samples: CounterType[
             Tuple[str, Action, int]
         ] = Counter()
-        milestone_outcomes_by_decision: Dict[int, tuple] = {}
+        milestone_outcomes_by_decision: Dict[
+            Tuple[str, int], tuple
+        ] = {}
         known_slots: set[Tuple[int, int]] = set(
             self.goal_prior.known_slots
         )
@@ -4336,7 +4338,10 @@ class VerifiedNeuralAgent:
                 continue
             if event.get("event") == "human_prior_milestone_outcome_recorded":
                 try:
-                    milestone_decision = int(event.get("decision", 0))
+                    milestone_event_key = (
+                        str(event.get("run_id") or ""),
+                        int(event.get("decision", 0)),
+                    )
                     source_slots = tuple(
                         (int(slot[0]), int(slot[1]))
                         for slot in (
@@ -4366,7 +4371,7 @@ class VerifiedNeuralAgent:
                             int(target_player_value[1]),
                         )
                     )
-                    milestone_outcomes_by_decision[milestone_decision] = (
+                    milestone_outcomes_by_decision[milestone_event_key] = (
                         source_slots,
                         target_slots,
                         target_player_slot,
@@ -4423,12 +4428,15 @@ class VerifiedNeuralAgent:
                         event_player_slot,
                     )
                 ] += 1
-                milestone_decision = int(event.get("decision", 0))
+                milestone_event_key = (
+                    str(event.get("run_id") or ""),
+                    int(event.get("decision", 0)),
+                )
                 milestone_outcome = milestone_outcomes_by_decision.get(
-                    milestone_decision
+                    milestone_event_key
                 )
                 if milestone_outcome is not None:
-                    milestone_outcomes_by_decision[milestone_decision] = (
+                    milestone_outcomes_by_decision[milestone_event_key] = (
                         milestone_outcome[0],
                         milestone_outcome[1],
                         event_player_slot,

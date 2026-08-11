@@ -3401,15 +3401,61 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(agent.goal_prior.current_present, set())
         self.assertEqual(agent.goal_prior.current_life_signature, "life-1")
         self.assertEqual(agent.goal_prior.current_player_slot, (32, 0))
-        seeded = [
-            event
-            for event in logger.events
-            if event["event"] == "episodic_human_prior_memory_seeded"
-        ]
         self.assertEqual(len(seeded), 1)
         self.assertEqual(seeded[0]["player_positions"], 2)
         self.assertEqual(seeded[0]["verified_option_paths"], 1)
         self.assertEqual(seeded[0]["pose_action"], Action.RIGHT)
+
+    def test_seed_milestone_outcomes_scopes_decisions_by_run(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        agent = VerifiedNeuralAgent(
+            WorldEffectEnv(True),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                human_prior_heart_reward=1.0,
+            ),
+        )
+        agent.reset()
+        events = [
+            {
+                "event": "human_prior_milestone_outcome_recorded",
+                "run_id": "parent",
+                "decision": 2,
+                "source_heart_slots": [[32, 32]],
+                "target_heart_slots": [],
+                "target_player_slot": None,
+            },
+            {
+                "event": "decision_committed",
+                "run_id": "parent",
+                "decision": 2,
+                "human_prior_target_player_slot": [32, 0],
+                "human_prior_target_hearts": [],
+            },
+            {
+                "event": "decision_committed",
+                "run_id": "child",
+                "decision": 2,
+                "human_prior_target_player_slot": [48, 0],
+                "human_prior_target_hearts": [],
+            },
+        ]
+
+        agent.seed_human_prior_episodic_memory(events)
+
+        self.assertIn(
+            (((32, 32),), (), (32, 0), False, False),
+            agent.human_prior_milestone_outcomes,
+        )
+        self.assertNotIn(
+            (((32, 32),), (), (48, 0), False, False),
+            agent.human_prior_milestone_outcomes,
+        )
 
     def test_seed_human_prior_memory_anchors_strict_resume_to_pixels(
         self,
