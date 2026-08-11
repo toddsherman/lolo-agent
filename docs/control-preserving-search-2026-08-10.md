@@ -829,8 +829,55 @@ These tests still do not encode a room solution or an object label: goal
 distance comes from the already declared pixel-heart prior, and every endpoint
 is produced and verified through emulator interaction.
 
+The continuous control
+`spatial-v14-room3-live-milestone-rollback-v44-p8-d8` clarified that the
+pre-heart resume lineage already contained four historical upper-heart outcome
+classes. Its 119 newly found candidate paths therefore collapsed to five
+settled outcomes and were correctly rejected as duplicates; the ordinary
+policy eventually collected the known upper heart at decision 4. A separate
+depth-14 left-side search,
+`spatial-v14-room3-left-bypass-search-v46-p8-d1`, verified 9,350 exact branches
+and falsified the apparent push hypothesis: repeated `DOWN` actions above the
+left green tile never moved the player beyond `y=48`. The run instead found a
+nine-edge upper detour from assisted heart distance 16 to 9 and balanced all
+9,352 native state handles.
+
+The rejected-effect telemetry from the repaired depth-20 search then exposed
+a more useful signal. Eight candidates had a safe, localized, persistent,
+phase-distinct change in coarse cell `[7,6]`. Leave-one-action-out replay showed
+that the change disappeared when the causative movement was replaced by an
+equal-duration `NOOP`, yet its two-step controllability probe found no immediate
+new player position. The original effect frontier correctly rejected these
+under its reachability contract, but that contract also discarded potentially
+delayed transformations before the agent could investigate their consequences.
+
+An independent opt-in causal-effect frontier now retains such observations when
+they pass the same stability, phase, localization, safety, and action-ablation
+checks, even when bounded reachability gain is zero. The original immediate
+effect frontier remains unchanged. Exact search preserves one bounded archive
+representative per confirmed world context alongside the ordinary primary
+endpoint, and telemetry distinguishes `delayed_causal_effect` from
+`immediate_reachability_gain`. Generic recovery also admits a semantically
+verified archive whose coarse scene signature matches the current scene; the
+later physical/world frontier filters still decide whether it is useful.
+
+The native sequence validated the complete lifecycle. Run
+`spatial-v14-room3-causal-effect-frontier-v47-p8-d2` archived both the ordinary
+primary and one zero-reachability causal context, revealing the coarse recovery
+filter. After that filter was repaired,
+`spatial-v14-room3-causal-effect-continuous-v49-p8-d8` restored the causal
+`LEFT,UP` option at decision 5 with
+`human_prior_verified_option=true` and
+`world_state_frontier_preferred=true`. Decisions 6 and 7 then explored locally
+while preserving the new learned world context instead of collapsing it back
+to the root state. The run logged eight eligible causal observations, one
+causal archive, three archive restores, two committed world contexts, balanced
+all 1,047 native handles, and preserved the frozen parameter hash. Visual
+inspection confirms that these are ordinary game-screen states; the pipeline
+still reads no ROM RAM and assigns no semantic label to the changed cell.
+
 ## Verification
 
-The complete test suite passes: 221 tests, with 4 expected skips when native
+The complete test suite passes: 223 tests, with 4 expected skips when native
 integration paths are not supplied. Every
 completed native run reported `frozen_evaluation_audit=pass`.

@@ -120,6 +120,7 @@ class NeuralPlanningConfig:
     human_prior_option_effect_local_controls: bool = False
     human_prior_option_effect_local_minimum_cell_pixels: int = 12
     human_prior_option_effect_frontier: bool = False
+    human_prior_option_causal_effect_frontier: bool = False
     human_prior_option_effect_controllability_depth: int = 1
     human_prior_option_entity_frontier: bool = False
     human_prior_intrinsic_clip: float = 10.0
@@ -211,6 +212,7 @@ class _HumanPriorOptionNode:
     confirmed_world_effect_signature: str = ""
     confirmed_world_context: str = ""
     confirmed_action_indices: Tuple[int, ...] = ()
+    confirmed_effect_frontier_reason: str = ""
     confirmed_entity_state_signature: str = ""
     settling_steps: int = 0
     settling_frames: int = 0
@@ -591,6 +593,14 @@ class VerifiedNeuralAgent:
         ):
             raise ValueError(
                 "human-prior option effect frontier requires phase offsets"
+            )
+        if self.config.human_prior_option_causal_effect_frontier and (
+            self.config.human_prior_option_effect_stability_steps <= 0
+            or self.config.human_prior_option_effect_phase_offsets <= 0
+        ):
+            raise ValueError(
+                "human-prior option causal effect frontier requires effect "
+                "stability and phase offsets"
             )
         if not (
             1
@@ -3084,7 +3094,12 @@ class VerifiedNeuralAgent:
                                     action_index,
                                 )
                             )
-                        confirmed_indices = tuple(
+                        causal_confirmed_indices = tuple(
+                            int(control["replaced_action_index"])
+                            for control in action_controls
+                            if control["confirmed"]
+                        )
+                        reachability_confirmed_indices = tuple(
                             int(control["replaced_action_index"])
                             for control in action_controls
                             if control["confirmed"]
@@ -3095,13 +3110,33 @@ class VerifiedNeuralAgent:
                             )
                             > 0
                         )
-                        if (
+                        immediate_effect_frontier = bool(
                             self.config.human_prior_option_effect_frontier
+                            and reachability_confirmed_indices
+                        )
+                        delayed_causal_effect_frontier = bool(
+                            self.config.human_prior_option_causal_effect_frontier
+                            and causal_confirmed_indices
+                        )
+                        if (
+                            (
+                                immediate_effect_frontier
+                                or delayed_causal_effect_frontier
+                            )
                             and phase_alignment is not None
                             and not phase_alignment["phase_equivalent"]
-                            and confirmed_indices
                             and stable_effect_signature
                         ):
+                            frontier_reason = (
+                                "immediate_reachability_gain"
+                                if immediate_effect_frontier
+                                else "delayed_causal_effect"
+                            )
+                            confirmed_indices = (
+                                causal_confirmed_indices
+                                if delayed_causal_effect_frontier
+                                else reachability_confirmed_indices
+                            )
                             target_world_context = (
                                 self._next_human_prior_world_context(
                                     self.current_human_prior_world_context_signature,
@@ -3144,6 +3179,9 @@ class VerifiedNeuralAgent:
                             node.confirmed_action_indices = (
                                 confirmed_indices
                             )
+                            node.confirmed_effect_frontier_reason = (
+                                frontier_reason
+                            )
                             node.target_signature = target_signature
                             node.target_state_visits = target_state_visits
                             if eligible and not any(
@@ -3161,6 +3199,13 @@ class VerifiedNeuralAgent:
                                 confirmed_action_indices=(
                                     confirmed_indices
                                 ),
+                                action_control_confirmed_indices=(
+                                    causal_confirmed_indices
+                                ),
+                                reachability_confirmed_action_indices=(
+                                    reachability_confirmed_indices
+                                ),
+                                frontier_reason=frontier_reason,
                                 world_effect_signature=(
                                     stable_effect_signature
                                 ),
@@ -3380,28 +3425,31 @@ class VerifiedNeuralAgent:
                 selection_endpoints,
                 key=selection_key,
             )
-            entity_representatives: Dict[
+            causal_frontier_representatives: Dict[
                 str, _HumanPriorOptionNode
             ] = {}
             for node in endpoints:
                 if not (
-                    node.confirmed_entity_state_signature
+                    (
+                        node.confirmed_world_effect_signature
+                        or node.confirmed_entity_state_signature
+                    )
                     and node.confirmed_world_context
                 ):
                     continue
-                previous = entity_representatives.get(
+                previous = causal_frontier_representatives.get(
                     node.confirmed_world_context
                 )
                 if previous is None or selection_key(node) > selection_key(
                     previous
                 ):
-                    entity_representatives[
+                    causal_frontier_representatives[
                         node.confirmed_world_context
                     ] = node
-            additional_entity_endpoints = sorted(
+            additional_causal_frontier_endpoints = sorted(
                 (
                     node
-                    for node in entity_representatives.values()
+                    for node in causal_frontier_representatives.values()
                     if node is not selected
                     and node.confirmed_world_context
                     != selected.confirmed_world_context
@@ -3414,7 +3462,9 @@ class VerifiedNeuralAgent:
             )
             archived_endpoints = [selected]
             archived_endpoints.extend(
-                additional_entity_endpoints[: max(0, available_slots - 1)]
+                additional_causal_frontier_endpoints[
+                    : max(0, available_slots - 1)
+                ]
             )
             for archived in archived_endpoints:
                 archived_frontier_signature = (
@@ -3563,6 +3613,9 @@ class VerifiedNeuralAgent:
                     human_prior_option_effect_confirmed_action_indices=(
                         archived.confirmed_action_indices
                     ),
+                    human_prior_option_effect_frontier_reason=(
+                        archived.confirmed_effect_frontier_reason or None
+                    ),
                     human_prior_option_settling_steps=(
                         archived.settling_steps
                     ),
@@ -3600,6 +3653,10 @@ class VerifiedNeuralAgent:
                 archive_branches_added=len(archived_endpoints),
                 distinct_entity_contexts_archived=sum(
                     bool(node.confirmed_entity_state_signature)
+                    for node in archived_endpoints
+                ),
+                distinct_effect_contexts_archived=sum(
+                    bool(node.confirmed_world_effect_signature)
                     for node in archived_endpoints
                 ),
                 selected_depth=selected.depth,
@@ -10974,11 +11031,22 @@ class VerifiedNeuralAgent:
         if delayed_return or known_scene_return or human_prior_graph_stagnation:
             loop_start = self.delayed_return_loop_start or 0
             current_signature = self._signature(self.frame)
+
+            def recovery_distinct(branch: _ArchivedBranch) -> bool:
+                # A coarse visual signature can remain unchanged when a
+                # verified option changes a localized world context.  Let the
+                # later semantic frontier filters decide whether such a branch
+                # is useful instead of dropping it at the generic scene gate.
+                return bool(
+                    self._signature(branch.frame) != current_signature
+                    or any(self._human_prior_archive_frontier_flags(branch))
+                )
+
             if self.config.behavioral_best_first_archive:
                 eligible = [
                     branch
                     for branch in self.archive
-                    if self._signature(branch.frame) != current_signature
+                    if recovery_distinct(branch)
                 ]
                 self._emit(
                     "behavioral_best_first_global_archive",
@@ -10991,13 +11059,13 @@ class VerifiedNeuralAgent:
                     branch
                     for branch in self.archive
                     if branch.created >= loop_start
-                    and self._signature(branch.frame) != current_signature
+                    and recovery_distinct(branch)
                 ]
                 if not eligible:
                     eligible = [
                         branch
                         for branch in self.archive
-                        if self._signature(branch.frame) != current_signature
+                        if recovery_distinct(branch)
                     ]
         else:
             minimum_created = max(0, self.decision_index - self.config.archive_max_age)

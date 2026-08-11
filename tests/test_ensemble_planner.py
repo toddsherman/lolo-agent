@@ -417,6 +417,39 @@ class WorldEffectEnv:
         return Frame(8, 8, 1, bytes(pixels))
 
 
+class WorldEffectAndMovementEnv:
+    def __init__(self) -> None:
+        self.position = 0
+        self.world_active = False
+
+    def reset(self) -> Frame:
+        self.position = 0
+        self.world_active = False
+        return self._frame()
+
+    def step(self, action: Action, frames: int = 1) -> Frame:
+        del frames
+        if action == Action.RIGHT:
+            self.position = min(1, self.position + 1)
+        elif action == Action.A:
+            self.world_active = True
+        return self._frame()
+
+    def save_state(self) -> tuple[int, bool]:
+        return self.position, self.world_active
+
+    def load_state(self, state: tuple[int, bool]) -> Frame:
+        self.position, self.world_active = state
+        return self._frame()
+
+    def _frame(self) -> Frame:
+        pixels = bytearray(64)
+        pixels[self.position] = 255
+        if self.world_active:
+            pixels[63] = 128
+        return Frame(8, 8, 1, bytes(pixels))
+
+
 class GoalDirectedEffectPriorityEnv:
     def __init__(self) -> None:
         self.position = 0
@@ -2770,6 +2803,151 @@ class EnsemblePlannerTests(unittest.TestCase):
                 "reachable_player_position_gain"
             ],
             0,
+        )
+
+    def test_causal_effect_frontier_archives_effect_without_immediate_gain(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            WorldEffectEnv(True),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=1,
+                human_prior_option_search_action_frames=1,
+                human_prior_option_effect_stability_steps=2,
+                human_prior_option_effect_probe_limit=1,
+                human_prior_option_effect_phase_offsets=2,
+                human_prior_option_causal_effect_frontier=True,
+                causal_spatial_columns=8,
+                causal_spatial_rows=8,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        source_signature = agent._current_human_prior_graph_signature()
+        agent.human_prior_graph_state_visits[source_signature] = 1
+        agent.human_prior_player_position_visits[(0, 0)] = 1
+
+        added = agent._search_human_prior_options()
+
+        self.assertEqual(added, 1)
+        self.assertEqual(len(agent.archive), 1)
+        self.assertTrue(agent.archive[0].goal_world_effect_signature)
+        eligible = [
+            event
+            for event in logger.events
+            if event["event"]
+            == "human_prior_option_effect_frontier_eligible"
+        ]
+        self.assertEqual(len(eligible), 1)
+        self.assertEqual(eligible[0]["frontier_reason"], "delayed_causal_effect")
+        self.assertEqual(eligible[0]["confirmed_action_indices"], (0,))
+        self.assertEqual(
+            eligible[0]["reachability_confirmed_action_indices"], ()
+        )
+
+    def test_causal_effect_frontier_is_retained_beside_primary_movement(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            WorldEffectAndMovementEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.A),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=4,
+                human_prior_option_search_action_frames=1,
+                human_prior_option_effect_stability_steps=2,
+                human_prior_option_effect_probe_limit=4,
+                human_prior_option_effect_phase_offsets=2,
+                human_prior_option_causal_effect_frontier=True,
+                causal_spatial_columns=8,
+                causal_spatial_rows=8,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        source_signature = agent._current_human_prior_graph_signature()
+        agent.human_prior_graph_state_visits[source_signature] = 1
+        agent.human_prior_player_position_visits[(0, 0)] = 1
+
+        added = agent._search_human_prior_options()
+
+        self.assertEqual(added, 2)
+        self.assertEqual(len(agent.archive), 2)
+        archived = [
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_archive_added"
+        ]
+        self.assertEqual(sum(event["selected_primary"] for event in archived), 1)
+        self.assertEqual(
+            sum(bool(event["human_prior_option_effect_frontier"]) for event in archived),
+            1,
+        )
+        completed = [
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_search_completed"
+        ][0]
+        self.assertEqual(completed["distinct_effect_contexts_archived"], 1)
+
+        primary = next(
+            branch
+            for branch in agent.archive
+            if not branch.goal_world_effect_signature
+        )
+        causal = next(
+            branch
+            for branch in agent.archive
+            if branch.goal_world_effect_signature
+        )
+        agent.frame = agent.env.load_state(primary.state)
+        agent.goal_prior.restore(
+            primary.goal_heart_slots,
+            primary.frame,
+            primary.goal_player_slot,
+        )
+        agent.human_prior_player_position_visits[
+            primary.goal_player_slot
+        ] = 1
+        agent.human_prior_graph_state_visits[
+            primary.goal_target_signature
+        ] = 1
+        # Reproduce a localized effect that is intentionally invisible to the
+        # generic coarse scene signature used by archive recovery.
+        agent._signature = lambda frame: "same-coarse-scene"
+        agent.human_prior_graph_recovery_pending = True
+
+        restored = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(restored)
+        self.assertEqual(agent.frame, causal.frame)
+        self.assertEqual(
+            agent.current_human_prior_world_context_signature,
+            causal.goal_target_world_context,
         )
 
     def test_option_effect_controllability_detects_new_reachable_slot(

@@ -229,6 +229,12 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   reachable-position sets, newly reachable positions, and factual/control
   pixel-outcome spread. An effect enters the frontier only when factual state
   adds at least one reachable player position;
+- `--human-prior-option-causal-effect-frontier` is a separate opt-in assisted
+  track for delayed consequences. It applies the same stability, phase,
+  localization, safety, and leave-one-action-out requirements, but permits a
+  confirmed effect when the bounded reachability probe has not yet exposed a
+  new player position. It does not weaken or replace the immediate effect
+  frontier's reachability requirement;
 - with `--human-prior-option-effect-local-controls`, compact persistent effects
   rejected only by the conservative player-neighborhood mask also receive
   telemetry-only action ablations. Nearby cells are admitted only at horizons
@@ -240,8 +246,12 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   observations never enter the effect frontier;
 - `human_prior_option_effect_frontier_eligible`, emitted when the opt-in
   assisted effect frontier is enabled, records the confirmed action indices
-  and the reversible learned world-context transition. Only safe, localized,
-  persistent, action-ablation-confirmed effects can enter this frontier;
+  and the reversible learned world-context transition. Its `frontier_reason`
+  distinguishes `immediate_reachability_gain` from `delayed_causal_effect`,
+  while `action_control_confirmed_indices` and
+  `reachability_confirmed_action_indices` expose the two gates independently.
+  Only safe, localized, persistent, phase-distinct,
+  action-ablation-confirmed effects can enter either frontier;
 - with `--human-prior-option-entity-frontier`, the same controlled rollouts
   also maintain temporary room-local appearance prototypes. For each
   intervention, telemetry records the pre-action facing ray, intersected
@@ -262,10 +272,16 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   reward. When one search verifies multiple distinct anonymous entity states,
   it retains one bounded save-state representative for each distinct learned
   world context instead of discarding all but the highest-scoring endpoint.
+  The same representative retention applies to confirmed immediate and delayed
+  causal-effect contexts, so the ordinary primary and a learned transformation
+  can coexist in the bounded archive.
   `human_prior_option_archive_added.selected_primary` distinguishes the
-  ordinary primary choice from additional entity alternatives, while
+  ordinary primary choice from additional causal alternatives;
+  `human_prior_option_effect_frontier_reason` records why an effect alternative
+  qualified. `human_prior_option_search_completed.distinct_effect_contexts_archived`
+  and
   `human_prior_option_search_completed.distinct_entity_contexts_archived`
-  records the number preserved by that search. Entity branches store the
+  record the numbers preserved by that search. Entity branches store the
   post-settling frame and emulator state used by the persistence/control
   audit, rather than the immediate possibly in-flight action frame.
   `human_prior_option_archive_added` records
@@ -301,6 +317,11 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   best-first exploration but cannot preempt the normal planner. Option archive
   `goal_progress_reward` is signed total assisted progress rather than an
   unsigned milestone-only bonus;
+- semantic recovery does not discard a confirmed physical, world-effect,
+  entity, or control frontier merely because its coarse scene signature equals
+  the current frame. Such entries still pass through the normal downstream
+  frontier-exhaustion and ranking filters, making localized reversible changes
+  recoverable without treating all same-scene archives as novel;
 - with `--human-prior-goal-exhaustion-rollback`,
   `goal_milestone_checkpoint_created.checkpoint_source` distinguishes an exact
   retained `archive_parent` from a `matching_current_parent`. An old archive

@@ -530,6 +530,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--human-prior-option-causal-effect-frontier",
+        action="store_true",
+        help=(
+            "on the assisted track, retain safe localized persistent effects "
+            "confirmed by action ablation even when bounded reachability has "
+            "not yet improved"
+        ),
+    )
+    parser.add_argument(
         "--human-prior-option-effect-controllability-depth",
         type=int,
         default=1,
@@ -784,6 +793,14 @@ def main() -> None:
             "--human-prior-option-effect-frontier requires "
             "--human-prior-option-effect-phase-offsets"
         )
+    if args.human_prior_option_causal_effect_frontier and (
+        args.human_prior_option_effect_stability_steps <= 0
+        or args.human_prior_option_effect_phase_offsets <= 0
+    ):
+        parser.error(
+            "--human-prior-option-causal-effect-frontier requires positive "
+            "effect stability and phase offsets"
+        )
     if not 1 <= args.human_prior_option_effect_controllability_depth <= 4:
         parser.error(
             "--human-prior-option-effect-controllability-depth must be "
@@ -988,6 +1005,11 @@ def main() -> None:
         ),
         human_prior_option_effect_frontier=(
             args.human_prior_option_effect_frontier
+            if args.human_prior_hearts
+            else False
+        ),
+        human_prior_option_causal_effect_frontier=(
+            args.human_prior_option_causal_effect_frontier
             if args.human_prior_hearts
             else False
         ),
