@@ -696,8 +696,34 @@ temporary native state handles, and passed the frozen-model audit. Hearts
 remain positive on first discovery, and a known heart remains selectable when
 it is the best remaining route.
 
+Post-heart continuation then isolated two more generic search failures. First,
+an archive restore to a different player position was immediately followed by
+another restore, so the recovered frontier never received a locally verified
+action. The existing navigation-recovery grace now applies to semantic graph
+recovery as well as delayed visual return, and archive restores preserve
+whether player navigation actually changed. Second, raw heart-distance shaping
+made a reversible cul-de-sac repeatedly profitable. Navigation reward is now
+paid only for a phase-position endpoint that episodic memory has not already
+visited; repeated closer and farther moves are neutral rather than forming a
+myopic reward loop.
+
+Once positions already present in the long resume lineage were encountered,
+the frontier criterion was extended from unseen positions to known semantic
+states with unexpanded outgoing controller actions. Candidates are ranked by
+unseen position, least-visited graph state, remaining controls, and then the
+ordinary branch score. On the same corridor entrance, the previous policy
+selected `DOWN` into a state with eight graph visits. The revised native replay
+selected `UP` into a state with one graph visit, then traversed the zero-visit
+top and right corridors from `(128,32)` through `(192,96)`. Subsequent exact
+continuations reached the central passage and the lower-right edge at
+`(192,176)` while retaining the final heart. Completed validation runs balanced
+452/452, 522/522, 573/573, and 445/445 native state handles and all passed the
+frozen-model audit. This maps the reachable movement topology without encoding
+a room solution; blocked lower routes now leave object-changing actions as the
+next experimental frontier.
+
 ## Verification
 
-The complete test suite passes: 210 tests, with 4 expected skips when native
+The complete test suite passes: 212 tests, with 4 expected skips when native
 integration paths are not supplied. Every
 completed native run reported `frozen_evaluation_audit=pass`.

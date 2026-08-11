@@ -772,6 +772,58 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
         self.assertEqual(decision.action, Action.UP)
         self.assertGreaterEqual(decision.score, 2.0)
 
+    def test_navigation_reward_is_novelty_gated_per_player_endpoint(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = HeartNavigationEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.UP,),
+                planning_depth=1,
+                human_prior_heart_reward=25.0,
+                human_prior_navigation_reward=1.0,
+                human_prior_phase_position_novelty=True,
+            ),
+        )
+        source = agent.reset()
+        target = room_frame(((80, 48),), player=(80, 176))
+        analysis = agent.goal_prior.analyze(source, target)
+        target_signature = agent._human_prior_graph_signatures(analysis)[1]
+
+        first_score, _ = agent._human_prior_score(
+            3.0, analysis, target_signature
+        )
+        agent._record_human_prior_player_position(
+            target_signature, (80, 176)
+        )
+        repeated_score, _ = agent._human_prior_score(
+            3.0, analysis, target_signature
+        )
+
+        self.assertEqual(first_score, 4.0)
+        self.assertEqual(repeated_score, 3.0)
+        self.assertEqual(
+            agent._human_prior_effective_navigation_reward(
+                analysis, target_signature
+            ),
+            0.0,
+        )
+        self.assertEqual(
+            agent._human_prior_unexpanded_control_actions(target_signature),
+            (Action.UP,),
+        )
+        agent._record_human_prior_graph_edge(
+            target_signature, Action.UP, 1
+        )
+        self.assertEqual(
+            agent._human_prior_unexpanded_control_actions(target_signature),
+            (),
+        )
+
     def test_archive_recovery_softly_prefers_a_closer_goal_checkpoint(self) -> None:
         model = EnsembleVisualDynamicsModel(
             latent_size=32, action_size=8, ensemble_size=2
@@ -883,6 +935,84 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
 
         self.assertIsNotNone(restored)
         self.assertEqual(restored.frame.digest, farther.digest)
+
+    def test_navigation_archive_restore_gets_local_expansion_grace(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = HeartNavigationEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.UP,),
+                planning_depth=1,
+                human_prior_heart_reward=25.0,
+                human_prior_navigation_reward=1.0,
+                human_prior_navigation_recovery_grace=2,
+                human_prior_best_first_archive=True,
+                human_prior_graph_stagnation_visits=1,
+            ),
+        )
+        agent.reset()
+        target = room_frame(((80, 48),), player=(80, 64))
+        plan = NeuralPlan((Action.UP,), (1,), 1.0, 0.0)
+        agent.archive = [
+            _ArchivedBranch(
+                state=(80, 64),
+                frame=target,
+                plan=plan,
+                score=1.0,
+                scene=agent._scene_signature(target),
+                created=0,
+                origin_signature="source-frontier",
+                frontier_signature="target-frontier",
+                goal_heart_slots=((80, 48),),
+                goal_remaining_hearts=1,
+                goal_total_hearts=1,
+                goal_player_slot=(80, 64),
+                goal_source_signature="source-goal",
+                goal_target_signature="target-goal",
+            )
+        ]
+        agent.human_prior_graph_recovery_pending = True
+
+        restored = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(restored)
+        self.assertEqual(agent.goal_prior.current_player_slot, (80, 64))
+        self.assertEqual(agent.last_navigation_change_decision, 1)
+        self.assertTrue(
+            agent._human_prior_navigation_recovery_grace_active()
+        )
+
+        alternate = room_frame(((80, 48),), player=(96, 64))
+        agent.archive = [
+            _ArchivedBranch(
+                state=(96, 64),
+                frame=alternate,
+                plan=plan,
+                score=1.0,
+                scene=agent._scene_signature(alternate),
+                created=1,
+                origin_signature="source-frontier",
+                frontier_signature="alternate-frontier",
+                goal_heart_slots=((80, 48),),
+                goal_remaining_hearts=1,
+                goal_total_hearts=1,
+                goal_player_slot=(96, 64),
+                goal_source_signature="source-goal",
+                goal_target_signature="alternate-goal",
+            )
+        ]
+        agent.human_prior_graph_recovery_pending = True
+
+        suppressed = agent._restore_if_stagnant()
+
+        self.assertIsNone(suppressed)
+        self.assertEqual(agent.goal_prior.current_player_slot, (80, 64))
+        self.assertFalse(agent.human_prior_graph_recovery_pending)
 
     def test_verified_planner_prioritizes_a_real_heart_event(self) -> None:
         model = EnsembleVisualDynamicsModel(

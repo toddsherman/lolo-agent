@@ -804,18 +804,30 @@ class VerifiedNeuralAgent:
             )
 
     def _human_prior_score(
-        self, intrinsic_score: float, analysis: Optional[HeartGoalAnalysis]
+        self,
+        intrinsic_score: float,
+        analysis: Optional[HeartGoalAnalysis],
+        target_signature: str = "",
     ) -> Tuple[float, float]:
         if analysis is None:
             return intrinsic_score, intrinsic_score
+        effective_navigation_reward = (
+            self._human_prior_effective_navigation_reward(
+                analysis, target_signature
+            )
+        )
         if analysis.outcome_reward == 0.0:
             return (
-                intrinsic_score + analysis.navigation_reward,
+                intrinsic_score + effective_navigation_reward,
                 intrinsic_score,
             )
         clip = self.config.human_prior_intrinsic_clip
         clipped = max(-clip, min(clip, intrinsic_score))
-        effective_goal_reward = analysis.total_reward
+        effective_goal_reward = (
+            analysis.total_reward
+            - analysis.navigation_reward
+            + effective_navigation_reward
+        )
         if self._human_prior_milestone_outcome_known(analysis):
             # A heart remains a positive goal the first time the agent reaches
             # this semantic outcome.  Replaying the exact same transition is
@@ -826,6 +838,29 @@ class VerifiedNeuralAgent:
             # the best remaining route.
             effective_goal_reward -= analysis.milestone_reward
         return clipped + effective_goal_reward, clipped
+
+    def _human_prior_effective_navigation_reward(
+        self, analysis: HeartGoalAnalysis, target_signature: str = ""
+    ) -> float:
+        if (
+            analysis.navigation_reward == 0.0
+            or analysis.target_player_slot is None
+        ):
+            return analysis.navigation_reward
+        if self._human_prior_position_visits(
+            target_signature, analysis.target_player_slot
+        ) > 0:
+            return 0.0
+        return analysis.navigation_reward
+
+    def _human_prior_navigation_recovery_grace_active(self) -> bool:
+        grace = self.config.human_prior_navigation_recovery_grace
+        return bool(
+            grace > 0
+            and self.last_navigation_change_decision is not None
+            and self.decision_index - self.last_navigation_change_decision
+            < grace
+        )
 
     def _commit_goal_prior(
         self, analysis: HeartGoalAnalysis, frame: Frame
@@ -1194,6 +1229,24 @@ class VerifiedNeuralAgent:
             (signature, action, duration)
         ]
         return visits, visits == 0
+
+    def _human_prior_unexpanded_control_actions(
+        self, signature: str
+    ) -> Tuple[Action, ...]:
+        if not signature:
+            return ()
+        visited_actions = {
+            action
+            for (source, action, _duration), visits in (
+                self.human_prior_graph_edge_visits.items()
+            )
+            if source == signature and visits > 0
+        }
+        return tuple(
+            action
+            for action in self.config.actions
+            if action != Action.NOOP and action not in visited_actions
+        )
 
     def _record_human_prior_graph_edge(
         self, signature: str, action: Action, duration: int
@@ -6741,12 +6794,40 @@ class VerifiedNeuralAgent:
                 current_goal_graph_signature
             ]
         )
-        human_prior_graph_stagnant = bool(
+        human_prior_graph_repeated = bool(
             self.config.human_prior_best_first_archive
             and semantic_stagnation_limit > 0
             and current_goal_graph_signature
             and current_goal_graph_visits >= semantic_stagnation_limit
         )
+        navigation_recovery_grace_active = (
+            self._human_prior_navigation_recovery_grace_active()
+        )
+        human_prior_graph_stagnant = bool(
+            human_prior_graph_repeated
+            and not navigation_recovery_grace_active
+        )
+        if human_prior_graph_repeated and navigation_recovery_grace_active:
+            assert self.last_navigation_change_decision is not None
+            self._emit(
+                "human_prior_graph_recovery_suppressed",
+                decision=self.decision_index + 1,
+                reason="navigation_recovery_grace",
+                goal_signature=current_goal_graph_signature,
+                state_visits=current_goal_graph_visits,
+                navigation_change_decision=(
+                    self.last_navigation_change_decision
+                ),
+                decisions_since_navigation_change=(
+                    self.decision_index
+                    - self.last_navigation_change_decision
+                ),
+                grace_decisions=(
+                    self.config.human_prior_navigation_recovery_grace
+                ),
+                archive_size=len(self.archive),
+                **self._frame_fields(self.frame),
+            )
         self.human_prior_graph_recovery_pending = bool(
             human_prior_graph_stagnant and self.archive
         )
@@ -7449,6 +7530,27 @@ class VerifiedNeuralAgent:
                     goal_source_signature,
                     goal_target_signature,
                 )
+                goal_target_state_visits = (
+                    0
+                    if not goal_target_signature
+                    else self.human_prior_graph_state_visits[
+                        goal_target_signature
+                    ]
+                )
+                goal_target_position_visits = (
+                    0
+                    if goal_analysis is None
+                    or goal_analysis.target_player_slot is None
+                    else self._human_prior_position_visits(
+                        goal_target_signature,
+                        goal_analysis.target_player_slot,
+                    )
+                )
+                goal_target_unexpanded_actions = (
+                    self._human_prior_unexpanded_control_actions(
+                        goal_target_signature
+                    )
+                )
                 (
                     human_prior_graph_edge_visits_before,
                     human_prior_graph_edge_unexpanded,
@@ -7458,7 +7560,14 @@ class VerifiedNeuralAgent:
                     duration,
                 )
                 score, clipped_intrinsic_score = self._human_prior_score(
-                    intrinsic_score, goal_analysis
+                    intrinsic_score, goal_analysis, goal_target_signature
+                )
+                effective_navigation_reward = (
+                    None
+                    if goal_analysis is None
+                    else self._human_prior_effective_navigation_reward(
+                        goal_analysis, goal_target_signature
+                    )
                 )
                 milestone_outcome_known = bool(
                     goal_analysis is not None
@@ -7611,11 +7720,27 @@ class VerifiedNeuralAgent:
                         None
                         if goal_analysis is None
                         else goal_analysis.total_reward
+                        - goal_analysis.navigation_reward
+                        + (
+                            effective_navigation_reward
+                            if effective_navigation_reward is not None
+                            else 0.0
+                        )
                         - (
                             goal_analysis.milestone_reward
                             if milestone_outcome_known
                             else 0.0
                         )
+                    ),
+                    human_prior_effective_navigation_reward=(
+                        effective_navigation_reward
+                    ),
+                    human_prior_navigation_reward_suppressed=(
+                        0.0
+                        if goal_analysis is None
+                        or effective_navigation_reward is None
+                        else goal_analysis.navigation_reward
+                        - effective_navigation_reward
                     ),
                     human_prior_graph_source_signature=(
                         goal_source_signature or None
@@ -7637,6 +7762,18 @@ class VerifiedNeuralAgent:
                     ),
                     human_prior_graph_edge_unexpanded=(
                         human_prior_graph_edge_unexpanded
+                    ),
+                    human_prior_graph_target_state_visits=(
+                        goal_target_state_visits
+                    ),
+                    human_prior_target_position_visits=(
+                        goal_target_position_visits
+                    ),
+                    human_prior_target_unexpanded_actions=(
+                        goal_target_unexpanded_actions
+                    ),
+                    human_prior_target_unexpanded_action_count=len(
+                        goal_target_unexpanded_actions
                     ),
                     **self._human_prior_fields(goal_analysis),
                     abstract_signature=target_visual_cluster,
@@ -7672,11 +7809,10 @@ class VerifiedNeuralAgent:
                     branch_goal_analyses[id(item[2])]
                 )
             ]
-            known_goal_semantic_frontiers = [
+            unvisited_semantic_frontiers = [
                 item
                 for item in selection_verified
-                if known_goal_branches
-                and branch_goal_analyses[id(item[2])] is not None
+                if branch_goal_analyses[id(item[2])] is not None
                 and branch_goal_analyses[id(item[2])].milestone_reward <= 0.0
                 and branch_goal_analyses[id(item[2])].life_loss_penalty >= 0.0
                 and branch_goal_analyses[id(item[2])].target_player_slot
@@ -7686,10 +7822,20 @@ class VerifiedNeuralAgent:
                 and branch_goal_signatures[id(item[2])][1]
                 and branch_goal_signatures[id(item[2])][1]
                 != branch_goal_signatures[id(item[2])][0]
-                and self.human_prior_graph_state_visits[
-                    branch_goal_signatures[id(item[2])][1]
-                ]
-                == 0
+                and (
+                    self._human_prior_position_visits(
+                        branch_goal_signatures[id(item[2])][1],
+                        branch_goal_analyses[
+                            id(item[2])
+                        ].target_player_slot,
+                    )
+                    == 0
+                    or bool(
+                        self._human_prior_unexpanded_control_actions(
+                            branch_goal_signatures[id(item[2])][1]
+                        )
+                    )
+                )
             ]
             if filtered_hazards:
                 self._emit(
@@ -7821,10 +7967,25 @@ class VerifiedNeuralAgent:
                 if positive_goal_branches
                 else None
             )
-            known_goal_semantic_frontier_choice = (
+            human_prior_semantic_frontier_choice = (
                 max(
-                    known_goal_semantic_frontiers,
+                    unvisited_semantic_frontiers,
                     key=lambda item: (
+                        self._human_prior_position_visits(
+                            branch_goal_signatures[id(item[2])][1],
+                            branch_goal_analyses[
+                                id(item[2])
+                            ].target_player_slot,
+                        )
+                        == 0,
+                        -self.human_prior_graph_state_visits[
+                            branch_goal_signatures[id(item[2])][1]
+                        ],
+                        len(
+                            self._human_prior_unexpanded_control_actions(
+                                branch_goal_signatures[id(item[2])][1]
+                            )
+                        ),
                         item[0],
                         tuple(
                             (action.value, duration)
@@ -7834,7 +7995,16 @@ class VerifiedNeuralAgent:
                         ),
                     ),
                 )
-                if known_goal_branches and known_goal_semantic_frontiers
+                if unvisited_semantic_frontiers
+                and (
+                    known_goal_branches
+                    or (
+                        self.config.human_prior_best_first_archive
+                        and semantic_stagnation_limit > 0
+                        and current_goal_graph_visits
+                        >= semantic_stagnation_limit
+                    )
+                )
                 else None
             )
             known_goal_fallback_choice = (
@@ -7846,7 +8016,7 @@ class VerifiedNeuralAgent:
                     ),
                 )
                 if known_goal_branches
-                and known_goal_semantic_frontier_choice is None
+                and human_prior_semantic_frontier_choice is None
                 else None
             )
             dynamic_control_choice = None
@@ -8199,19 +8369,46 @@ class VerifiedNeuralAgent:
                     action_frames=chosen[1].durations[0],
                     **self._human_prior_fields(selected_analysis),
                 )
-            elif known_goal_semantic_frontier_choice is not None:
-                chosen = known_goal_semantic_frontier_choice
+            elif human_prior_semantic_frontier_choice is not None:
+                chosen = human_prior_semantic_frontier_choice
                 selected_analysis = branch_goal_analyses[id(chosen[2])]
                 self._emit(
-                    "human_prior_known_milestone_frontier_choice",
+                    (
+                        "human_prior_known_milestone_frontier_choice"
+                        if known_goal_branches
+                        else "human_prior_semantic_frontier_choice"
+                    ),
                     decision=self.decision_index + 1,
                     action=chosen[1].path[0],
                     action_frames=chosen[1].durations[0],
                     known_milestone_alternatives=len(known_goal_branches),
                     unvisited_semantic_frontiers=len(
-                        known_goal_semantic_frontiers
+                        unvisited_semantic_frontiers
                     ),
-                    reason="explore_before_repeating_known_milestone",
+                    reason=(
+                        "explore_before_repeating_known_milestone"
+                        if known_goal_branches
+                        else "player_endpoint_needs_expansion"
+                    ),
+                    target_graph_state_visits=(
+                        self.human_prior_graph_state_visits[
+                            branch_goal_signatures[id(chosen[2])][1]
+                        ]
+                    ),
+                    target_position_visits=(
+                        self._human_prior_position_visits(
+                            branch_goal_signatures[id(chosen[2])][1],
+                            selected_analysis.target_player_slot,
+                        )
+                        if selected_analysis is not None
+                        and selected_analysis.target_player_slot is not None
+                        else 0
+                    ),
+                    target_unexpanded_actions=(
+                        self._human_prior_unexpanded_control_actions(
+                            branch_goal_signatures[id(chosen[2])][1]
+                        )
+                    ),
                     **self._human_prior_fields(selected_analysis),
                 )
             elif known_goal_fallback_choice is not None:
@@ -10360,11 +10557,10 @@ class VerifiedNeuralAgent:
                 self.delayed_return_loop_start = None
             return None
         if (
-            delayed_return
-            and self.last_navigation_change_decision is not None
-            and self.decision_index - self.last_navigation_change_decision
-            < self.config.human_prior_navigation_recovery_grace
+            (delayed_return or human_prior_graph_stagnation)
+            and self._human_prior_navigation_recovery_grace_active()
         ):
+            assert self.last_navigation_change_decision is not None
             self._emit(
                 "human_prior_navigation_recovery_suppressed",
                 decision=self.decision_index + 1,
@@ -10377,8 +10573,11 @@ class VerifiedNeuralAgent:
                     self.config.human_prior_navigation_recovery_grace
                 ),
             )
-            self.delayed_return_recovery = False
-            self.delayed_return_loop_start = None
+            if delayed_return:
+                self.delayed_return_recovery = False
+                self.delayed_return_loop_start = None
+            if human_prior_graph_stagnation:
+                self.human_prior_graph_recovery_pending = False
             return None
         if delayed_return or known_scene_return or human_prior_graph_stagnation:
             loop_start = self.delayed_return_loop_start or 0
@@ -10897,6 +11096,11 @@ class VerifiedNeuralAgent:
                 else self.goal_prior.current_slots()
             )
         )
+        source_goal_player_slot = (
+            None
+            if self.goal_prior is None
+            else self.goal_prior.current_player_slot
+        )
         archive_goal_milestone = bool(
             self.goal_prior is not None
             and self.config.human_prior_life_loss_penalty > 0.0
@@ -10977,7 +11181,6 @@ class VerifiedNeuralAgent:
         if self.unlabeled_entity_memory is not None:
             self.unlabeled_entity_memory.observe(branch.frame)
         self.current_search_depth = branch.search_depth
-        self.last_navigation_change_decision = None
         self.pending_life_hazard_choice = None
         self.autonomous_intervention_pending = False
         self.causal_observation_intervention_pending = False
@@ -10987,6 +11190,16 @@ class VerifiedNeuralAgent:
             branch.frame,
             branch.goal_player_slot,
             branch.goal_chest_obtained,
+        )
+        restored_goal_player_slot = (
+            None
+            if self.goal_prior is None
+            else self.goal_prior.current_player_slot
+        )
+        restored_navigation_changed = bool(
+            source_goal_player_slot is not None
+            and restored_goal_player_slot is not None
+            and source_goal_player_slot != restored_goal_player_slot
         )
         if archive_goal_milestone:
             assert self.goal_prior is not None
@@ -11034,6 +11247,9 @@ class VerifiedNeuralAgent:
         self.visual_stagnation_streak = 0
         self.autonomous_grace_remaining = 0
         self.decision_index += 1
+        self.last_navigation_change_decision = (
+            self.decision_index if restored_navigation_changed else None
+        )
         if milestone_checkpoint_source is not None:
             assert self.pending_goal_milestone_checkpoint is not None
             self._emit(
@@ -11327,6 +11543,10 @@ class VerifiedNeuralAgent:
             ),
             human_prior_graph_stagnation_limit=(
                 self.config.human_prior_graph_stagnation_visits
+            ),
+            human_prior_navigation_changed=restored_navigation_changed,
+            human_prior_navigation_recovery_grace=(
+                self.config.human_prior_navigation_recovery_grace
             ),
             speculative_persistence_applied=(
                 speculative_persistence_applied
