@@ -301,6 +301,82 @@ falsifies a modest increase in movement horizon at that boundary; the next
 search signal must distinguish a lasting non-player room transformation from
 ordinary reachability and animation.
 
+## Persistent-effect falsification
+
+The option verifier now records raw action-versus-duration-matched-`NOOP`
+effects, replays them across future horizons, limits accepted effects to four
+coarse cells, checks nearby animation phases, and performs leave-one-action-out
+controls. An opt-in assisted world-effect frontier was also tested. When it was
+allowed to compete directly with ordinary endpoints, it reduced physical
+exploration; ordinary unseen endpoints now always win and a confirmed effect is
+only a fallback.
+
+The apparent local signal did not survive stricter controls. A first
+memory-faithful audit from the decision-127 endurance plateau recorded 48
+stability probes, three compact local candidates, eight action ablations, and
+three same-tile confirmations. Stored factual/control frames showed Lolo in a
+different sub-tile position or facing pose. The evaluator now removes the
+union of the factual/control blue-and-white player footprints plus a small
+outline halo, and requires 12 remaining changed pixels in a coarse cell. The
+exact matched rerun
+`spatial-v14-room2-player-footprint-local-effect-matched-audit-with-memory-d127-d5`
+recorded the same 48 probes, three candidates, and eight controls, but zero
+confirmations. The sole planning-configuration difference from the prior audit
+was the new 12-pixel support threshold. No effect telemetry influenced action
+selection, and the frozen audit passed.
+
+This falsifies the current coarse-pixel transformation signal at the measured
+all-heart plateau. Broad effects were animation; compact adjacent effects were
+player pose. More option depth or promotion of those cells would manufacture
+state rather than discover it.
+
+## Resume fidelity and goal-exhaustion credit
+
+Two temporary-memory bugs were found while reproducing the plateau. Emulator
+and scene pixels were restored across runs, but assisted graph visits, position
+visits, edge coverage, and option coverage were initially reset. Recursive
+episodic seeding now restored 51 graph states and exactly 49 player positions
+for the decision-127 audit. A later strict-to-assisted resume exposed a second
+case: stale semantic fields from an older assisted ancestor overwrote a heart
+visibly present in the current save state. Current hearts, player, and life are
+now anchored to the resumed pixels unless the latest source decision itself
+contains assisted state. Exact learned goal-exhaustion values are also carried
+as temporary episodic memory.
+
+The all-heart frontier map explains why preparation must be tested. The agent
+reached 49 positions, including `(32,176)` four tiles below the chest. At
+`(48,160)` the stored frame shows Lolo pressed against the pink moving entity;
+from that endpoint every controller action was pixel-equivalent. The lower-left
+corridor to the chest was blocked in this particular post-heart state. This is
+an observed controllability failure, not an encoded entity label or rule.
+
+An opt-in assisted rollback now treats a goal state as boundedly exhausted only
+when all three conditions hold: its semantic graph state is repeated, no
+recoverable archive frontier remains, and exact option search adds no endpoint.
+It gives the exact milestone choice a small negative temporal-option sample and
+restores the pre-milestone save state. In
+`spatial-v14-room2-goal-exhaustion-rollback-v3-from-pre-final-heart-d37-d150`,
+the final heart was collected at decision 1. Search continued through decision
+146, reaching 64 graph states, 53 player positions, and 12 exhausted option
+sources. At decision 147 the proof fired, learned a negative value for that
+exact `LEFT 16` context, invalidated 358 post-heart descendants, and restored
+the visible final heart at `(176,48)`. All 2,194 save states were released and
+the frozen audit passed.
+
+The next resumed run restored that negative value, filtered the original
+choice, tried a different collection context, and rolled that context back
+after its known post-heart frontier exhausted. Subsequent preparation rounds
+sustained hundreds of decisions with the final heart visible, reached 74
+cumulative detected positions, and verified more than a thousand exact options
+in a single 100-decision round. No life was lost.
+
+The result is a real improvement in credit assignment, not a room-clear result.
+Later preparation rounds stopped adding option endpoints and cycled near
+`(80,64)`/`(96,64)`. Visual comparison with the original pre-heart state showed
+the lower-left pink entity in the same location. Exact-context rejection can
+defer an irreversible choice, but the current graph still lacks an
+object-centric objective for changing the dynamic blocker before retrying it.
+
 ## Telemetry
 
 New events preserve every diagnostic and recovery decision:
@@ -352,15 +428,19 @@ verified save states, with controllability as a hard constraint and persistent
 pixel changes as the progress value. Increasing a semantic reward would not
 address the demonstrated timing and lineage failures.
 
-The semantic-frontier comparison has now passed that gate. Short exact options
-work, but the ablation shows that physical archive ordering is the dominant
-gain and depth-3 search adds only one endpoint at appreciable cost. The next
-experiment should retain local-gated options as a fallback, extend the broader
-physical frontier, and determine whether the distance-4 chest basin requires a
-longer verified option or a persistent world transformation. It should not
-increase the heart/chest reward or add a room-specific action sequence.
+The semantic-frontier comparison and goal-exhaustion preparation runs have now
+passed those gates. Short exact options work, but physical archive ordering is
+the dominant reachability gain, and coarse persistent-effect detection does not
+survive player-pose controls. Exhaustion credit successfully defers the final
+heart, yet hundreds of preparation decisions leave the visible blocker in the
+same place. The next architectural experiment should therefore learn and track
+unlabelled local sprite/tile entities through time, score verified changes to
+their position or controllability, and use that object state in the reversible
+graph. It should retain exact options and milestone rollback as safety
+mechanisms, without increasing reward or adding a room-specific action
+sequence.
 
 ## Verification
 
-The complete test suite passes: 172 tests, with 3 expected skips. Every
+The complete test suite passes: 182 tests, with 3 expected skips. Every
 completed native run reported `frozen_evaluation_audit=pass`.

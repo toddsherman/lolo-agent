@@ -101,9 +101,18 @@ class NeuralPlanningConfig:
     human_prior_navigation_recovery_grace: int = 0
     human_prior_best_first_archive: bool = False
     human_prior_graph_stagnation_visits: int = 0
+    human_prior_goal_exhaustion_rollback: bool = False
     human_prior_option_search_depth: int = 0
     human_prior_option_search_beam_width: int = 8
     human_prior_option_search_action_frames: int = 0
+    human_prior_option_effect_stability_steps: int = 0
+    human_prior_option_effect_probe_limit: int = 8
+    human_prior_option_effect_max_stable_cells: int = 4
+    human_prior_option_effect_phase_offsets: int = 0
+    human_prior_option_effect_phase_l1_threshold: float = 0.002
+    human_prior_option_effect_local_controls: bool = False
+    human_prior_option_effect_local_minimum_cell_pixels: int = 12
+    human_prior_option_effect_frontier: bool = False
     human_prior_intrinsic_clip: float = 10.0
     spatial_selection_weight: float = 0.0
     returnability_probe_depth: int = 0
@@ -166,6 +175,7 @@ class _ArchivedBranch:
     goal_target_world_context: str = "human-prior-world-root"
     goal_world_effect_signature: str = ""
     human_prior_verified_option: bool = False
+    human_prior_option_world_effect_signature: str = ""
 
 
 @dataclass
@@ -181,6 +191,11 @@ class _HumanPriorOptionNode:
     depth: int
     target_state_visits: int
     target_position_visits: int
+    world_effect_signature: str = ""
+    world_effect_changed_pixels: int = 0
+    confirmed_world_effect_signature: str = ""
+    confirmed_world_context: str = ""
+    confirmed_action_indices: Tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -484,6 +499,15 @@ class VerifiedNeuralAgent:
             raise ValueError(
                 "human-prior graph stagnation visits must be non-negative"
             )
+        if self.config.human_prior_goal_exhaustion_rollback and (
+            not self.config.human_prior_best_first_archive
+            or self.config.human_prior_graph_stagnation_visits <= 0
+            or self.config.human_prior_option_search_depth < 2
+        ):
+            raise ValueError(
+                "human-prior goal exhaustion rollback requires best-first "
+                "archive, graph stagnation, and option search"
+            )
         if self.config.human_prior_option_search_depth < 0:
             raise ValueError(
                 "human-prior option search depth must be non-negative"
@@ -495,6 +519,40 @@ class VerifiedNeuralAgent:
         if self.config.human_prior_option_search_action_frames < 0:
             raise ValueError(
                 "human-prior option search action frames must be non-negative"
+            )
+        if self.config.human_prior_option_effect_stability_steps < 0:
+            raise ValueError(
+                "human-prior option effect stability steps must be non-negative"
+            )
+        if self.config.human_prior_option_effect_probe_limit <= 0:
+            raise ValueError(
+                "human-prior option effect probe limit must be positive"
+            )
+        if self.config.human_prior_option_effect_max_stable_cells <= 0:
+            raise ValueError(
+                "human-prior option effect max stable cells must be positive"
+            )
+        if self.config.human_prior_option_effect_phase_offsets < 0:
+            raise ValueError(
+                "human-prior option effect phase offsets must be non-negative"
+            )
+        if self.config.human_prior_option_effect_phase_l1_threshold < 0.0:
+            raise ValueError(
+                "human-prior option effect phase L1 threshold must be non-negative"
+            )
+        if (
+            self.config.human_prior_option_effect_local_minimum_cell_pixels
+            <= 0
+        ):
+            raise ValueError(
+                "human-prior option effect local minimum cell pixels must be positive"
+            )
+        if (
+            self.config.human_prior_option_effect_frontier
+            and self.config.human_prior_option_effect_phase_offsets <= 0
+        ):
+            raise ValueError(
+                "human-prior option effect frontier requires phase offsets"
             )
         if self.config.human_prior_intrinsic_clip <= 0.0:
             raise ValueError("human-prior intrinsic clip must be positive")
@@ -769,6 +827,7 @@ class VerifiedNeuralAgent:
         analysis: Optional[HeartGoalAnalysis],
         frame: Frame,
         action: Optional[Action] = None,
+        allow_nonlocal: bool = False,
     ) -> str:
         """Remove detected player motion from a matched causal pixel effect.
 
@@ -777,7 +836,9 @@ class VerifiedNeuralAgent:
         sprite.  Comparing against a duration-matched NOOP has already
         removed autonomous animation; masking the source and target player
         tiles prevents ordinary movement from creating path-dependent world
-        states.
+        states. Multi-action matched-time probes may retain non-local cells
+        because their controlled path can legitimately affect several parts
+        of the screen before the endpoint is observed.
         """
 
         if not spatial_signature or analysis is None:
@@ -801,7 +862,11 @@ class VerifiedNeuralAgent:
             gy = min(rows - 1, max(0, slot[1] * rows // frame.height))
             player_cells.add((gx, gy))
             occupied[gy * columns + gx] = 0
-        if action not in (Action.A, Action.B) and player_cells:
+        if (
+            not allow_nonlocal
+            and action not in (Action.A, Action.B)
+            and player_cells
+        ):
             for index in range(len(occupied)):
                 gx = index % columns
                 gy = index // columns
@@ -813,6 +878,94 @@ class VerifiedNeuralAgent:
         if not any(occupied):
             return ""
         return occupied.hex()
+
+    def _human_prior_nonlocal_world_effect_cells(
+        self,
+        world_effect_signature: Optional[str],
+        analysis: HeartGoalAnalysis,
+        frame: Frame,
+        extra_player_slots: Sequence[Optional[Tuple[int, int]]] = (),
+    ) -> set[Tuple[int, int]]:
+        """Conservatively exclude the controlled sprite's neighborhood.
+
+        The assisted player detector reports a snapped tile anchor, while a
+        rendered pose can spill across that tile boundary.  A one-cell
+        Manhattan guard around both detected anchors keeps those pose pixels
+        observationally separate from more distant world effects.  Nearby
+        manipulation remains deliberately unresolved rather than being
+        mislabeled as a persistent object change.
+        """
+
+        cells = self._causal_spatial_cells(world_effect_signature)
+        if not cells:
+            return set()
+        columns = self.config.causal_spatial_columns
+        rows = self.config.causal_spatial_rows
+        player_cells = set()
+        for slot in {
+            analysis.source_player_slot,
+            analysis.target_player_slot,
+            *extra_player_slots,
+        }:
+            if slot is None:
+                continue
+            player_cells.add(
+                (
+                    min(
+                        columns - 1,
+                        max(0, slot[0] * columns // frame.width),
+                    ),
+                    min(
+                        rows - 1,
+                        max(0, slot[1] * rows // frame.height),
+                    ),
+                )
+            )
+        if not player_cells:
+            return cells
+        return {
+            cell
+            for cell in cells
+            if min(
+                abs(cell[0] - player[0])
+                + abs(cell[1] - player[1])
+                for player in player_cells
+            )
+            > 1
+        }
+
+    def _human_prior_cell_patch_l1(
+        self,
+        left: Frame,
+        right: Frame,
+        cells: set[Tuple[int, int]],
+    ) -> float:
+        if (
+            not cells
+            or left.width != right.width
+            or left.height != right.height
+            or left.channels != right.channels
+        ):
+            return 1.0
+        columns = self.config.causal_spatial_columns
+        rows = self.config.causal_spatial_rows
+        total = 0
+        values = 0
+        for column, row in cells:
+            x_start = column * left.width // columns
+            x_end = (column + 1) * left.width // columns
+            y_start = row * left.height // rows
+            y_end = (row + 1) * left.height // rows
+            for y in range(y_start, y_end):
+                for x in range(x_start, x_end):
+                    offset = (y * left.width + x) * left.channels
+                    for channel in range(left.channels):
+                        total += abs(
+                            left.pixels[offset + channel]
+                            - right.pixels[offset + channel]
+                        )
+                        values += 1
+        return total / (255.0 * max(1, values))
 
     @staticmethod
     def _next_human_prior_world_context(
@@ -971,6 +1124,529 @@ class VerifiedNeuralAgent:
             for branch in self.archive
         )
 
+    def _probe_human_prior_option_world_effect(
+        self,
+        root: object,
+        source_frame: Frame,
+        node: _HumanPriorOptionNode,
+        future_duration: int,
+        candidate_rank: int,
+    ) -> Dict[str, Any]:
+        assert self.goal_prior is not None
+        observations = []
+        cell_sets: List[set[Tuple[int, int]]] = []
+        nonlocal_cell_sets: List[set[Tuple[int, int]]] = []
+        safe = True
+        final_factual = node.frame
+        for future_step in range(
+            self.config.human_prior_option_effect_stability_steps + 1
+        ):
+            self.env.load_state(root)
+            factual = source_frame
+            for action, duration in zip(node.path, node.durations):
+                factual = self.env.step(action, duration)
+            for _ in range(future_step):
+                factual = self.env.step(Action.NOOP, future_duration)
+
+            self.env.load_state(root)
+            neutral = source_frame
+            for duration in node.durations:
+                neutral = self.env.step(Action.NOOP, duration)
+            for _ in range(future_step):
+                neutral = self.env.step(Action.NOOP, future_duration)
+
+            analysis = self.goal_prior.analyze(source_frame, factual)
+            spatial_signature, changed_pixels, _centroid = (
+                self._causal_spatial_effect(factual, neutral)
+            )
+            world_effect_signature = (
+                self._human_prior_world_effect_signature(
+                    spatial_signature,
+                    analysis,
+                    factual,
+                    action=node.path[-1],
+                    allow_nonlocal=True,
+                )
+            )
+            cells = self._causal_spatial_cells(
+                world_effect_signature
+            )
+            cell_sets.append(cells)
+            nonlocal_cells = self._human_prior_nonlocal_world_effect_cells(
+                world_effect_signature, analysis, factual
+            )
+            nonlocal_cell_sets.append(nonlocal_cells)
+            safe = bool(
+                safe
+                and analysis.target_player_slot is not None
+                and not analysis.life_counter_changed
+                and not analysis.dark_transition_started
+            )
+            observations.append(
+                {
+                    "future_step": future_step,
+                    "factual_frame": factual.digest,
+                    "neutral_frame": neutral.digest,
+                    "world_effect_signature": (
+                        world_effect_signature or None
+                    ),
+                    "world_effect_cells": sorted(cells),
+                    "world_effect_nonlocal_cells": sorted(
+                        nonlocal_cells
+                    ),
+                    "changed_pixels": changed_pixels,
+                    "target_player_slot": (
+                        analysis.target_player_slot
+                    ),
+                    "life_counter_changed": (
+                        analysis.life_counter_changed
+                    ),
+                    "dark_transition_started": (
+                        analysis.dark_transition_started
+                    ),
+                }
+            )
+            final_factual = factual
+        initial_cells = cell_sets[0] if cell_sets else set()
+        common_cells = (
+            set.intersection(*cell_sets) if cell_sets else set()
+        )
+        initial_nonlocal_cells = (
+            nonlocal_cell_sets[0] if nonlocal_cell_sets else set()
+        )
+        common_nonlocal_cells = (
+            set.intersection(*nonlocal_cell_sets)
+            if nonlocal_cell_sets
+            else set()
+        )
+        persistence_ratio = (
+            len(common_nonlocal_cells) / len(initial_nonlocal_cells)
+            if initial_nonlocal_cells
+            else 0.0
+        )
+        localized = bool(
+            common_nonlocal_cells
+            and len(common_nonlocal_cells)
+            <= self.config.human_prior_option_effect_max_stable_cells
+        )
+        stable = bool(
+            safe
+            and initial_nonlocal_cells
+            and all(nonlocal_cell_sets)
+            and common_nonlocal_cells
+            and localized
+            and persistence_ratio >= 0.5
+        )
+        raw_persistence_ratio = (
+            len(common_cells) / len(initial_cells)
+            if initial_cells
+            else 0.0
+        )
+        local_candidate = bool(
+            safe
+            and initial_cells
+            and all(cell_sets)
+            and common_cells
+            and len(common_cells)
+            <= self.config.human_prior_option_effect_max_stable_cells
+            and raw_persistence_ratio >= 0.5
+            and not stable
+        )
+        columns = self.config.causal_spatial_columns
+        rows = self.config.causal_spatial_rows
+        common_signature = bytearray(columns * rows)
+        for column, row in common_nonlocal_cells:
+            if 0 <= column < columns and 0 <= row < rows:
+                common_signature[row * columns + column] = 1
+        raw_common_signature = bytearray(columns * rows)
+        for column, row in common_cells:
+            if 0 <= column < columns and 0 <= row < rows:
+                raw_common_signature[row * columns + column] = 1
+        result = {
+            "candidate_rank": candidate_rank,
+            "depth": node.depth,
+            "path": node.path,
+            "durations": node.durations,
+            "source_graph_signature": node.source_signature,
+            "target_graph_signature": node.target_signature or None,
+            "initial_world_effect_signature": (
+                node.world_effect_signature or None
+            ),
+            "stable_world_effect_signature": (
+                bytes(common_signature).hex()
+                if common_nonlocal_cells
+                else None
+            ),
+            "initial_world_effect_cells": len(initial_cells),
+            "persistent_world_effect_cells": len(common_cells),
+            "persistent_world_effect_signature": (
+                bytes(raw_common_signature).hex()
+                if common_cells
+                else None
+            ),
+            "initial_nonlocal_world_effect_cells": len(
+                initial_nonlocal_cells
+            ),
+            "stable_world_effect_cells": len(common_nonlocal_cells),
+            "local_only_persistent_world_effect_cells": len(
+                common_cells - common_nonlocal_cells
+            ),
+            "persistence_ratio": persistence_ratio,
+            "raw_persistence_ratio": raw_persistence_ratio,
+            "localized": localized,
+            "local_candidate": local_candidate,
+            "maximum_stable_cells": (
+                self.config.human_prior_option_effect_max_stable_cells
+            ),
+            "stability_steps": (
+                self.config.human_prior_option_effect_stability_steps
+            ),
+            "safe": safe,
+            "stable": stable,
+            "observations": observations,
+        }
+        self._emit(
+            "human_prior_option_world_effect_stability",
+            decision=self.decision_index + 1,
+            agent_visible=True,
+            **result,
+            **self._frame_fields(final_factual),
+        )
+        return result
+
+    def _probe_human_prior_option_phase_alignment(
+        self,
+        root: object,
+        source_frame: Frame,
+        node: _HumanPriorOptionNode,
+        stable_world_effect_signature: str,
+        candidate_rank: int,
+    ) -> Dict[str, Any]:
+        """Test whether a localized effect is merely an animation phase shift."""
+
+        cells = self._causal_spatial_cells(
+            stable_world_effect_signature
+        )
+        self.env.load_state(root)
+        neutral = source_frame
+        for duration in node.durations:
+            neutral = self.env.step(Action.NOOP, duration)
+        observations = []
+        best_offset = 0
+        best_patch_l1 = float("inf")
+        best_frame = neutral
+        for offset in range(
+            self.config.human_prior_option_effect_phase_offsets + 1
+        ):
+            if offset > 0:
+                neutral = self.env.step(Action.NOOP, 1)
+            patch_l1 = self._human_prior_cell_patch_l1(
+                node.frame, neutral, cells
+            )
+            observations.append(
+                {
+                    "offset_frames": offset,
+                    "neutral_frame": neutral.digest,
+                    "patch_l1": patch_l1,
+                }
+            )
+            if patch_l1 < best_patch_l1:
+                best_patch_l1 = patch_l1
+                best_offset = offset
+                best_frame = neutral
+        phase_equivalent = bool(
+            cells
+            and best_patch_l1
+            <= self.config.human_prior_option_effect_phase_l1_threshold
+        )
+        result = {
+            "candidate_rank": candidate_rank,
+            "depth": node.depth,
+            "path": node.path,
+            "durations": node.durations,
+            "source_graph_signature": node.source_signature,
+            "target_graph_signature": node.target_signature or None,
+            "stable_world_effect_signature": (
+                stable_world_effect_signature
+            ),
+            "stable_world_effect_cells": len(cells),
+            "phase_offsets": (
+                self.config.human_prior_option_effect_phase_offsets
+            ),
+            "phase_l1_threshold": (
+                self.config.human_prior_option_effect_phase_l1_threshold
+            ),
+            "best_offset_frames": best_offset,
+            "best_patch_l1": best_patch_l1,
+            "best_neutral_frame": best_frame.digest,
+            "phase_equivalent": phase_equivalent,
+            "observations": observations,
+        }
+        self._emit(
+            "human_prior_option_world_effect_phase_alignment",
+            decision=self.decision_index + 1,
+            agent_visible=True,
+            **result,
+            **self._frame_fields(node.frame),
+        )
+        return result
+
+    def _probe_human_prior_option_action_control(
+        self,
+        root: object,
+        source_frame: Frame,
+        node: _HumanPriorOptionNode,
+        future_duration: int,
+        candidate_rank: int,
+        action_index: int,
+        allow_endpoint_matched_local: bool = False,
+    ) -> Dict[str, Any]:
+        """Replace one option action with an equal-duration NOOP.
+
+        This observational control asks whether a compact persistent effect is
+        attributable to a particular intervention rather than merely to the
+        other actions, elapsed animation, or endpoint pose. Both factual and
+        control player neighborhoods are excluded from the nonlocal effect.
+        """
+
+        assert self.goal_prior is not None
+        if not 0 <= action_index < len(node.path):
+            raise IndexError("option action control index out of range")
+        control_actions = list(node.path)
+        replaced_action = control_actions[action_index]
+        control_actions[action_index] = Action.NOOP
+        control_path = tuple(control_actions)
+        observations = []
+        audited_cell_sets: List[set[Tuple[int, int]]] = []
+        safe = True
+        endpoint_matched_all = True
+        final_factual = node.frame
+        for future_step in range(
+            self.config.human_prior_option_effect_stability_steps + 1
+        ):
+            self.env.load_state(root)
+            factual = source_frame
+            for action, duration in zip(node.path, node.durations):
+                factual = self.env.step(action, duration)
+            for _ in range(future_step):
+                factual = self.env.step(Action.NOOP, future_duration)
+
+            self.env.load_state(root)
+            control = source_frame
+            for action, duration in zip(control_path, node.durations):
+                control = self.env.step(action, duration)
+            for _ in range(future_step):
+                control = self.env.step(Action.NOOP, future_duration)
+
+            factual_analysis = self.goal_prior.analyze(
+                source_frame, factual
+            )
+            control_analysis = self.goal_prior.analyze(
+                source_frame, control
+            )
+            endpoint_matched = bool(
+                factual_analysis.target_player_slot is not None
+                and factual_analysis.target_player_slot
+                == control_analysis.target_player_slot
+            )
+            ignored_player_pixels: set[Tuple[int, int]] = set()
+            player_pixel_mask = getattr(
+                self.goal_prior, "player_pixel_mask", None
+            )
+            if (
+                allow_endpoint_matched_local
+                and endpoint_matched
+                and callable(player_pixel_mask)
+            ):
+                ignored_player_pixels.update(
+                    player_pixel_mask(
+                        factual, factual_analysis.target_player_slot
+                    )
+                )
+                ignored_player_pixels.update(
+                    player_pixel_mask(
+                        control, control_analysis.target_player_slot
+                    )
+                )
+            spatial_signature, changed_pixels, _centroid = (
+                self._causal_spatial_effect(
+                    factual,
+                    control,
+                    ignored_pixels=(
+                        ignored_player_pixels
+                        if ignored_player_pixels
+                        else None
+                    ),
+                    minimum_cell_pixels=(
+                        self.config.human_prior_option_effect_local_minimum_cell_pixels
+                        if ignored_player_pixels
+                        else 1
+                    ),
+                )
+            )
+            world_effect_signature = (
+                self._human_prior_world_effect_signature(
+                    spatial_signature,
+                    factual_analysis,
+                    factual,
+                    action=replaced_action,
+                    allow_nonlocal=True,
+                )
+            )
+            nonlocal_cells = (
+                self._human_prior_nonlocal_world_effect_cells(
+                    world_effect_signature,
+                    factual_analysis,
+                    factual,
+                    extra_player_slots=(
+                        control_analysis.source_player_slot,
+                        control_analysis.target_player_slot,
+                    ),
+                )
+            )
+            endpoint_matched_all = bool(
+                endpoint_matched_all and endpoint_matched
+            )
+            world_effect_cells = self._causal_spatial_cells(
+                world_effect_signature
+            )
+            audited_cells = (
+                world_effect_cells
+                if allow_endpoint_matched_local and endpoint_matched
+                else nonlocal_cells
+            )
+            audited_cell_sets.append(audited_cells)
+            safe = bool(
+                safe
+                and factual_analysis.target_player_slot is not None
+                and control_analysis.target_player_slot is not None
+                and not factual_analysis.life_counter_changed
+                and not control_analysis.life_counter_changed
+                and not factual_analysis.dark_transition_started
+                and not control_analysis.dark_transition_started
+            )
+            observations.append(
+                {
+                    "future_step": future_step,
+                    "factual_frame": factual.digest,
+                    "control_frame": control.digest,
+                    "world_effect_signature": (
+                        world_effect_signature or None
+                    ),
+                    "world_effect_nonlocal_cells": sorted(
+                        nonlocal_cells
+                    ),
+                    "world_effect_audited_cells": sorted(audited_cells),
+                    "endpoint_matched": endpoint_matched,
+                    "ignored_player_pixels": len(
+                        ignored_player_pixels
+                    ),
+                    "changed_pixels": changed_pixels,
+                    "factual_player_slot": (
+                        factual_analysis.target_player_slot
+                    ),
+                    "control_player_slot": (
+                        control_analysis.target_player_slot
+                    ),
+                    "factual_life_counter_changed": (
+                        factual_analysis.life_counter_changed
+                    ),
+                    "control_life_counter_changed": (
+                        control_analysis.life_counter_changed
+                    ),
+                    "factual_dark_transition_started": (
+                        factual_analysis.dark_transition_started
+                    ),
+                    "control_dark_transition_started": (
+                        control_analysis.dark_transition_started
+                    ),
+                }
+            )
+            final_factual = factual
+
+        initial_cells = (
+            audited_cell_sets[0] if audited_cell_sets else set()
+        )
+        common_cells = (
+            set.intersection(*audited_cell_sets)
+            if audited_cell_sets
+            else set()
+        )
+        persistence_ratio = (
+            len(common_cells) / len(initial_cells)
+            if initial_cells
+            else 0.0
+        )
+        localized = bool(
+            common_cells
+            and len(common_cells)
+            <= self.config.human_prior_option_effect_max_stable_cells
+        )
+        confirmed = bool(
+            safe
+            and initial_cells
+            and all(audited_cell_sets)
+            and common_cells
+            and localized
+            and persistence_ratio >= 0.5
+            and (
+                not allow_endpoint_matched_local
+                or endpoint_matched_all
+            )
+        )
+        columns = self.config.causal_spatial_columns
+        rows = self.config.causal_spatial_rows
+        common_signature = bytearray(columns * rows)
+        for column, row in common_cells:
+            if 0 <= column < columns and 0 <= row < rows:
+                common_signature[row * columns + column] = 1
+        result = {
+            "candidate_rank": candidate_rank,
+            "depth": node.depth,
+            "path": node.path,
+            "durations": node.durations,
+            "control_path": control_path,
+            "replaced_action_index": action_index,
+            "replaced_action": replaced_action,
+            "source_graph_signature": node.source_signature,
+            "target_graph_signature": node.target_signature or None,
+            "initial_nonlocal_world_effect_cells": len(initial_cells),
+            "persistent_nonlocal_world_effect_cells": len(common_cells),
+            "persistent_nonlocal_world_effect_signature": (
+                bytes(common_signature).hex() if common_cells else None
+            ),
+            "persistence_ratio": persistence_ratio,
+            "control_mode": (
+                "endpoint_matched_local"
+                if allow_endpoint_matched_local
+                else "nonlocal"
+            ),
+            "endpoint_matched": endpoint_matched_all,
+            "minimum_cell_pixels": (
+                self.config.human_prior_option_effect_local_minimum_cell_pixels
+                if allow_endpoint_matched_local
+                else 1
+            ),
+            "localized": localized,
+            "maximum_stable_cells": (
+                self.config.human_prior_option_effect_max_stable_cells
+            ),
+            "stability_steps": (
+                self.config.human_prior_option_effect_stability_steps
+            ),
+            "safe": safe,
+            "confirmed": confirmed,
+            "observations": observations,
+        }
+        self._emit(
+            "human_prior_option_world_effect_action_control",
+            decision=self.decision_index + 1,
+            agent_visible=True,
+            **result,
+            **self._frame_fields(final_factual),
+        )
+        return result
+
     def _search_human_prior_options(self) -> int:
         """Verify short action sequences from the current emulator state.
 
@@ -1053,6 +1729,7 @@ class VerifiedNeuralAgent:
         )
         parents = [root_node]
         endpoints: List[_HumanPriorOptionNode] = []
+        effect_nodes: List[_HumanPriorOptionNode] = []
         branches_verified = 0
         active_failure = False
         self._emit(
@@ -1070,6 +1747,24 @@ class VerifiedNeuralAgent:
             for depth in range(
                 1, self.config.human_prior_option_search_depth + 1
             ):
+                self.env.load_state(root)
+                neutral_target = source_frame
+                for _neutral_step in range(depth):
+                    neutral_target = self.env.step(
+                        Action.NOOP, duration
+                    )
+                self._emit(
+                    "human_prior_option_neutral_verified",
+                    decision=self.decision_index + 1,
+                    depth=depth,
+                    path=(Action.NOOP,) * depth,
+                    durations=(duration,) * depth,
+                    source_state_id=self._state_id(root),
+                    env_step_seq=getattr(
+                        self.env, "last_step_seq", None
+                    ),
+                    **self._frame_fields(neutral_target),
+                )
                 depth_candidates: List[_HumanPriorOptionNode] = []
                 for parent in parents:
                     for action in actions:
@@ -1108,6 +1803,29 @@ class VerifiedNeuralAgent:
                                 source_signature, path, durations
                             )
                         )
+                        (
+                            option_spatial_signature,
+                            option_changed_pixels,
+                            _option_change_centroid,
+                        ) = self._causal_spatial_effect(
+                            target, neutral_target
+                        )
+                        option_world_effect_signature = (
+                            self._human_prior_world_effect_signature(
+                                option_spatial_signature,
+                                analysis,
+                                target,
+                                action=action,
+                                allow_nonlocal=True,
+                            )
+                        )
+                        option_nonlocal_world_effect_cells = (
+                            self._human_prior_nonlocal_world_effect_cells(
+                                option_world_effect_signature,
+                                analysis,
+                                target,
+                            )
+                        )
                         state_novelty = 1.0 / math.sqrt(
                             target_state_visits + 1
                         )
@@ -1135,6 +1853,12 @@ class VerifiedNeuralAgent:
                             depth=depth,
                             target_state_visits=target_state_visits,
                             target_position_visits=target_position_visits,
+                            world_effect_signature=(
+                                option_world_effect_signature
+                            ),
+                            world_effect_changed_pixels=(
+                                option_changed_pixels
+                            ),
                         )
                         depth_candidates.append(node)
                         branches_verified += 1
@@ -1155,6 +1879,8 @@ class VerifiedNeuralAgent:
                         )
                         if endpoint_eligible:
                             endpoints.append(node)
+                        if option_world_effect_signature:
+                            effect_nodes.append(node)
                         self._emit(
                             "human_prior_option_branch_verified",
                             decision=self.decision_index + 1,
@@ -1177,6 +1903,18 @@ class VerifiedNeuralAgent:
                             ),
                             option_path_visits_before=option_visits,
                             option_path_unexpanded=option_unexpanded,
+                            human_prior_option_world_effect_signature=(
+                                option_world_effect_signature or None
+                            ),
+                            human_prior_option_world_effect_changed_pixels=(
+                                option_changed_pixels
+                            ),
+                            human_prior_option_nonlocal_world_effect_cells=(
+                                sorted(option_nonlocal_world_effect_cells)
+                            ),
+                            human_prior_option_nonlocal_world_effect_cell_count=(
+                                len(option_nonlocal_world_effect_cells)
+                            ),
                             endpoint_eligible=endpoint_eligible,
                             score=score,
                             agent_visible=True,
@@ -1203,6 +1941,204 @@ class VerifiedNeuralAgent:
                     reverse=True,
                 )[: self.config.human_prior_option_search_beam_width]
 
+            if (
+                self.config.human_prior_option_effect_stability_steps > 0
+                and effect_nodes
+            ):
+                distinct_effect_nodes: Dict[
+                    str, _HumanPriorOptionNode
+                ] = {}
+                for node in effect_nodes:
+                    previous = distinct_effect_nodes.get(
+                        node.world_effect_signature
+                    )
+                    if previous is None or node.score > previous.score:
+                        distinct_effect_nodes[
+                            node.world_effect_signature
+                        ] = node
+                effect_probe_candidates = sorted(
+                    distinct_effect_nodes.values(),
+                    key=lambda node: (
+                        node.analysis.target_player_slot is not None
+                        and not node.analysis.life_counter_changed
+                        and not node.analysis.dark_transition_started,
+                        bool(
+                            self._human_prior_nonlocal_world_effect_cells(
+                                node.world_effect_signature,
+                                node.analysis,
+                                node.frame,
+                            )
+                        ),
+                        node.path[-1] in (Action.A, Action.B),
+                        -len(
+                            self._human_prior_nonlocal_world_effect_cells(
+                                node.world_effect_signature,
+                                node.analysis,
+                                node.frame,
+                            )
+                        ),
+                        node.score,
+                    ),
+                    reverse=True,
+                )[: self.config.human_prior_option_effect_probe_limit]
+                for candidate_rank, node in enumerate(
+                    effect_probe_candidates, 1
+                ):
+                    stability = self._probe_human_prior_option_world_effect(
+                        root,
+                        source_frame,
+                        node,
+                        duration,
+                        candidate_rank,
+                    )
+                    if stability["stable"]:
+                        stable_effect_signature = str(
+                            stability.get(
+                                "stable_world_effect_signature"
+                            )
+                            or ""
+                        )
+                        phase_alignment = (
+                            None
+                            if not stable_effect_signature
+                            or self.config.human_prior_option_effect_phase_offsets
+                            <= 0
+                            else self._probe_human_prior_option_phase_alignment(
+                                root,
+                                source_frame,
+                                node,
+                                stable_effect_signature,
+                                candidate_rank,
+                            )
+                        )
+                        if (
+                            phase_alignment is not None
+                            and phase_alignment["phase_equivalent"]
+                        ):
+                            continue
+                        action_controls = []
+                        for action_index in range(len(node.path)):
+                            action_controls.append(
+                                self._probe_human_prior_option_action_control(
+                                    root,
+                                    source_frame,
+                                    node,
+                                    duration,
+                                    candidate_rank,
+                                    action_index,
+                                )
+                            )
+                        confirmed_indices = tuple(
+                            int(control["replaced_action_index"])
+                            for control in action_controls
+                            if control["confirmed"]
+                        )
+                        if (
+                            self.config.human_prior_option_effect_frontier
+                            and phase_alignment is not None
+                            and not phase_alignment["phase_equivalent"]
+                            and confirmed_indices
+                            and stable_effect_signature
+                        ):
+                            target_world_context = (
+                                self._next_human_prior_world_context(
+                                    self.current_human_prior_world_context_signature,
+                                    stable_effect_signature,
+                                )
+                            )
+                            _, target_signature = (
+                                self._human_prior_graph_signatures(
+                                    node.analysis,
+                                    self.current_human_prior_world_context_signature,
+                                    target_world_context,
+                                )
+                            )
+                            target_state_visits = (
+                                0
+                                if not target_signature
+                                else self.human_prior_graph_state_visits[
+                                    target_signature
+                                ]
+                            )
+                            _, option_unexpanded = (
+                                self._human_prior_option_coverage(
+                                    source_signature,
+                                    node.path,
+                                    node.durations,
+                                )
+                            )
+                            eligible = bool(
+                                target_signature
+                                and target_signature != source_signature
+                                and target_state_visits == 0
+                                and option_unexpanded
+                            )
+                            node.confirmed_world_effect_signature = (
+                                stable_effect_signature
+                            )
+                            node.confirmed_world_context = (
+                                target_world_context
+                            )
+                            node.confirmed_action_indices = (
+                                confirmed_indices
+                            )
+                            node.target_signature = target_signature
+                            node.target_state_visits = target_state_visits
+                            if eligible and not any(
+                                candidate is node
+                                for candidate in endpoints
+                            ):
+                                endpoints.append(node)
+                            self._emit(
+                                "human_prior_option_effect_frontier_eligible",
+                                decision=self.decision_index + 1,
+                                candidate_rank=candidate_rank,
+                                depth=node.depth,
+                                path=node.path,
+                                durations=node.durations,
+                                confirmed_action_indices=(
+                                    confirmed_indices
+                                ),
+                                world_effect_signature=(
+                                    stable_effect_signature
+                                ),
+                                source_world_context=(
+                                    self.current_human_prior_world_context_signature
+                                ),
+                                target_world_context=(
+                                    target_world_context
+                                ),
+                                source_graph_signature=(
+                                    source_signature
+                                ),
+                                target_graph_signature=(
+                                    target_signature or None
+                                ),
+                                target_graph_state_visits=(
+                                    target_state_visits
+                                ),
+                                option_path_unexpanded=(
+                                    option_unexpanded
+                                ),
+                                eligible=eligible,
+                                agent_visible=True,
+                                **self._frame_fields(node.frame),
+                            )
+                    elif (
+                        self.config.human_prior_option_effect_local_controls
+                        and stability["local_candidate"]
+                    ):
+                        for action_index in range(len(node.path)):
+                            self._probe_human_prior_option_action_control(
+                                root,
+                                source_frame,
+                                node,
+                                duration,
+                                candidate_rank,
+                                action_index,
+                                allow_endpoint_matched_local=True,
+                            )
+
             if not endpoints:
                 self.human_prior_option_exhausted_sources.add(
                     source_signature
@@ -1217,13 +2153,19 @@ class VerifiedNeuralAgent:
                     **self._frame_fields(source_frame),
                 )
                 return 0
+            ordinary_endpoints = [
+                node
+                for node in endpoints
+                if not node.confirmed_world_effect_signature
+            ]
+            selection_endpoints = ordinary_endpoints or endpoints
             selected = max(
-                endpoints,
+                selection_endpoints,
                 key=lambda node: (
                     node.analysis.milestone_reward,
                     node.target_position_visits == 0,
-                    node.target_state_visits == 0,
                     node.analysis.total_reward,
+                    node.target_state_visits == 0,
                     node.score,
                     -node.depth,
                 ),
@@ -1235,6 +2177,14 @@ class VerifiedNeuralAgent:
                 selected_pose_action = self._resulting_pose_action(
                     selected_pose_action, action
                 )
+            selected_target_world_context = (
+                selected.confirmed_world_context
+                or self.current_human_prior_world_context_signature
+            )
+            selected_world_effect_signature = (
+                selected.confirmed_world_effect_signature
+                or selected.world_effect_signature
+            )
             branch = _ArchivedBranch(
                 state=selected.state,
                 frame=selected.frame,
@@ -1279,9 +2229,15 @@ class VerifiedNeuralAgent:
                     self.current_human_prior_world_context_signature
                 ),
                 goal_target_world_context=(
-                    self.current_human_prior_world_context_signature
+                    selected_target_world_context
+                ),
+                goal_world_effect_signature=(
+                    selected.confirmed_world_effect_signature
                 ),
                 human_prior_verified_option=True,
+                human_prior_option_world_effect_signature=(
+                    selected_world_effect_signature
+                ),
             )
             self.archive.append(branch)
             self._emit(
@@ -1303,6 +2259,24 @@ class VerifiedNeuralAgent:
                 target_player_position_visits=(
                     selected.target_position_visits
                 ),
+                human_prior_option_world_effect_signature=(
+                    selected_world_effect_signature or None
+                ),
+                human_prior_option_effect_frontier=bool(
+                    selected.confirmed_world_effect_signature
+                ),
+                human_prior_option_effect_confirmed_action_indices=(
+                    selected.confirmed_action_indices
+                ),
+                human_prior_world_source_context=(
+                    self.current_human_prior_world_context_signature
+                ),
+                human_prior_world_target_context=(
+                    selected_target_world_context
+                ),
+                human_prior_option_world_effect_changed_pixels=(
+                    selected.world_effect_changed_pixels
+                ),
                 score=selected.score,
                 archive_size=len(self.archive),
                 agent_visible=True,
@@ -1314,6 +2288,10 @@ class VerifiedNeuralAgent:
                 decision=self.decision_index + 1,
                 branches_verified=branches_verified,
                 eligible_endpoints=len(endpoints),
+                ordinary_eligible_endpoints=len(ordinary_endpoints),
+                confirmed_effect_fallback_used=bool(
+                    selected.confirmed_world_effect_signature
+                ),
                 archive_branches_added=1,
                 selected_depth=selected.depth,
                 selected_path=selected.path,
@@ -1876,8 +2854,14 @@ class VerifiedNeuralAgent:
         return self.action_effect_values.get(key, 0.0), count > 0, count
 
     def _causal_spatial_effect(
-        self, factual: Frame, neutral: Frame
+        self,
+        factual: Frame,
+        neutral: Frame,
+        ignored_pixels: Optional[set[Tuple[int, int]]] = None,
+        minimum_cell_pixels: int = 1,
     ) -> Tuple[Optional[str], int, Optional[Tuple[float, float]]]:
+        if minimum_cell_pixels <= 0:
+            raise ValueError("minimum cell pixels must be positive")
         if (
             factual.width != neutral.width
             or factual.height != neutral.height
@@ -1892,6 +2876,8 @@ class VerifiedNeuralAgent:
         y_total = 0
         for y in range(factual.height):
             for x in range(factual.width):
+                if ignored_pixels is not None and (x, y) in ignored_pixels:
+                    continue
                 offset = (y * factual.width + x) * factual.channels
                 difference = sum(
                     abs(
@@ -1910,7 +2896,9 @@ class VerifiedNeuralAgent:
                 cells[gy * columns + gx] += 1
         if not changed_pixels:
             return None, 0, None
-        occupied = bytes(1 if count else 0 for count in cells)
+        occupied = bytes(
+            1 if count >= minimum_cell_pixels else 0 for count in cells
+        )
         if not any(occupied):
             return None, changed_pixels, (
                 x_total / changed_pixels,
@@ -2123,6 +3111,184 @@ class VerifiedNeuralAgent:
             known_scene_return_distance_threshold=(
                 self.config.known_scene_return_distance_threshold
             ),
+        )
+
+    def seed_human_prior_episodic_memory(
+        self, events: Sequence[Dict[str, Any]]
+    ) -> None:
+        """Reconstruct temporary assisted frontier memory from telemetry."""
+
+        if self.goal_prior is None:
+            return
+        graph_states: CounterType[str] = Counter()
+        player_positions: CounterType[Tuple[int, int]] = Counter()
+        graph_edges: CounterType[Tuple[str, Action, int]] = Counter()
+        option_paths: CounterType[
+            Tuple[str, Tuple[Tuple[Action, int], ...]]
+        ] = Counter()
+        temporal_option_values: Dict[Tuple[str, Action, int], float] = {}
+        temporal_option_samples: CounterType[
+            Tuple[str, Action, int]
+        ] = Counter()
+        known_slots: set[Tuple[int, int]] = set(
+            self.goal_prior.known_slots
+        )
+        observed_present_slots: Tuple[Tuple[int, int], ...] = tuple(
+            self.goal_prior.current_slots()
+        )
+        observed_life_signature = self.goal_prior.current_life_signature
+        observed_player_slot = self.goal_prior.current_player_slot
+        observed_world_context = (
+            self.current_human_prior_world_context_signature
+        )
+        event_present_slots = observed_present_slots
+        event_life_signature = observed_life_signature
+        event_player_slot = observed_player_slot
+        event_world_context = observed_world_context
+        latest_decision_has_semantic_state = False
+        decisions = 0
+        for event in events:
+            for slot in event.get("human_prior_known_heart_slots") or ():
+                known_slots.add((int(slot[0]), int(slot[1])))
+            if event.get("event") == "goal_milestone_exhaustion_learned":
+                choice_values = tuple(event.get("milestone_choice") or ())
+                if len(choice_values) == 3:
+                    try:
+                        choice = (
+                            str(choice_values[0]),
+                            Action(str(choice_values[1])),
+                            int(choice_values[2]),
+                        )
+                        temporal_option_values[choice] = float(
+                            event["learned_hazard_value"]
+                        )
+                        temporal_option_samples[choice] = int(
+                            event["learned_hazard_samples"]
+                        )
+                    except (KeyError, TypeError, ValueError):
+                        pass
+            if event.get("event") != "decision_committed":
+                continue
+            decisions += 1
+            latest_decision_has_semantic_state = bool(
+                "human_prior_target_hearts" in event
+                or event.get("human_prior_target_player_slot") is not None
+                or event.get("human_prior_world_target_context")
+            )
+            source_signature = str(
+                event.get("human_prior_graph_source_signature") or ""
+            )
+            target_signature = str(
+                event.get("human_prior_graph_target_signature") or ""
+            )
+            if target_signature:
+                graph_states[target_signature] += 1
+            target_player = event.get("human_prior_target_player_slot")
+            if target_player is not None:
+                event_player_slot = (
+                    int(target_player[0]),
+                    int(target_player[1]),
+                )
+                player_positions[event_player_slot] += 1
+            if "human_prior_target_hearts" in event:
+                event_present_slots = tuple(
+                    (int(slot[0]), int(slot[1]))
+                    for slot in (
+                        event.get("human_prior_target_hearts") or ()
+                    )
+                )
+            target_life = event.get("human_prior_target_life_signature")
+            if target_life:
+                event_life_signature = str(target_life)
+            target_context = event.get(
+                "human_prior_world_target_context"
+            )
+            if target_context:
+                event_world_context = str(target_context)
+            path_values = tuple(event.get("path") or ())
+            duration_values = tuple(event.get("durations") or ())
+            if event.get("human_prior_verified_option") and source_signature:
+                if len(path_values) == len(duration_values) and path_values:
+                    try:
+                        option_path = tuple(
+                            (
+                                Action(str(action_value)),
+                                int(duration_value),
+                            )
+                            for action_value, duration_value in zip(
+                                path_values, duration_values
+                            )
+                        )
+                    except (TypeError, ValueError):
+                        option_path = ()
+                    if option_path:
+                        option_paths[(source_signature, option_path)] += 1
+                continue
+            action_value = event.get("action")
+            duration_value = event.get("action_frames")
+            if (
+                source_signature
+                and action_value is not None
+                and duration_value is not None
+            ):
+                try:
+                    graph_edges[
+                        (
+                            source_signature,
+                            Action(str(action_value)),
+                            int(duration_value),
+                        )
+                    ] += 1
+                except (TypeError, ValueError):
+                    pass
+
+        if graph_states:
+            self.human_prior_graph_state_visits = graph_states
+        if player_positions:
+            self.human_prior_player_position_visits = player_positions
+        self.human_prior_graph_edge_visits = graph_edges
+        self.human_prior_option_visits = option_paths
+        self.temporal_option_values.update(temporal_option_values)
+        self.temporal_option_samples.update(temporal_option_samples)
+        if latest_decision_has_semantic_state:
+            present_slots = event_present_slots
+            life_signature = event_life_signature
+            player_slot = event_player_slot
+            world_context = event_world_context
+            current_state_source = "latest_assisted_decision"
+        else:
+            present_slots = observed_present_slots
+            life_signature = observed_life_signature
+            player_slot = observed_player_slot
+            world_context = observed_world_context
+            current_state_source = "resume_frame"
+        self.current_human_prior_world_context_signature = world_context
+        self.goal_prior.seed_episodic_memory(
+            tuple(sorted(known_slots)),
+            present_slots,
+            life_signature,
+            player_slot,
+        )
+        self._emit(
+            "episodic_human_prior_memory_seeded",
+            decision=self.decision_index,
+            source_events=len(events),
+            committed_decisions=decisions,
+            graph_states=len(graph_states),
+            graph_state_visits=sum(graph_states.values()),
+            player_positions=len(player_positions),
+            player_position_visits=sum(player_positions.values()),
+            graph_edges=len(graph_edges),
+            graph_edge_visits=sum(graph_edges.values()),
+            verified_option_paths=len(option_paths),
+            verified_option_path_visits=sum(option_paths.values()),
+            temporal_option_values=len(temporal_option_values),
+            temporal_option_samples=sum(temporal_option_samples.values()),
+            known_heart_slots=tuple(sorted(known_slots)),
+            present_heart_slots=present_slots,
+            player_slot=player_slot,
+            world_context=world_context,
+            current_state_source=current_state_source,
         )
 
     def _persistent_change_fields(self) -> Dict[str, Any]:
@@ -4130,14 +5296,17 @@ class VerifiedNeuralAgent:
                 current_goal_graph_signature
             ]
         )
-        self.human_prior_graph_recovery_pending = bool(
+        human_prior_graph_stagnant = bool(
             self.config.human_prior_best_first_archive
             and semantic_stagnation_limit > 0
             and current_goal_graph_signature
             and current_goal_graph_visits >= semantic_stagnation_limit
-            and self.archive
         )
-        if self.human_prior_graph_recovery_pending:
+        self.human_prior_graph_recovery_pending = bool(
+            human_prior_graph_stagnant and self.archive
+        )
+        option_search_exhausted = False
+        if human_prior_graph_stagnant:
             self._emit(
                 "human_prior_graph_stagnation_detected",
                 decision=self.decision_index + 1,
@@ -4170,10 +5339,26 @@ class VerifiedNeuralAgent:
                     **self._frame_fields(self.frame),
                 )
             else:
-                self._search_human_prior_options()
+                option_search_exhausted = bool(
+                    self.config.human_prior_option_search_depth >= 2
+                    and self._search_human_prior_options() == 0
+                )
         restored = self._restore_if_stagnant()
         if restored is not None:
             return restored
+        if (
+            self.config.human_prior_goal_exhaustion_rollback
+            and option_search_exhausted
+            and self.pending_goal_milestone_checkpoint is not None
+        ):
+            goal_exhaustion_recovery = (
+                self._restore_goal_milestone_after_exhaustion(
+                    current_goal_graph_signature,
+                    current_goal_graph_visits,
+                )
+            )
+            if goal_exhaustion_recovery is not None:
+                return goal_exhaustion_recovery
         anticipated_transition_observation_due = (
             self.anticipated_transition_observations_remaining > 0
         )
@@ -7034,6 +8219,57 @@ class VerifiedNeuralAgent:
                     ):
                         release_state(candidate)
 
+    def _restore_goal_milestone_after_exhaustion(
+        self,
+        exhausted_graph_signature: str,
+        exhausted_graph_visits: int,
+    ) -> Optional[Decision]:
+        """Learn from a bounded post-milestone search and restore its source.
+
+        This assisted, opt-in recovery does not assert why the goal state is
+        blocked. It requires both semantic graph stagnation and an exhausted
+        verified option search, then gives the exact milestone choice the same
+        small negative sample used for an unrecoverable temporal option.
+        """
+
+        checkpoint = self.pending_goal_milestone_checkpoint
+        if checkpoint is None:
+            return None
+        self.pending_goal_milestone_checkpoint = None
+        penalty = -self.config.temporal_option_return_penalty
+        learned_value = self._record_temporal_option_sample(
+            checkpoint.choice, penalty
+        )
+        learned_samples = self.temporal_option_samples[checkpoint.choice]
+        if self.pending_life_recovery is not None:
+            self._release_life_hazard_checkpoint(
+                self.pending_life_recovery,
+                "superseded_by_goal_milestone_exhaustion",
+            )
+        self.pending_life_recovery = checkpoint
+        self.pending_recovery_cause = "goal_exhaustion"
+        self._emit(
+            "goal_milestone_exhaustion_learned",
+            decision=self.decision_index + 1,
+            exhausted_graph_signature=exhausted_graph_signature,
+            exhausted_graph_visits=exhausted_graph_visits,
+            explored_graph_states=len(self.human_prior_graph_state_visits),
+            explored_player_positions=len(
+                self.human_prior_player_position_visits
+            ),
+            exhausted_option_sources=len(
+                self.human_prior_option_exhausted_sources
+            ),
+            milestone_choice=checkpoint.choice,
+            milestone_decision=checkpoint.decision,
+            learned_hazard_value=learned_value,
+            learned_hazard_samples=learned_samples,
+            recovery_state_id=checkpoint.state_id,
+            agent_visible=True,
+            **self._frame_fields(self.frame),
+        )
+        return self._restore_after_life_loss()
+
     def _restore_after_life_loss(self) -> Optional[Decision]:
         checkpoint = self.pending_life_recovery
         if checkpoint is None:
@@ -7133,7 +8369,11 @@ class VerifiedNeuralAgent:
         checkpoint_restore_cleanup_reason = (
             "control_collapse_checkpoint_restore"
             if recovery_cause == "control_collapse"
-            else "life_loss_checkpoint_restore"
+            else (
+                "goal_milestone_exhaustion_checkpoint_restore"
+                if recovery_cause == "goal_exhaustion"
+                else "life_loss_checkpoint_restore"
+            )
         )
         self._discard_temporal_option(checkpoint_restore_cleanup_reason)
         self._discard_pending_temporal_option(
@@ -7184,7 +8424,11 @@ class VerifiedNeuralAgent:
                 (
                     "control_collapse_rollback"
                     if recovery_cause == "control_collapse"
-                    else "goal_milestone_rollback"
+                    else (
+                        "goal_milestone_exhaustion_rollback"
+                        if recovery_cause == "goal_exhaustion"
+                        else "goal_milestone_rollback"
+                    )
                 ),
             )
         learned_value, learned = self._temporal_option_estimate(
@@ -7194,9 +8438,13 @@ class VerifiedNeuralAgent:
             "control_collapse_checkpoint"
             if recovery_cause == "control_collapse"
             else (
-                "life_loss_goal_milestone"
-                if checkpoint.kind == "goal_milestone"
-                else "life_loss_checkpoint"
+                "goal_milestone_exhaustion"
+                if recovery_cause == "goal_exhaustion"
+                else (
+                    "life_loss_goal_milestone"
+                    if checkpoint.kind == "goal_milestone"
+                    else "life_loss_checkpoint"
+                )
             )
         )
         goal_analysis = (
@@ -7208,7 +8456,11 @@ class VerifiedNeuralAgent:
             (
                 "control_collapse_state_restored"
                 if recovery_cause == "control_collapse"
-                else "life_hazard_state_restored"
+                else (
+                    "goal_milestone_exhaustion_state_restored"
+                    if recovery_cause == "goal_exhaustion"
+                    else "life_hazard_state_restored"
+                )
             ),
             decision=self.decision_index,
             recovery_cause=recovery_cause,
@@ -7821,13 +9073,29 @@ class VerifiedNeuralAgent:
                     candidate
                     for candidate in human_prior_unexpanded_eligible
                     if candidate.goal_player_slot is not None
+                    and not (
+                        candidate.human_prior_verified_option
+                        and candidate.goal_world_effect_signature
+                    )
                     and self.human_prior_player_position_visits[
                         candidate.goal_player_slot
                     ]
                     == 0
                 ]
+                option_effect_frontier_eligible = [
+                    candidate
+                    for candidate in human_prior_unexpanded_eligible
+                    if candidate.human_prior_verified_option
+                    and bool(candidate.goal_world_effect_signature)
+                    and bool(candidate.goal_target_signature)
+                    and self.human_prior_graph_state_visits[
+                        candidate.goal_target_signature
+                    ]
+                    == 0
+                ]
                 eligible = (
                     physical_frontier_eligible
+                    or option_effect_frontier_eligible
                     or human_prior_unexpanded_eligible
                 )
                 human_prior_best_first_applied = True
@@ -7842,6 +9110,13 @@ class VerifiedNeuralAgent:
                     unexpanded_goal_edges=len(eligible),
                     physical_frontier_preferred=bool(
                         physical_frontier_eligible
+                    ),
+                    option_effect_frontier_preferred=bool(
+                        option_effect_frontier_eligible
+                        and not physical_frontier_eligible
+                    ),
+                    confirmed_option_effects=len(
+                        option_effect_frontier_eligible
                     ),
                     unvisited_player_positions=len(
                         physical_frontier_eligible
@@ -8275,6 +9550,9 @@ class VerifiedNeuralAgent:
                 if branch.human_prior_verified_option
                 else 0
             ),
+            human_prior_option_world_effect_signature=(
+                branch.human_prior_option_world_effect_signature or None
+            ),
             human_prior_graph_source_signature=(
                 branch.goal_source_signature or None
             ),
@@ -8414,6 +9692,9 @@ class VerifiedNeuralAgent:
                 restored_goal_graph_edge_visits_before
                 if branch.human_prior_verified_option
                 else 0
+            ),
+            human_prior_option_world_effect_signature=(
+                branch.human_prior_option_world_effect_signature or None
             ),
             human_prior_graph_source_signature=(
                 branch.goal_source_signature or None

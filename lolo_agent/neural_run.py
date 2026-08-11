@@ -156,6 +156,44 @@ def load_episodic_scene_frames(
     return frames
 
 
+def load_episodic_decision_events(
+    run_dir: Path,
+    through_decision: int,
+    visited: Optional[set[Path]] = None,
+) -> list[Dict[str, Any]]:
+    """Load temporary planner-memory telemetry across a resume chain."""
+
+    run_dir = Path(run_dir).expanduser().resolve()
+    visited = set() if visited is None else visited
+    if run_dir in visited:
+        raise RuntimeError(f"episodic resume cycle detected at {run_dir}")
+    visited.add(run_dir)
+    manifest = json.loads(
+        (run_dir / "manifest.json").read_text(encoding="utf-8")
+    )
+    events: list[Dict[str, Any]] = []
+    resume = manifest.get("metadata", {}).get("episodic_resume")
+    if resume:
+        events.extend(
+            load_episodic_decision_events(
+                Path(resume["source_run"]),
+                int(resume["source_decision"]),
+                visited,
+            )
+        )
+    events.extend(
+        event
+        for event in read_events(run_dir)
+        if event.get("event")
+        in {
+            "decision_committed",
+            "goal_milestone_exhaustion_learned",
+        }
+        and int(event.get("decision", 0)) <= through_decision
+    )
+    return events
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run a frozen neural rollout planner")
     parser.add_argument("--host", type=Path, required=True)
@@ -371,6 +409,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--human-prior-goal-exhaustion-rollback",
+        action="store_true",
+        help=(
+            "on the assisted track, learn a small negative value for an exact "
+            "goal milestone and restore its pre-action state after both the "
+            "semantic graph and verified option frontier are exhausted"
+        ),
+    )
+    parser.add_argument(
         "--human-prior-option-search-depth",
         type=int,
         default=0,
@@ -392,6 +439,73 @@ def main() -> None:
         help=(
             "press length for assisted option search; zero uses the longest "
             "configured gameplay duration"
+        ),
+    )
+    parser.add_argument(
+        "--human-prior-option-effect-stability-steps",
+        type=int,
+        default=0,
+        help=(
+            "future matched-NOOP horizons used to audit persistence of "
+            "player-masked option effects; zero disables the audit"
+        ),
+    )
+    parser.add_argument(
+        "--human-prior-option-effect-probe-limit",
+        type=int,
+        default=8,
+        help="distinct option effects audited per sequence search",
+    )
+    parser.add_argument(
+        "--human-prior-option-effect-max-stable-cells",
+        type=int,
+        default=4,
+        help=(
+            "maximum persistent nonlocal coarse cells treated as a localized "
+            "option effect"
+        ),
+    )
+    parser.add_argument(
+        "--human-prior-option-effect-phase-offsets",
+        type=int,
+        default=0,
+        help=(
+            "nearby future NOOP frame offsets searched for an animation-phase "
+            "match; zero disables this audit"
+        ),
+    )
+    parser.add_argument(
+        "--human-prior-option-effect-phase-l1-threshold",
+        type=float,
+        default=0.002,
+        help=(
+            "maximum normalized patch L1 treated as phase-equivalent to a "
+            "future all-NOOP control"
+        ),
+    )
+    parser.add_argument(
+        "--human-prior-option-effect-frontier",
+        action="store_true",
+        help=(
+            "on the assisted track, archive safe localized persistent option "
+            "effects confirmed by leave-one-action-out controls"
+        ),
+    )
+    parser.add_argument(
+        "--human-prior-option-effect-local-controls",
+        action="store_true",
+        help=(
+            "telemetry-only action ablations for compact persistent effects "
+            "when factual and control player endpoints match"
+        ),
+    )
+    parser.add_argument(
+        "--human-prior-option-effect-local-minimum-cell-pixels",
+        type=int,
+        default=12,
+        help=(
+            "minimum unmasked changed pixels required per coarse cell in "
+            "telemetry-only endpoint-matched local controls"
         ),
     )
     parser.add_argument(
@@ -538,6 +652,16 @@ def main() -> None:
         parser.error(
             "--human-prior-graph-stagnation-visits must be non-negative"
         )
+    if args.human_prior_goal_exhaustion_rollback and (
+        not args.human_prior_best_first_archive
+        or args.human_prior_graph_stagnation_visits <= 0
+        or args.human_prior_option_search_depth < 2
+    ):
+        parser.error(
+            "--human-prior-goal-exhaustion-rollback requires assisted "
+            "best-first archive, positive graph stagnation visits, and "
+            "option search depth of at least two"
+        )
     if args.human_prior_option_search_depth < 0:
         parser.error(
             "--human-prior-option-search-depth must be non-negative"
@@ -549,6 +673,38 @@ def main() -> None:
     if args.human_prior_option_search_action_frames < 0:
         parser.error(
             "--human-prior-option-search-action-frames must be non-negative"
+        )
+    if args.human_prior_option_effect_stability_steps < 0:
+        parser.error(
+            "--human-prior-option-effect-stability-steps must be non-negative"
+        )
+    if args.human_prior_option_effect_probe_limit <= 0:
+        parser.error(
+            "--human-prior-option-effect-probe-limit must be positive"
+        )
+    if args.human_prior_option_effect_max_stable_cells <= 0:
+        parser.error(
+            "--human-prior-option-effect-max-stable-cells must be positive"
+        )
+    if args.human_prior_option_effect_phase_offsets < 0:
+        parser.error(
+            "--human-prior-option-effect-phase-offsets must be non-negative"
+        )
+    if args.human_prior_option_effect_phase_l1_threshold < 0.0:
+        parser.error(
+            "--human-prior-option-effect-phase-l1-threshold must be non-negative"
+        )
+    if args.human_prior_option_effect_local_minimum_cell_pixels <= 0:
+        parser.error(
+            "--human-prior-option-effect-local-minimum-cell-pixels must be positive"
+        )
+    if (
+        args.human_prior_option_effect_frontier
+        and args.human_prior_option_effect_phase_offsets <= 0
+    ):
+        parser.error(
+            "--human-prior-option-effect-frontier requires "
+            "--human-prior-option-effect-phase-offsets"
         )
     if args.human_prior_intrinsic_clip <= 0.0:
         parser.error("--human-prior-intrinsic-clip must be positive")
@@ -693,6 +849,11 @@ def main() -> None:
             if args.human_prior_hearts
             else 0
         ),
+        human_prior_goal_exhaustion_rollback=(
+            args.human_prior_goal_exhaustion_rollback
+            if args.human_prior_hearts
+            else False
+        ),
         human_prior_option_search_depth=(
             args.human_prior_option_search_depth
             if args.human_prior_hearts
@@ -703,6 +864,34 @@ def main() -> None:
         ),
         human_prior_option_search_action_frames=(
             args.human_prior_option_search_action_frames
+        ),
+        human_prior_option_effect_stability_steps=(
+            args.human_prior_option_effect_stability_steps
+        ),
+        human_prior_option_effect_probe_limit=(
+            args.human_prior_option_effect_probe_limit
+        ),
+        human_prior_option_effect_max_stable_cells=(
+            args.human_prior_option_effect_max_stable_cells
+        ),
+        human_prior_option_effect_phase_offsets=(
+            args.human_prior_option_effect_phase_offsets
+        ),
+        human_prior_option_effect_phase_l1_threshold=(
+            args.human_prior_option_effect_phase_l1_threshold
+        ),
+        human_prior_option_effect_frontier=(
+            args.human_prior_option_effect_frontier
+            if args.human_prior_hearts
+            else False
+        ),
+        human_prior_option_effect_local_controls=(
+            args.human_prior_option_effect_local_controls
+            if args.human_prior_hearts
+            else False
+        ),
+        human_prior_option_effect_local_minimum_cell_pixels=(
+            args.human_prior_option_effect_local_minimum_cell_pixels
         ),
         human_prior_intrinsic_clip=args.human_prior_intrinsic_clip,
         spatial_selection_weight=args.spatial_selection_weight,
@@ -838,6 +1027,11 @@ def main() -> None:
                 agent.reset(initial_frame=initial_frame)
                 agent.seed_bright_scene_memory(
                     load_episodic_scene_frames(
+                        args.resume_run, args.resume_decision
+                    )
+                )
+                agent.seed_human_prior_episodic_memory(
+                    load_episodic_decision_events(
                         args.resume_run, args.resume_decision
                     )
                 )

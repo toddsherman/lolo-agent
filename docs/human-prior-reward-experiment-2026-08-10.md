@@ -289,3 +289,47 @@ across nine searches and committed seven endpoints, but found zero endpoints
 closer than distance 4 and zero chest completions. The frozen audit passed.
 The next assisted mechanism should therefore value stable, matched-NOOP
 non-player transformations rather than extend the movement horizon again.
+
+## Persistent-effect audit and goal-exhaustion rollback
+
+The proposed non-player transformation signal was tested before it was allowed
+to guide search. Duration-matched action-versus-`NOOP` effects were replayed,
+phase-aligned, localized, and checked with leave-one-action-out controls. Three
+apparently persistent local effects survived the first audit, but stored-frame
+inspection showed that they were Lolo pose or sub-tile motion. Removing the
+union of the factual and control player footprints and requiring 12 residual
+pixels per coarse cell reduced the exact matched rerun to zero confirmations.
+The coarse effect signal is therefore not promoted into reward or graph state.
+
+The assisted track instead gained an opt-in goal-exhaustion rollback. It may
+reverse a collected-heart milestone only after the resulting semantic graph
+state repeats, no archived frontier can be restored, and exact option search
+adds no endpoint. The exact collection context receives a small negative
+temporary value, and the pre-collection save state is restored. Resume logic
+now reconstructs assisted graph, position, edge, option, and exact exhaustion
+memory while anchoring the current visible hearts, player, and life to the
+resumed frame.
+
+In
+`spatial-v14-room2-goal-exhaustion-rollback-v3-from-pre-final-heart-d37-d150`,
+the agent collected the last heart at decision 1, explored 64 graph states and
+53 player positions, then proved that frontier exhausted at decision 147. It
+learned a negative value for that exact `LEFT 16` collection context,
+invalidated 358 descendants, and restored the visible final heart. A resumed
+run filtered that choice and tested other approaches. Five preparation rounds
+then kept the heart visible for hundreds of decisions without a life loss.
+
+The final round,
+`spatial-v14-room2-preparation-search-round5-from-d100-d100`, completed 100
+decisions, verified 318 exact option paths across four searches, and committed
+no new endpoint. It revisited only four local player positions. All 803 saved
+states were released, and the frozen audit passed. Comparing its final room
+frame with the original pre-heart checkpoint showed the lower-left moving
+entity in the same location.
+
+This improves credit assignment—the agent can now defer a choice whose
+downstream frontier has been empirically exhausted—but it does not prepare or
+clear Room 2. The next assisted experiment should learn an unlabelled local
+entity representation from pixels and track verified changes in entity
+position or controllability. Reward weights and the strict rule-free track
+remain unchanged.

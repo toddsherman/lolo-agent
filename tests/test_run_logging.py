@@ -116,12 +116,84 @@ class RunLoggingTests(unittest.TestCase):
             self.assertIn("human_prior_option_search_skips", summary)
             self.assertIn("human_prior_option_cleanup_failures", summary)
             self.assertIn("human_prior_option_branches_verified", summary)
+            self.assertIn(
+                "human_prior_option_neutral_verifications", summary
+            )
+            self.assertIn(
+                "human_prior_option_world_effect_observations", summary
+            )
+            self.assertIn(
+                "human_prior_option_nonlocal_world_effect_observations",
+                summary,
+            )
+            self.assertIn(
+                "human_prior_unique_option_world_effect_signatures",
+                summary,
+            )
+            self.assertIn(
+                "human_prior_option_world_effect_stability_probes",
+                summary,
+            )
+            self.assertIn(
+                "human_prior_option_world_effect_stable", summary
+            )
+            self.assertIn(
+                "human_prior_option_world_effect_local_candidates", summary
+            )
+            self.assertIn(
+                "human_prior_option_world_effect_phase_audits", summary
+            )
+            self.assertIn(
+                "human_prior_option_world_effect_phase_equivalent", summary
+            )
+            self.assertIn(
+                "human_prior_option_world_effect_safe", summary
+            )
+            self.assertIn(
+                "human_prior_option_world_effect_action_controls",
+                summary,
+            )
+            self.assertIn(
+                "human_prior_option_world_effect_action_controls_confirmed",
+                summary,
+            )
+            self.assertIn(
+                "human_prior_option_world_effect_local_controls", summary
+            )
+            self.assertIn(
+                "human_prior_option_world_effect_local_controls_confirmed",
+                summary,
+            )
+            self.assertIn(
+                "human_prior_option_effect_frontier_evaluations", summary
+            )
+            self.assertIn(
+                "human_prior_option_effect_frontier_eligible", summary
+            )
+            self.assertIn(
+                "human_prior_option_effect_frontier_archives", summary
+            )
+            self.assertIn("episodic_human_prior_memory_seeds", summary)
+            self.assertIn(
+                "episodic_human_prior_seeded_graph_states", summary
+            )
+            self.assertIn(
+                "episodic_human_prior_seeded_player_positions", summary
+            )
+            self.assertIn(
+                "episodic_human_prior_seeded_option_paths", summary
+            )
+            self.assertIn(
+                "episodic_human_prior_seeded_temporal_options", summary
+            )
             self.assertIn("human_prior_option_archives_added", summary)
             self.assertIn("human_prior_options_committed", summary)
             self.assertIn("life_hazard_checkpoints_created", summary)
             self.assertIn("life_hazard_checkpoint_restores", summary)
             self.assertIn("goal_milestone_checkpoints_created", summary)
             self.assertIn("goal_milestone_checkpoint_restores", summary)
+            self.assertIn("goal_milestone_exhaustions_learned", summary)
+            self.assertIn("goal_milestone_exhaustion_restores", summary)
             self.assertIn(
                 "goal_milestone_descendant_invalidations", summary
             )

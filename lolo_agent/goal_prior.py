@@ -336,6 +336,50 @@ class PixelHeartGoalPrior:
             self._player_cache.popitem(last=False)
         return result
 
+    def player_pixel_mask(
+        self,
+        frame: Frame,
+        slot: HeartSlot,
+        search_padding: int = 12,
+        dilation: int = 3,
+    ) -> set[Tuple[int, int]]:
+        """Return a conservative pixel mask around a detected player sprite.
+
+        The assisted player detector snaps its result to a 16-pixel tile, so
+        equal detected endpoints can still contain different sub-tile poses.
+        Starting from Lolo's explicit blue/white palette, this mask includes a
+        small halo for black outline pixels. It is used only by telemetry
+        controls and is never exposed to the strict rule-free policy.
+        """
+
+        if search_padding < 0:
+            raise ValueError("player mask search padding must be non-negative")
+        if dilation < 0:
+            raise ValueError("player mask dilation must be non-negative")
+        player_colours = {(21, 95, 217), (255, 255, 255)}
+        x_start = max(0, slot[0] - search_padding)
+        y_start = max(0, slot[1] - search_padding)
+        x_stop = min(frame.width, slot[0] + 16 + search_padding)
+        y_stop = min(frame.height, slot[1] + 16 + search_padding)
+        anchors = {
+            (x, y)
+            for y in range(y_start, y_stop)
+            for x in range(x_start, x_stop)
+            if self._pixel(frame, x, y) in player_colours
+        }
+        masked: set[Tuple[int, int]] = set()
+        for x, y in anchors:
+            for y_offset in range(-dilation, dilation + 1):
+                for x_offset in range(-dilation, dilation + 1):
+                    masked_x = x + x_offset
+                    masked_y = y + y_offset
+                    if (
+                        0 <= masked_x < frame.width
+                        and 0 <= masked_y < frame.height
+                    ):
+                        masked.add((masked_x, masked_y))
+        return masked
+
     @staticmethod
     def _nearest_distance(
         player: Optional[HeartSlot], hearts: Iterable[HeartSlot]
@@ -650,6 +694,26 @@ class PixelHeartGoalPrior:
             else self.detect_player(frame)
         )
         self.dark_transition_observed = False
+
+    def seed_episodic_memory(
+        self,
+        known_slots: Sequence[HeartSlot],
+        present_slots: Sequence[HeartSlot],
+        life_signature: Optional[str],
+        player_slot: Optional[HeartSlot],
+    ) -> None:
+        """Restore temporary pixel-derived goal memory across a save-state resume."""
+
+        self.known_slots = set(known_slots)
+        self.current_present = set(present_slots)
+        self.initialized = bool(self.known_slots)
+        self.best_remaining_hearts = (
+            len(self.current_present) if self.initialized else None
+        )
+        self.current_life_signature = life_signature
+        self.current_player_slot = player_slot
+        self.dark_transition_observed = False
+        self._player_cache.clear()
 
     def current_slots(self) -> Tuple[HeartSlot, ...]:
         return tuple(sorted(self.current_present))

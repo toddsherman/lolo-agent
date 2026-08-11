@@ -1,6 +1,12 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
-from lolo_agent.neural_run import StableSceneChangeDetector
+from lolo_agent.neural_run import (
+    StableSceneChangeDetector,
+    load_episodic_decision_events,
+)
 from lolo_agent.pixels import Frame
 
 
@@ -37,6 +43,72 @@ class StableSceneChangeDetectorTests(unittest.TestCase):
         self.assertIsNone(detector.observe(1, initial))
         self.assertIsNone(detector.observe(2, self.frame(255)))
         self.assertIsNone(detector.observe(3, self.frame(255)))
+
+    def test_loads_recursive_episodic_decision_events_to_boundaries(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            parent = root / "parent"
+            child = root / "child"
+            parent.mkdir()
+            child.mkdir()
+            (parent / "manifest.json").write_text(
+                json.dumps({"metadata": {}}), encoding="utf-8"
+            )
+            (parent / "events.jsonl").write_text(
+                "\n".join(
+                    json.dumps(
+                        {
+                            "event": "decision_committed",
+                            "decision": decision,
+                            "marker": f"parent-{decision}",
+                        }
+                    )
+                    for decision in (1, 2)
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (child / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "metadata": {
+                            "episodic_resume": {
+                                "source_run": str(parent),
+                                "source_decision": 1,
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (child / "events.jsonl").write_text(
+                "\n".join(
+                    json.dumps(event)
+                    for event in (
+                        {
+                            "event": "decision_committed",
+                            "decision": 1,
+                            "marker": "child-1",
+                        },
+                        {
+                            "event": "goal_milestone_exhaustion_learned",
+                            "decision": 1,
+                            "marker": "child-hazard",
+                        },
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            events = load_episodic_decision_events(child, 1)
+
+        self.assertEqual(
+            [event["marker"] for event in events],
+            ["parent-1", "child-1", "child-hazard"],
+        )
 
 
 if __name__ == "__main__":

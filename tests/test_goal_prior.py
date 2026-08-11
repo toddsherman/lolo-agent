@@ -286,6 +286,17 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
             (80, 64),
         )
 
+    def test_player_pixel_mask_covers_palette_and_outline_halo(self) -> None:
+        frame = room_frame(player=(80, 64))
+        prior = PixelHeartGoalPrior()
+
+        masked = prior.player_pixel_mask(frame, (80, 64))
+
+        self.assertIn((80, 64), masked)
+        self.assertIn((79, 64), masked)
+        self.assertIn((80, 70), masked)
+        self.assertNotIn((40, 40), masked)
+
     def test_open_chest_becomes_the_goal_after_the_last_heart(self) -> None:
         initial = room_frame(((48, 48),), life_glyph=LIFE_FIVE)
         opened = room_frame(

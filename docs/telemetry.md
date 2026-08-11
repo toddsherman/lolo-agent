@@ -172,14 +172,57 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   `human_prior_graph_stagnation_detected`, which make every semantic
   backtracking decision reconstructable;
 - `human_prior_option_search_started`,
+  `human_prior_option_neutral_verified`,
   `human_prior_option_branch_verified`, and
   `human_prior_option_search_completed`, which preserve every exact
-  save-state sequence rollout, its action/duration path, parent and endpoint
-  state IDs, pixel-derived goal analysis, novelty counts, score, and selection;
+  save-state sequence rollout, its duration-matched all-`NOOP` reference,
+  action/duration path, parent and endpoint state IDs, player-masked
+  non-player effect signature, conservative nonlocal effect cells,
+  pixel-derived goal analysis, novelty counts, score, and selection;
+- `human_prior_option_world_effect_stability`, which replays a bounded sample
+  of distinct option effects beside duration-matched all-`NOOP` controls at
+  future horizons and records the intersected coarse cells, conservative
+  nonlocal subset beyond the detected player's immediate neighborhood,
+  persistence ratio, safety checks, and every factual/control observation.
+  The local/nonlocal split prevents player-sprite spill pixels from being
+  promoted as a stable world change, while a maximum stable-cell footprint
+  rejects layout-wide animation-phase differences. This audit is
+  telemetry-only and does not affect endpoint selection;
+- `human_prior_option_world_effect_phase_alignment`, which compares a
+  localized candidate patch with nearby future all-`NOOP` frames. A match below
+  the configured patch-L1 threshold classifies the observation as an animation
+  phase shift and prevents it from reaching action-ablation controls or the
+  assisted effect frontier;
+- `human_prior_option_world_effect_action_control`, which is emitted only for
+  a safe, localized persistent candidate and replays the sequence while
+  replacing each action in turn with an equal-duration `NOOP`. It records
+  which intervention positions remain causally necessary for the compact
+  nonlocal effect;
+- with `--human-prior-option-effect-local-controls`, compact persistent effects
+  rejected only by the conservative player-neighborhood mask also receive
+  telemetry-only action ablations. Nearby cells are admitted only at horizons
+  where factual and control player endpoints match exactly. A union of the
+  factual/control player-palette footprints (plus a small outline halo) is
+  removed before comparison, and each remaining coarse cell must contain at
+  least `--human-prior-option-effect-local-minimum-cell-pixels` changed pixels.
+  The event records both the ignored-pixel count and support threshold. These
+  observations never enter the effect frontier;
+- `human_prior_option_effect_frontier_eligible`, emitted when the opt-in
+  assisted effect frontier is enabled, records the confirmed action indices
+  and the reversible learned world-context transition. Only safe, localized,
+  persistent, action-ablation-confirmed effects can enter this frontier;
 - `human_prior_option_search_deferred` and
   `human_prior_option_search_skipped`, which distinguish a cheaper unseen
   local archive endpoint from an already exhausted sequence-search source;
-  and
+- with `--human-prior-goal-exhaustion-rollback`,
+  `goal_milestone_exhaustion_learned` and
+  `goal_milestone_exhaustion_state_restored` record the opt-in assisted
+  preparation loop. Rollback requires a repeated semantic state, no
+  recoverable archive frontier, and an exact option search that adds no
+  endpoint. The event preserves the exact milestone choice, small learned
+  negative value, graph/position coverage, exhausted option sources,
+  pre-milestone state ID, descendant invalidations, and restored pixel goal
+  state. It does not infer or label the reason the milestone state is blocked;
 - `human_prior_option_archive_added`, plus
   `human_prior_verified_option`, `human_prior_option_depth`, and
   `human_prior_option_path_visits_before` on restore/commit events, which make
@@ -348,6 +391,16 @@ decision, source location, and source-event SHA-256 in its manifest. Replay
 validates that hash and reconstructs the parent decision before applying the
 child event stream. Gameplay-only resumes exclude `START` and `SELECT` from the
 agent action set.
+
+`episodic_human_prior_memory_seeded` records reconstruction of the assisted
+track's temporary graph-state visits, player-position visits, graph-edge and
+verified-option coverage, learned world context, exact milestone-exhaustion
+values, and pixel-derived goal memory across the recursive resume chain.
+Current hearts, player, and life are anchored to the resumed pixels whenever
+the latest source decision is strict; stale semantic fields from an older
+assisted ancestor cannot overwrite the current save state. These are
+evaluator-legal episodic counters; the frozen neural and spatial parameters
+remain unchanged.
 
 ## Deterministic high-speed playback
 

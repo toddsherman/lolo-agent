@@ -120,6 +120,7 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
     human_prior_world_contexts: set[str] = set()
     human_prior_graph_states: set[str] = set()
     human_prior_player_positions: set[Tuple[int, int]] = set()
+    human_prior_option_world_effect_signatures: set[str] = set()
     archive_rejections_by_reason: Counter[str] = Counter()
     spatial_shadow_rows: List[Dict[str, Any]] = []
     returnability_probe_rows: List[Dict[str, Any]] = []
@@ -219,6 +220,14 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             world_effect = event.get("human_prior_world_effect_signature")
             if world_effect:
                 human_prior_world_effect_signatures.add(str(world_effect))
+        if event["event"] == "human_prior_option_branch_verified":
+            option_world_effect = event.get(
+                "human_prior_option_world_effect_signature"
+            )
+            if option_world_effect:
+                human_prior_option_world_effect_signatures.add(
+                    str(option_world_effect)
+                )
         if event["event"] == "branch_verified":
             if event.get("action_effect_contrast") is not None:
                 action_effect_observations += 1
@@ -557,6 +566,9 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                     "human_prior_option_path_visits_before": event.get(
                         "human_prior_option_path_visits_before", 0
                     ),
+                    "human_prior_option_world_effect_signature": event.get(
+                        "human_prior_option_world_effect_signature"
+                    ),
                     "human_prior_graph_source_signature": event.get(
                         "human_prior_graph_source_signature"
                     ),
@@ -700,6 +712,7 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "human_prior_verified_option",
         "human_prior_option_depth",
         "human_prior_option_path_visits_before",
+        "human_prior_option_world_effect_signature",
         "human_prior_graph_source_signature",
         "human_prior_graph_target_signature",
         "human_prior_world_source_context",
@@ -969,6 +982,45 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "episodic_scene_memory_seeds": event_counts.get(
             "episodic_scene_memory_seeded", 0
         ),
+        "episodic_human_prior_memory_seeds": event_counts.get(
+            "episodic_human_prior_memory_seeded", 0
+        ),
+        "episodic_human_prior_seeded_graph_states": max(
+            (
+                int(event.get("graph_states", 0))
+                for event in events
+                if event["event"]
+                == "episodic_human_prior_memory_seeded"
+            ),
+            default=0,
+        ),
+        "episodic_human_prior_seeded_player_positions": max(
+            (
+                int(event.get("player_positions", 0))
+                for event in events
+                if event["event"]
+                == "episodic_human_prior_memory_seeded"
+            ),
+            default=0,
+        ),
+        "episodic_human_prior_seeded_option_paths": max(
+            (
+                int(event.get("verified_option_paths", 0))
+                for event in events
+                if event["event"]
+                == "episodic_human_prior_memory_seeded"
+            ),
+            default=0,
+        ),
+        "episodic_human_prior_seeded_temporal_options": max(
+            (
+                int(event.get("temporal_option_values", 0))
+                for event in events
+                if event["event"]
+                == "episodic_human_prior_memory_seeded"
+            ),
+            default=0,
+        ),
         "human_prior_chest_completions": event_counts.get(
             "human_prior_chest_completed", 0
         ),
@@ -1029,6 +1081,100 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "human_prior_option_branches_verified": event_counts.get(
             "human_prior_option_branch_verified", 0
         ),
+        "human_prior_option_neutral_verifications": event_counts.get(
+            "human_prior_option_neutral_verified", 0
+        ),
+        "human_prior_option_world_effect_observations": sum(
+            event["event"] == "human_prior_option_branch_verified"
+            and bool(
+                event.get(
+                    "human_prior_option_world_effect_signature"
+                )
+            )
+            for event in events
+        ),
+        "human_prior_option_nonlocal_world_effect_observations": sum(
+            event["event"] == "human_prior_option_branch_verified"
+            and int(
+                event.get(
+                    "human_prior_option_nonlocal_world_effect_cell_count",
+                    0,
+                )
+            )
+            > 0
+            for event in events
+        ),
+        "human_prior_unique_option_world_effect_signatures": len(
+            human_prior_option_world_effect_signatures
+        ),
+        "human_prior_option_world_effect_stability_probes": event_counts.get(
+            "human_prior_option_world_effect_stability", 0
+        ),
+        "human_prior_option_world_effect_stable": sum(
+            event["event"]
+            == "human_prior_option_world_effect_stability"
+            and bool(event.get("stable"))
+            for event in events
+        ),
+        "human_prior_option_world_effect_local_candidates": sum(
+            event["event"]
+            == "human_prior_option_world_effect_stability"
+            and bool(event.get("local_candidate"))
+            for event in events
+        ),
+        "human_prior_option_world_effect_phase_audits": event_counts.get(
+            "human_prior_option_world_effect_phase_alignment", 0
+        ),
+        "human_prior_option_world_effect_phase_equivalent": sum(
+            event["event"]
+            == "human_prior_option_world_effect_phase_alignment"
+            and bool(event.get("phase_equivalent"))
+            for event in events
+        ),
+        "human_prior_option_world_effect_safe": sum(
+            event["event"]
+            == "human_prior_option_world_effect_stability"
+            and bool(event.get("safe"))
+            for event in events
+        ),
+        "human_prior_option_world_effect_action_controls": (
+            event_counts.get(
+                "human_prior_option_world_effect_action_control", 0
+            )
+        ),
+        "human_prior_option_world_effect_action_controls_confirmed": sum(
+            event["event"]
+            == "human_prior_option_world_effect_action_control"
+            and bool(event.get("confirmed"))
+            for event in events
+        ),
+        "human_prior_option_world_effect_local_controls": sum(
+            event["event"]
+            == "human_prior_option_world_effect_action_control"
+            and event.get("control_mode") == "endpoint_matched_local"
+            for event in events
+        ),
+        "human_prior_option_world_effect_local_controls_confirmed": sum(
+            event["event"]
+            == "human_prior_option_world_effect_action_control"
+            and event.get("control_mode") == "endpoint_matched_local"
+            and bool(event.get("confirmed"))
+            for event in events
+        ),
+        "human_prior_option_effect_frontier_evaluations": event_counts.get(
+            "human_prior_option_effect_frontier_eligible", 0
+        ),
+        "human_prior_option_effect_frontier_eligible": sum(
+            event["event"]
+            == "human_prior_option_effect_frontier_eligible"
+            and bool(event.get("eligible"))
+            for event in events
+        ),
+        "human_prior_option_effect_frontier_archives": sum(
+            event["event"] == "human_prior_option_archive_added"
+            and bool(event.get("human_prior_option_effect_frontier"))
+            for event in events
+        ),
         "human_prior_option_archives_added": event_counts.get(
             "human_prior_option_archive_added", 0
         ),
@@ -1046,9 +1192,19 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             "goal_milestone_checkpoint_created", 0
         ),
         "goal_milestone_checkpoint_restores": sum(
-            event["event"] == "life_hazard_state_restored"
+            event["event"]
+            in {
+                "life_hazard_state_restored",
+                "goal_milestone_exhaustion_state_restored",
+            }
             and event.get("checkpoint_kind") == "goal_milestone"
             for event in events
+        ),
+        "goal_milestone_exhaustions_learned": event_counts.get(
+            "goal_milestone_exhaustion_learned", 0
+        ),
+        "goal_milestone_exhaustion_restores": event_counts.get(
+            "goal_milestone_exhaustion_state_restored", 0
         ),
         "goal_milestone_descendant_invalidations": sum(
             event["event"] == "archive_branch_removed"
