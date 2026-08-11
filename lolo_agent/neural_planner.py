@@ -815,7 +815,17 @@ class VerifiedNeuralAgent:
             )
         clip = self.config.human_prior_intrinsic_clip
         clipped = max(-clip, min(clip, intrinsic_score))
-        return clipped + analysis.total_reward, clipped
+        effective_goal_reward = analysis.total_reward
+        if self._human_prior_milestone_outcome_known(analysis):
+            # A heart remains a positive goal the first time the agent reaches
+            # this semantic outcome.  Replaying the exact same transition is
+            # no longer informative, however, so episodic memory removes only
+            # the already-observed milestone bonus.  Navigation progress and
+            # life-loss evidence keep their original signs, and the branch can
+            # still win on its learned/intrinsic value when it is genuinely
+            # the best remaining route.
+            effective_goal_reward -= analysis.milestone_reward
+        return clipped + effective_goal_reward, clipped
 
     def _commit_goal_prior(
         self, analysis: HeartGoalAnalysis, frame: Frame
@@ -5509,6 +5519,15 @@ class VerifiedNeuralAgent:
             analysis.chest_obtained,
         )
 
+    def _human_prior_milestone_outcome_known(
+        self, analysis: HeartGoalAnalysis
+    ) -> bool:
+        return bool(
+            analysis.milestone_reward > 0.0
+            and self._human_prior_milestone_outcome_key(analysis)
+            in self.human_prior_milestone_outcomes
+        )
+
     def _settle_human_prior_milestone_endpoint(
         self,
         root: object,
@@ -7441,6 +7460,12 @@ class VerifiedNeuralAgent:
                 score, clipped_intrinsic_score = self._human_prior_score(
                     intrinsic_score, goal_analysis
                 )
+                milestone_outcome_known = bool(
+                    goal_analysis is not None
+                    and self._human_prior_milestone_outcome_known(
+                        goal_analysis
+                    )
+                )
                 verified.append(
                     (
                         score,
@@ -7573,6 +7598,25 @@ class VerifiedNeuralAgent:
                     human_prior_clipped_intrinsic_score=(
                         clipped_intrinsic_score
                     ),
+                    human_prior_milestone_outcome_known=(
+                        milestone_outcome_known
+                    ),
+                    human_prior_milestone_reward_suppressed=(
+                        goal_analysis.milestone_reward
+                        if milestone_outcome_known
+                        and goal_analysis is not None
+                        else 0.0
+                    ),
+                    human_prior_effective_goal_reward=(
+                        None
+                        if goal_analysis is None
+                        else goal_analysis.total_reward
+                        - (
+                            goal_analysis.milestone_reward
+                            if milestone_outcome_known
+                            else 0.0
+                        )
+                    ),
                     human_prior_graph_source_signature=(
                         goal_source_signature or None
                     ),
@@ -7608,11 +7652,44 @@ class VerifiedNeuralAgent:
                     source_signature, verified
                 )
             )
-            positive_goal_branches = [
+            milestone_goal_branches = [
                 item
                 for item in selection_verified
                 if branch_goal_analyses[id(item[2])] is not None
                 and branch_goal_analyses[id(item[2])].milestone_reward > 0.0
+            ]
+            positive_goal_branches = [
+                item
+                for item in milestone_goal_branches
+                if not self._human_prior_milestone_outcome_known(
+                    branch_goal_analyses[id(item[2])]
+                )
+            ]
+            known_goal_branches = [
+                item
+                for item in milestone_goal_branches
+                if self._human_prior_milestone_outcome_known(
+                    branch_goal_analyses[id(item[2])]
+                )
+            ]
+            known_goal_semantic_frontiers = [
+                item
+                for item in selection_verified
+                if known_goal_branches
+                and branch_goal_analyses[id(item[2])] is not None
+                and branch_goal_analyses[id(item[2])].milestone_reward <= 0.0
+                and branch_goal_analyses[id(item[2])].life_loss_penalty >= 0.0
+                and branch_goal_analyses[id(item[2])].target_player_slot
+                is not None
+                and branch_goal_analyses[id(item[2])].target_player_slot
+                != branch_goal_analyses[id(item[2])].source_player_slot
+                and branch_goal_signatures[id(item[2])][1]
+                and branch_goal_signatures[id(item[2])][1]
+                != branch_goal_signatures[id(item[2])][0]
+                and self.human_prior_graph_state_visits[
+                    branch_goal_signatures[id(item[2])][1]
+                ]
+                == 0
             ]
             if filtered_hazards:
                 self._emit(
@@ -7742,6 +7819,34 @@ class VerifiedNeuralAgent:
                     ),
                 )
                 if positive_goal_branches
+                else None
+            )
+            known_goal_semantic_frontier_choice = (
+                max(
+                    known_goal_semantic_frontiers,
+                    key=lambda item: (
+                        item[0],
+                        tuple(
+                            (action.value, duration)
+                            for action, duration in zip(
+                                item[1].path, item[1].durations
+                            )
+                        ),
+                    ),
+                )
+                if known_goal_branches and known_goal_semantic_frontiers
+                else None
+            )
+            known_goal_fallback_choice = (
+                max(
+                    known_goal_branches,
+                    key=lambda item: (
+                        branch_goal_analyses[id(item[2])].milestone_reward,
+                        item[0],
+                    ),
+                )
+                if known_goal_branches
+                and known_goal_semantic_frontier_choice is None
                 else None
             )
             dynamic_control_choice = None
@@ -8092,6 +8197,34 @@ class VerifiedNeuralAgent:
                     decision=self.decision_index + 1,
                     action=chosen[1].path[0],
                     action_frames=chosen[1].durations[0],
+                    **self._human_prior_fields(selected_analysis),
+                )
+            elif known_goal_semantic_frontier_choice is not None:
+                chosen = known_goal_semantic_frontier_choice
+                selected_analysis = branch_goal_analyses[id(chosen[2])]
+                self._emit(
+                    "human_prior_known_milestone_frontier_choice",
+                    decision=self.decision_index + 1,
+                    action=chosen[1].path[0],
+                    action_frames=chosen[1].durations[0],
+                    known_milestone_alternatives=len(known_goal_branches),
+                    unvisited_semantic_frontiers=len(
+                        known_goal_semantic_frontiers
+                    ),
+                    reason="explore_before_repeating_known_milestone",
+                    **self._human_prior_fields(selected_analysis),
+                )
+            elif known_goal_fallback_choice is not None:
+                chosen = known_goal_fallback_choice
+                selected_analysis = branch_goal_analyses[id(chosen[2])]
+                self._emit(
+                    "human_prior_known_milestone_fallback",
+                    decision=self.decision_index + 1,
+                    action=chosen[1].path[0],
+                    action_frames=chosen[1].durations[0],
+                    known_milestone_alternatives=len(known_goal_branches),
+                    unvisited_semantic_frontiers=0,
+                    reason="no_unvisited_semantic_frontier",
                     **self._human_prior_fields(selected_analysis),
                 )
             elif dynamic_control_choice is not None:

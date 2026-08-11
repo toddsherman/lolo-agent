@@ -309,7 +309,17 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   resume-chain memory; `episodic_human_prior_memory_seeded.milestone_outcomes`
   reports how many were reconstructed. Reconstruction pairs each outcome with
   `(run_id, decision)` so local decision numbers cannot collide across chained
-  runs;
+  runs. Direct one-step verification exposes the same memory through
+  `branch_verified.human_prior_milestone_outcome_known`,
+  `human_prior_milestone_reward_suppressed`, and
+  `human_prior_effective_goal_reward`. The repeated milestone loses only its
+  already-observed assisted bonus; navigation and life-loss terms keep their
+  signs. `human_prior_known_milestone_frontier_choice` records selection of an
+  unvisited semantic player endpoint before repetition, while
+  `human_prior_known_milestone_fallback` records deliberate repetition when no
+  such endpoint remains. This makes necessary repeated milestone actions
+  possible without letting blocked animation changes masquerade as semantic
+  progress;
 - `human_prior_option_archive_added`, plus
   `human_prior_verified_option`, `human_prior_option_depth`, and
   `human_prior_option_path_visits_before` on restore/commit events, which make

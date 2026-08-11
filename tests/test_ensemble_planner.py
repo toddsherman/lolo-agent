@@ -971,6 +971,42 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(decision.branches_examined, 2)
         self.assertEqual(before, model.checkpoint_digest)
 
+    def test_known_milestone_suppresses_only_repeated_goal_bonus(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = MovingMilestoneSettlesEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                human_prior_heart_reward=25.0,
+                human_prior_navigation_reward=1.0,
+                human_prior_intrinsic_clip=10.0,
+            ),
+        )
+        source = env.reset()
+        env.armed = True
+        env.collected = True
+        env.motion_step = 2
+        target = env._frame()
+        analysis = MovingMilestoneGoalPrior().analyze(source, target)
+
+        novel_score, novel_intrinsic = agent._human_prior_score(
+            500.0, analysis
+        )
+        outcome_key = agent._human_prior_milestone_outcome_key(analysis)
+        agent.human_prior_milestone_outcomes.add(outcome_key)
+        repeated_score, repeated_intrinsic = agent._human_prior_score(
+            500.0, analysis
+        )
+
+        self.assertEqual(novel_intrinsic, repeated_intrinsic)
+        self.assertEqual(novel_score - repeated_score, 25.0)
+        self.assertEqual(repeated_score, repeated_intrinsic + 2.0)
+        self.assertTrue(agent._human_prior_milestone_outcome_known(analysis))
+
     def test_spatial_shadow_is_logged_but_cannot_change_selection(self) -> None:
         model = EnsembleVisualDynamicsModel(
             latent_size=32, action_size=8, ensemble_size=2

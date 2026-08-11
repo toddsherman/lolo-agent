@@ -681,8 +681,23 @@ settled-state archival, duplicate rejection, and resume reconstruction. Resume
 records are paired by run ID and decision because each chained run restarts its
 local decision counter.
 
+The next native replay showed that option-level deduplication alone was not
+enough: ordinary one-step selection still recollected the known upper heart
+because its fixed +25 reward preempted every exploration branch. Direct branch
+scoring now removes only the bonus for an exact committed semantic outcome.
+On the identical Room 3 state this changed the first choice from `DOWN` to a
+non-milestone branch while retaining both hearts. That comparison also exposed
+blocked movement animation as false visual progress, so the final selection
+rule considers only an unvisited detected-player endpoint a semantic frontier.
+If no such endpoint exists, the agent deliberately falls back to the known
+milestone. The final identical-state replay therefore selected `DOWN`, logged
+`no_unvisited_semantic_frontier`, collected the necessary heart, balanced all
+temporary native state handles, and passed the frozen-model audit. Hearts
+remain positive on first discovery, and a known heart remains selectable when
+it is the best remaining route.
+
 ## Verification
 
-The complete test suite passes: 209 tests, with 4 expected skips when native
+The complete test suite passes: 210 tests, with 4 expected skips when native
 integration paths are not supplied. Every
 completed native run reported `frozen_evaluation_audit=pass`.
