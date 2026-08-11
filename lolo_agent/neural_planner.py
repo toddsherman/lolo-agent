@@ -1025,6 +1025,22 @@ class VerifiedNeuralAgent:
             occupied[gy * columns + gx] = 0
         if (
             not allow_nonlocal
+            and action
+            in (Action.UP, Action.DOWN, Action.LEFT, Action.RIGHT)
+            and analysis.source_player_slot is not None
+            and analysis.target_player_slot is not None
+            and analysis.source_player_slot != analysis.target_player_slot
+        ):
+            # The stable graph key already represents ordinary detected
+            # movement.  Coarse cells beside the two anchors are dominated by
+            # sprite outline/animation spill, so toggling them into the world
+            # context invents a new room state for every walking pose.  Exact
+            # option search uses allow_nonlocal=True and retains its stricter
+            # persistence, phase, player-mask, and action-control audits for
+            # real transformations that accompany movement.
+            return ""
+        if (
+            not allow_nonlocal
             and action not in (Action.A, Action.B)
             and player_cells
         ):

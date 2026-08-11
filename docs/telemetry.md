@@ -169,7 +169,11 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
 - `human_prior_world_source_context`,
   `human_prior_world_target_context`, and
   `human_prior_world_effect_signature` on verified, archived, restored, and
-  committed transitions;
+  committed transitions. For ordinary single-step directional movement, a
+  changed detected player anchor is represented by the graph position and does
+  not also toggle adjacent coarse sprite-spill cells into the world context.
+  Exact option search still receives the unfiltered multi-action observation
+  for its stricter persistence, phase, player-mask, and action-control audits;
 - `human_prior_world_effect_confirmation`, which records the candidate coarse
   effect, immediate-control acceptance, future outcome spread, confirmation
   observations, action, duration, and endpoint frame;

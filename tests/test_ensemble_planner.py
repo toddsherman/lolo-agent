@@ -4486,6 +4486,25 @@ class EnsemblePlannerTests(unittest.TestCase):
             ),
             bytes((0, 0, 1, 0)).hex(),
         )
+        self.assertEqual(
+            agent._human_prior_world_effect_signature(
+                with_world_change,
+                analysis,
+                frame,
+                Action.RIGHT,
+            ),
+            "",
+        )
+        self.assertEqual(
+            agent._human_prior_world_effect_signature(
+                with_world_change,
+                analysis,
+                frame,
+                Action.RIGHT,
+                allow_nonlocal=True,
+            ),
+            bytes((0, 0, 1, 0)).hex(),
+        )
         target_context = agent._next_human_prior_world_context(
             "human-prior-world-root",
             bytes((0, 0, 1, 0)).hex(),

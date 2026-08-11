@@ -876,6 +876,33 @@ all 1,047 native handles, and preserved the frozen parameter hash. Visual
 inspection confirms that these are ordinary game-screen states; the pipeline
 still reads no ROM RAM and assigns no semantic label to the changed cell.
 
+The 12-decision consequence run
+`spatial-v14-room3-causal-consequence-v50-p8-d12` continued from that context
+through two depth-6 searches and 4,455 verified option branches. At the left
+boundary it found six independently controlled paths that reversed the same
+stable cell back to the earlier learned context, but no new reachability gain.
+The agent then exposed a separate bookkeeping error: walking between
+`(32,48)` and `(48,48)` created three apparent world contexts whose changed
+coarse cells were exactly the source/target sprite-outline cells `(2,2)` and
+`(3,2)`. These were not stable audited causal effects. Ordinary directional
+movement now leaves the world context unchanged when the detected player anchor
+moves; the player coordinate already represents that state change. Exact
+option search remains unchanged and may still retain movement-accompanying
+effects after its nonlocal, persistence, phase, pixel-player-mask, and
+action-control checks.
+
+The exact native replay
+`spatial-v14-room3-directional-context-filter-v51-p8-d4` repeated `RIGHT` and
+`LEFT` across the same pocket. Both transitions retained the starting world
+context and emitted no world-effect signature, instead of creating three false
+contexts. It balanced 41/41 native handles and passed the frozen audit. The
+paired v49 screen inspection also localized the real stable signal to the
+anonymous central cell `[7,6]`: the factual and duration-matched neutral frames
+show different appearances there while the player is far away. This supports
+the next experiment—route from the preserved context toward that changed
+region or the remaining visible goal and test downstream behavior—without
+assigning a game-specific object type.
+
 ## Verification
 
 The complete test suite passes: 223 tests, with 4 expected skips when native
