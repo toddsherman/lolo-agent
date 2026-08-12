@@ -1024,6 +1024,25 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             ),
             default=0,
         ),
+        "option_archive_snapshots_stored": event_counts.get(
+            "option_archive_snapshot_stored", 0
+        ),
+        "episodic_option_archive_state_imports": event_counts.get(
+            "episodic_option_archive_state_imported", 0
+        ),
+        "episodic_option_archive_seed_events": event_counts.get(
+            "episodic_option_archives_seeded", 0
+        ),
+        "episodic_option_archives_seeded": sum(
+            int(event.get("seeded_archives", 0))
+            for event in events
+            if event["event"] == "episodic_option_archives_seeded"
+        ),
+        "episodic_option_archives_skipped": sum(
+            int(event.get("skipped_milestone_archives", 0))
+            for event in events
+            if event["event"] == "episodic_option_archives_seeded"
+        ),
         "human_prior_chest_completions": event_counts.get(
             "human_prior_chest_completed", 0
         ),
@@ -1172,6 +1191,7 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "human_prior_option_effect_controllability_gains": sum(
             event["event"]
             == "human_prior_option_effect_controllability_probe"
+            and bool(event.get("player_footprint_matched"))
             and int(event.get("reachable_player_position_gain", 0)) > 0
             for event in events
         ),

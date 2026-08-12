@@ -3640,19 +3640,39 @@ class VerifiedNeuralAgent:
                 )
                 self.archive.append(branch)
                 retained_state_ids.add(id(archived.state))
+                persist_archive_state = getattr(
+                    self.env, "persist_option_archive_state", None
+                )
+                if callable(persist_archive_state):
+                    persist_archive_state(
+                        archived.state,
+                        archived.frame,
+                        self.decision_index + 1,
+                    )
                 self._emit(
                     "human_prior_option_archive_added",
                     decision=self.decision_index + 1,
                     state_id=self._state_id(archived.state),
                     parent_state_id=self._state_id(root),
+                    parent_frame=source_frame.digest,
+                    parent_decision=self.decision_index,
                     search_depth=branch.search_depth,
                     option_depth=archived.depth,
                     path=archived.path,
                     durations=archived.durations,
                     source_graph_signature=archived.source_signature,
+                    source_behavioral_signature=branch.origin_signature,
+                    source_causal_context_signature=(
+                        branch.causal_context_signature
+                    ),
                     target_graph_signature=(
                         archived.target_signature or None
                     ),
+                    target_frontier_signature=branch.frontier_signature,
+                    target_causal_context_signature=(
+                        branch.target_causal_context_signature
+                    ),
+                    target_pose_action=archived.pose_action,
                     target_graph_state_visits=(
                         archived.target_state_visits
                     ),
@@ -4825,6 +4845,31 @@ class VerifiedNeuralAgent:
                     except (TypeError, ValueError):
                         pass
                 continue
+            if event.get("event") == "human_prior_option_branch_verified":
+                source_signature = str(
+                    event.get("source_graph_signature") or ""
+                )
+                path_values = tuple(event.get("path") or ())
+                duration_values = tuple(event.get("durations") or ())
+                if (
+                    source_signature
+                    and path_values
+                    and len(path_values) == len(duration_values)
+                ):
+                    try:
+                        option_path = tuple(
+                            (
+                                Action(str(action_value)),
+                                int(duration_value),
+                            )
+                            for action_value, duration_value in zip(
+                                path_values, duration_values
+                            )
+                        )
+                        option_paths[(source_signature, option_path)] += 1
+                    except (TypeError, ValueError):
+                        pass
+                continue
             if event.get("event") != "decision_committed":
                 continue
             decisions += 1
@@ -5019,6 +5064,255 @@ class VerifiedNeuralAgent:
             pose_action=pose_action,
             chest_obtained=chest_obtained,
             current_state_source=current_state_source,
+        )
+
+    def seed_human_prior_option_archives(
+        self,
+        archives: Sequence[
+            Tuple[object, Frame, Dict[str, Any], str, str]
+        ],
+    ) -> None:
+        """Restore evaluator-owned promoted alternatives into live memory."""
+
+        release_state = getattr(self.env, "release_state", None)
+        persist_state = getattr(
+            self.env, "persist_option_archive_state", None
+        )
+        seeded = 0
+        skipped_milestones = 0
+
+        def slot(value: Any) -> Optional[Tuple[int, int]]:
+            if value is None:
+                return None
+            return int(value[0]), int(value[1])
+
+        for state, frame, metadata, source_run_id, source_state_id in archives:
+            if float(metadata.get("human_prior_milestone_reward", 0.0)) > 0.0:
+                skipped_milestones += 1
+                if release_state is not None:
+                    release_state(state)
+                self._emit(
+                    "episodic_option_archive_skipped",
+                    decision=self.decision_index,
+                    reason="milestone_parent_checkpoint_not_persisted",
+                    source_run_id=source_run_id,
+                    source_state_id=source_state_id,
+                    agent_visible=False,
+                    **self._frame_fields(frame),
+                )
+                continue
+            try:
+                path = tuple(
+                    Action(str(value))
+                    for value in (metadata.get("path") or ())
+                )
+                durations = tuple(
+                    int(value)
+                    for value in (metadata.get("durations") or ())
+                )
+                if not path or len(path) != len(durations):
+                    raise ValueError("persisted option path is malformed")
+                target_hearts = tuple(
+                    (int(value[0]), int(value[1]))
+                    for value in (
+                        metadata.get("human_prior_target_hearts") or ()
+                    )
+                )
+                known_hearts = tuple(
+                    (int(value[0]), int(value[1]))
+                    for value in (
+                        metadata.get("human_prior_known_heart_slots") or ()
+                    )
+                )
+                pose_value = metadata.get("target_pose_action")
+                pose_action = (
+                    None
+                    if pose_value is None
+                    else Action(str(pose_value))
+                )
+                source_world_context = str(
+                    metadata.get("human_prior_world_source_context")
+                    or self.current_human_prior_world_context_signature
+                )
+                target_world_context = str(
+                    metadata.get("human_prior_world_target_context")
+                    or source_world_context
+                )
+                effect_signature = str(
+                    metadata.get(
+                        "human_prior_option_world_effect_signature"
+                    )
+                    or ""
+                )
+                entity_signature = str(
+                    metadata.get(
+                        "human_prior_option_entity_state_signature"
+                    )
+                    or ""
+                )
+                frontier_reason = str(
+                    metadata.get(
+                        "human_prior_option_effect_frontier_reason"
+                    )
+                    or ""
+                )
+                branch = _ArchivedBranch(
+                    state=state,
+                    frame=frame,
+                    plan=NeuralPlan(
+                        path,
+                        durations,
+                        float(metadata.get("score", 0.0)),
+                        0.0,
+                    ),
+                    score=float(metadata.get("score", 0.0)),
+                    scene=self._scene_signature(frame),
+                    created=self.decision_index,
+                    origin_signature=str(
+                        metadata.get("source_behavioral_signature")
+                        or self.current_frontier_signature
+                    ),
+                    frontier_signature=self._new_provisional_signature(),
+                    causal_context_signature=str(
+                        metadata.get("source_causal_context_signature")
+                        or self.current_causal_context_signature
+                    ),
+                    target_causal_context_signature=str(
+                        metadata.get("target_causal_context_signature")
+                        or self.current_causal_context_signature
+                    ),
+                    pose_action=pose_action,
+                    goal_heart_slots=target_hearts,
+                    goal_progress_reward=float(
+                        metadata.get("human_prior_goal_reward", 0.0)
+                    ),
+                    goal_remaining_hearts=int(
+                        metadata.get(
+                            "human_prior_remaining_hearts",
+                            len(target_hearts),
+                        )
+                    ),
+                    goal_total_hearts=len(known_hearts),
+                    goal_chest_slot=(
+                        slot(metadata.get("human_prior_target_chest_slot"))
+                        or slot(
+                            metadata.get("human_prior_source_chest_slot")
+                        )
+                    ),
+                    goal_player_slot=slot(
+                        metadata.get("human_prior_target_player_slot")
+                    ),
+                    parent_state_id=None,
+                    parent_frame_digest=str(
+                        metadata.get("parent_frame") or ""
+                    )
+                    or None,
+                    parent_decision=int(
+                        metadata.get("parent_decision", 0)
+                    ),
+                    search_depth=int(metadata.get("search_depth", len(path))),
+                    goal_source_signature=str(
+                        metadata.get("source_graph_signature") or ""
+                    ),
+                    goal_target_signature=str(
+                        metadata.get("target_graph_signature") or ""
+                    ),
+                    goal_source_world_context=source_world_context,
+                    goal_target_world_context=target_world_context,
+                    goal_world_effect_signature=(
+                        effect_signature
+                        if metadata.get(
+                            "human_prior_option_effect_frontier", False
+                        )
+                        else ""
+                    ),
+                    human_prior_verified_option=True,
+                    human_prior_option_world_effect_signature=(
+                        effect_signature
+                    ),
+                    human_prior_option_entity_state_signature=(
+                        entity_signature
+                    ),
+                    human_prior_option_effect_frontier_reason=(
+                        frontier_reason
+                    ),
+                    goal_chest_obtained=bool(
+                        metadata.get("human_prior_chest_obtained", False)
+                    ),
+                )
+            except (KeyError, TypeError, ValueError) as error:
+                if release_state is not None:
+                    release_state(state)
+                raise RuntimeError(
+                    "invalid persisted option archive metadata"
+                ) from error
+            self.archive.append(branch)
+            if callable(persist_state):
+                persist_state(state, frame, self.decision_index)
+            self._emit(
+                "human_prior_option_archive_added",
+                decision=self.decision_index,
+                source="episodic_resume",
+                source_run_id=source_run_id,
+                source_state_id=source_state_id,
+                state_id=self._state_id(state),
+                parent_state_id=None,
+                parent_frame=branch.parent_frame_digest,
+                parent_decision=branch.parent_decision,
+                search_depth=branch.search_depth,
+                option_depth=len(path),
+                path=path,
+                durations=durations,
+                source_graph_signature=branch.goal_source_signature,
+                source_behavioral_signature=branch.origin_signature,
+                source_causal_context_signature=(
+                    branch.causal_context_signature
+                ),
+                target_graph_signature=branch.goal_target_signature or None,
+                target_frontier_signature=branch.frontier_signature,
+                target_causal_context_signature=(
+                    branch.target_causal_context_signature
+                ),
+                target_pose_action=branch.pose_action,
+                human_prior_known_heart_slots=known_hearts,
+                human_prior_target_hearts=target_hearts,
+                human_prior_remaining_hearts=branch.goal_remaining_hearts,
+                human_prior_goal_reward=branch.goal_progress_reward,
+                human_prior_milestone_reward=0.0,
+                human_prior_target_player_slot=branch.goal_player_slot,
+                human_prior_target_chest_slot=branch.goal_chest_slot,
+                human_prior_chest_obtained=branch.goal_chest_obtained,
+                human_prior_option_world_effect_signature=(
+                    effect_signature or None
+                ),
+                human_prior_option_effect_frontier=bool(
+                    branch.goal_world_effect_signature
+                ),
+                human_prior_option_entity_frontier=bool(entity_signature),
+                human_prior_option_entity_state_signature=(
+                    entity_signature or None
+                ),
+                human_prior_option_effect_frontier_reason=(
+                    frontier_reason or None
+                ),
+                human_prior_world_source_context=source_world_context,
+                human_prior_world_target_context=target_world_context,
+                selected_primary=bool(metadata.get("selected_primary", False)),
+                score=branch.score,
+                archive_size=len(self.archive),
+                agent_visible=True,
+                **self._frame_fields(frame),
+            )
+            seeded += 1
+        self._prune_archive()
+        self._emit(
+            "episodic_option_archives_seeded",
+            decision=self.decision_index,
+            source_archives=len(archives),
+            seeded_archives=seeded,
+            skipped_milestone_archives=skipped_milestones,
+            archive_size=len(self.archive),
+            agent_visible=False,
         )
 
     def _persistent_change_fields(self) -> Dict[str, Any]:

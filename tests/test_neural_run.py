@@ -5,9 +5,11 @@ from pathlib import Path
 
 from lolo_agent.neural_run import (
     StableSceneChangeDetector,
+    load_active_option_archives,
     load_episodic_decision_events,
 )
 from lolo_agent.pixels import Frame
+from lolo_agent.run_logging import RunLogger
 
 
 class StableSceneChangeDetectorTests(unittest.TestCase):
@@ -112,6 +114,11 @@ class StableSceneChangeDetectorTests(unittest.TestCase):
                             "decision": 1,
                             "marker": "child-milestone-outcome",
                         },
+                        {
+                            "event": "human_prior_option_branch_verified",
+                            "decision": 1,
+                            "marker": "child-option-branch",
+                        },
                     )
                 )
                 + "\n",
@@ -129,8 +136,48 @@ class StableSceneChangeDetectorTests(unittest.TestCase):
                 "child-room-boundary",
                 "child-hazard",
                 "child-milestone-outcome",
+                "child-option-branch",
             ],
         )
+
+    def test_loads_only_option_archives_active_at_decision_snapshot(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            logger = RunLogger(Path(temporary), run_id="archives")
+            frame = self.frame(96)
+            logger.store_option_archive_snapshot(
+                1, "state-1", b"archive-state", frame
+            )
+            logger.log(
+                "human_prior_option_archive_added",
+                decision=1,
+                state_id="state-1",
+                path=["left"],
+                durations=[4],
+                frame=frame.digest,
+            )
+            logger.store_decision_snapshot(1, b"decision-1", frame)
+            logger.log(
+                "archive_branch_restored",
+                decision=2,
+                state_id="state-1",
+            )
+            logger.store_decision_snapshot(2, b"decision-2", frame)
+            logger.close()
+
+            active_at_one = load_active_option_archives(
+                logger.run_dir, 1
+            )
+            active_at_two = load_active_option_archives(
+                logger.run_dir, 2
+            )
+
+        self.assertEqual(len(active_at_one), 1)
+        self.assertEqual(active_at_one[0].state, b"archive-state")
+        self.assertEqual(active_at_one[0].frame, frame)
+        self.assertEqual(active_at_one[0].source_state_id, "state-1")
+        self.assertEqual(active_at_two, [])
 
 
 if __name__ == "__main__":

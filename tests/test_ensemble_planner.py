@@ -4100,6 +4100,13 @@ class EnsemblePlannerTests(unittest.TestCase):
                 "human_prior_graph_source_signature": "state-0",
             },
             {
+                "event": "human_prior_option_branch_verified",
+                "decision": 1,
+                "source_graph_signature": "state-0",
+                "path": ["up", "right"],
+                "durations": [4, 16],
+            },
+            {
                 "event": "decision_committed",
                 "decision": 1,
                 "action": "right",
@@ -4178,6 +4185,15 @@ class EnsemblePlannerTests(unittest.TestCase):
             1,
         )
         self.assertEqual(
+            agent.human_prior_option_visits[
+                (
+                    "state-0",
+                    ((Action.UP, 4), (Action.RIGHT, 16)),
+                )
+            ],
+            1,
+        )
+        self.assertEqual(
             agent.current_human_prior_world_context_signature,
             "context-2",
         )
@@ -4211,8 +4227,113 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(agent.goal_prior.current_player_slot, (32, 0))
         self.assertEqual(len(seeded), 1)
         self.assertEqual(seeded[0]["player_positions"], 2)
-        self.assertEqual(seeded[0]["verified_option_paths"], 1)
+        self.assertEqual(seeded[0]["verified_option_paths"], 2)
         self.assertEqual(seeded[0]["pose_action"], Action.RIGHT)
+
+    def test_seed_human_prior_option_archive_restores_promoted_branch(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = UniqueStateEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+            ),
+            event_logger=logger,
+        )
+        frame = agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        state = env.save_state()
+        metadata = {
+            "path": ["right"],
+            "durations": [1],
+            "score": 2.5,
+            "search_depth": 3,
+            "source_graph_signature": "graph-source",
+            "target_graph_signature": "graph-target",
+            "source_behavioral_signature": "behavior-source",
+            "source_causal_context_signature": "causal-source",
+            "target_causal_context_signature": "causal-target",
+            "target_pose_action": "right",
+            "human_prior_known_heart_slots": [[7, 0]],
+            "human_prior_target_hearts": [[7, 0]],
+            "human_prior_remaining_hearts": 1,
+            "human_prior_target_player_slot": [0, 0],
+            "human_prior_goal_reward": 0.0,
+            "human_prior_milestone_reward": 0.0,
+            "human_prior_world_source_context": "world-source",
+            "human_prior_world_target_context": "world-target",
+            "human_prior_option_world_effect_signature": "effect",
+            "human_prior_option_effect_frontier": True,
+            "human_prior_option_effect_frontier_reason": (
+                "delayed_causal_effect"
+            ),
+        }
+
+        agent.seed_human_prior_option_archives(
+            ((state, frame, metadata, "parent", "state-7"),)
+        )
+
+        self.assertEqual(len(agent.archive), 1)
+        branch = agent.archive[0]
+        self.assertIs(branch.state, state)
+        self.assertEqual(branch.plan.path, (Action.RIGHT,))
+        self.assertEqual(branch.plan.durations, (1,))
+        self.assertEqual(branch.goal_target_signature, "graph-target")
+        self.assertEqual(branch.goal_target_world_context, "world-target")
+        self.assertEqual(
+            branch.human_prior_option_effect_frontier_reason,
+            "delayed_causal_effect",
+        )
+        seeded = next(
+            event
+            for event in logger.events
+            if event["event"] == "episodic_option_archives_seeded"
+        )
+        self.assertEqual(seeded["seeded_archives"], 1)
+        added = next(
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_archive_added"
+        )
+        self.assertEqual(added["source"], "episodic_resume")
+        agent.clear_archive()
+        self.assertNotIn(state, env.active_states)
+
+        milestone_state = env.save_state()
+        milestone_metadata = dict(metadata)
+        milestone_metadata["human_prior_milestone_reward"] = 25.0
+        agent.seed_human_prior_option_archives(
+            (
+                (
+                    milestone_state,
+                    frame,
+                    milestone_metadata,
+                    "parent",
+                    "state-8",
+                ),
+            )
+        )
+        self.assertEqual(agent.archive, [])
+        self.assertNotIn(milestone_state, env.active_states)
+        skipped = next(
+            event
+            for event in logger.events
+            if event["event"] == "episodic_option_archive_skipped"
+        )
+        self.assertEqual(
+            skipped["reason"],
+            "milestone_parent_checkpoint_not_persisted",
+        )
 
     def test_seed_milestone_outcomes_scopes_decisions_by_run(self) -> None:
         model = EnsembleVisualDynamicsModel(

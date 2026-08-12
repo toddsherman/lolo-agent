@@ -207,6 +207,42 @@ class RunLogger:
             **self.frame_fields(frame),
         )
 
+    def store_option_archive_snapshot(
+        self,
+        decision: int,
+        state_id: str,
+        state: bytes,
+        frame: Frame,
+    ) -> Dict[str, Any]:
+        """Persist one promoted option without exposing its bytes to policy."""
+
+        if decision < 0:
+            raise ValueError("archive snapshot decision must be non-negative")
+        if not state_id:
+            raise ValueError("archive snapshot requires a state ID")
+        if not state:
+            raise ValueError("archive snapshot state must not be empty")
+        digest = sha256(state).hexdigest()
+        relative = Path("states") / f"{digest}.state"
+        if digest not in self._stored_states:
+            self.states_dir.mkdir(exist_ok=True)
+            destination = self.run_dir / relative
+            if not destination.exists():
+                temporary = self.states_dir / f".{digest}.tmp"
+                temporary.write_bytes(state)
+                os.replace(temporary, destination)
+            self._stored_states.add(digest)
+        return self.log(
+            "option_archive_snapshot_stored",
+            decision=decision,
+            state_id=state_id,
+            state_file=str(relative),
+            state_sha256=digest,
+            state_bytes=len(state),
+            agent_visible=False,
+            **self.frame_fields(frame),
+        )
+
     def close(self, status: str = "complete", error: Optional[str] = None) -> None:
         if self._closed:
             return
@@ -245,6 +281,7 @@ class LoggedEnvironment:
         self._frame: Optional[Frame] = None
         self._next_state = 0
         self._active_states: Dict[int, str] = {}
+        self._persisted_archive_state_ids: set[str] = set()
         self.last_step_seq: Optional[int] = None
         self.last_state_event_seq: Optional[int] = None
         self.phase = "agent"
@@ -317,6 +354,113 @@ class LoggedEnvironment:
         )
         self.last_state_event_seq = int(event["seq"])
         return state
+
+    def persist_option_archive_state(
+        self,
+        state: object,
+        frame: Frame,
+        decision: int,
+    ) -> Optional[Dict[str, Any]]:
+        """Store an opaque promoted branch while restoring the live state."""
+
+        export_state = getattr(self.env, "export_state", None)
+        release_state = getattr(self.env, "release_state", None)
+        if not callable(export_state) or not callable(release_state):
+            return None
+        state_id = self.state_id(state)
+        if state_id is None or self._frame is None:
+            return None
+        if state_id in self._persisted_archive_state_ids:
+            return None
+        live_frame = self._frame
+        live_state = self.env.save_state()
+        try:
+            archived_frame = self.env.load_state(state)
+            if archived_frame.digest != frame.digest:
+                raise RuntimeError(
+                    "promoted option state does not match its archived frame"
+                )
+            payload = export_state()
+            stored = self.logger.store_option_archive_snapshot(
+                decision, state_id, payload, frame
+            )
+            self._persisted_archive_state_ids.add(state_id)
+            return stored
+        finally:
+            restored = self.env.load_state(live_state)
+            release_state(live_state)
+            if restored.digest != live_frame.digest:
+                raise RuntimeError(
+                    "live emulator state diverged after archive snapshot"
+                )
+            self._frame = live_frame
+
+    def import_option_archive_state(
+        self,
+        state: bytes,
+        frame: Frame,
+        *,
+        source_run_id: str,
+        source_state_id: str,
+    ) -> object:
+        """Import an evaluator-owned archive and restore the live state."""
+
+        import_state = getattr(self.env, "import_state", None)
+        release_state = getattr(self.env, "release_state", None)
+        if not callable(import_state) or not callable(release_state):
+            raise RuntimeError(
+                "environment does not support persistent option archives"
+            )
+        if self._frame is None:
+            raise RuntimeError("cannot import an archive before environment attach")
+        live_frame = self._frame
+        live_state = self.env.save_state()
+        imported_handle: Optional[object] = None
+        try:
+            imported_frame = import_state(state, frame)
+            if imported_frame.digest != frame.digest:
+                raise RuntimeError(
+                    "imported option state does not match its archived frame"
+                )
+            imported_handle = self.env.save_state()
+            self._next_state += 1
+            imported_state_id = f"state-{self._next_state:08d}"
+            self._active_states[id(imported_handle)] = imported_state_id
+        finally:
+            restored = self.env.load_state(live_state)
+            release_state(live_state)
+            if restored.digest != live_frame.digest:
+                if imported_handle is not None:
+                    self.release_state(imported_handle)
+                raise RuntimeError(
+                    "live emulator state diverged after archive import"
+                )
+            self._frame = live_frame
+        assert imported_handle is not None
+        imported_state_id = self.state_id(imported_handle)
+        assert imported_state_id is not None
+        stored = self.logger.store_option_archive_snapshot(
+            0, imported_state_id, state, frame
+        )
+        self._persisted_archive_state_ids.add(imported_state_id)
+        saved = self.logger.log(
+            "state_saved",
+            state_id=imported_state_id,
+            imported_option_archive=True,
+            option_archive_state_file=stored["state_file"],
+            option_archive_state_sha256=stored["state_sha256"],
+            frame=self.logger.store_frame(frame),
+        )
+        self.last_state_event_seq = int(saved["seq"])
+        self.logger.log(
+            "episodic_option_archive_state_imported",
+            source_run_id=source_run_id,
+            source_state_id=source_state_id,
+            state_id=imported_state_id,
+            agent_visible=False,
+            **self.logger.frame_fields(frame),
+        )
+        return imported_handle
 
     def state_id(self, state: object) -> Optional[str]:
         return self._active_states.get(id(state))

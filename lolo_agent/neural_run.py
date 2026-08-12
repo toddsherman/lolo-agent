@@ -113,6 +113,87 @@ class StableSceneChangeDetector:
         }
 
 
+@dataclass(frozen=True)
+class PersistedOptionArchive:
+    state: bytes
+    frame: Frame
+    metadata: Dict[str, Any]
+    source_run_id: str
+    source_state_id: str
+
+
+def load_active_option_archives(
+    run_dir: Path, through_decision: int
+) -> list[PersistedOptionArchive]:
+    """Load promoted, unconsumed option states at a decision boundary."""
+
+    if through_decision <= 0:
+        raise ValueError("option archive decision must be positive")
+    run_dir = Path(run_dir).expanduser().resolve()
+    manifest = json.loads(
+        (run_dir / "manifest.json").read_text(encoding="utf-8")
+    )
+    events = list(read_events(run_dir))
+    decision_snapshot = next(
+        (
+            event
+            for event in events
+            if event.get("event") == "decision_snapshot_stored"
+            and int(event.get("decision", 0)) == through_decision
+        ),
+        None,
+    )
+    if decision_snapshot is None:
+        return []
+    cutoff_seq = int(decision_snapshot["seq"])
+    active: Dict[str, Dict[str, Any]] = {}
+    snapshots: Dict[str, Dict[str, Any]] = {}
+    for event in events:
+        if int(event.get("seq", 0)) > cutoff_seq:
+            break
+        event_type = event.get("event")
+        state_id = str(event.get("state_id") or "")
+        if event_type == "option_archive_snapshot_stored" and state_id:
+            snapshots[state_id] = event
+        elif event_type == "human_prior_option_archive_added" and state_id:
+            active[state_id] = event
+        elif event_type in {
+            "archive_branch_removed",
+            "archive_branch_restored",
+        } and state_id:
+            active.pop(state_id, None)
+
+    source_run_id = str(manifest.get("run_id") or run_dir.name)
+    loaded = []
+    for state_id, metadata in sorted(
+        active.items(), key=lambda item: int(item[1].get("seq", 0))
+    ):
+        snapshot = snapshots.get(state_id)
+        if snapshot is None:
+            continue
+        relative = Path(str(snapshot["state_file"]))
+        state_path = (run_dir / relative).resolve()
+        if not state_path.is_relative_to(run_dir):
+            raise RuntimeError("option archive snapshot escapes telemetry run")
+        if sha256_file(state_path) != str(snapshot["state_sha256"]):
+            raise RuntimeError("option archive snapshot digest mismatch")
+        frame_digest = str(snapshot["frame"])
+        if frame_digest != str(metadata.get("frame") or ""):
+            raise RuntimeError("option archive metadata frame mismatch")
+        frame_path = run_dir / "frames" / f"{frame_digest}.png"
+        frame = decode_logged_png(frame_path)
+        loaded.append(
+            PersistedOptionArchive(
+                state=state_path.read_bytes(),
+                frame=frame,
+                metadata=metadata,
+                source_run_id=source_run_id,
+                source_state_id=state_id,
+            )
+        )
+    return loaded
+
+
 def load_episodic_scene_frames(
     run_dir: Path,
     through_decision: int,
@@ -190,6 +271,7 @@ def load_episodic_decision_events(
             "decision_committed",
             "goal_milestone_exhaustion_learned",
             "human_prior_milestone_outcome_recorded",
+            "human_prior_option_branch_verified",
             "pixel_novel_room_started",
         }
         and int(event.get("decision", 0)) <= through_decision
@@ -1175,6 +1257,29 @@ def main() -> None:
                     load_episodic_decision_events(
                         args.resume_run, args.resume_decision
                     )
+                )
+                persisted_archives = load_active_option_archives(
+                    args.resume_run, args.resume_decision
+                )
+                imported_archives = []
+                for archive in persisted_archives:
+                    handle = env.import_option_archive_state(
+                        archive.state,
+                        archive.frame,
+                        source_run_id=archive.source_run_id,
+                        source_state_id=archive.source_state_id,
+                    )
+                    imported_archives.append(
+                        (
+                            handle,
+                            archive.frame,
+                            archive.metadata,
+                            archive.source_run_id,
+                            archive.source_state_id,
+                        )
+                    )
+                agent.seed_human_prior_option_archives(
+                    imported_archives
                 )
             elif bootstrap_fixture is None:
                 initial_frame = agent.reset()

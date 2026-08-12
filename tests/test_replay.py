@@ -6,6 +6,7 @@ from pathlib import Path
 from lolo_agent.pixels import Frame
 from lolo_agent.replay import (
     ReplayCapture,
+    _save_logged_state,
     committed_timeline,
     restore_logged_decision,
     write_player,
@@ -14,6 +15,71 @@ from lolo_agent.run_logging import RunLogger
 
 
 class ReplayTests(unittest.TestCase):
+    def test_imported_archive_save_replays_without_moving_live_state(
+        self,
+    ) -> None:
+        class ArchiveEnvironment:
+            def __init__(self) -> None:
+                self.position = 0
+                self.states = set()
+
+            def frame(self) -> Frame:
+                pixels = bytearray(2)
+                pixels[self.position] = 255
+                return Frame(2, 1, 1, bytes(pixels))
+
+            def save_state(self):
+                state = [self.position]
+                self.states.add(id(state))
+                return state
+
+            def load_state(self, state) -> Frame:
+                self.position = state[0]
+                return self.frame()
+
+            def release_state(self, state) -> None:
+                self.states.remove(id(state))
+
+            def import_state(self, state: bytes, frame: Frame) -> Frame:
+                self.position = state[0]
+                imported = self.frame()
+                self.assert_frame(imported, frame)
+                return imported
+
+            @staticmethod
+            def assert_frame(actual: Frame, expected: Frame) -> None:
+                if actual != expected:
+                    raise RuntimeError("frame mismatch")
+
+        with tempfile.TemporaryDirectory() as directory:
+            logger = RunLogger(Path(directory), run_id="archive-replay")
+            env = ArchiveEnvironment()
+            live = env.frame()
+            env.position = 1
+            archived = env.frame()
+            env.position = 0
+            stored = logger.store_option_archive_snapshot(
+                0, "state-1", b"\x01", archived
+            )
+            event = logger.log(
+                "state_saved",
+                state_id="state-1",
+                imported_option_archive=True,
+                option_archive_state_file=stored["state_file"],
+                option_archive_state_sha256=stored["state_sha256"],
+                **logger.frame_fields(archived),
+            )
+            logger.close()
+
+            handle = _save_logged_state(
+                env, logger.run_dir, event, live
+            )
+
+            self.assertEqual(env.frame(), live)
+            self.assertEqual(env.load_state(handle), archived)
+            env.release_state(handle)
+            self.assertEqual(env.states, set())
+
     def test_decision_snapshot_restores_without_replaying_event_history(self) -> None:
         class SnapshotEnvironment:
             def __init__(self) -> None:

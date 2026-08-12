@@ -231,6 +231,12 @@ constant time. The agent never observes the snapshot bytes. Legacy logs still
 use deterministic full-event replay, and gameplay resumes exclude the
 title-screen `START`/`SELECT` controls.
 
+Assisted exact-search resumes also retain evaluator-owned snapshots for the
+small bounded set of promoted, unconsumed option alternatives. Their opaque
+bytes never enter policy observations; pixels and snapshot hashes are verified
+on import, and the child copies active alternatives into its own telemetry so
+later descendants remain self-contained.
+
 ## Durable learning experiments
 
 Run repeated collection, MPS training, and frozen evaluation with explicit

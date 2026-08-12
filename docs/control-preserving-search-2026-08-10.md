@@ -915,10 +915,11 @@ The complementary pre-upper-heart search also failed to reveal a simple
 ordering solution. `spatial-v14-room3-lower-first-v53-p8-d1` began with both
 visible hearts, verified 22,759 exact branches through depth 20, and rejected
 34 duplicate upper-heart outcomes. It reached the central boundary at
-`(144,128)`, still four tiles from the lower heart, but never reached below
-that boundary. This falsifies the hypothesis that merely delaying the upper
-heart makes the lower route available. The run balanced 22,827/22,827 handles
-and preserved the frozen parameter hash.
+`(144,128)` while both hearts remained. Every branch below that boundary first
+took the upper heart; those branches reached `(192,176)` but remained four
+tiles from the lower heart. This falsifies the hypothesis that merely delaying
+the upper heart makes the lower route available. The run balanced
+22,827/22,827 handles and preserved the frozen parameter hash.
 
 Follow-through exposed a second sprite bookkeeping leak. Ordinary blocked
 directional presses at the same detected tile changed facing and nearby
@@ -953,8 +954,55 @@ frontier instead of `UP,LEFT,A`. The run balanced 839/839 handles and passed
 the frozen audit. This leaves the delayed effect available for later
 experimentation without allowing sprite pose to outrank demonstrated motion.
 
+The continuous 12-decision replay
+`spatial-v14-room3-delayed-effect-followthrough-v58-p8-d12` then consumed the
+entire ranked frontier while all native handles were still live. It first
+restored the demonstrated physical `DOWN,UP` option, then restored delayed
+context A (`UP,LEFT,A`) at decision 6 and delayed context B
+(`UP,LEFT,LEFT`) at decision 10. Each context survived ordinary follow-through,
+but neither short continuation left the upper pocket or changed the two-heart
+state. This validates delayed-hypothesis retention and ordering without yet
+showing that either appearance change is useful. The run balanced 870/870
+handles and passed the frozen audit.
+
+The matched-budget context-A consequence search is also negative. Starting
+from v58's first delayed context,
+`spatial-v14-room3-context-a-consequence-v59-p8-d1` verified 22,077 exact
+branches through depth 20. With both hearts present it shared the baseline's
+`y=128` ceiling. After taking the upper heart it reached the same
+`(192,176)` right-corridor boundary and the same minimum distance four from the
+lower heart, first doing so at depth 16 rather than the clean baseline's depth
+14. The selected six-edge option took the already known upper heart. Thus
+context A is a real persistent visual intervention but not a capability gain
+for this state. The run balanced 22,120/22,120 handles and preserved the frozen
+parameter hash.
+
+This sequence also exposed a process-boundary limitation: exact-option archive
+handles disappeared when a run ended, while only committed decisions had
+durable emulator snapshots. Promoted alternatives are now exported as
+content-hashed, evaluator-owned opaque snapshots. Resume reconstructs every
+previously verified option path as temporary coverage, imports only promoted
+alternatives still active at the selected decision snapshot, verifies archived
+and live pixels around every import, and copies active alternatives into the
+child run. Positive goal-milestone alternatives remain conservatively excluded
+until their independent rollback parent can be persisted too. Imported state
+saves carry their checkpoint reference so deterministic replay recreates the
+alternative without moving the live resumed state.
+
+The native three-generation gate passed. Parent v60 stored three 13,296-byte
+promoted alternatives plus its normal decision snapshot, balanced 824/824
+handles, and passed the frozen audit. Child v61 imported all three, reconstructed
+24,073 verified option paths from its lineage, repeated zero exact branches,
+restored the ordinary physical alternative in 23 seconds, and balanced 4/4
+handles. Its committed and full 240-fps replays verified all seven observations.
+Grandchild v62 imported only the two alternatives unconsumed at v61's decision,
+again repeated zero exact branches, restored delayed context A, balanced 3/3
+handles, and passed the frozen audit. Durable experimentation now survives
+ordinary process restarts without converting a path into a demonstration or
+updating persistent parameters.
+
 ## Verification
 
-The complete test suite passes: 224 tests, with 4 expected skips when native
+The complete test suite passes: 228 tests, with 4 expected skips when native
 integration paths are not supplied. Every
 completed native run reported `frozen_evaluation_audit=pass`.

@@ -14,11 +14,104 @@ from lolo_agent.environment import Action
 from lolo_agent.log_summary import append_level_annotation, build_run_summary
 from lolo_agent.mock_puzzle import MockPuzzleEnv
 from lolo_agent.neural_planner import NeuralPlanningConfig, VerifiedNeuralAgent
-from lolo_agent.pixels import signature_key
+from lolo_agent.pixels import Frame, signature_key
 from lolo_agent.run_logging import LoggedEnvironment, RunLogger, read_events
 
 
+class PersistentStateEnv:
+    def __init__(self) -> None:
+        self.position = 0
+        self.active_states = set()
+
+    def _frame(self) -> Frame:
+        pixels = bytearray(8)
+        pixels[self.position] = 255
+        return Frame(8, 1, 1, bytes(pixels))
+
+    def reset(self) -> Frame:
+        self.position = 0
+        return self._frame()
+
+    def observe(self) -> Frame:
+        return self._frame()
+
+    def step(self, action: Action, frames: int = 1) -> Frame:
+        del frames
+        if action == Action.RIGHT:
+            self.position = 1
+        return self._frame()
+
+    def save_state(self):
+        state = [self.position]
+        self.active_states.add(id(state))
+        return state
+
+    def load_state(self, state) -> Frame:
+        if id(state) not in self.active_states:
+            raise RuntimeError("unknown state")
+        self.position = state[0]
+        return self._frame()
+
+    def release_state(self, state) -> None:
+        self.active_states.remove(id(state))
+
+    def export_state(self) -> bytes:
+        return bytes((self.position,))
+
+    def import_state(self, state: bytes, frame: Frame) -> Frame:
+        self.position = state[0]
+        imported = self._frame()
+        if imported.digest != frame.digest:
+            raise RuntimeError("frame mismatch")
+        return imported
+
+
 class RunLoggingTests(unittest.TestCase):
+    def test_persistent_option_archive_round_trip_preserves_live_state(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            logger = RunLogger(Path(directory), run_id="archive-round-trip")
+            native = PersistentStateEnv()
+            env = LoggedEnvironment(native, logger)
+            root_frame = env.reset()
+            root = env.save_state()
+            archive_frame = env.step(Action.RIGHT, 1)
+            archive = env.save_state()
+            env.load_state(root)
+
+            stored = env.persist_option_archive_state(
+                archive, archive_frame, 1
+            )
+
+            self.assertIsNotNone(stored)
+            self.assertEqual(env.observe(), root_frame)
+            assert stored is not None
+            payload = (
+                logger.run_dir / str(stored["state_file"])
+            ).read_bytes()
+            imported = env.import_option_archive_state(
+                payload,
+                archive_frame,
+                source_run_id="parent",
+                source_state_id="state-2",
+            )
+            self.assertEqual(env.observe(), root_frame)
+            self.assertEqual(env.load_state(imported), archive_frame)
+            env.release_state(imported)
+            env.release_state(archive)
+            env.release_state(root)
+            logger.close()
+
+            events = list(read_events(logger.run_dir))
+            counts = CounterLike(event["event"] for event in events)
+            self.assertEqual(counts["option_archive_snapshot_stored"], 2)
+            self.assertEqual(
+                counts["episodic_option_archive_state_imported"], 1
+            )
+            self.assertEqual(counts["state_saved"], counts["state_released"])
+            self.assertEqual(native.active_states, set())
+
     def test_full_decision_trace_and_derived_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             logger = RunLogger(Path(directory), run_id="audit-test", fsync_interval=1)
@@ -195,6 +288,15 @@ class RunLoggingTests(unittest.TestCase):
             self.assertIn(
                 "episodic_human_prior_seeded_temporal_options", summary
             )
+            self.assertIn("option_archive_snapshots_stored", summary)
+            self.assertIn(
+                "episodic_option_archive_state_imports", summary
+            )
+            self.assertIn(
+                "episodic_option_archive_seed_events", summary
+            )
+            self.assertIn("episodic_option_archives_seeded", summary)
+            self.assertIn("episodic_option_archives_skipped", summary)
             self.assertIn("human_prior_option_archives_added", summary)
             self.assertIn("human_prior_options_committed", summary)
             self.assertIn("life_hazard_checkpoints_created", summary)

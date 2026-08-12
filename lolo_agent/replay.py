@@ -51,6 +51,48 @@ def _check_frame(frame: Frame, event: Dict[str, Any], field: str = "frame") -> N
         )
 
 
+def _save_logged_state(
+    env: NativeLibretroEnv,
+    run_dir: Path,
+    event: Dict[str, Any],
+    current: Optional[Frame],
+) -> object:
+    """Recreate an ordinary or evaluator-imported logged capability."""
+
+    if not event.get("imported_option_archive"):
+        handle = env.save_state()
+        if current is not None:
+            _check_frame(current, event)
+        return handle
+    if current is None:
+        raise RuntimeError(
+            f"archive import without live frame at event {event['seq']}"
+        )
+    relative = Path(str(event["option_archive_state_file"]))
+    state_path = (run_dir / relative).resolve()
+    if not state_path.is_relative_to(run_dir):
+        raise RuntimeError("imported option archive escapes telemetry run")
+    if sha256_file(state_path) != str(
+        event["option_archive_state_sha256"]
+    ):
+        raise RuntimeError("imported option archive digest mismatch")
+    frame_digest = str(event["frame"])
+    frame = decode_logged_png(run_dir / "frames" / f"{frame_digest}.png")
+    live_state = env.save_state()
+    try:
+        imported = env.import_state(state_path.read_bytes(), frame)
+        _check_frame(imported, event)
+        handle = env.save_state()
+    finally:
+        restored = env.load_state(live_state)
+        env.release_state(live_state)
+        if restored.digest != current.digest:
+            raise RuntimeError(
+                "live state diverged while replaying an imported option archive"
+            )
+    return handle
+
+
 def _entry(frame: Frame, event: Dict[str, Any], kind: str, **fields: Any) -> Dict[str, Any]:
     result = {
         "frame": frame.digest,
@@ -153,9 +195,9 @@ def restore_logged_decision(
                     raise RuntimeError(
                         f"invalid state save alias at event {event['seq']}"
                     )
-                handles[state_id] = env.save_state()
-                if current is not None:
-                    _check_frame(current, event)
+                handles[state_id] = _save_logged_state(
+                    env, run_dir, event, current
+                )
             elif kind == "state_loaded":
                 state_id = event.get("state_id")
                 if state_id not in handles:
@@ -273,9 +315,10 @@ def capture_replay(
                     state_id = event.get("state_id")
                     if not state_id or state_id in handles:
                         raise RuntimeError(f"invalid state save alias at event {event['seq']}")
-                    handles[state_id] = env.save_state()
+                    handles[state_id] = _save_logged_state(
+                        env, run_dir, event, current
+                    )
                     if current is not None:
-                        _check_frame(current, event)
                         checked += 1
                 elif kind == "state_loaded":
                     state_id = event.get("state_id")

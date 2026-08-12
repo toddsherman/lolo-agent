@@ -196,7 +196,10 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   additionally receives one long-press edge while buttons and neutral waits
   retain the base option-search duration. `action_duration_edges` records the
   exact expansion set, and each neutral event records `elapsed_frames` plus
-  the heterogeneous duration tuple used for its matched reference;
+  the heterogeneous duration tuple used for its matched reference. On an
+  episodic resume, these verified paths reconstruct temporary option coverage
+  even when they were not selected or committed, preventing the same exact
+  experiment from being treated as unseen after a process restart;
 - `human_prior_option_search_depth_completed`, which makes beam loss and
   tracker failure directly auditable at every depth. It records raw
   candidates, globally deduplicated and novel candidates, detected- and
@@ -613,6 +616,25 @@ the latest source decision is strict; stale semantic fields from an older
 assisted ancestor cannot overwrite the current save state. These are
 evaluator-legal episodic counters; the frozen neural and spatial parameters
 remain unchanged.
+
+Promoted option alternatives also have evaluator-owned persistence. Only the
+bounded alternatives admitted to the live archive are exported; ordinary beam
+nodes are not. `option_archive_snapshot_stored` links a content-hashed opaque
+checkpoint to its anonymous live state ID and is marked `agent_visible=false`.
+When resuming, archive add/restore/remove events are replayed only through the
+chosen `decision_snapshot_stored` boundary. Still-active alternatives are
+imported without exposing their bytes to the policy, reseeded into the bounded
+archive, and copied into the child run so a later descendant remains
+self-contained. `episodic_option_archive_state_imported`,
+`episodic_option_archives_seeded`, and
+`episodic_option_archive_skipped` make this lifecycle auditable. Alternatives
+that contain an uncommitted goal milestone are conservatively skipped until
+their independent rollback-parent checkpoint can also be persisted. Live
+pixels are verified before and after every export/import, and ordinary state
+save/release balance remains explicit. An imported `state_saved` event carries
+`imported_option_archive`, `option_archive_state_file`, and its SHA-256 so both
+legacy decision reconstruction and full high-speed replay bind the state alias
+to the exact persisted alternative while leaving the live frame unchanged.
 
 ## Deterministic high-speed playback
 
