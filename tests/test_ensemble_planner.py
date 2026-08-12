@@ -4789,6 +4789,42 @@ class EnsemblePlannerTests(unittest.TestCase):
             "human-prior-world-root",
         )
 
+        # A real native trace produced two visually identical room states
+        # whose only differing pixels occupied the player sprite bounding box.
+        # The snapped player anchors disagreed by one tile, leaving sprite
+        # spill two coarse Manhattan cells away from either anchor.  Keep that
+        # spill out of the learned world context while retaining a genuinely
+        # remote cell.
+        native_frame = Frame(256, 240, 3, bytes(256 * 240 * 3))
+        native_analysis = replace(
+            analysis,
+            source_player_slot=(128, 48),
+            target_player_slot=(112, 48),
+        )
+        native_effect = bytearray(16 * 15)
+        native_effect[2 * 16 + 6] = 1
+        native_effect[6 * 16 + 7] = 1
+        native_agent = VerifiedNeuralAgent(
+            ActionEffectEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                causal_spatial_columns=16,
+                causal_spatial_rows=15,
+            ),
+        )
+        self.assertEqual(
+            native_agent._human_prior_nonlocal_world_effect_cells(
+                bytes(native_effect).hex(),
+                native_analysis,
+                native_frame,
+                extra_player_slots=((128, 32),),
+            ),
+            {(7, 6)},
+        )
+
     def test_persistent_change_filters_regressive_archives_when_alternatives_exist(
         self,
     ) -> None:

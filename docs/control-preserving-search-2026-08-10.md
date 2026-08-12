@@ -1001,6 +1001,29 @@ handles, and passed the frozen audit. Durable experimentation now survives
 ordinary process restarts without converting a path into a demonstration or
 updating persistent parameters.
 
+The final imported alternative exposed a context-aliasing error rather than a
+second learned mechanic. V63 restored the remaining `UP,LEFT,LEFT` alternative
+without repeating exact search. From it, v64 verified 21,307 depth-20 branches
+and found one both-heart endpoint at `(192,144)`, apparently below the baseline
+and context-A `y=128` ceiling. Visual and pixel counterfactual inspection
+confirmed that endpoint was the controlled sprite, but also showed that the
+two alleged source contexts differed in exactly 156 pixels inside a 19-by-15
+player-sprite bounding box. Every other room pixel, including the common remote
+effect cell `(7,6)`, was bit-identical. Context B's only additional signature
+cell, `(6,2)`, was adjacent sprite spill. The deeper route was therefore caused
+by a different sub-tile/facing player state, not by a distinct world change.
+
+The nonlocal-effect filter now uses a two-coarse-cell Manhattan guard around
+every detected player anchor. This conservatively covers both sprite spill and
+a one-tile snapped-detector disagreement. The matched native regression
+`spatial-v14-room3-player-guard-regression-v65-p8-d1` repeated all 781 exact
+branches from the original source. All six delayed candidates collapsed onto
+the single legitimate remote signature `(7,6)` and one target world context,
+so only one delayed-context archive was retained instead of two pose-fragmented
+copies. The run balanced 820/820 native states, passed the frozen audit, and
+selected the ordinary physical frontier. Context A's prior depth-20 negative
+result consequently covers the only surviving delayed hypothesis.
+
 ## Verification
 
 The complete test suite passes: 228 tests, with 4 expected skips when native

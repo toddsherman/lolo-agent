@@ -1084,11 +1084,12 @@ class VerifiedNeuralAgent:
         """Conservatively exclude the controlled sprite's neighborhood.
 
         The assisted player detector reports a snapped tile anchor, while a
-        rendered pose can spill across that tile boundary.  A one-cell
-        Manhattan guard around both detected anchors keeps those pose pixels
-        observationally separate from more distant world effects.  Nearby
-        manipulation remains deliberately unresolved rather than being
-        mislabeled as a persistent object change.
+        rendered pose and a one-tile detector disagreement can spill across
+        more than one coarse-cell boundary.  A two-cell Manhattan guard
+        around every detected anchor keeps those pose pixels observationally
+        separate from more distant world effects.  Nearby manipulation
+        remains deliberately unresolved rather than being mislabeled as a
+        persistent object change.
         """
 
         cells = self._causal_spatial_cells(world_effect_signature)
@@ -1126,7 +1127,7 @@ class VerifiedNeuralAgent:
                 + abs(cell[1] - player[1])
                 for player in player_cells
             )
-            > 1
+            > 2
         }
 
     def _human_prior_cell_patch_l1(

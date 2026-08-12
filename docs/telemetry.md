@@ -213,11 +213,12 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
 - `human_prior_option_world_effect_stability`, which replays a bounded sample
   of distinct option effects beside duration-matched all-`NOOP` controls at
   future horizons and records the intersected coarse cells, conservative
-  nonlocal subset beyond the detected player's immediate neighborhood,
-  persistence ratio, safety checks, and every factual/control observation.
-  The local/nonlocal split prevents player-sprite spill pixels from being
-  promoted as a stable world change, while a maximum stable-cell footprint
-  rejects layout-wide animation-phase differences. This audit is
+  nonlocal subset beyond a two-cell Manhattan guard around every detected
+  player anchor, persistence ratio, safety checks, and every factual/control
+  observation. The guard covers sprite spill plus a one-tile disagreement in
+  the snapped detector; the local/nonlocal split prevents those pose pixels
+  from being promoted as a stable world change. A maximum stable-cell
+  footprint rejects layout-wide animation-phase differences. This audit is
   telemetry-only and does not affect endpoint selection;
 - `human_prior_option_world_effect_phase_alignment`, which compares a
   localized candidate patch with nearby future all-`NOOP` frames. A match below
