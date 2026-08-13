@@ -217,6 +217,92 @@ class StableSceneChangeDetectorTests(unittest.TestCase):
         self.assertEqual(active_at_one.metadata["exploration_steps"], 3)
         self.assertIsNone(active_at_two)
 
+    def test_recovers_legacy_milestone_target_across_resume_ancestry(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source_frame = self.frame(96)
+            target_frame = self.frame(128)
+            parent = RunLogger(root, run_id="legacy-parent")
+            parent.store_goal_milestone_checkpoint_snapshot(
+                1,
+                "state-1",
+                b"pre-heart-state",
+                source_frame,
+                checkpoint_decision=1,
+                choice=["frontier", "down", 16],
+                checkpoint_kind="goal_milestone",
+                goal_heart_slots=[[1, 2], [3, 4]],
+                goal_target_heart_slots=[],
+                exploration_steps=3,
+            )
+            parent.log(
+                "decision_committed",
+                decision=1,
+                action="down",
+                action_frames=16,
+                source_behavioral_signature="frontier",
+                parent_frame=source_frame.digest,
+                human_prior_source_hearts=[[1, 2], [3, 4]],
+                human_prior_target_hearts=[[3, 4]],
+                **parent.frame_fields(target_frame),
+            )
+            parent.store_decision_snapshot(
+                1, b"parent-decision-1", target_frame
+            )
+            parent.close()
+
+            child = RunLogger(
+                root,
+                run_id="legacy-child",
+                metadata={
+                    "episodic_resume": {
+                        "source_run": str(parent.run_dir),
+                        "source_decision": 1,
+                    }
+                },
+            )
+            child.store_goal_milestone_checkpoint_snapshot(
+                0,
+                "state-1",
+                b"pre-heart-state",
+                source_frame,
+                checkpoint_decision=1,
+                choice=["frontier", "down", 16],
+                checkpoint_kind="goal_milestone",
+                goal_heart_slots=[[1, 2], [3, 4]],
+                goal_target_heart_slots=[],
+                goal_target_heart_slots_known=False,
+                exploration_steps=7,
+            )
+            child.store_decision_snapshot(
+                1, b"child-decision-1", target_frame
+            )
+            child.close()
+
+            recovered = load_active_goal_milestone_checkpoint(
+                child.run_dir, 1
+            )
+
+        self.assertIsNotNone(recovered)
+        assert recovered is not None
+        self.assertEqual(
+            recovered.metadata["goal_target_heart_slots"], [[3, 4]]
+        )
+        self.assertTrue(
+            recovered.metadata["goal_target_heart_slots_known"]
+        )
+        self.assertEqual(
+            recovered.metadata["goal_target_heart_slots_source"],
+            "legacy_decision_telemetry",
+        )
+        self.assertEqual(
+            recovered.metadata["goal_target_heart_slots_source_decision"],
+            1,
+        )
+        self.assertEqual(recovered.metadata["exploration_steps"], 7)
+
 
 if __name__ == "__main__":
     unittest.main()

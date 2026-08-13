@@ -1027,6 +1027,20 @@ class VerifiedNeuralAgent:
             checkpoint_source="episodic_resume",
             checkpoint_decision=checkpoint.decision,
             exploration_steps=checkpoint.exploration_steps,
+            goal_heart_slots=checkpoint.goal_heart_slots,
+            goal_target_heart_slots=checkpoint.goal_target_heart_slots,
+            goal_target_heart_slots_known=(
+                checkpoint.goal_target_heart_slots_known
+            ),
+            goal_target_heart_slots_source=metadata.get(
+                "goal_target_heart_slots_source"
+            ),
+            goal_target_heart_slots_source_run=metadata.get(
+                "goal_target_heart_slots_source_run"
+            ),
+            goal_target_heart_slots_source_decision=metadata.get(
+                "goal_target_heart_slots_source_decision"
+            ),
             source_run_id=source_run_id,
             source_state_id=source_state_id,
             agent_visible=False,
@@ -11929,6 +11943,18 @@ class VerifiedNeuralAgent:
                             if committed_goal_analysis is not None
                             else None
                         ),
+                        goal_heart_slots=(
+                            self.pending_goal_milestone_checkpoint
+                            .goal_heart_slots
+                        ),
+                        goal_target_heart_slots=(
+                            self.pending_goal_milestone_checkpoint
+                            .goal_target_heart_slots
+                        ),
+                        goal_target_heart_slots_known=(
+                            self.pending_goal_milestone_checkpoint
+                            .goal_target_heart_slots_known
+                        ),
                         source_behavioral_signature=source_signature,
                         **self._frame_fields(source_frame),
                     )
@@ -14435,6 +14461,17 @@ class VerifiedNeuralAgent:
                 state_id=self.pending_goal_milestone_checkpoint.state_id,
                 milestone_reward=branch.goal_progress_reward,
                 remaining_hearts=branch.goal_remaining_hearts,
+                goal_heart_slots=(
+                    self.pending_goal_milestone_checkpoint.goal_heart_slots
+                ),
+                goal_target_heart_slots=(
+                    self.pending_goal_milestone_checkpoint
+                    .goal_target_heart_slots
+                ),
+                goal_target_heart_slots_known=(
+                    self.pending_goal_milestone_checkpoint
+                    .goal_target_heart_slots_known
+                ),
                 source_behavioral_signature=branch.origin_signature,
                 checkpoint_source=milestone_checkpoint_source,
                 parent_state_id=branch.parent_state_id,

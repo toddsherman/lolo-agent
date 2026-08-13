@@ -132,6 +132,98 @@ class PersistedGoalMilestoneCheckpoint:
     source_state_id: str
 
 
+def _recover_legacy_goal_target_heart_slots(
+    run_dir: Path,
+    metadata: Dict[str, Any],
+    through_decision: int,
+    visited: Optional[set[Path]] = None,
+) -> Dict[str, Any]:
+    """Recover an old checkpoint's target heart set from exact telemetry.
+
+    Early milestone snapshots persisted the target tuple but did not preserve
+    whether an empty tuple meant "known empty" or "metadata unavailable".
+    The committed transition still contains both pixel-detected heart sets.
+    Only an exact match on source frame, behavioral source, controller edge,
+    and source heart set is accepted.  Resume ancestry is followed because an
+    unchanged opaque checkpoint may have crossed several evaluator runs.
+    """
+
+    recovered = dict(metadata)
+    if recovered.get("goal_target_heart_slots_known") is True:
+        return recovered
+    choice = tuple(recovered.get("choice") or ())
+    source_slots = tuple(
+        (int(slot[0]), int(slot[1]))
+        for slot in recovered.get("goal_heart_slots") or ()
+    )
+    source_frame = str(recovered.get("frame") or "")
+    if len(choice) != 3 or not source_slots or not source_frame:
+        return recovered
+    run_dir = Path(run_dir).expanduser().resolve()
+    visited = set() if visited is None else visited
+    if run_dir in visited:
+        return recovered
+    visited.add(run_dir)
+    for event in read_events(run_dir):
+        if event.get("event") != "decision_committed":
+            continue
+        if int(event.get("decision", 0)) > through_decision:
+            continue
+        try:
+            event_source_slots = tuple(
+                (int(slot[0]), int(slot[1]))
+                for slot in event.get("human_prior_source_hearts") or ()
+            )
+            exact_match = bool(
+                str(event.get("parent_frame") or "") == source_frame
+                and str(event.get("source_behavioral_signature") or "")
+                == str(choice[0])
+                and str(event.get("action") or "") == str(choice[1])
+                and int(event.get("action_frames", 0)) == int(choice[2])
+                and event_source_slots == source_slots
+                and "human_prior_target_hearts" in event
+            )
+            target_slots = tuple(
+                (int(slot[0]), int(slot[1]))
+                for slot in event.get("human_prior_target_hearts") or ()
+            )
+        except (IndexError, TypeError, ValueError):
+            continue
+        if not exact_match or target_slots == source_slots:
+            continue
+        recovered["goal_target_heart_slots"] = [
+            [slot[0], slot[1]] for slot in target_slots
+        ]
+        recovered["goal_target_heart_slots_known"] = True
+        recovered["goal_target_heart_slots_source"] = (
+            "legacy_decision_telemetry"
+        )
+        recovered["goal_target_heart_slots_source_run"] = str(run_dir)
+        recovered["goal_target_heart_slots_source_decision"] = int(
+            event.get("decision", 0)
+        )
+        recovered["goal_target_heart_slots_source_seq"] = int(
+            event.get("seq", 0)
+        )
+        return recovered
+    manifest = json.loads(
+        (run_dir / "manifest.json").read_text(encoding="utf-8")
+    )
+    resume = manifest.get("metadata", {}).get("episodic_resume")
+    if not resume:
+        return recovered
+    source_run_value = str(resume.get("source_run") or "")
+    source_decision = int(resume.get("source_decision", 0))
+    if not source_run_value or source_decision <= 0:
+        return recovered
+    return _recover_legacy_goal_target_heart_slots(
+        Path(source_run_value),
+        recovered,
+        source_decision,
+        visited,
+    )
+
+
 def load_active_goal_milestone_checkpoint(
     run_dir: Path, through_decision: int
 ) -> Optional[PersistedGoalMilestoneCheckpoint]:
@@ -185,10 +277,15 @@ def load_active_goal_milestone_checkpoint(
         raise RuntimeError("milestone checkpoint digest mismatch")
     frame_digest = str(active["frame"])
     frame = decode_logged_png(run_dir / "frames" / f"{frame_digest}.png")
+    metadata = _recover_legacy_goal_target_heart_slots(
+        run_dir,
+        active,
+        through_decision,
+    )
     return PersistedGoalMilestoneCheckpoint(
         state=state_path.read_bytes(),
         frame=frame,
-        metadata=active,
+        metadata=metadata,
         source_run_id=str(manifest.get("run_id") or run_dir.name),
         source_state_id=str(active["state_id"]),
     )

@@ -48,6 +48,15 @@ heart set remain usable after observed life loss but cannot trigger bounded
 exhaustion. Old unqualified goal-exhaustion values are ignored during episodic
 seeding.
 
+For compatible legacy checkpoints, the loader can now recover the missing
+known target flag from immutable ancestral telemetry. Recovery requires an
+exact match on the checkpoint's source frame, behavioral source, action,
+duration, and source heart set; it then copies the pixel-detected target heart
+set from that committed transition. The Room 3 chain resolves to the original
+self-discovered decision 1 transition, from `[(128,64),(144,192)]` to
+`[(144,192)]`, and records `legacy_decision_telemetry` provenance. No visual
+object identity or game rule is introduced.
+
 ## Native matched replay
 
 The corrected agent resumed from decision 1 of

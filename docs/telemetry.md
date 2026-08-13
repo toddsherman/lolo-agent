@@ -363,7 +363,12 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   state ID, descendant invalidations, and restored pixel goal state. Rollback
   also requires an explicitly known, changed source/target heart set; legacy
   checkpoints without that metadata remain valid for observed life-loss
-  recovery but cannot assert bounded exhaustion. The event records the
+  recovery but cannot assert bounded exhaustion. On episodic import,
+  `goal_target_heart_slots_source=legacy_decision_telemetry` means the loader
+  recovered the target only after matching the opaque checkpoint's source
+  frame, behavioral source, controller edge, and source heart set to an exact
+  ancestral `decision_committed` event. A partial match is never accepted. The
+  event records the
   observed heart-set transition as a soft preparation-ordering hint; it does
   not create a negative temporal-option hazard sample. Those samples remain
   reserved for observed loss or causal recoverability evidence. Legacy
