@@ -12,6 +12,7 @@ from .bootstrap import (
     bootstrap_metadata,
     get_bootstrap_fixture,
 )
+from .entity_behavior import AnonymousEntityBehaviorModel
 from .ensemble_world_model import load_ensemble_checkpoint
 from .experience_import import classify_reward_track, decode_logged_png
 from .log_summary import build_run_summary
@@ -737,6 +738,35 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--anonymous-entity-behavior-checkpoint",
+        type=Path,
+        help=(
+            "persistent anonymous appearance-type and conditional-behavior "
+            "checkpoint; contains no game-specific object labels"
+        ),
+    )
+    parser.add_argument(
+        "--anonymous-entity-behavior-mode",
+        choices=("off", "frozen", "learn"),
+        default="off",
+        help=(
+            "off disables the sidecar, frozen predicts without updates, and "
+            "learn records unique controlled pixel outcomes"
+        ),
+    )
+    parser.add_argument(
+        "--anonymous-entity-appearance-threshold",
+        type=float,
+        default=0.08,
+        help="maximum pooled-patch distance assigned to an existing anonymous type",
+    )
+    parser.add_argument(
+        "--anonymous-entity-minimum-prediction-samples",
+        type=int,
+        default=2,
+        help="minimum supporting outcomes before an anonymous behavior is known",
+    )
+    parser.add_argument(
         "--human-prior-option-effect-local-minimum-cell-pixels",
         type=int,
         default=12,
@@ -997,12 +1027,68 @@ def main() -> None:
             "--human-prior-option-entity-frontier requires local controls, "
             "positive effect stability, and phase offsets"
         )
+    if args.anonymous_entity_appearance_threshold < 0.0:
+        parser.error(
+            "--anonymous-entity-appearance-threshold must be non-negative"
+        )
+    if args.anonymous_entity_minimum_prediction_samples <= 0:
+        parser.error(
+            "--anonymous-entity-minimum-prediction-samples must be positive"
+        )
+    if args.anonymous_entity_behavior_mode != "off" and (
+        args.anonymous_entity_behavior_checkpoint is None
+    ):
+        parser.error(
+            "anonymous entity behavior mode requires "
+            "--anonymous-entity-behavior-checkpoint"
+        )
+    if args.anonymous_entity_behavior_mode == "off" and (
+        args.anonymous_entity_behavior_checkpoint is not None
+    ):
+        parser.error(
+            "--anonymous-entity-behavior-checkpoint requires frozen or learn mode"
+        )
+    if args.anonymous_entity_behavior_mode != "off" and not (
+        args.human_prior_hearts and args.human_prior_option_entity_frontier
+    ):
+        parser.error(
+            "anonymous entity behavior currently requires the assisted heart "
+            "track and --human-prior-option-entity-frontier"
+        )
     if args.human_prior_intrinsic_clip <= 0.0:
         parser.error("--human-prior-intrinsic-clip must be positive")
 
     device = choose_torch_device()
     model, horizon = load_ensemble_checkpoint(args.checkpoint, device=device, frozen=True)
     before = model.checkpoint_digest
+    entity_behavior_model = None
+    entity_behavior_before = None
+    entity_behavior_checkpoint_existed = False
+    entity_behavior_path: Optional[Path] = None
+    if args.anonymous_entity_behavior_mode != "off":
+        assert args.anonymous_entity_behavior_checkpoint is not None
+        entity_behavior_path = (
+            args.anonymous_entity_behavior_checkpoint.expanduser().resolve()
+        )
+        entity_behavior_checkpoint_existed = entity_behavior_path.exists()
+        if entity_behavior_checkpoint_existed:
+            entity_behavior_model = AnonymousEntityBehaviorModel.load(
+                entity_behavior_path
+            )
+        elif args.anonymous_entity_behavior_mode == "frozen":
+            parser.error(
+                "frozen anonymous entity behavior checkpoint does not exist"
+            )
+        else:
+            entity_behavior_model = AnonymousEntityBehaviorModel(
+                appearance_match_threshold=(
+                    args.anonymous_entity_appearance_threshold
+                ),
+                minimum_prediction_samples=(
+                    args.anonymous_entity_minimum_prediction_samples
+                ),
+            )
+        entity_behavior_before = entity_behavior_model.digest
     action_durations = (
         tuple(int(value) for value in args.action_durations.split(","))
         if args.action_durations
@@ -1216,6 +1302,9 @@ def main() -> None:
             if args.human_prior_hearts
             else False
         ),
+        anonymous_entity_behavior_learning=(
+            args.anonymous_entity_behavior_mode == "learn"
+        ),
         human_prior_option_effect_local_minimum_cell_pixels=(
             args.human_prior_option_effect_local_minimum_cell_pixels
         ),
@@ -1258,6 +1347,31 @@ def main() -> None:
             "parameter_sha256": before,
         },
     }
+    if entity_behavior_model is not None:
+        assert args.anonymous_entity_behavior_checkpoint is not None
+        entity_behavior_input: Dict[str, Any] = {
+            "name": args.anonymous_entity_behavior_checkpoint.name,
+            "parameter_sha256": entity_behavior_before,
+            "mode": args.anonymous_entity_behavior_mode,
+            "checkpoint_existed": entity_behavior_checkpoint_existed,
+            "appearance_match_threshold": (
+                entity_behavior_model.appearance_match_threshold
+            ),
+            "minimum_prediction_samples": (
+                entity_behavior_model.minimum_prediction_samples
+            ),
+            "type_count": entity_behavior_model.type_count,
+            "rule_count": entity_behavior_model.rule_count,
+            "observations": entity_behavior_model.observation_count,
+            "selection_weight": 0.0,
+        }
+        if entity_behavior_checkpoint_existed:
+            entity_behavior_input["file_sha256"] = sha256_file(
+                entity_behavior_path
+            )
+        inputs["anonymous_entity_behavior_checkpoint"] = (
+            entity_behavior_input
+        )
     if args.spatial_shadow_checkpoint is not None:
         inputs["spatial_shadow_checkpoint"] = {
             "name": args.spatial_shadow_checkpoint.name,
@@ -1280,7 +1394,11 @@ def main() -> None:
             **(spatial_returnability_configuration or {}),
         }
     metadata = {
-        "mode": "frozen_neural_evaluation",
+        "mode": (
+            "frozen_neural_evaluation_with_entity_behavior_learning"
+            if args.anonymous_entity_behavior_mode == "learn"
+            else "frozen_neural_evaluation"
+        ),
         "reward_track": (
             "human_prior_v2"
             if args.human_prior_hearts
@@ -1339,6 +1457,7 @@ def main() -> None:
                 config,
                 event_logger=logger,
                 spatial_shadow=spatial_shadow,
+                entity_behavior_model=entity_behavior_model,
             )
             if restored is not None:
                 initial_frame = env.start_attempt_from_current(
@@ -1507,6 +1626,38 @@ def main() -> None:
                     mode="observational",
                     parameter_sha256_before=spatial_returnability_before,
                     parameter_sha256_after=spatial_returnability_after,
+                )
+        if entity_behavior_model is not None:
+            assert entity_behavior_path is not None
+            entity_behavior_after = entity_behavior_model.digest
+            if args.anonymous_entity_behavior_mode == "frozen":
+                if entity_behavior_before != entity_behavior_after:
+                    raise RuntimeError(
+                        "frozen anonymous entity behavior model changed"
+                    )
+                logger.log(
+                    "anonymous_entity_behavior_parameter_audit",
+                    status="pass",
+                    mode="frozen",
+                    selection_weight=0.0,
+                    parameter_sha256_before=entity_behavior_before,
+                    parameter_sha256_after=entity_behavior_after,
+                    type_count=entity_behavior_model.type_count,
+                    rule_count=entity_behavior_model.rule_count,
+                    observations=entity_behavior_model.observation_count,
+                )
+            else:
+                entity_behavior_model.save(entity_behavior_path)
+                logger.log(
+                    "anonymous_entity_behavior_checkpoint_updated",
+                    mode="learn",
+                    selection_weight=0.0,
+                    parameter_sha256_before=entity_behavior_before,
+                    parameter_sha256_after=entity_behavior_after,
+                    checkpoint=str(entity_behavior_path),
+                    type_count=entity_behavior_model.type_count,
+                    rule_count=entity_behavior_model.rule_count,
+                    observations=entity_behavior_model.observation_count,
                 )
         logger.close("complete")
     except BaseException as exc:

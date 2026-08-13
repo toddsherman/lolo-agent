@@ -12,6 +12,7 @@ from torch import Tensor
 
 from .agent import Decision
 from .bidirectional_probe import BidirectionalProbeCollector
+from .entity_behavior import AnonymousEntityBehaviorModel
 from .ensemble_world_model import EnsembleVisualDynamicsModel
 from .environment import Action, PixelSaveStateEnv
 from .goal_prior import HeartGoalAnalysis, PixelHeartGoalPrior
@@ -125,6 +126,7 @@ class NeuralPlanningConfig:
     human_prior_option_causal_effect_frontier: bool = False
     human_prior_option_effect_controllability_depth: int = 1
     human_prior_option_entity_frontier: bool = False
+    anonymous_entity_behavior_learning: bool = False
     human_prior_intrinsic_clip: float = 10.0
     spatial_selection_weight: float = 0.0
     returnability_probe_depth: int = 0
@@ -463,10 +465,12 @@ class VerifiedNeuralAgent:
         config: Optional[NeuralPlanningConfig] = None,
         event_logger: Optional[Any] = None,
         spatial_shadow: Optional[SpatialShadowEvaluator] = None,
+        entity_behavior_model: Optional[AnonymousEntityBehaviorModel] = None,
     ) -> None:
         self.env = env
         self.model = model
         self.config = config or NeuralPlanningConfig()
+        self.entity_behavior_model = entity_behavior_model
         if self.config.frontier_credit_horizon <= 0:
             raise ValueError("frontier credit horizon must be positive")
         if not 0.0 < self.config.frontier_discount <= 1.0:
@@ -633,6 +637,19 @@ class VerifiedNeuralAgent:
             raise ValueError(
                 "human-prior option entity frontier requires local controls, "
                 "effect stability, and phase offsets"
+            )
+        if (
+            self.config.anonymous_entity_behavior_learning
+            and self.entity_behavior_model is None
+        ):
+            raise ValueError(
+                "anonymous entity behavior learning requires a behavior model"
+            )
+        if self.entity_behavior_model is not None and not (
+            self.config.human_prior_option_entity_frontier
+        ):
+            raise ValueError(
+                "anonymous entity behavior requires the unlabeled entity frontier"
             )
         if self.config.human_prior_intrinsic_clip <= 0.0:
             raise ValueError("human-prior intrinsic clip must be positive")
@@ -1915,6 +1932,437 @@ class VerifiedNeuralAgent:
             row += dy
         return before, direction, tuple(cells)
 
+    def _anonymous_entity_behavior_observation(
+        self,
+        before_frame: Frame,
+        factual_frame: Frame,
+        control_frame: Frame,
+        before_observation: Any,
+        factual_analysis: HeartGoalAnalysis,
+        control_analysis: HeartGoalAnalysis,
+        action: Action,
+        duration: int,
+        interaction_ray: Sequence[Tuple[int, int]],
+        effect_cells: Sequence[Tuple[int, int]],
+        ignored_player_pixels: set[Tuple[int, int]],
+        evidence_scope: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Predict or learn one anonymous type's controlled outcome.
+
+        The target is simply the first visual cell on the action ray.  Its
+        identity and outcome are derived from pooled pixels; neither receives
+        a game-specific name.  Absolute cells are converted to relative
+        offsets before the outcome is stored so evidence can transfer between
+        rooms.
+        """
+
+        memory = self.unlabeled_entity_memory
+        model = self.entity_behavior_model
+        if memory is None or model is None or not interaction_ray:
+            return None
+        anchor = interaction_ray[0]
+        source_feature = memory.feature_at(before_frame, *anchor)
+        factual_feature = memory.feature_at(
+            factual_frame, *anchor, ignored_player_pixels
+        )
+        control_feature = memory.feature_at(
+            control_frame, *anchor, ignored_player_pixels
+        )
+        relative_cells = tuple(
+            sorted(
+                (column - anchor[0], row - anchor[1])
+                for column, row in effect_cells
+            )
+        )
+        player_displacement = None
+        factual_player = factual_analysis.target_player_slot
+        control_player = control_analysis.target_player_slot
+        if factual_player is not None and control_player is not None:
+            player_displacement = (
+                round(
+                    (factual_player[0] - control_player[0])
+                    * memory.columns
+                    / factual_frame.width
+                ),
+                round(
+                    (factual_player[1] - control_player[1])
+                    * memory.rows
+                    / factual_frame.height
+                ),
+            )
+        differential_terminal_change = bool(
+            factual_analysis.life_counter_changed
+            != control_analysis.life_counter_changed
+            or factual_analysis.dark_transition_started
+            != control_analysis.dark_transition_started
+        )
+        hazardous = bool(
+            factual_analysis.life_counter_changed
+            and not control_analysis.life_counter_changed
+        )
+        outcome_signature = model.effect_signature(
+            source_feature,
+            factual_feature,
+            control_feature,
+            relative_effect_cells=relative_cells,
+            player_displacement=player_displacement,
+            terminal_visual_change=differential_terminal_change,
+        )
+        context_signature = model.context_signature(
+            patch.feature
+            for patch in before_observation.patches
+            if (patch.column, patch.row) != anchor
+        )
+        prediction_before = model.predict(
+            source_feature,
+            action,
+            duration,
+            context_signature=context_signature,
+        )
+        observed_probability = model.outcome_probability(
+            source_feature,
+            action,
+            duration,
+            outcome_signature,
+            context_signature=context_signature,
+        )
+        evidence_payload = (
+            f"{evidence_scope}|{before_frame.digest}|{factual_frame.digest}|"
+            f"{control_frame.digest}|{action.value}|{duration}|{anchor}"
+        )
+        evidence_id = hashlib.sha256(
+            evidence_payload.encode("ascii")
+        ).hexdigest()[:24]
+        observation = None
+        if self.config.anonymous_entity_behavior_learning:
+            observation = model.observe(
+                source_feature,
+                action,
+                duration,
+                outcome_signature,
+                context_signature=context_signature,
+                hazardous=hazardous,
+                evidence_id=evidence_id,
+            )
+            prediction_after = observation.prediction_after
+            accepted = observation.accepted
+            type_id = observation.type_id
+            created_type = observation.created_type
+            surprise = observation.surprise
+        else:
+            prediction_after = prediction_before
+            accepted = False
+            type_id = prediction_before.type_id
+            created_type = False
+            surprise = -math.log(max(1e-9, observed_probability))
+        result = {
+            "evidence_id": evidence_id,
+            "learning_enabled": (
+                self.config.anonymous_entity_behavior_learning
+            ),
+            "evidence_accepted": accepted,
+            "anonymous_type_id": type_id,
+            "anonymous_type_created": created_type,
+            "appearance_fingerprint": model.appearance_fingerprint(
+                source_feature
+            ),
+            "appearance_distance": (
+                prediction_before.appearance_distance
+            ),
+            "action": action,
+            "action_frames": duration,
+            "autonomous": False,
+            "context_signature": context_signature,
+            "context_matched_before": (
+                prediction_before.context_matched
+            ),
+            "predicted_outcome_before": (
+                prediction_before.outcome_signature
+            ),
+            "predicted_outcome_probability_before": (
+                prediction_before.outcome_probability
+            ),
+            "observed_outcome_probability_before": observed_probability,
+            "behavior_samples_before": prediction_before.samples,
+            "behavior_known_before": prediction_before.known,
+            "behavior_confidence_before": prediction_before.confidence,
+            "behavior_entropy_before": prediction_before.entropy,
+            "hazard_probability_before": (
+                prediction_before.hazardous_probability
+            ),
+            "observed_outcome": outcome_signature,
+            "observed_hazard": hazardous,
+            "surprise": surprise,
+            "outcome_matched_prediction": bool(
+                prediction_before.outcome_signature == outcome_signature
+            ),
+            "behavior_samples_after": prediction_after.samples,
+            "behavior_confidence_after": prediction_after.confidence,
+            "hazard_probability_after": (
+                prediction_after.hazardous_probability
+            ),
+            "anchor_cell": anchor,
+            "relative_effect_cells": relative_cells,
+            "player_displacement": player_displacement,
+            "differential_terminal_visual_change": (
+                differential_terminal_change
+            ),
+            "model_type_count": model.type_count,
+            "model_rule_count": model.rule_count,
+            "model_observations": model.observation_count,
+        }
+        self._emit(
+            "anonymous_entity_behavior_observed",
+            decision=self.decision_index + 1,
+            agent_visible=True,
+            **result,
+            **self._frame_fields(factual_frame),
+        )
+        return result
+
+    def _observe_anonymous_autonomous_behaviors(
+        self,
+        source_frame: Frame,
+        neutral_frame: Frame,
+        duration: int,
+    ) -> int:
+        """Track rare anonymous patches through a passive emulator interval.
+
+        Candidate cells are selected only because their pooled appearance is
+        uncommon in the current image.  A recurring appearance at a different
+        relative cell is evidence of motion; persistence at the origin is
+        evidence of stability.  The context remains anonymous, allowing one
+        type to learn different distributions before and after a visual room
+        change without naming the trigger.
+        """
+
+        memory = self.unlabeled_entity_memory
+        model = self.entity_behavior_model
+        if memory is None or model is None or duration <= 0:
+            return 0
+        source_features: Dict[Tuple[int, int], Tuple[int, ...]] = {}
+        target_features: Dict[Tuple[int, int], Tuple[int, ...]] = {}
+        fingerprint_counts: CounterType[str] = Counter()
+        for row in range(memory.rows):
+            for column in range(memory.columns):
+                cell = (column, row)
+                source_feature = memory.feature_at(source_frame, *cell)
+                source_features[cell] = source_feature
+                target_features[cell] = memory.feature_at(
+                    neutral_frame, *cell
+                )
+                fingerprint_counts[
+                    model.appearance_fingerprint(source_feature)
+                ] += 1
+
+        player_cells: set[Tuple[int, int]] = set()
+        if self.goal_prior is not None:
+            analysis = self.goal_prior.analyze(
+                source_frame, neutral_frame
+            )
+            for slot in {
+                analysis.source_player_slot,
+                analysis.target_player_slot,
+            }:
+                if slot is None:
+                    continue
+                player_cells.add(
+                    (
+                        min(
+                            memory.columns - 1,
+                            max(
+                                0,
+                                slot[0]
+                                * memory.columns
+                                // source_frame.width,
+                            ),
+                        ),
+                        min(
+                            memory.rows - 1,
+                            max(
+                                0,
+                                slot[1]
+                                * memory.rows
+                                // source_frame.height,
+                            ),
+                        ),
+                    )
+                )
+        excluded_cells = {
+            (column, row)
+            for column in range(memory.columns)
+            for row in range(memory.rows)
+            if player_cells
+            and min(
+                abs(column - player_column) + abs(row - player_row)
+                for player_column, player_row in player_cells
+            )
+            <= 1
+        }
+        context_signature = model.context_signature(
+            feature
+            for cell, feature in source_features.items()
+            if cell not in excluded_cells
+        )
+        observed = 0
+        for anchor, source_feature in sorted(source_features.items()):
+            if anchor in excluded_cells:
+                continue
+            if (
+                fingerprint_counts[
+                    model.appearance_fingerprint(source_feature)
+                ]
+                > 4
+            ):
+                continue
+            matching_offsets = []
+            for cell, target_feature in target_features.items():
+                if memory.feature_distance(
+                    source_feature, target_feature
+                ) <= memory.match_threshold:
+                    matching_offsets.append(
+                        (cell[0] - anchor[0], cell[1] - anchor[1])
+                    )
+            if matching_offsets:
+                nearest_distance = min(
+                    abs(column) + abs(row)
+                    for column, row in matching_offsets
+                )
+                matching_offsets = [
+                    (column, row)
+                    for column, row in matching_offsets
+                    if abs(column) + abs(row) == nearest_distance
+                ]
+            outcome_signature = model.effect_signature(
+                source_feature,
+                target_features[anchor],
+                source_feature,
+                relative_effect_cells=tuple(matching_offsets),
+            )
+            prediction_before = model.predict(
+                source_feature,
+                Action.NOOP,
+                duration,
+                context_signature=context_signature,
+                autonomous=True,
+            )
+            observed_probability = model.outcome_probability(
+                source_feature,
+                Action.NOOP,
+                duration,
+                outcome_signature,
+                context_signature=context_signature,
+                autonomous=True,
+            )
+            evidence_payload = (
+                f"passive|{source_frame.digest}|{neutral_frame.digest}|"
+                f"{duration}|{anchor}"
+            )
+            evidence_id = hashlib.sha256(
+                evidence_payload.encode("ascii")
+            ).hexdigest()[:24]
+            observation = None
+            if self.config.anonymous_entity_behavior_learning:
+                observation = model.observe(
+                    source_feature,
+                    Action.NOOP,
+                    duration,
+                    outcome_signature,
+                    context_signature=context_signature,
+                    autonomous=True,
+                    evidence_id=evidence_id,
+                )
+                prediction_after = observation.prediction_after
+                type_id = observation.type_id
+                created_type = observation.created_type
+                accepted = observation.accepted
+                surprise = observation.surprise
+            else:
+                prediction_after = prediction_before
+                type_id = prediction_before.type_id
+                created_type = False
+                accepted = False
+                surprise = -math.log(max(1e-9, observed_probability))
+            self._emit(
+                "anonymous_entity_behavior_observed",
+                decision=self.decision_index + 1,
+                agent_visible=True,
+                evidence_id=evidence_id,
+                learning_enabled=(
+                    self.config.anonymous_entity_behavior_learning
+                ),
+                evidence_accepted=accepted,
+                anonymous_type_id=type_id,
+                anonymous_type_created=created_type,
+                appearance_fingerprint=(
+                    model.appearance_fingerprint(source_feature)
+                ),
+                appearance_distance=(
+                    prediction_before.appearance_distance
+                ),
+                action=Action.NOOP,
+                action_frames=duration,
+                autonomous=True,
+                context_signature=context_signature,
+                context_matched_before=(
+                    prediction_before.context_matched
+                ),
+                predicted_outcome_before=(
+                    prediction_before.outcome_signature
+                ),
+                predicted_outcome_probability_before=(
+                    prediction_before.outcome_probability
+                ),
+                observed_outcome_probability_before=(
+                    observed_probability
+                ),
+                behavior_samples_before=prediction_before.samples,
+                behavior_known_before=prediction_before.known,
+                behavior_confidence_before=prediction_before.confidence,
+                behavior_entropy_before=prediction_before.entropy,
+                hazard_probability_before=(
+                    prediction_before.hazardous_probability
+                ),
+                observed_outcome=outcome_signature,
+                observed_hazard=False,
+                surprise=surprise,
+                outcome_matched_prediction=bool(
+                    prediction_before.outcome_signature
+                    == outcome_signature
+                ),
+                behavior_samples_after=prediction_after.samples,
+                behavior_confidence_after=prediction_after.confidence,
+                hazard_probability_after=(
+                    prediction_after.hazardous_probability
+                ),
+                anchor_cell=anchor,
+                relative_effect_cells=tuple(sorted(matching_offsets)),
+                player_displacement=None,
+                differential_terminal_visual_change=False,
+                model_type_count=model.type_count,
+                model_rule_count=model.rule_count,
+                model_observations=model.observation_count,
+                **self._frame_fields(neutral_frame),
+            )
+            observed += 1
+        self._emit(
+            "anonymous_entity_passive_scan_completed",
+            decision=self.decision_index + 1,
+            action_frames=duration,
+            candidate_cells=observed,
+            excluded_player_cells=len(excluded_cells),
+            unique_source_appearances=len(fingerprint_counts),
+            learning_enabled=(
+                self.config.anonymous_entity_behavior_learning
+            ),
+            model_type_count=model.type_count,
+            model_rule_count=model.rule_count,
+            model_observations=model.observation_count,
+            agent_visible=True,
+            **self._frame_fields(neutral_frame),
+        )
+        return observed
+
     def _probe_human_prior_option_action_control(
         self,
         root: object,
@@ -2240,6 +2688,27 @@ class VerifiedNeuralAgent:
         entity_effect_confirmed = bool(
             confirmed and entity_effect_cells and entity_state_signature
         )
+        anonymous_behavior = None
+        if memory is not None and interaction_ray:
+            anonymous_behavior = (
+                self._anonymous_entity_behavior_observation(
+                    before_intervention,
+                    final_factual,
+                    final_control,
+                    before_observation,
+                    factual_analysis,
+                    control_analysis,
+                    replaced_action,
+                    node.durations[action_index],
+                    interaction_ray,
+                    tuple(sorted(entity_effect_cells)),
+                    final_entity_player_pixels,
+                    evidence_scope=(
+                        f"option:{node.path}:{node.durations}:"
+                        f"action-index-{action_index}"
+                    ),
+                )
+            )
         result = {
             "candidate_rank": candidate_rank,
             "depth": node.depth,
@@ -2290,6 +2759,7 @@ class VerifiedNeuralAgent:
                 final_entity_player_pixels
             ),
             "entity_entries": entity_entries,
+            "anonymous_entity_behavior": anonymous_behavior,
             "controllability": controllability,
             "observations": observations,
         }
@@ -8332,6 +8802,16 @@ class VerifiedNeuralAgent:
                     source_state_id=self._state_id(root),
                     **self._frame_fields(neutral_target),
                 )
+
+            if self.entity_behavior_model is not None:
+                for duration, neutral_target in sorted(
+                    neutral_outcomes.items()
+                ):
+                    self._observe_anonymous_autonomous_behaviors(
+                        source_frame,
+                        neutral_target,
+                        duration,
+                    )
 
             probe_outcomes = {
                 (item[0].path[0], item[0].durations[0]): item[2]

@@ -328,6 +328,24 @@ class RunLoggingTests(unittest.TestCase):
             self.assertIn(
                 "human_prior_option_entity_frontier_archives", summary
             )
+            self.assertIn(
+                "anonymous_entity_behavior_observations", summary
+            )
+            self.assertIn(
+                "anonymous_entity_behavior_evidence_accepted", summary
+            )
+            self.assertIn(
+                "anonymous_entity_behavior_known_predictions", summary
+            )
+            self.assertIn(
+                "anonymous_entity_behavior_prediction_matches", summary
+            )
+            self.assertIn(
+                "anonymous_entity_behavior_types_observed", summary
+            )
+            self.assertTrue(
+                (logger.run_dir / "entity_behaviors.csv").is_file()
+            )
             self.assertIn("episodic_human_prior_memory_seeds", summary)
             self.assertIn(
                 "episodic_human_prior_seeded_graph_states", summary

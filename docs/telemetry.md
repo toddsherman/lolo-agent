@@ -599,6 +599,29 @@ research boundary during play.
 Use `--no-frame-images` for digest-only profiling runs. The default keeps PNGs
 because they make state timelines and transition-graph inspection much easier.
 
+## Anonymous entity behaviors
+
+When the anonymous behavior sidecar is enabled, each rare passive patch and
+each controlled interaction produces an
+`anonymous_entity_behavior_observed` event. The record contains an anonymous
+type ID and appearance fingerprint, context signature, action and duration,
+predicted and observed outcome hashes, evidence count, probability, entropy,
+confidence, surprise, hazard probability, relative effect cells, and the
+deduplicated evidence ID. It never contains a supplied sprite or mechanic name.
+
+`anonymous_entity_passive_scan_completed` records how many rare patches were
+tracked through each matched passive interval and how many controlled-sprite
+cells were excluded. `anonymous_entity_behavior_checkpoint_updated` binds a
+clean learning run to before/after parameter digests. Frozen evaluation instead
+emits `anonymous_entity_behavior_parameter_audit` and fails if the digest
+changes.
+
+`lolo-log summarize` writes all behavior observations to
+`entity_behaviors.csv` and adds counts for accepted evidence, known predictions,
+prediction matches, anonymous types, and distinct outcome signatures to
+`summary.json`. See `anonymous-entity-behavior.md` for the learning and freeze
+protocol.
+
 ## Episodic resume
 
 Use a state the agent previously reached without replaying a hand-authored

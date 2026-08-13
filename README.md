@@ -144,6 +144,27 @@ number of emulator frames. Probe actions are logged under a separate phase,
 excluded from normal experience import, and cannot affect planning. Results are
 flattened to `returnability_probes.csv`.
 
+Learn persistent anonymous appearance types and conditional behavior
+distributions from passive intervals and controlled local effects:
+
+```bash
+lolo-neural-run \
+  ... \
+  --human-prior-hearts \
+  --human-prior-option-effect-stability-steps 3 \
+  --human-prior-option-effect-phase-offsets 3 \
+  --human-prior-option-effect-local-controls \
+  --human-prior-option-entity-frontier \
+  --anonymous-entity-behavior-checkpoint experiments/lolo1-entity/anonymous-behavior.json \
+  --anonymous-entity-behavior-mode learn
+```
+
+The checkpoint contains no sprite names or supplied mechanics. Use
+`--anonymous-entity-behavior-mode frozen` for parameter-immutable held-out or
+sequel evaluation. The sidecar is currently observational and must pass native
+held-out prediction gates before it can affect planning. See
+`docs/anonymous-entity-behavior.md`.
+
 Train an observational relation head only after assigning complete strict runs
 to disjoint training and validation partitions:
 

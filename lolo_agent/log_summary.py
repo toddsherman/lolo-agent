@@ -121,6 +121,9 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
     human_prior_graph_states: set[str] = set()
     human_prior_player_positions: set[Tuple[int, int]] = set()
     human_prior_option_world_effect_signatures: set[str] = set()
+    anonymous_behavior_rows: List[Dict[str, Any]] = []
+    anonymous_behavior_types: set[int] = set()
+    anonymous_behavior_outcomes: set[str] = set()
     archive_rejections_by_reason: Counter[str] = Counter()
     spatial_shadow_rows: List[Dict[str, Any]] = []
     returnability_probe_rows: List[Dict[str, Any]] = []
@@ -149,6 +152,59 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
     edge_counts: Counter[Tuple[str, str, str, int]] = Counter()
     node_details: Dict[str, Dict[str, Any]] = {}
     for event in events:
+        if event["event"] == "anonymous_entity_behavior_observed":
+            type_id = event.get("anonymous_type_id")
+            if type_id is not None:
+                anonymous_behavior_types.add(int(type_id))
+            outcome = event.get("observed_outcome")
+            if outcome:
+                anonymous_behavior_outcomes.add(str(outcome))
+            anonymous_behavior_rows.append(
+                {
+                    field: event.get(field)
+                    for field in (
+                        "seq",
+                        "elapsed_ms",
+                        "attempt",
+                        "decision",
+                        "evidence_id",
+                        "learning_enabled",
+                        "evidence_accepted",
+                        "anonymous_type_id",
+                        "anonymous_type_created",
+                        "appearance_fingerprint",
+                        "appearance_distance",
+                        "action",
+                        "action_frames",
+                        "autonomous",
+                        "context_signature",
+                        "context_matched_before",
+                        "predicted_outcome_before",
+                        "predicted_outcome_probability_before",
+                        "observed_outcome_probability_before",
+                        "behavior_samples_before",
+                        "behavior_known_before",
+                        "behavior_confidence_before",
+                        "behavior_entropy_before",
+                        "hazard_probability_before",
+                        "observed_outcome",
+                        "observed_hazard",
+                        "surprise",
+                        "outcome_matched_prediction",
+                        "behavior_samples_after",
+                        "behavior_confidence_after",
+                        "hazard_probability_after",
+                        "anchor_cell",
+                        "relative_effect_cells",
+                        "player_displacement",
+                        "differential_terminal_visual_change",
+                        "model_type_count",
+                        "model_rule_count",
+                        "model_observations",
+                        "frame",
+                    )
+                }
+            )
         if event["event"] == "bidirectional_probe_step":
             returnability_probe_rows.append(
                 {
@@ -797,6 +853,56 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         writer.writeheader()
         writer.writerows(returnability_probe_rows)
 
+    anonymous_behavior_columns = [
+        "seq",
+        "elapsed_ms",
+        "attempt",
+        "decision",
+        "evidence_id",
+        "learning_enabled",
+        "evidence_accepted",
+        "anonymous_type_id",
+        "anonymous_type_created",
+        "appearance_fingerprint",
+        "appearance_distance",
+        "action",
+        "action_frames",
+        "autonomous",
+        "context_signature",
+        "context_matched_before",
+        "predicted_outcome_before",
+        "predicted_outcome_probability_before",
+        "observed_outcome_probability_before",
+        "behavior_samples_before",
+        "behavior_known_before",
+        "behavior_confidence_before",
+        "behavior_entropy_before",
+        "hazard_probability_before",
+        "observed_outcome",
+        "observed_hazard",
+        "surprise",
+        "outcome_matched_prediction",
+        "behavior_samples_after",
+        "behavior_confidence_after",
+        "hazard_probability_after",
+        "anchor_cell",
+        "relative_effect_cells",
+        "player_displacement",
+        "differential_terminal_visual_change",
+        "model_type_count",
+        "model_rule_count",
+        "model_observations",
+        "frame",
+    ]
+    with (run_dir / "entity_behaviors.csv").open(
+        "w", encoding="utf-8", newline=""
+    ) as handle:
+        writer = csv.DictWriter(
+            handle, fieldnames=anonymous_behavior_columns
+        )
+        writer.writeheader()
+        writer.writerows(anonymous_behavior_rows)
+
     graph = {
         "schema_version": SCHEMA_VERSION,
         "run_id": manifest["run_id"],
@@ -1228,6 +1334,37 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             event["event"] == "human_prior_option_archive_added"
             and bool(event.get("human_prior_option_entity_frontier"))
             for event in events
+        ),
+        "anonymous_entity_behavior_observations": len(
+            anonymous_behavior_rows
+        ),
+        "anonymous_entity_behavior_evidence_accepted": sum(
+            bool(row.get("evidence_accepted"))
+            for row in anonymous_behavior_rows
+        ),
+        "anonymous_entity_behavior_known_predictions": sum(
+            bool(row.get("behavior_known_before"))
+            for row in anonymous_behavior_rows
+        ),
+        "anonymous_entity_behavior_prediction_matches": sum(
+            bool(row.get("behavior_known_before"))
+            and bool(row.get("outcome_matched_prediction"))
+            for row in anonymous_behavior_rows
+        ),
+        "anonymous_entity_behavior_types_observed": len(
+            anonymous_behavior_types
+        ),
+        "anonymous_entity_behavior_outcomes_observed": len(
+            anonymous_behavior_outcomes
+        ),
+        "anonymous_entity_behavior_checkpoint_updates": event_counts.get(
+            "anonymous_entity_behavior_checkpoint_updated", 0
+        ),
+        "anonymous_entity_behavior_parameter_audits": event_counts.get(
+            "anonymous_entity_behavior_parameter_audit", 0
+        ),
+        "anonymous_entity_passive_scans": event_counts.get(
+            "anonymous_entity_passive_scan_completed", 0
         ),
         "human_prior_option_archives_added": event_counts.get(
             "human_prior_option_archive_added", 0

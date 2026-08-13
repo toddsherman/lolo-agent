@@ -77,11 +77,24 @@ endpoint. During live planning it can inspect only predicted endpoints; after
 branch execution its telemetry uses the observed endpoint. Neither path
 currently affects control.
 
+`entity_behavior.py` adds the first persistent object-centric sidecar. It
+clusters pooled RGB patches into anonymous appearance types and learns
+conditional empirical outcome distributions from matched controls and passive
+intervals. Outcomes are position-relative pixel-effect hashes; types have no
+sprite names or supplied mechanics. Context-specific distributions can differ
+from the cross-room fallback, so one appearance may be stationary in one
+anonymous visual context and mobile in another. Exact save-state evidence is
+deduplicated, contradictory observations reduce confidence, and a frozen mode
+supports parameter-immutable evaluation. The sidecar currently has selection
+weight zero while native held-out calibration is collected.
+
 The remaining successor milestones are:
 
 1. changed-region rendering that reliably beats persistence on native branches;
 2. multi-fold run- and room-held-out validation without semantic inputs;
-3. object-centric slots or sparse entity tokens discovered without labels;
+3. promote calibrated anonymous type-conditioned predictions from observation
+   to planning, then replace the assisted action-ray locator with a learned
+   controlled-entity tracker;
 4. a native-generalizing reachability/reversibility representation, followed
    by terminal-risk estimates learned from trajectories rather than hand-authored
    death or object rules.

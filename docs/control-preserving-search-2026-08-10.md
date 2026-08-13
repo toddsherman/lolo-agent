@@ -1066,5 +1066,5 @@ each completed depth while allocating the beam to states in which both hearts
 remain visible. This is an exploration-policy change, not a change to the
 heart, chest, completion, or life-loss reward magnitudes.
 
-The complete test suite now passes: 238 tests, with 4 expected native-platform
+The complete test suite now passes: 252 tests, with 4 expected native-platform
 skips.

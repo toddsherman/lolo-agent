@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import torch
 
+from lolo_agent.entity_behavior import AnonymousEntityBehaviorModel
 from lolo_agent.ensemble_world_model import (
     EnsembleVisualDynamicsModel,
     VisualSequence,
@@ -51,6 +52,41 @@ class AutonomousAnimationEnv:
 
     def _frame(self) -> Frame:
         return Frame(8, 8, 1, bytes([self.tick % 256]) * 64)
+
+
+class PassiveRareEntityEnv:
+    def __init__(self, duplicate: bool = False) -> None:
+        self.moved = False
+        self.duplicate = duplicate
+
+    def reset(self) -> Frame:
+        self.moved = False
+        return self._frame()
+
+    def step(self, action: Action, frames: int = 1) -> Frame:
+        del frames
+        if action == Action.NOOP:
+            self.moved = True
+        return self._frame()
+
+    def save_state(self) -> bool:
+        return self.moved
+
+    def load_state(self, state: bool) -> Frame:
+        self.moved = state
+        return self._frame()
+
+    def _frame(self) -> Frame:
+        pixels = bytearray([16] * (16 * 16))
+        entity_column = 2 if self.moved else 1
+        for y in range(4, 8):
+            for x in range(entity_column * 4, entity_column * 4 + 4):
+                pixels[y * 16 + x] = 224
+        if self.duplicate:
+            for y in range(12, 16):
+                for x in range(12, 16):
+                    pixels[y * 16 + x] = 224
+        return Frame(16, 16, 1, bytes(pixels))
 
 
 class AnimationPauseEnv:
@@ -3470,6 +3506,185 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertTrue(eligible[0]["eligible"])
         self.assertEqual(eligible[0]["entity_effect_cells"], ((1, 0),))
         self.assertEqual(eligible[0]["confirmed_action_indices"], (0, 1))
+
+    def test_unlabeled_entity_behavior_transfers_to_second_encounter(
+        self,
+    ) -> None:
+        behavior_model = AnonymousEntityBehaviorModel(
+            minimum_prediction_samples=1
+        )
+
+        def run(learning: bool) -> RecordingLogger:
+            dynamics = EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            )
+            logger = RecordingLogger()
+            agent = VerifiedNeuralAgent(
+                UnlabeledEntityTransformEnv(),
+                dynamics,
+                "cpu",
+                NeuralPlanningConfig(
+                    actions=(Action.LEFT, Action.RIGHT, Action.A),
+                    planning_depth=1,
+                    action_frames=1,
+                    human_prior_heart_reward=1.0,
+                    human_prior_best_first_archive=True,
+                    human_prior_option_search_depth=2,
+                    human_prior_option_search_beam_width=4,
+                    human_prior_option_search_action_frames=1,
+                    human_prior_option_effect_stability_steps=2,
+                    human_prior_option_effect_probe_limit=4,
+                    human_prior_option_effect_phase_offsets=1,
+                    human_prior_option_effect_local_controls=True,
+                    human_prior_option_entity_frontier=True,
+                    anonymous_entity_behavior_learning=learning,
+                    causal_spatial_columns=8,
+                    causal_spatial_rows=8,
+                ),
+                event_logger=logger,
+                entity_behavior_model=behavior_model,
+            )
+            agent.reset()
+            agent.goal_prior = PositionGoalPrior()
+            source_signature = agent._current_human_prior_graph_signature()
+            agent.human_prior_graph_state_visits[source_signature] = 1
+            agent.human_prior_player_position_visits[(0, 0)] = 1
+            agent._search_human_prior_options()
+            return logger
+
+        learned = run(True)
+        digest_after_learning = behavior_model.digest
+        observed = run(False)
+
+        learned_events = [
+            event
+            for event in learned.events
+            if event["event"] == "anonymous_entity_behavior_observed"
+            and event["evidence_accepted"]
+        ]
+        transfer_events = [
+            event
+            for event in observed.events
+            if event["event"] == "anonymous_entity_behavior_observed"
+            and event["behavior_known_before"]
+        ]
+        self.assertGreaterEqual(len(learned_events), 1)
+        self.assertGreaterEqual(len(transfer_events), 1)
+        self.assertTrue(
+            any(event["outcome_matched_prediction"] for event in transfer_events)
+        )
+        self.assertEqual(behavior_model.digest, digest_after_learning)
+        self.assertTrue(
+            all(not event["learning_enabled"] for event in transfer_events)
+        )
+
+    def test_passive_scan_learns_anonymous_autonomous_motion(self) -> None:
+        behavior_model = AnonymousEntityBehaviorModel(
+            minimum_prediction_samples=1
+        )
+
+        def run(learning: bool) -> RecordingLogger:
+            logger = RecordingLogger()
+            agent = VerifiedNeuralAgent(
+                PassiveRareEntityEnv(),
+                EnsembleVisualDynamicsModel(
+                    latent_size=32, action_size=8, ensemble_size=2
+                ),
+                "cpu",
+                NeuralPlanningConfig(
+                    actions=(Action.NOOP,),
+                    planning_depth=1,
+                    action_frames=1,
+                    human_prior_option_effect_stability_steps=1,
+                    human_prior_option_effect_phase_offsets=1,
+                    human_prior_option_effect_local_controls=True,
+                    human_prior_option_entity_frontier=True,
+                    anonymous_entity_behavior_learning=learning,
+                    causal_spatial_columns=4,
+                    causal_spatial_rows=4,
+                ),
+                event_logger=logger,
+                entity_behavior_model=behavior_model,
+            )
+            agent.reset()
+            agent.decide()
+            agent.clear_archive()
+            return logger
+
+        learned = run(True)
+        digest = behavior_model.digest
+        frozen = run(False)
+
+        learned_motion = [
+            event
+            for event in learned.events
+            if event["event"] == "anonymous_entity_behavior_observed"
+            and event["autonomous"]
+            and event["relative_effect_cells"] == ((1, 0),)
+        ]
+        predicted_motion = [
+            event
+            for event in frozen.events
+            if event["event"] == "anonymous_entity_behavior_observed"
+            and event["behavior_known_before"]
+            and event["outcome_matched_prediction"]
+            and event["relative_effect_cells"] == ((1, 0),)
+        ]
+        self.assertEqual(len(learned_motion), 1)
+        self.assertEqual(len(predicted_motion), 1)
+        self.assertEqual(behavior_model.digest, digest)
+        self.assertTrue(
+            any(
+                event["event"]
+                == "anonymous_entity_passive_scan_completed"
+                and event["candidate_cells"] == 1
+                for event in frozen.events
+            )
+        )
+
+    def test_passive_motion_ignores_distant_duplicate_appearances(self) -> None:
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            PassiveRareEntityEnv(duplicate=True),
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.NOOP,),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_option_effect_stability_steps=1,
+                human_prior_option_effect_phase_offsets=1,
+                human_prior_option_effect_local_controls=True,
+                human_prior_option_entity_frontier=True,
+                anonymous_entity_behavior_learning=True,
+                causal_spatial_columns=4,
+                causal_spatial_rows=4,
+            ),
+            event_logger=logger,
+            entity_behavior_model=AnonymousEntityBehaviorModel(
+                minimum_prediction_samples=1
+            ),
+        )
+        agent.reset()
+        agent.decide()
+        agent.clear_archive()
+
+        moving = [
+            event
+            for event in logger.events
+            if event["event"] == "anonymous_entity_behavior_observed"
+            and event["anchor_cell"] == (1, 1)
+        ]
+        stationary = [
+            event
+            for event in logger.events
+            if event["event"] == "anonymous_entity_behavior_observed"
+            and event["anchor_cell"] == (3, 3)
+        ]
+        self.assertEqual(moving[0]["relative_effect_cells"], ((1, 0),))
+        self.assertEqual(stationary[0]["relative_effect_cells"], ((0, 0),))
 
     def test_option_search_can_add_long_direction_edges(self) -> None:
         model = EnsembleVisualDynamicsModel(
