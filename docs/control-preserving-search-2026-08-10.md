@@ -1129,5 +1129,11 @@ created zero localizations and zero attributions. The sidecar remains at
 selection weight zero because this is still same-room transfer and uses the
 assisted pixel player/life detectors.
 
+The available Room 3 source was screened before spending a long native causal
+run. Nineteen of its 25 rare appearance fingerprints matched checkpoint types,
+but type 7 was absent. It is therefore unsuitable for evaluating transfer of
+this specific dynamic rule; the cross-room gate must begin from a room where
+the recurring appearance is actually visible.
+
 The complete test suite now passes: 259 tests, with 4 expected native-platform
 skips.

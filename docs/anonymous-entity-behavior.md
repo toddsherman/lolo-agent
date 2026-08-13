@@ -175,6 +175,12 @@ The result establishes a causal local credit mechanism and a reusable
 anonymous rule; the next gate is recurrence in other rooms and prospective
 folds.
 
+An exact pixel-only screen of the available Room 3 source found 25 rare
+appearance fingerprints. Nineteen matched existing checkpoint types, but none
+matched type 7. That state can measure generic stationary appearance reuse,
+not transfer of this learned dynamic rule, so it was not presented as the
+cross-room gate.
+
 ## Native relational-dynamics milestone
 
 Room 2 development branches produced an anonymous appearance with fingerprint
