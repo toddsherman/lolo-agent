@@ -2901,6 +2901,46 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(blocked, [dead_branch])
         self.assertTrue(fail_open)
 
+    def test_option_exhaustion_egress_filter_prefers_graph_transition(
+        self,
+    ) -> None:
+        stationary_state = object()
+        egress_state = object()
+        stationary = (
+            2.0,
+            NeuralPlan((Action.LEFT,), (1,), 2.0, 0.0),
+            stationary_state,
+            Frame(1, 1, 1, b"\x00"),
+        )
+        egress = (
+            1.0,
+            NeuralPlan((Action.DOWN,), (1,), 1.0, 0.0),
+            egress_state,
+            Frame(1, 1, 1, b"\x01"),
+        )
+        signatures = {
+            id(stationary_state): ("source", "source"),
+            id(egress_state): ("source", "escape"),
+        }
+
+        filtered, non_egress, fail_open = (
+            VerifiedNeuralAgent._filter_option_exhaustion_egress(
+                [stationary, egress], signatures
+            )
+        )
+
+        self.assertEqual(filtered, [egress])
+        self.assertEqual(non_egress, [stationary])
+        self.assertFalse(fail_open)
+        only_stationary, non_egress, fail_open = (
+            VerifiedNeuralAgent._filter_option_exhaustion_egress(
+                [stationary], signatures
+            )
+        )
+        self.assertEqual(only_stationary, [stationary])
+        self.assertEqual(non_egress, [stationary])
+        self.assertTrue(fail_open)
+
     def test_option_search_does_not_archive_exhausted_frontier(self) -> None:
         model = EnsembleVisualDynamicsModel(
             latent_size=32, action_size=8, ensemble_size=2

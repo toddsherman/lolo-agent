@@ -593,6 +593,13 @@ class RunLoggingTests(unittest.TestCase):
                 summary,
             )
             self.assertIn(
+                "human_prior_option_exhaustion_egress_filters", summary
+            )
+            self.assertIn(
+                "human_prior_option_exhaustion_non_egress_branches_filtered",
+                summary,
+            )
+            self.assertIn(
                 "anonymous_entity_behavior_observations", summary
             )
             self.assertIn(

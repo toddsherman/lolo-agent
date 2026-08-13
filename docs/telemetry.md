@@ -380,6 +380,12 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   resumes, cleared at room boundaries, and withdrawn when a later search from
   the same state finds a retainable endpoint. Telemetry explicitly reports
   `policy_effect=bounded_frontier_avoidance` and `hazard_evidence=false`;
+  after a bounded option search returns no usable endpoint,
+  `human_prior_option_exhaustion_egress_filter_evaluated` prefers verified
+  actions that actually change the current pixel-derived graph state over
+  non-moving actions. It reports every suppressed branch and fails open when
+  no graph-changing action exists. This is a decision-local escape policy,
+  not a persistent hazard label or a supplied route;
 - `human_prior_option_recovery_armed` and
   `human_prior_option_recovery_deferred`, which record whether a branch added
   by the current exact search may be restored in the same decision. Immediate

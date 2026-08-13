@@ -6471,6 +6471,9 @@ class VerifiedNeuralAgent:
                     **self._frame_fields(source_frame),
                 )
                 if not endpoints:
+                    self.human_prior_option_exhausted_sources.add(
+                        exhausted_key
+                    )
                     self._emit(
                         "human_prior_option_search_completed",
                         decision=self.decision_index + 1,
@@ -9987,6 +9990,30 @@ class VerifiedNeuralAgent:
         fail_open = bool(blocked and not filtered)
         return (verified if fail_open else filtered), blocked, fail_open
 
+    @staticmethod
+    def _filter_option_exhaustion_egress(
+        verified: List[Tuple[Any, ...]],
+        graph_signatures: Dict[int, Tuple[str, str]],
+    ) -> Tuple[List[Tuple[Any, ...]], List[Tuple[Any, ...]], bool]:
+        """Prefer a real graph transition after exact search is exhausted."""
+
+        egress: List[Tuple[Any, ...]] = []
+        non_egress: List[Tuple[Any, ...]] = []
+        for item in verified:
+            source_signature, target_signature = graph_signatures.get(
+                id(item[2]), ("", "")
+            )
+            if (
+                source_signature
+                and target_signature
+                and target_signature != source_signature
+            ):
+                egress.append(item)
+            else:
+                non_egress.append(item)
+        fail_open = bool(non_egress and not egress)
+        return (verified if fail_open else egress), non_egress, fail_open
+
     def _filter_exhausted_milestone_transitions(
         self,
         verified: List[Tuple[Any, ...]],
@@ -12821,6 +12848,47 @@ class VerifiedNeuralAgent:
                     alternatives_remaining=len(selection_verified),
                     fail_open=exhausted_option_frontier_fail_open,
                 )
+            if option_search_exhausted:
+                (
+                    selection_verified,
+                    option_exhaustion_non_egress_branches,
+                    option_exhaustion_egress_fail_open,
+                ) = self._filter_option_exhaustion_egress(
+                    selection_verified,
+                    branch_goal_signatures,
+                )
+                if option_exhaustion_non_egress_branches:
+                    self._emit(
+                        "human_prior_option_exhaustion_egress_filter_evaluated",
+                        decision=self.decision_index + 1,
+                        enabled=True,
+                        policy_authority=True,
+                        policy_effect="bounded_search_egress",
+                        hazard_evidence=False,
+                        non_egress_branches_detected=len(
+                            option_exhaustion_non_egress_branches
+                        ),
+                        non_egress_branches_filtered=(
+                            0
+                            if option_exhaustion_egress_fail_open
+                            else len(option_exhaustion_non_egress_branches)
+                        ),
+                        egress_alternatives=len(selection_verified),
+                        fail_open=option_exhaustion_egress_fail_open,
+                        branches=tuple(
+                            {
+                                "action": item[1].path[0],
+                                "action_frames": item[1].durations[0],
+                                "source_graph_signature": (
+                                    branch_goal_signatures[id(item[2])][0]
+                                ),
+                                "target_graph_signature": (
+                                    branch_goal_signatures[id(item[2])][1]
+                                ),
+                            }
+                            for item in option_exhaustion_non_egress_branches
+                        ),
+                    )
             milestone_goal_branches = [
                 item
                 for item in selection_verified
