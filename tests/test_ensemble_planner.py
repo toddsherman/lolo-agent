@@ -4702,6 +4702,95 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertTrue(filtered["episodic_graph_frontier_preferred"])
         env.release_state(root)
 
+    def test_archive_restore_does_not_prefer_regressive_graph_progress_over_goal_progress(
+        self,
+    ) -> None:
+        env = UniqueStateEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                behavioral_best_first_archive=True,
+                human_prior_best_first_archive=True,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.goal_prior = OrderingPositionGoalPrior()
+        root = env.save_state()
+        regressive_frame = env.step(Action.RIGHT, 1)
+        regressive_state = env.save_state()
+        env.load_state(root)
+        progress_frame = env.step(Action.RIGHT, 2)
+        progress_state = env.save_state()
+        env.load_state(root)
+        source_hearts = tuple(sorted(agent.goal_prior.current_slots()))
+        regressive_graph = _ArchivedBranch(
+            state=regressive_state,
+            frame=regressive_frame,
+            plan=NeuralPlan((Action.RIGHT,), (1,), 8.0, 0.0),
+            score=8.0,
+            scene=agent._scene_signature(regressive_frame),
+            created=0,
+            origin_signature="source",
+            goal_source_signature="graph-source",
+            goal_target_signature="regressive-target",
+            goal_heart_slots=source_hearts,
+            goal_progress_reward=-2.0,
+            goal_remaining_hearts=2,
+            goal_total_hearts=2,
+            goal_player_slot=(1, 0),
+            human_prior_episodic_graph_plan_kind="control_frontier",
+            human_prior_episodic_graph_progress=1.0,
+            human_prior_episodic_graph_remaining_cost=0,
+        )
+        goal_progress = _ArchivedBranch(
+            state=progress_state,
+            frame=progress_frame,
+            plan=NeuralPlan((Action.RIGHT,), (2,), 7.0, 0.0),
+            score=7.0,
+            scene=agent._scene_signature(progress_frame),
+            created=0,
+            origin_signature="source",
+            goal_source_signature="graph-source",
+            goal_target_signature="progress-target",
+            goal_heart_slots=source_hearts,
+            goal_progress_reward=7.0,
+            goal_remaining_hearts=2,
+            goal_total_hearts=2,
+            goal_player_slot=(2, 0),
+        )
+        agent.archive = [regressive_graph, goal_progress]
+        agent.human_prior_graph_recovery_pending = True
+
+        decision = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(decision)
+        assert decision is not None
+        self.assertTrue(decision.restored_archive)
+        self.assertEqual(env.position, 2)
+        restored = next(
+            event
+            for event in logger.events
+            if event["event"] == "archive_branch_restored"
+        )
+        self.assertEqual(restored["human_prior_goal_reward"], 7.0)
+        filtered = next(
+            event
+            for event in logger.events
+            if event["event"]
+            == "human_prior_best_first_archives_filtered"
+        )
+        self.assertTrue(
+            filtered["positive_goal_frontier_constraint_applied"]
+        )
+        self.assertFalse(filtered["episodic_graph_frontier_preferred"])
+        env.release_state(root)
+
     def test_archive_restore_invalidates_stale_episodic_graph_progress(
         self,
     ) -> None:

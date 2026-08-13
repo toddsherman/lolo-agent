@@ -18844,9 +18844,14 @@ class VerifiedNeuralAgent:
             return None
         human_prior_best_first_applied = False
         human_prior_episodic_graph_best_first_applied = False
+        human_prior_frontier_candidates = (
+            global_goal_eligible
+            if global_goal_eligible
+            else behavioral_frontier_candidates
+        )
         human_prior_intervention_eligible = [
             candidate
-            for candidate in behavioral_frontier_candidates
+            for candidate in human_prior_frontier_candidates
             if candidate.plan.path[0] != Action.NOOP
             and candidate.goal_source_signature
         ]
@@ -18986,6 +18991,9 @@ class VerifiedNeuralAgent:
                     ),
                     milestone_goal_frontiers=len(
                         milestone_goal_eligible
+                    ),
+                    positive_goal_frontier_constraint_applied=bool(
+                        global_goal_eligible
                     ),
                     episodic_graph_frontiers=len(
                         episodic_graph_eligible

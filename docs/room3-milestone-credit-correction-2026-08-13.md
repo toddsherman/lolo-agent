@@ -260,3 +260,22 @@ Exact search can replay one shortest labelled route in a reserved beam slot,
 but every step and waypoint remains emulator-verified and failed replay does
 not fabricate progress. Telemetry records the route proposal, every retained
 prefix, and whether the waypoint was actually reached.
+
+Native frozen validations v70 through v73 confirmed the correction. The first
+run rejected blocked RIGHT at the genuine `(48,48)` state without inventing
+movement. The next run replayed a learned LEFT edge to `(32,48)` and verified
+the predicted waypoint; its depth-2 branches detected the real upper corridor
+at `(32,32)`, `(48,32)`, and `(64,32)`. It then escaped the former cycle via
+`(160,32)`, `(176,32)`, `(192,32)`, `(192,48)`, and `(192,64)`. A depth-8
+search from the clean right-side state verified 1,914 branches, reached
+`(192,176)`, and archived an interior route to `(144,128)` with +7
+pixel-derived goal reward. No heart transition or life loss occurred, and all
+frozen neural and anonymous-behavior audits passed.
+
+That same search exposed a separate archive-ordering defect: live
+control-frontier progress of 0.5 caused a `(96,32)` archive with −2 goal reward
+to displace the +7 `(144,128)` archive. Positive pixel-derived goal archives
+now constrain the best-first candidate pool before graph/frontier ranking.
+Graph completion may still break ties among positive alternatives and remains
+available when no positive alternative exists, but optional exploration can
+no longer override verified progress with a regressive branch.

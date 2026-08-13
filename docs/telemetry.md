@@ -264,6 +264,13 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   make that archive look useful under an unrelated plan. Restore events expose
   both the live fields above and the corresponding
   `human_prior_episodic_graph_stored_*` values;
+- `human_prior_best_first_archives_filtered` records
+  `positive_goal_frontier_constraint_applied` when at least one safe archive
+  has positive pixel-derived goal reward. In that case graph, semantic,
+  physical, world, and local-control frontier ranking is performed only among
+  the positive-reward archives. A completed graph route may still win over a
+  less complete positive shaping route, but optional control-frontier progress
+  cannot displace a positive alternative with negative goal reward;
 - `human_prior_option_search_depth_completed`, which makes beam loss and
   tracker failure directly auditable at every depth. It records raw
   candidates, globally deduplicated and novel candidates, detected- and
