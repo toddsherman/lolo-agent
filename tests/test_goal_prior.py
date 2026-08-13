@@ -1007,6 +1007,7 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
                 moved_analysis,
                 "source",
                 "test_frontier_exhausted",
+                "test-search-budget",
             )
         )
         fields = agent._human_prior_ordering_navigation_fields(

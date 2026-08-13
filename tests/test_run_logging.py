@@ -510,6 +510,14 @@ class RunLoggingTests(unittest.TestCase):
                 "human_prior_option_entity_curiosity_probes", summary
             )
             self.assertIn(
+                "human_prior_option_entity_curiosity_distinct_probe_cells",
+                summary,
+            )
+            self.assertIn(
+                "human_prior_option_entity_curiosity_max_groups_available",
+                summary,
+            )
+            self.assertIn(
                 "human_prior_option_entity_curiosity_known_probes",
                 summary,
             )
@@ -565,6 +573,10 @@ class RunLoggingTests(unittest.TestCase):
                 "human_prior_ordering_hypotheses_disproved", summary
             )
             self.assertIn(
+                "human_prior_ordering_disproofs_budget_invalidated",
+                summary,
+            )
+            self.assertIn(
                 "human_prior_ordering_stale_archives_removed", summary
             )
             self.assertIn(
@@ -579,6 +591,29 @@ class RunLoggingTests(unittest.TestCase):
             )
             self.assertIn(
                 "human_prior_navigation_reconsidered_committed_reward_total",
+                summary,
+            )
+            self.assertIn(
+                "human_prior_option_position_reserve_depths", summary
+            )
+            self.assertIn(
+                "human_prior_option_position_reserve_parents_retained",
+                summary,
+            )
+            self.assertIn(
+                "human_prior_option_position_reserve_unique_slots",
+                summary,
+            )
+            self.assertIn(
+                "human_prior_option_position_representative_archives",
+                summary,
+            )
+            self.assertIn(
+                "human_prior_option_position_representative_unique_slots",
+                summary,
+            )
+            self.assertIn(
+                "human_prior_option_position_representative_max_divergence",
                 summary,
             )
             self.assertIn(

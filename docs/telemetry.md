@@ -186,6 +186,7 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   backtracking decision reconstructable;
 - `human_prior_option_search_started`,
   `human_prior_option_neutral_verified`,
+  `human_prior_option_local_neutral_verified`,
   `human_prior_option_branch_verified`, and
   `human_prior_option_search_completed`, which preserve every exact
   save-state sequence rollout, its duration-matched all-`NOOP` reference,
@@ -196,24 +197,65 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   additionally receives one long-press edge while buttons and neutral waits
   retain the base option-search duration. `action_duration_edges` records the
   exact expansion set, and each neutral event records `elapsed_frames` plus
-  the heterogeneous duration tuple used for its matched reference. On an
-  episodic resume, these verified paths reconstruct temporary option coverage
-  even when they were not selected or committed, preventing the same exact
-  experiment from being treated as unseen after a process restart;
+  the heterogeneous duration tuple used for its matched reference.
+  `parent_graph_signature` records the observed pixel-state parent of every
+  endpoint. On an episodic resume, the parent field—or the ordered verified
+  prefixes in older telemetry—reconstructs each emulator-observed
+  prefix-to-prefix graph edge, its local controller-edge coverage, and
+  temporary option coverage. Thus a multi-action macro has measurable
+  progress at its verified intermediate states, while states whose controls
+  were tested inside a longer option are not mislabeled as fresh control
+  frontiers. This evidence remains available even when the option was not
+  selected or committed, and the same exact experiment is not treated as
+  unseen after a process restart. Every branch is also compared with both an
+  all-`NOOP` rollout from the search root and a duration-matched `NOOP` from
+  its immediate parent. `human_prior_option_action_dependent_endpoint`,
+  `human_prior_option_local_action_dependent`, their visual-difference fields,
+  the two neutral player slots, `human_prior_option_player_matches_neutral`,
+  and `human_prior_option_causal_goal_reward` expose the result. Movement,
+  novelty, shaping reward, graph progress, and graph edges that the matched
+  neutral rollout reproduces are not credited to the controller. Local action
+  coverage is still recorded, so an ineffective input is known to have been
+  tested. Resume reconstruction applies the same rule to new telemetry and
+  infers it from matching neutral frame digests where older logs contain the
+  required counterfactual rollouts;
 - `human_prior_episodic_graph_plan_selected`, emitted by the opt-in
   `--human-prior-episodic-graph-guidance` policy. It records the current
-  pixel-state signature, the reachable waypoint, the nearest state in a
-  component that previously preceded a positive visual outcome, their pixel
-  gap, and the verified action cost remaining to the waypoint. `known_route`
-  distinguishes replaying progress along an already connected transition
-  graph from investigating one missing bridge. The policy reconstructs only
-  emulator-verified source/target signatures from temporary telemetry; it does
-  not store an object label or supplied action sequence. Every exact branch,
-  archived endpoint, restore, and commit carries
+  pixel-state signature, reachable waypoint, plan kind, pixel gap, and verified
+  action cost remaining to the waypoint. `milestone_route` and
+  `milestone_bridge` target a component that previously preceded a positive
+  visual outcome; `known_route` distinguishes an already connected route from
+  investigating one missing bridge. When that room phase has no known positive
+  outcome, `control_frontier` instead targets a different reachable state with
+  locally untested controller actions. `frontier_actions` records those
+  actions, but does not predict which one is useful. A state that is itself a
+  historical milestone precursor never produces a zero-length milestone
+  route: direct reward verification remains responsible for that outcome,
+  while graph guidance may target an unfinished control frontier. Exhausted bounded-search
+  states and stationary animation-only signature changes are ineligible. The
+  policy reconstructs only emulator-verified source/target signatures and
+  action-coverage counts from temporary telemetry; it does not store an object
+  label, object rule, or supplied action sequence. Every exact branch, archived
+  endpoint, restore, and commit carries
+  `human_prior_episodic_graph_plan_kind`,
   `human_prior_episodic_graph_progress`,
   `human_prior_episodic_graph_bridge_reached`, and
   `human_prior_episodic_graph_remaining_cost`, so route reuse and the first
   newly connected component can be visualized decision by decision;
+- `human_prior_episodic_milestone_sources_filtered` records when a historical
+  positive-outcome source is excluded because every explicitly positive,
+  observed heart-removal transition from that pixel state matches an
+  empirically exhausted ordering. Ordinary graph edges that happen to cross a
+  noisy goal-state signature cannot qualify a milestone source.
+  The source becomes eligible again if that ordering hypothesis is later
+  disproved. This prevents graph reuse from silently bypassing the same
+  learned ordering constraint applied to direct reward and archive choices;
+- `human_prior_archive_episodic_graph_revalidated` recomputes every archived
+  endpoint against the graph plan active at restore time. Stored progress from
+  the plan that originally created an archive is audit-only and cannot later
+  make that archive look useful under an unrelated plan. Restore events expose
+  both the live fields above and the corresponding
+  `human_prior_episodic_graph_stored_*` values;
 - `human_prior_option_search_depth_completed`, which makes beam loss and
   tracker failure directly auditable at every depth. It records raw
   candidates, globally deduplicated and novel candidates, detected- and
@@ -224,6 +266,12 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   `--human-prior-option-search-missing-player-reserve` slots after detected
   endpoints, and may not exceed
   `--human-prior-option-search-missing-player-max-streak` consecutive edges;
+  `--human-prior-option-search-position-reserve` can reserve part of the beam
+  for one representative of geometrically distinct detected player positions.
+  Representatives favor larger displacement and lower visit counts, allowing
+  a necessary temporary move away from the shaped goal to survive alongside
+  high-reward candidates. The depth event records the candidate count,
+  retained count, and exact reserved positions;
 - `human_prior_option_world_effect_stability`, which replays a bounded sample
   of distinct option effects beside duration-matched all-`NOOP` controls at
   future horizons and records the intersected coarse cells, conservative
@@ -327,7 +375,12 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   the anonymous target appearance fingerprint, learned type when matched,
   relative context, prior sample count, posterior novelty, within-frame spatial
   rarity, and combined curiosity. The reserve retains distinct under-tested
-  appearance/action tuples in the search beam and matched-control probe set.
+  appearance/action tuples in the search beam. The bounded matched-control
+  probe set ranks one uncertain interaction per spatial locus before spending
+  a second probe on another action at the same locus, so one visually novel
+  patch cannot consume the whole audit budget. Each probe reports
+  `distinct_interaction_groups_available` and
+  `interaction_group_reserved`.
   `human_prior_option_entity_curiosity_probe` links the reserved tuple to its
   leave-one-action-out result and behavior evidence, including static/no-effect
   outcomes. Prefix replay carries the same prior-position reference used by
@@ -367,7 +420,11 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   temporary pose directly when present; older logs are supported by replaying
   the executed action for live decisions and the full path for restored
   archive decisions. `episodic_human_prior_memory_seeded.pose_action` exposes
-  the reconstructed value used by the resumed interaction planner;
+  the reconstructed value used by the resumed interaction planner. A source
+  archive restore that reached an unfinished local-control frontier also
+  preserves its bounded navigation-recovery grace across the process
+  boundary; `navigation_recovery_grace_restored` and
+  `navigation_recovery_grace_elapsed_decisions` expose that continuity;
 - `human_prior_option_search_deferred` and
   `human_prior_option_search_skipped`, which distinguish a cheaper unseen
   local archive endpoint from an already exhausted sequence-search source.
@@ -552,7 +609,12 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   explicitly report search budget,
   failed and alternate slots, discarded archives, `hazard_evidence=false`, and
   policy effect; `summary.json` counts progress trials, disproofs, discarded
-  archives, and reactivations.
+  archives, and reactivations. A disproof also records the exact search-budget
+  digest and its depth, beam width, and position reserve. Resume invalidates
+  that negative conclusion when any of those exploration capacities becomes
+  stronger, retains the factual exhaustion observation, and retries the
+  alternate ordering; `budget_invalidated_ordering_disproofs` makes that
+  memory revision explicit.
   Every verified source/action edge is also reconstructed from the resume
   chain, whether or not that branch was committed. Thus "unexpanded" means
   that a controller action has not yet been tested from the semantic source,
@@ -578,7 +640,16 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   representatives, bounded by
   `--human-prior-option-archive-representatives` and the global archive
   capacity. `semantic_state_representatives_available` and
-  `semantic_state_representatives_archived` report the result. Confirmed
+  `semantic_state_representatives_archived` report the result. When the
+  position-diversity reserve is enabled, the same representative budget first
+  preserves a terminal endpoint at a spatially distinct player position;
+  `position_representatives_available`,
+  `position_representatives_archived`, and
+  `human_prior_option_archive_position_representative` expose that choice.
+  The representative maximizes distance from the selected endpoint before
+  considering distance from the source, and its selected-player anchor and
+  Manhattan divergence are logged for replay and visualization.
+  Confirmed
   replay-stable causal-effect frontiers remain first-class and are preferred
   over ordinary movement frontiers during best-first recovery;
 - `human_prior_option_archive_added`, plus

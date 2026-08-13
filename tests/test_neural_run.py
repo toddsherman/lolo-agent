@@ -91,6 +91,11 @@ class StableSceneChangeDetectorTests(unittest.TestCase):
                     json.dumps(event)
                     for event in (
                         {
+                            "event": "archive_branch_restored",
+                            "decision": 1,
+                            "marker": "child-archive-restore",
+                        },
+                        {
                             "event": "branch_verified",
                             "decision": 1,
                             "marker": "child-branch",
@@ -119,6 +124,18 @@ class StableSceneChangeDetectorTests(unittest.TestCase):
                             "event": "human_prior_option_branch_verified",
                             "decision": 1,
                             "marker": "child-option-branch",
+                        },
+                        {
+                            "event": "human_prior_option_neutral_verified",
+                            "decision": 1,
+                            "marker": "child-option-neutral",
+                        },
+                        {
+                            "event": (
+                                "human_prior_option_local_neutral_verified"
+                            ),
+                            "decision": 1,
+                            "marker": "child-option-local-neutral",
                         },
                         {
                             "event": "human_prior_option_archive_added",
@@ -157,12 +174,15 @@ class StableSceneChangeDetectorTests(unittest.TestCase):
             [event["marker"] for event in events],
             [
                 "parent-1",
+                "child-archive-restore",
                 "child-branch",
                 "child-1",
                 "child-room-boundary",
                 "child-hazard",
                 "child-milestone-outcome",
                 "child-option-branch",
+                "child-option-neutral",
+                "child-option-local-neutral",
                 "child-option-archive",
                 "child-option-search-started",
                 "child-option-search-completed",

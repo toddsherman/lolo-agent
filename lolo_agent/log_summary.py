@@ -822,6 +822,9 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                     "human_prior_option_world_effect_signature": event.get(
                         "human_prior_option_world_effect_signature"
                     ),
+                    "human_prior_episodic_graph_plan_kind": event.get(
+                        "human_prior_episodic_graph_plan_kind"
+                    ),
                     "human_prior_episodic_graph_progress": event.get(
                         "human_prior_episodic_graph_progress", 0.0
                     ),
@@ -830,6 +833,18 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                     ),
                     "human_prior_episodic_graph_remaining_cost": event.get(
                         "human_prior_episodic_graph_remaining_cost"
+                    ),
+                    "human_prior_episodic_graph_stored_plan_kind": event.get(
+                        "human_prior_episodic_graph_stored_plan_kind"
+                    ),
+                    "human_prior_episodic_graph_stored_progress": event.get(
+                        "human_prior_episodic_graph_stored_progress"
+                    ),
+                    "human_prior_episodic_graph_stored_bridge_reached": event.get(
+                        "human_prior_episodic_graph_stored_bridge_reached"
+                    ),
+                    "human_prior_episodic_graph_stored_remaining_cost": event.get(
+                        "human_prior_episodic_graph_stored_remaining_cost"
                     ),
                     "human_prior_graph_source_signature": event.get(
                         "human_prior_graph_source_signature"
@@ -992,9 +1007,14 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "human_prior_option_depth",
         "human_prior_option_path_visits_before",
         "human_prior_option_world_effect_signature",
+        "human_prior_episodic_graph_plan_kind",
         "human_prior_episodic_graph_progress",
         "human_prior_episodic_graph_bridge_reached",
         "human_prior_episodic_graph_remaining_cost",
+        "human_prior_episodic_graph_stored_plan_kind",
+        "human_prior_episodic_graph_stored_progress",
+        "human_prior_episodic_graph_stored_bridge_reached",
+        "human_prior_episodic_graph_stored_remaining_cost",
         "human_prior_graph_source_signature",
         "human_prior_graph_target_signature",
         "human_prior_world_source_context",
@@ -1693,6 +1713,16 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "human_prior_ordering_hypotheses_disproved": event_counts.get(
             "human_prior_ordering_hypothesis_disproved", 0
         ),
+        "human_prior_ordering_disproofs_budget_invalidated": sum(
+            int(
+                event.get(
+                    "budget_invalidated_ordering_disproofs", 0
+                )
+                or 0
+            )
+            for event in events
+            if event["event"] == "episodic_human_prior_memory_seeded"
+        ),
         "human_prior_ordering_stale_archives_removed": sum(
             int(event.get("stale_ordering_archives_removed", 0))
             for event in events
@@ -1723,13 +1753,30 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             event["event"]
             == "human_prior_episodic_graph_plan_selected"
             and bool(event.get("known_route"))
+            and event.get("plan_kind") != "control_frontier"
             for event in events
         ),
         "human_prior_episodic_graph_missing_bridge_plans": sum(
             event["event"]
             == "human_prior_episodic_graph_plan_selected"
             and not bool(event.get("known_route"))
+            and event.get("plan_kind") != "control_frontier"
             for event in events
+        ),
+        "human_prior_episodic_graph_control_frontier_plans": sum(
+            event["event"]
+            == "human_prior_episodic_graph_plan_selected"
+            and event.get("plan_kind") == "control_frontier"
+            for event in events
+        ),
+        "human_prior_episodic_milestone_source_filters": event_counts.get(
+            "human_prior_episodic_milestone_sources_filtered", 0
+        ),
+        "human_prior_exhausted_episodic_milestone_sources_filtered": sum(
+            int(event.get("exhausted_milestone_sources", 0))
+            for event in events
+            if event["event"]
+            == "human_prior_episodic_milestone_sources_filtered"
         ),
         "human_prior_episodic_graph_bridges_reached": sum(
             event["event"] == "human_prior_option_archive_added"
@@ -1739,6 +1786,21 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                 )
             )
             for event in events
+        ),
+        "human_prior_archive_episodic_graph_revalidations": event_counts.get(
+            "human_prior_archive_episodic_graph_revalidated", 0
+        ),
+        "human_prior_archive_stale_graph_progress_invalidated": sum(
+            int(event.get("stale_positive_progress_invalidated", 0))
+            for event in events
+            if event["event"]
+            == "human_prior_archive_episodic_graph_revalidated"
+        ),
+        "human_prior_archive_live_graph_progress_candidates": sum(
+            int(event.get("live_positive_progress", 0))
+            for event in events
+            if event["event"]
+            == "human_prior_archive_episodic_graph_revalidated"
         ),
         "human_prior_episodic_graph_maximum_progress": max(
             (
@@ -1825,6 +1887,57 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         ),
         "human_prior_option_neutral_verifications": event_counts.get(
             "human_prior_option_neutral_verified", 0
+        ),
+        "human_prior_option_local_neutral_verifications": event_counts.get(
+            "human_prior_option_local_neutral_verified", 0
+        ),
+        "human_prior_option_action_dependent_branches": sum(
+            event["event"] == "human_prior_option_branch_verified"
+            and bool(
+                event.get(
+                    "human_prior_option_action_dependent_endpoint", True
+                )
+            )
+            for event in events
+        ),
+        "human_prior_option_action_independent_branches": sum(
+            event["event"] == "human_prior_option_branch_verified"
+            and event.get(
+                "human_prior_option_action_dependent_endpoint"
+            )
+            is False
+            for event in events
+        ),
+        "human_prior_option_local_action_dependent_branches": sum(
+            event["event"] == "human_prior_option_branch_verified"
+            and bool(
+                event.get(
+                    "human_prior_option_local_action_dependent", True
+                )
+            )
+            for event in events
+        ),
+        "human_prior_option_player_matches_neutral_branches": sum(
+            event["event"] == "human_prior_option_branch_verified"
+            and bool(
+                event.get(
+                    "human_prior_option_player_matches_neutral", False
+                )
+            )
+            for event in events
+        ),
+        "human_prior_option_causal_goal_reward_total": sum(
+            float(
+                event.get("human_prior_option_causal_goal_reward", 0.0)
+                or 0.0
+            )
+            for event in events
+            if event["event"] == "human_prior_option_branch_verified"
+        ),
+        "human_prior_autonomous_option_transitions_ignored_on_resume": sum(
+            int(event.get("autonomous_option_transitions_ignored", 0))
+            for event in events
+            if event["event"] == "episodic_human_prior_memory_seeded"
         ),
         "human_prior_option_world_effect_observations": sum(
             event["event"] == "human_prior_option_branch_verified"
@@ -1962,8 +2075,102 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             if event["event"]
             == "human_prior_option_search_depth_completed"
         ),
+        "human_prior_option_position_reserve_depths": sum(
+            event["event"]
+            == "human_prior_option_search_depth_completed"
+            and int(
+                event.get("human_prior_option_position_reserve", 0)
+            )
+            > 0
+            for event in events
+        ),
+        "human_prior_option_position_reserve_parents_retained": sum(
+            int(
+                event.get(
+                    "human_prior_option_position_parents_retained", 0
+                )
+            )
+            for event in events
+            if event["event"]
+            == "human_prior_option_search_depth_completed"
+        ),
+        "human_prior_option_position_reserve_unique_slots": len(
+            {
+                tuple(slot)
+                for event in events
+                if event["event"]
+                == "human_prior_option_search_depth_completed"
+                for slot in event.get(
+                    "human_prior_option_position_reserve_slots", ()
+                )
+            }
+        ),
+        "human_prior_option_position_representative_archives": sum(
+            event["event"] == "human_prior_option_archive_added"
+            and bool(
+                event.get(
+                    "human_prior_option_archive_position_representative"
+                )
+            )
+            for event in events
+        ),
+        "human_prior_option_position_representative_unique_slots": len(
+            {
+                tuple(event["human_prior_target_player_slot"])
+                for event in events
+                if event["event"] == "human_prior_option_archive_added"
+                and bool(
+                    event.get(
+                        "human_prior_option_archive_position_representative"
+                    )
+                )
+                and event.get("human_prior_target_player_slot") is not None
+            }
+        ),
+        "human_prior_option_position_representative_max_divergence": max(
+            (
+                int(
+                    event.get(
+                        "human_prior_option_archive_position_divergence",
+                        0,
+                    )
+                    or 0
+                )
+                for event in events
+                if event["event"] == "human_prior_option_archive_added"
+                and bool(
+                    event.get(
+                        "human_prior_option_archive_position_representative"
+                    )
+                )
+            ),
+            default=0,
+        ),
         "human_prior_option_entity_curiosity_probes": event_counts.get(
             "human_prior_option_entity_curiosity_probe", 0
+        ),
+        "human_prior_option_entity_curiosity_distinct_probe_cells": len(
+            {
+                tuple(event["interaction_cell"])
+                for event in events
+                if event["event"]
+                == "human_prior_option_entity_curiosity_probe"
+                and event.get("interaction_cell") is not None
+            }
+        ),
+        "human_prior_option_entity_curiosity_max_groups_available": max(
+            (
+                int(
+                    event.get(
+                        "distinct_interaction_groups_available", 0
+                    )
+                    or 0
+                )
+                for event in events
+                if event["event"]
+                == "human_prior_option_entity_curiosity_probe"
+            ),
+            default=0,
         ),
         "human_prior_option_entity_curiosity_known_probes": sum(
             event["event"]

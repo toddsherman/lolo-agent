@@ -436,12 +436,15 @@ def load_episodic_decision_events(
         for event in read_events(run_dir)
         if event.get("event")
         in {
+            "archive_branch_restored",
             "branch_verified",
             "decision_committed",
             "goal_milestone_exhaustion_learned",
             "human_prior_milestone_outcome_recorded",
             "human_prior_option_archive_added",
             "human_prior_option_branch_verified",
+            "human_prior_option_local_neutral_verified",
+            "human_prior_option_neutral_verified",
             "human_prior_option_search_completed",
             "human_prior_option_search_started",
             "human_prior_ordering_hypothesis_disproved",
@@ -725,7 +728,8 @@ def main() -> None:
         help=(
             "use emulator-verified pixel transition memory to guide exact "
             "search toward a known positive-outcome component or its closest "
-            "unobserved bridge"
+            "unobserved bridge, falling back to a reachable state with "
+            "untested local controls when no outcome route is known"
         ),
     )
     parser.add_argument(
@@ -736,6 +740,15 @@ def main() -> None:
             "maximum distinct visible semantic states retained from each "
             "assisted option search; confirmed causal states remain eligible "
             "within the global archive capacity"
+        ),
+    )
+    parser.add_argument(
+        "--human-prior-option-search-position-reserve",
+        type=int,
+        default=0,
+        help=(
+            "maximum beam slots reserved for geometrically distinct detected "
+            "player positions, including temporary goal regression"
         ),
     )
     parser.add_argument(
@@ -1154,6 +1167,11 @@ def main() -> None:
     if args.human_prior_option_archive_representatives <= 0:
         parser.error(
             "--human-prior-option-archive-representatives must be positive"
+        )
+    if args.human_prior_option_search_position_reserve < 0:
+        parser.error(
+            "--human-prior-option-search-position-reserve must be "
+            "non-negative"
         )
     if args.human_prior_option_search_missing_player_reserve < 0:
         parser.error(
@@ -1588,6 +1606,9 @@ def main() -> None:
         ),
         human_prior_option_search_beam_width=(
             args.human_prior_option_search_beam_width
+        ),
+        human_prior_option_search_position_reserve=(
+            args.human_prior_option_search_position_reserve
         ),
         human_prior_option_search_missing_player_reserve=(
             args.human_prior_option_search_missing_player_reserve
