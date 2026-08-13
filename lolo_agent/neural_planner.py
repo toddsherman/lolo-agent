@@ -4248,6 +4248,39 @@ class VerifiedNeuralAgent:
                 else (duration,)
             )
         )
+        search_budget = (
+            int(self.config.human_prior_option_search_depth),
+            int(self.config.human_prior_option_search_beam_width),
+            int(
+                self.config.human_prior_option_search_missing_player_reserve
+            ),
+            int(
+                self.config.human_prior_option_search_missing_player_max_streak
+            ),
+            int(self.config.human_prior_option_archive_representatives),
+            int(self.config.human_prior_option_effect_stability_steps),
+            int(self.config.human_prior_option_effect_probe_limit),
+            int(self.config.human_prior_option_effect_max_stable_cells),
+            int(self.config.human_prior_option_effect_phase_offsets),
+            float(self.config.human_prior_option_effect_phase_l1_threshold),
+            bool(self.config.human_prior_option_effect_local_controls),
+            int(
+                self.config.human_prior_option_effect_local_minimum_cell_pixels
+            ),
+            bool(self.config.human_prior_option_effect_frontier),
+            bool(self.config.human_prior_option_causal_effect_frontier),
+            int(
+                self.config.human_prior_option_effect_controllability_depth
+            ),
+            bool(self.config.human_prior_option_entity_frontier),
+            tuple(
+                (action.value, int(edge_duration))
+                for action, edge_duration in action_edges
+            ),
+        )
+        search_budget_sha256 = hashlib.sha256(
+            repr(search_budget).encode("utf-8")
+        ).hexdigest()
         source_frame = self.frame
         source_analysis = self.goal_prior.analyze(
             source_frame, source_frame
@@ -4257,15 +4290,42 @@ class VerifiedNeuralAgent:
         )[1]
         if not source_signature:
             return 0
-        if source_signature in self.human_prior_option_exhausted_sources:
+        exhausted_key = (source_signature, search_budget)
+        if exhausted_key in self.human_prior_option_exhausted_sources:
             self._emit(
                 "human_prior_option_search_skipped",
                 decision=self.decision_index + 1,
                 reason="source_already_exhausted",
                 source_graph_signature=source_signature,
+                search_budget_sha256=search_budget_sha256,
+                maximum_depth=self.config.human_prior_option_search_depth,
+                beam_width=self.config.human_prior_option_search_beam_width,
+                action_duration_edges=action_edges,
+                exact_search_budget_match=True,
                 **self._frame_fields(source_frame),
             )
             return 0
+        prior_exhausted_budgets = [
+            budget
+            for exhausted_source, budget in (
+                self.human_prior_option_exhausted_sources
+            )
+            if exhausted_source == source_signature
+        ]
+        if prior_exhausted_budgets:
+            self._emit(
+                "human_prior_option_search_reopened",
+                decision=self.decision_index + 1,
+                reason="search_budget_changed",
+                source_graph_signature=source_signature,
+                prior_exhausted_budgets=len(prior_exhausted_budgets),
+                search_budget_sha256=search_budget_sha256,
+                maximum_depth=self.config.human_prior_option_search_depth,
+                beam_width=self.config.human_prior_option_search_beam_width,
+                action_duration_edges=action_edges,
+                exact_search_budget_match=False,
+                **self._frame_fields(source_frame),
+            )
 
         root = self.env.save_state()
         saved_states = [root]
@@ -4319,6 +4379,7 @@ class VerifiedNeuralAgent:
             actions=actions,
             action_frames=duration,
             action_duration_edges=action_edges,
+            search_budget_sha256=search_budget_sha256,
             long_direction_frames=(
                 long_direction_duration or None
             ),
@@ -5168,7 +5229,7 @@ class VerifiedNeuralAgent:
 
             if not endpoints:
                 self.human_prior_option_exhausted_sources.add(
-                    source_signature
+                    exhausted_key
                 )
                 self._emit(
                     "human_prior_option_search_completed",
@@ -5177,6 +5238,7 @@ class VerifiedNeuralAgent:
                     eligible_endpoints=0,
                     archive_branches_added=0,
                     reason="no_unexpanded_endpoint",
+                    search_budget_sha256=search_budget_sha256,
                     **self._frame_fields(source_frame),
                 )
                 return 0
@@ -5199,7 +5261,7 @@ class VerifiedNeuralAgent:
             selection_endpoints = ordinary_endpoints or causal_endpoints
             if not selection_endpoints:
                 self.human_prior_option_exhausted_sources.add(
-                    source_signature
+                    exhausted_key
                 )
                 self._emit(
                     "human_prior_option_search_completed",
@@ -5209,6 +5271,7 @@ class VerifiedNeuralAgent:
                     globally_novel_endpoints=0,
                     archive_branches_added=0,
                     reason="no_globally_novel_endpoint",
+                    search_budget_sha256=search_budget_sha256,
                     **self._frame_fields(source_frame),
                 )
                 return 0
@@ -5846,7 +5909,7 @@ class VerifiedNeuralAgent:
         self.human_prior_phase_player_position_visits = Counter()
         self.human_prior_milestone_outcomes = set()
         self.human_prior_exhausted_milestone_transitions = set()
-        self.human_prior_option_exhausted_sources: set[str] = set()
+        self.human_prior_option_exhausted_sources: set[tuple] = set()
         self.human_prior_graph_recovery_pending = False
         self.current_human_prior_world_context_signature = (
             "human-prior-world-root"

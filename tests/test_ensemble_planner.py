@@ -2885,6 +2885,7 @@ class EnsemblePlannerTests(unittest.TestCase):
         ]
         self.assertEqual(len(skipped), 1)
         self.assertEqual(skipped[0]["reason"], "source_already_exhausted")
+        self.assertTrue(skipped[0]["exact_search_budget_match"])
         depth_events = [
             event
             for event in logger.events
@@ -2896,6 +2897,33 @@ class EnsemblePlannerTests(unittest.TestCase):
             [1, 0],
         )
         self.assertEqual(depth_events[-1]["novel_candidates"], 0)
+
+        agent.config = replace(
+            agent.config,
+            human_prior_option_search_depth=3,
+        )
+        third = agent._search_human_prior_options()
+
+        self.assertEqual(third, 0)
+        reopened = [
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_search_reopened"
+        ]
+        self.assertEqual(len(reopened), 1)
+        self.assertEqual(reopened[0]["reason"], "search_budget_changed")
+        self.assertEqual(reopened[0]["maximum_depth"], 3)
+        self.assertFalse(reopened[0]["exact_search_budget_match"])
+        completed = [
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_search_completed"
+        ]
+        self.assertEqual(len(completed), 2)
+        self.assertNotEqual(
+            completed[0]["search_budget_sha256"],
+            completed[1]["search_budget_sha256"],
+        )
 
     def test_option_search_does_not_reward_missing_player_as_novel(
         self,

@@ -1510,6 +1510,9 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "human_prior_option_search_skips": event_counts.get(
             "human_prior_option_search_skipped", 0
         ),
+        "human_prior_option_search_budget_reopens": event_counts.get(
+            "human_prior_option_search_reopened", 0
+        ),
         "human_prior_option_cleanup_failures": event_counts.get(
             "human_prior_option_cleanup_failed", 0
         ),

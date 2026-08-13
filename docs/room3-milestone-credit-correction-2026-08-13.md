@@ -191,3 +191,27 @@ Continue from decision 4 of that replay, expand the two-heart graph toward the
 lower heart, and retain the failed upper-first transition as episodic ordering
 knowledge. Any future hard veto still requires observed loss or causal hazard
 provenance.
+
+## Interior planning frontier
+
+The subsequent two-heart continuations discovered a reusable route down the
+right side and into the room interior without collecting the exhausted first
+heart. The agent expanded through `(192,64)`, `(192,80)`, `(192,96)`,
+`(160,96)`, `(160,112)`, `(192,112)`, `(160,128)`, and `(144,128)`, then
+mapped a second interior approach through `(128,96)`, `(128,112)`, and
+`(128,128)`. The frozen audit continued to pass with zero life losses and zero
+global action-hazard samples.
+
+At the `(128,128)` / `(144,128)` bottleneck, two depth-4 exact searches
+verified 847 branches but found no globally novel endpoint. The live agent
+then cached that semantic source as exhausted and skipped six later searches.
+That cache key contained only the source graph signature, so a bounded depth-4
+result would also suppress a later deeper search in the same evaluator.
+
+Option-search exhaustion is now qualified by the complete relevant search
+budget, including depth, beam width, missing-player handling, action/duration
+edges, and effect/entity probe settings. Identical searches are still cached,
+while a changed budget emits `human_prior_option_search_reopened` and may
+investigate the same pixel source again. The next native experiment should
+resume the interior state with a deeper budget and test whether the obstacle
+cluster requires a longer action sequence rather than another reward change.

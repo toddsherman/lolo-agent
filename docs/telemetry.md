@@ -328,7 +328,15 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   the reconstructed value used by the resumed interaction planner;
 - `human_prior_option_search_deferred` and
   `human_prior_option_search_skipped`, which distinguish a cheaper unseen
-  local archive endpoint from an already exhausted sequence-search source;
+  local archive endpoint from an already exhausted sequence-search source.
+  Exhaustion is qualified by the actual search budget: depth, beam width,
+  missing-player reserves, action/duration edges, effect-probe settings, and
+  entity-frontier settings. `search_budget_sha256` links start, completion,
+  and skip events without treating the opaque hash as policy input.
+  `human_prior_option_search_reopened` records when the same semantic pixel
+  source is searched again under a different budget; a bounded depth-4 result
+  therefore cannot permanently suppress a later depth-6 experiment. Summary
+  telemetry counts these budget reopens;
 - `human_prior_option_recovery_armed` and
   `human_prior_option_recovery_deferred`, which record whether a branch added
   by the current exact search may be restored in the same decision. Immediate

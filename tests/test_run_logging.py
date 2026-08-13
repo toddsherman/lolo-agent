@@ -428,6 +428,9 @@ class RunLoggingTests(unittest.TestCase):
             self.assertIn("human_prior_option_searches", summary)
             self.assertIn("human_prior_option_search_deferrals", summary)
             self.assertIn("human_prior_option_search_skips", summary)
+            self.assertIn(
+                "human_prior_option_search_budget_reopens", summary
+            )
             self.assertIn("human_prior_option_cleanup_failures", summary)
             self.assertIn("human_prior_option_branches_verified", summary)
             self.assertIn(
