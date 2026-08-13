@@ -1027,6 +1027,12 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "option_archive_snapshots_stored": event_counts.get(
             "option_archive_snapshot_stored", 0
         ),
+        "goal_milestone_checkpoint_snapshots_stored": event_counts.get(
+            "goal_milestone_checkpoint_snapshot_stored", 0
+        ),
+        "episodic_goal_milestone_checkpoint_state_imports": event_counts.get(
+            "episodic_goal_milestone_checkpoint_state_imported", 0
+        ),
         "episodic_option_archive_state_imports": event_counts.get(
             "episodic_option_archive_state_imported", 0
         ),
@@ -1250,6 +1256,9 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         ),
         "goal_milestone_exhaustions_learned": event_counts.get(
             "goal_milestone_exhaustion_learned", 0
+        ),
+        "goal_milestone_frontier_budget_exhaustions": event_counts.get(
+            "goal_milestone_frontier_budget_exhausted", 0
         ),
         "goal_milestone_exhaustion_restores": event_counts.get(
             "goal_milestone_exhaustion_state_restored", 0

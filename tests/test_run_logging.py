@@ -112,6 +112,59 @@ class RunLoggingTests(unittest.TestCase):
             self.assertEqual(counts["state_saved"], counts["state_released"])
             self.assertEqual(native.active_states, set())
 
+    def test_persistent_milestone_checkpoint_round_trip_preserves_live_state(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            logger = RunLogger(Path(directory), run_id="milestone-round-trip")
+            native = PersistentStateEnv()
+            env = LoggedEnvironment(native, logger)
+            root_frame = env.reset()
+            checkpoint = env.save_state()
+            env.step(Action.RIGHT, 1)
+            live_frame = env.observe()
+
+            stored = env.persist_goal_milestone_checkpoint_state(
+                checkpoint,
+                root_frame,
+                1,
+                choice=["frontier", "right", 1],
+                checkpoint_kind="goal_milestone",
+            )
+
+            self.assertIsNotNone(stored)
+            self.assertEqual(env.observe(), live_frame)
+            assert stored is not None
+            payload = (logger.run_dir / str(stored["state_file"])).read_bytes()
+            imported = env.import_goal_milestone_checkpoint_state(
+                payload,
+                root_frame,
+                source_run_id="parent",
+                source_state_id="state-1",
+                metadata={
+                    "choice": ["frontier", "right", 1],
+                    "checkpoint_kind": "goal_milestone",
+                },
+            )
+            self.assertEqual(env.observe(), live_frame)
+            self.assertEqual(env.load_state(imported), root_frame)
+            env.release_state(imported)
+            env.release_state(checkpoint)
+            logger.close()
+
+            events = list(read_events(logger.run_dir))
+            counts = CounterLike(event["event"] for event in events)
+            self.assertEqual(
+                counts["goal_milestone_checkpoint_snapshot_stored"], 2
+            )
+            self.assertEqual(
+                counts[
+                    "episodic_goal_milestone_checkpoint_state_imported"
+                ],
+                1,
+            )
+            self.assertEqual(native.active_states, set())
+
     def test_full_decision_trace_and_derived_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             logger = RunLogger(Path(directory), run_id="audit-test", fsync_interval=1)

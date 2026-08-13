@@ -24,6 +24,18 @@ The neural model is frozen during this process. Novelty counts, controller
 coverage, action streaks, delayed-return costs, and archived state handles are
 temporary attempt memory and are discarded after the run.
 
+On the explicitly assisted reward track, exact save-state option search may
+retain several globally novel semantic pixel endpoints rather than only the
+single closest visible goal endpoint. Stable action-ablation-confirmed world
+changes are recovered before ordinary movement states. Positive goal
+milestones retain an independent pre-action checkpoint; that opaque capability
+is persisted across evaluator resumes and can be restored after exhaustive
+search or after a configured frontier-decision budget. A visible heart-set
+transition learned to strand the search is not expanded again within temporary
+episodic memory, preserving beam capacity for a different collection order.
+None of these mechanisms changes neural parameters or introduces object names,
+room solutions, or ROM memory.
+
 The evaluator may optionally attach the agent to a verified first-room frame
 after a fixed title/story bootstrap. The macro lives outside
 `VerifiedNeuralAgent`; the agent receives only the resulting pixels and begins

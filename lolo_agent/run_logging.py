@@ -243,6 +243,44 @@ class RunLogger:
             **self.frame_fields(frame),
         )
 
+    def store_goal_milestone_checkpoint_snapshot(
+        self,
+        decision: int,
+        state_id: str,
+        state: bytes,
+        frame: Frame,
+        **metadata: Any,
+    ) -> Dict[str, Any]:
+        """Persist a pre-milestone rollback state for episodic resume."""
+
+        if decision < 0:
+            raise ValueError("milestone snapshot decision must be non-negative")
+        if not state_id:
+            raise ValueError("milestone snapshot requires a state ID")
+        if not state:
+            raise ValueError("milestone snapshot state must not be empty")
+        digest = sha256(state).hexdigest()
+        relative = Path("states") / f"{digest}.state"
+        if digest not in self._stored_states:
+            self.states_dir.mkdir(exist_ok=True)
+            destination = self.run_dir / relative
+            if not destination.exists():
+                temporary = self.states_dir / f".{digest}.tmp"
+                temporary.write_bytes(state)
+                os.replace(temporary, destination)
+            self._stored_states.add(digest)
+        return self.log(
+            "goal_milestone_checkpoint_snapshot_stored",
+            decision=decision,
+            state_id=state_id,
+            state_file=str(relative),
+            state_sha256=digest,
+            state_bytes=len(state),
+            agent_visible=False,
+            **metadata,
+            **self.frame_fields(frame),
+        )
+
     def close(self, status: str = "complete", error: Optional[str] = None) -> None:
         if self._closed:
             return
@@ -282,6 +320,7 @@ class LoggedEnvironment:
         self._next_state = 0
         self._active_states: Dict[int, str] = {}
         self._persisted_archive_state_ids: set[str] = set()
+        self._persisted_milestone_state_ids: set[str] = set()
         self.last_step_seq: Optional[int] = None
         self.last_state_event_seq: Optional[int] = None
         self.phase = "agent"
@@ -454,6 +493,122 @@ class LoggedEnvironment:
         self.last_state_event_seq = int(saved["seq"])
         self.logger.log(
             "episodic_option_archive_state_imported",
+            source_run_id=source_run_id,
+            source_state_id=source_state_id,
+            state_id=imported_state_id,
+            agent_visible=False,
+            **self.logger.frame_fields(frame),
+        )
+        return imported_handle
+
+    def persist_goal_milestone_checkpoint_state(
+        self,
+        state: object,
+        frame: Frame,
+        decision: int,
+        **metadata: Any,
+    ) -> Optional[Dict[str, Any]]:
+        """Store a rollback capability without changing the live emulator."""
+
+        export_state = getattr(self.env, "export_state", None)
+        release_state = getattr(self.env, "release_state", None)
+        if not callable(export_state) or not callable(release_state):
+            return None
+        state_id = self.state_id(state)
+        if state_id is None or self._frame is None:
+            return None
+        live_frame = self._frame
+        live_state = self.env.save_state()
+        try:
+            checkpoint_frame = self.env.load_state(state)
+            if checkpoint_frame.digest != frame.digest:
+                raise RuntimeError(
+                    "goal milestone state does not match its checkpoint frame"
+                )
+            payload = export_state()
+            stored = self.logger.store_goal_milestone_checkpoint_snapshot(
+                decision,
+                state_id,
+                payload,
+                frame,
+                **metadata,
+            )
+            return stored
+        finally:
+            restored = self.env.load_state(live_state)
+            release_state(live_state)
+            if restored.digest != live_frame.digest:
+                raise RuntimeError(
+                    "live emulator state diverged after milestone snapshot"
+                )
+            self._frame = live_frame
+
+    def import_goal_milestone_checkpoint_state(
+        self,
+        state: bytes,
+        frame: Frame,
+        *,
+        source_run_id: str,
+        source_state_id: str,
+        metadata: Dict[str, Any],
+    ) -> object:
+        """Import a persisted rollback capability and restore live state."""
+
+        import_state = getattr(self.env, "import_state", None)
+        release_state = getattr(self.env, "release_state", None)
+        if not callable(import_state) or not callable(release_state):
+            raise RuntimeError(
+                "environment does not support persistent milestone checkpoints"
+            )
+        if self._frame is None:
+            raise RuntimeError(
+                "cannot import a milestone checkpoint before environment attach"
+            )
+        live_frame = self._frame
+        live_state = self.env.save_state()
+        imported_handle: Optional[object] = None
+        try:
+            imported_frame = import_state(state, frame)
+            if imported_frame.digest != frame.digest:
+                raise RuntimeError(
+                    "imported milestone state does not match its checkpoint frame"
+                )
+            imported_handle = self.env.save_state()
+            self._next_state += 1
+            imported_state_id = f"state-{self._next_state:08d}"
+            self._active_states[id(imported_handle)] = imported_state_id
+        finally:
+            restored = self.env.load_state(live_state)
+            release_state(live_state)
+            if restored.digest != live_frame.digest:
+                if imported_handle is not None:
+                    self.release_state(imported_handle)
+                raise RuntimeError(
+                    "live emulator state diverged after milestone import"
+                )
+            self._frame = live_frame
+        assert imported_handle is not None
+        imported_state_id = self.state_id(imported_handle)
+        assert imported_state_id is not None
+        stored = self.logger.store_goal_milestone_checkpoint_snapshot(
+            0,
+            imported_state_id,
+            state,
+            frame,
+            **metadata,
+        )
+        self._persisted_milestone_state_ids.add(imported_state_id)
+        saved = self.logger.log(
+            "state_saved",
+            state_id=imported_state_id,
+            imported_goal_milestone_checkpoint=True,
+            goal_milestone_state_file=stored["state_file"],
+            goal_milestone_state_sha256=stored["state_sha256"],
+            frame=self.logger.store_frame(frame),
+        )
+        self.last_state_event_seq = int(saved["seq"])
+        self.logger.log(
+            "episodic_goal_milestone_checkpoint_state_imported",
             source_run_id=source_run_id,
             source_state_id=source_state_id,
             state_id=imported_state_id,

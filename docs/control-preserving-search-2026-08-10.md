@@ -1029,3 +1029,42 @@ result consequently covers the only surviving delayed hypothesis.
 The complete test suite passes: 228 tests, with 4 expected skips when native
 integration paths are not supplied. Every
 completed native run reported `frozen_evaluation_audit=pass`.
+
+## Room-three semantic coverage and recoverability
+
+The depth-20 post-heart search originally archived only the single endpoint
+that minimized visible distance to the remaining heart. Native run v74 changed
+that policy to retain one representative per distinct visible semantic graph
+state, bounded by the archive capacity. It verified 20,196 pixel branches and
+persisted 33 representatives while balancing all 20,199 native save-state
+handles. Later runs restored those endpoints without updating the frozen model.
+
+This broader archive exposed a second inefficiency: a search rooted at one
+semantic endpoint could recompute states already covered elsewhere. Global
+state and phase-position visitation now filter ordinary endpoints before
+selection. Native v77 completed 20 decisions, reduced exact search to three
+globally novel sources, restored eight durable alternatives, balanced all
+16,476 temporary states, and preserved the checkpoint parameter digest.
+
+The audit also showed that pre-heart rollback was not durable. The live
+pre-milestone capability was correctly cloned while a process ran, but cleanup
+released it and the next evaluator resumed only the committed post-heart
+frame. Goal-milestone checkpoints are now exported as opaque, content-addressed
+states and imported with pixel verification across resume chains. A configurable
+post-milestone frontier budget prevents indefinitely growing semantic archives
+from delaying rollback. When rollback is learned, its temporary failure memory
+is keyed both by the exact controller choice and by the visible heart-set
+transition, so a different path cannot immediately repeat the same stranded
+collection order.
+
+The first alternate-order native attempt, v78, revealed that 567 descendants
+of the already known upper-heart transition occupied the exact-search beam by
+depth five even though those endpoints would later be rejected as duplicates.
+The beam now keeps those transitions as auditable endpoints but does not expand
+them. Corrected run v79 confirmed zero repeated-milestone parents retained at
+each completed depth while allocating the beam to states in which both hearts
+remain visible. This is an exploration-policy change, not a change to the
+heart, chest, completion, or life-loss reward magnitudes.
+
+The complete test suite now passes: 238 tests, with 4 expected native-platform
+skips.

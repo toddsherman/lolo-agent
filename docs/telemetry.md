@@ -355,6 +355,16 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   negative value, graph/position coverage, exhausted option sources,
   pre-milestone state ID, descendant invalidations, and restored pixel goal
   state. It does not infer or label the reason the milestone state is blocked;
+- `goal_milestone_checkpoint_snapshot_stored` persists that opaque
+  pre-milestone capability without exposing its bytes or metadata to policy.
+  `episodic_goal_milestone_checkpoint_state_imported` records restoration in a
+  child evaluator, and `checkpoint_source=episodic_resume` distinguishes it
+  from a parent retained in live memory. With a positive
+  `--human-prior-goal-exhaustion-frontier-budget`,
+  `goal_milestone_frontier_budget_exhausted` bounds post-milestone exploration
+  even when an expanding semantic archive would otherwise postpone rollback.
+  The learned failure is also scoped to the visible heart-set transition, so a
+  later path cannot immediately repeat the same exhausted collection order;
 - `human_prior_option_milestone_settled` links the immediate action endpoint
   to the stable frame and state used for milestone analysis and archival.
   `human_prior_option_milestone_candidates_collapsed` reports the reduction in
@@ -379,6 +389,11 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   such endpoint remains. This makes necessary repeated milestone actions
   possible without letting blocked animation changes masquerade as semantic
   progress;
+- exact option-search depth telemetry reports
+  `repeated_milestone_candidates` and
+  `repeated_milestone_parents_retained`. Previously observed or exhausted
+  heart-set transitions remain auditable endpoints but are not expanded as
+  beam parents, preserving capacity for alternative collection orders;
 - navigation shaping is endpoint-novelty gated. `branch_verified` records
   `human_prior_effective_navigation_reward` and
   `human_prior_navigation_reward_suppressed`, plus target graph-state visits,
@@ -405,6 +420,13 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   branch. Once an endpoint's position, world state, and outgoing controls are
   all covered, `human_prior_semantic_archives_exhausted` records removal and
   release of that now-terminal save-state capability;
+- each exact search can retain multiple globally novel semantic endpoint
+  representatives, bounded by
+  `--human-prior-option-archive-representatives` and the global archive
+  capacity. `semantic_state_representatives_available` and
+  `semantic_state_representatives_archived` report the result. Confirmed
+  replay-stable causal-effect frontiers remain first-class and are preferred
+  over ordinary movement frontiers during best-first recovery;
 - `human_prior_option_archive_added`, plus
   `human_prior_verified_option`, `human_prior_option_depth`, and
   `human_prior_option_path_visits_before` on restore/commit events, which make

@@ -122,6 +122,77 @@ class PersistedOptionArchive:
     source_state_id: str
 
 
+@dataclass(frozen=True)
+class PersistedGoalMilestoneCheckpoint:
+    state: bytes
+    frame: Frame
+    metadata: Dict[str, Any]
+    source_run_id: str
+    source_state_id: str
+
+
+def load_active_goal_milestone_checkpoint(
+    run_dir: Path, through_decision: int
+) -> Optional[PersistedGoalMilestoneCheckpoint]:
+    """Load the pending pre-milestone rollback at a decision boundary."""
+
+    if through_decision <= 0:
+        raise ValueError("milestone checkpoint decision must be positive")
+    run_dir = Path(run_dir).expanduser().resolve()
+    manifest = json.loads(
+        (run_dir / "manifest.json").read_text(encoding="utf-8")
+    )
+    events = list(read_events(run_dir))
+    decision_snapshot = next(
+        (
+            event
+            for event in events
+            if event.get("event") == "decision_snapshot_stored"
+            and int(event.get("decision", 0)) == through_decision
+        ),
+        None,
+    )
+    if decision_snapshot is None:
+        return None
+    cutoff_seq = int(decision_snapshot["seq"])
+    active: Optional[Dict[str, Any]] = None
+    for event in events:
+        if int(event.get("seq", 0)) > cutoff_seq:
+            break
+        event_type = event.get("event")
+        if event_type == "goal_milestone_checkpoint_snapshot_stored":
+            active = event
+        elif event_type in {
+            "goal_milestone_checkpoint_released",
+            "goal_milestone_exhaustion_learned",
+        }:
+            active_state = "" if active is None else str(active.get("state_id") or "")
+            released_state = str(
+                event.get("state_id") or event.get("recovery_state_id") or ""
+            )
+            if active is not None and (
+                not released_state or released_state == active_state
+            ):
+                active = None
+    if active is None:
+        return None
+    relative = Path(str(active["state_file"]))
+    state_path = (run_dir / relative).resolve()
+    if not state_path.is_relative_to(run_dir):
+        raise RuntimeError("milestone checkpoint escapes telemetry run")
+    if sha256_file(state_path) != str(active["state_sha256"]):
+        raise RuntimeError("milestone checkpoint digest mismatch")
+    frame_digest = str(active["frame"])
+    frame = decode_logged_png(run_dir / "frames" / f"{frame_digest}.png")
+    return PersistedGoalMilestoneCheckpoint(
+        state=state_path.read_bytes(),
+        frame=frame,
+        metadata=active,
+        source_run_id=str(manifest.get("run_id") or run_dir.name),
+        source_state_id=str(active["state_id"]),
+    )
+
+
 def load_active_option_archives(
     run_dir: Path, through_decision: int
 ) -> list[PersistedOptionArchive]:
@@ -511,6 +582,16 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--human-prior-goal-exhaustion-frontier-budget",
+        type=int,
+        default=0,
+        help=(
+            "maximum post-milestone decisions spent on ordinary and causal "
+            "frontiers before restoring the pre-milestone checkpoint; zero "
+            "keeps purely exhaustive rollback"
+        ),
+    )
+    parser.add_argument(
         "--human-prior-option-search-depth",
         type=int,
         default=0,
@@ -524,6 +605,16 @@ def main() -> None:
         type=int,
         default=8,
         help="pixel endpoints retained at each assisted option-search depth",
+    )
+    parser.add_argument(
+        "--human-prior-option-archive-representatives",
+        type=int,
+        default=1,
+        help=(
+            "maximum distinct visible semantic states retained from each "
+            "assisted option search; confirmed causal states remain eligible "
+            "within the global archive capacity"
+        ),
     )
     parser.add_argument(
         "--human-prior-option-search-missing-player-reserve",
@@ -806,6 +897,11 @@ def main() -> None:
         parser.error(
             "--human-prior-graph-stagnation-visits must be non-negative"
         )
+    if args.human_prior_goal_exhaustion_frontier_budget < 0:
+        parser.error(
+            "--human-prior-goal-exhaustion-frontier-budget must be "
+            "non-negative"
+        )
     if args.human_prior_goal_exhaustion_rollback and (
         not args.human_prior_best_first_archive
         or args.human_prior_graph_stagnation_visits <= 0
@@ -823,6 +919,10 @@ def main() -> None:
     if args.human_prior_option_search_beam_width <= 0:
         parser.error(
             "--human-prior-option-search-beam-width must be positive"
+        )
+    if args.human_prior_option_archive_representatives <= 0:
+        parser.error(
+            "--human-prior-option-archive-representatives must be positive"
         )
     if args.human_prior_option_search_missing_player_reserve < 0:
         parser.error(
@@ -1050,6 +1150,11 @@ def main() -> None:
             if args.human_prior_hearts
             else False
         ),
+        human_prior_goal_exhaustion_frontier_budget=(
+            args.human_prior_goal_exhaustion_frontier_budget
+            if args.human_prior_hearts
+            else 0
+        ),
         human_prior_option_search_depth=(
             args.human_prior_option_search_depth
             if args.human_prior_hearts
@@ -1069,6 +1174,9 @@ def main() -> None:
         ),
         human_prior_option_search_long_direction_frames=(
             args.human_prior_option_search_long_direction_frames
+        ),
+        human_prior_option_archive_representatives=(
+            args.human_prior_option_archive_representatives
         ),
         human_prior_option_effect_stability_steps=(
             args.human_prior_option_effect_stability_steps
@@ -1281,6 +1389,30 @@ def main() -> None:
                 agent.seed_human_prior_option_archives(
                     imported_archives
                 )
+                persisted_milestone = load_active_goal_milestone_checkpoint(
+                    args.resume_run, args.resume_decision
+                )
+                if persisted_milestone is not None:
+                    milestone_handle = (
+                        env.import_goal_milestone_checkpoint_state(
+                            persisted_milestone.state,
+                            persisted_milestone.frame,
+                            source_run_id=(
+                                persisted_milestone.source_run_id
+                            ),
+                            source_state_id=(
+                                persisted_milestone.source_state_id
+                            ),
+                            metadata=persisted_milestone.metadata,
+                        )
+                    )
+                    agent.seed_goal_milestone_checkpoint(
+                        milestone_handle,
+                        persisted_milestone.frame,
+                        persisted_milestone.metadata,
+                        persisted_milestone.source_run_id,
+                        persisted_milestone.source_state_id,
+                    )
             elif bootstrap_fixture is None:
                 initial_frame = agent.reset()
             else:

@@ -6,6 +6,7 @@ from pathlib import Path
 from lolo_agent.neural_run import (
     StableSceneChangeDetector,
     load_active_option_archives,
+    load_active_goal_milestone_checkpoint,
     load_episodic_decision_events,
 )
 from lolo_agent.pixels import Frame
@@ -178,6 +179,43 @@ class StableSceneChangeDetectorTests(unittest.TestCase):
         self.assertEqual(active_at_one[0].frame, frame)
         self.assertEqual(active_at_one[0].source_state_id, "state-1")
         self.assertEqual(active_at_two, [])
+
+    def test_loads_goal_milestone_checkpoint_active_at_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            logger = RunLogger(Path(temporary), run_id="milestone")
+            frame = self.frame(96)
+            logger.store_goal_milestone_checkpoint_snapshot(
+                1,
+                "state-1",
+                b"pre-heart-state",
+                frame,
+                checkpoint_decision=1,
+                choice=["frontier", "down", 16],
+                checkpoint_kind="goal_milestone",
+                exploration_steps=3,
+            )
+            logger.store_decision_snapshot(1, b"decision-1", frame)
+            logger.log(
+                "goal_milestone_checkpoint_released",
+                decision=2,
+                state_id="state-1",
+            )
+            logger.store_decision_snapshot(2, b"decision-2", frame)
+            logger.close()
+
+            active_at_one = load_active_goal_milestone_checkpoint(
+                logger.run_dir, 1
+            )
+            active_at_two = load_active_goal_milestone_checkpoint(
+                logger.run_dir, 2
+            )
+
+        self.assertIsNotNone(active_at_one)
+        assert active_at_one is not None
+        self.assertEqual(active_at_one.state, b"pre-heart-state")
+        self.assertEqual(active_at_one.frame, frame)
+        self.assertEqual(active_at_one.metadata["exploration_steps"], 3)
+        self.assertIsNone(active_at_two)
 
 
 if __name__ == "__main__":

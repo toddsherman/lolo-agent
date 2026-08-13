@@ -2,6 +2,7 @@ import unittest
 import tempfile
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import torch
 
@@ -835,10 +836,41 @@ class MovingMilestoneGoalPrior(PositionGoalPrior):
             life_loss_confirmed=False,
         )
 
-    def restore(self, slots, frame: Frame, player_slot) -> None:
-        self.current_present = set(slots)
-        self.current_player_slot = (
-            player_slot or self._optional_position(frame)
+
+class VisibleMovingMilestoneSettlesEnv(MovingMilestoneSettlesEnv):
+    """Keep the moved player visible while its milestone animation settles."""
+
+    def _frame(self) -> Frame:
+        pixels = bytearray(64)
+        if not self.collected:
+            pixels[1 if self.armed else 0] = 255
+            pixels[7] = 128
+        else:
+            pixels[2] = 255
+            if self.motion_step < 2:
+                pixels[3 + self.motion_step] = 64
+        return Frame(8, 8, 1, bytes(pixels))
+
+
+class RecordingMovingMilestoneGoalPrior(MovingMilestoneGoalPrior):
+    def __init__(self) -> None:
+        super().__init__()
+        self.analysis_calls = []
+
+    def analyze(
+        self,
+        source: Frame,
+        target: Frame,
+        *,
+        target_player_reference=None,
+    ) -> HeartGoalAnalysis:
+        self.analysis_calls.append(
+            (source.digest, target.digest, target_player_reference)
+        )
+        return super().analyze(
+            source,
+            target,
+            target_player_reference=target_player_reference,
         )
 
 
@@ -2353,6 +2385,150 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertTrue(committed["human_prior_verified_option"])
         self.assertEqual(committed["human_prior_option_depth"], 3)
 
+    def test_human_prior_option_search_retains_distinct_semantic_states(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = UniqueStateEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=3,
+                human_prior_option_search_beam_width=1,
+                human_prior_option_search_action_frames=1,
+                human_prior_option_archive_representatives=3,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        source_signature = agent._current_human_prior_graph_signature()
+        agent.human_prior_graph_state_visits[source_signature] = 1
+        agent.human_prior_player_position_visits[(0, 0)] = 1
+
+        added = agent._search_human_prior_options()
+
+        self.assertEqual(added, 2)
+        self.assertEqual(
+            {branch.goal_player_slot for branch in agent.archive},
+            {(2, 0), (3, 0)},
+        )
+        completed = next(
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_search_completed"
+        )
+        self.assertEqual(
+            completed["semantic_state_representatives_available"], 2
+        )
+        self.assertEqual(
+            completed["semantic_state_representatives_archived"], 2
+        )
+
+    def test_option_search_does_not_expand_a_known_milestone(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = MovingMilestoneSettlesEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.A),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=3,
+                human_prior_option_search_beam_width=1,
+                human_prior_option_search_action_frames=1,
+            ),
+            event_logger=logger,
+        )
+        source = agent.reset()
+        agent.goal_prior = MovingMilestoneGoalPrior()
+        agent.human_prior_exhausted_milestone_transitions.add(
+            (((7, 0),), (), False)
+        )
+
+        agent._search_human_prior_options()
+
+        depths = [
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_search_depth_completed"
+        ]
+        milestone_depth = next(
+            event for event in depths if event["repeated_milestone_candidates"]
+        )
+        self.assertEqual(
+            milestone_depth["repeated_milestone_parents_retained"], 0
+        )
+
+    def test_human_prior_option_search_rejects_globally_visited_states(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            UniqueStateEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=3,
+                human_prior_option_search_beam_width=1,
+                human_prior_option_search_action_frames=1,
+                human_prior_option_archive_representatives=3,
+            ),
+            event_logger=logger,
+        )
+        source = agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        source_signature = agent._current_human_prior_graph_signature()
+        agent.human_prior_graph_state_visits[source_signature] = 1
+        agent.human_prior_player_position_visits[(0, 0)] = 1
+        for position in range(1, 4):
+            pixels = bytearray(64)
+            pixels[position] = 255
+            target = Frame(8, 8, 1, bytes(pixels))
+            analysis = agent.goal_prior.analyze(source, target)
+            target_signature = agent._human_prior_graph_signatures(
+                analysis
+            )[1]
+            agent.human_prior_graph_state_visits[target_signature] = 1
+            agent.human_prior_player_position_visits[(position, 0)] = 1
+
+        added = agent._search_human_prior_options()
+
+        self.assertEqual(added, 0)
+        self.assertEqual(agent.archive, [])
+        completed = next(
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_search_completed"
+        )
+        self.assertEqual(completed["reason"], "no_globally_novel_endpoint")
+        self.assertEqual(completed["globally_novel_endpoints"], 0)
+
     def test_human_prior_option_archive_uses_whole_path_coverage(self) -> None:
         model = EnsembleVisualDynamicsModel(
             latent_size=32, action_size=8, ensemble_size=2
@@ -3534,6 +3710,101 @@ class EnsemblePlannerTests(unittest.TestCase):
             all(branch.goal_progress_reward < 25.0 for branch in agent.archive)
         )
 
+    def test_milestone_settlement_tracks_from_verified_endpoint(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = VisibleMovingMilestoneSettlesEnv()
+        prior = RecordingMovingMilestoneGoalPrior()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.A),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=3,
+                human_prior_option_search_beam_width=4,
+                human_prior_option_search_action_frames=1,
+                human_prior_option_effect_stability_steps=2,
+            ),
+        )
+        source = agent.reset()
+        agent.goal_prior = prior
+        source_signature = agent._current_human_prior_graph_signature()
+        agent.human_prior_graph_state_visits[source_signature] = 1
+        agent.human_prior_player_position_visits[(0, 0)] = 1
+
+        agent._search_human_prior_options()
+
+        self.assertEqual(len(agent.archive), 1)
+        settled = agent.archive[0]
+        self.assertEqual(settled.goal_player_slot, (2, 0))
+        self.assertIn(
+            (source.digest, settled.frame.digest, (2, 0)),
+            prior.analysis_calls,
+        )
+
+    def test_milestone_selection_preserves_closest_followthrough(self) -> None:
+        source = HeartGoalAnalysis(
+            reliable=True,
+            known_slots=((1, 0), (7, 0)),
+            source_present=((1, 0), (7, 0)),
+            target_present=((7, 0),),
+            collected=((1, 0),),
+            target_similarities=(),
+            heart_reward=25.0,
+            all_hearts_reward=0.0,
+            chest_reward=0.0,
+            navigation_reward=0.0,
+            life_loss_penalty=0.0,
+            total_reward=25.0,
+            global_visual_change=0.0,
+            target_intensity=1.0,
+            source_player_slot=(0, 0),
+            target_player_slot=(1, 0),
+            source_heart_distance=1.0,
+            target_heart_distance=6.0,
+            source_chest_slot=None,
+            target_chest_slot=None,
+            source_chest_distance=None,
+            target_chest_distance=None,
+            chest_completed=False,
+            source_life_signature="life",
+            target_life_signature="life",
+            life_counter_changed=False,
+            dark_transition_started=False,
+            life_loss_confirmed=False,
+        )
+        shallow = SimpleNamespace(
+            analysis=source,
+            target_position_visits=0,
+            target_state_visits=0,
+            score=100.0,
+            depth=2,
+        )
+        deep = SimpleNamespace(
+            analysis=replace(
+                source,
+                target_player_slot=(5, 0),
+                target_heart_distance=2.0,
+            ),
+            target_position_visits=0,
+            target_state_visits=0,
+            score=1.0,
+            depth=8,
+        )
+
+        selected = max(
+            (shallow, deep),
+            key=VerifiedNeuralAgent._human_prior_option_selection_key,
+        )
+
+        self.assertIs(selected, deep)
+
     def test_entity_state_hash_masks_overlapping_player_pose(self) -> None:
         model = EnsembleVisualDynamicsModel(
             latent_size=32, action_size=8, ensemble_size=2
@@ -3816,6 +4087,7 @@ class EnsemblePlannerTests(unittest.TestCase):
             goal_heart_slots=((7, 0),),
             goal_player_slot=(0, 0),
             kind="goal_milestone",
+            goal_target_heart_slots=(),
         )
         agent.frame = env.step(Action.RIGHT, 1)
         agent.goal_prior = PositionGoalPrior()
@@ -3848,6 +4120,81 @@ class EnsemblePlannerTests(unittest.TestCase):
         ]
         self.assertEqual(len(restored), 1)
         self.assertEqual(restored[0]["recovery_cause"], "goal_exhaustion")
+
+    def test_goal_milestone_frontier_budget_rolls_back_without_full_exhaustion(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = ActionEffectEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                human_prior_best_first_archive=True,
+                human_prior_graph_stagnation_visits=1,
+                human_prior_goal_exhaustion_rollback=True,
+                human_prior_goal_exhaustion_frontier_budget=2,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=1,
+                human_prior_option_search_action_frames=1,
+            ),
+            event_logger=logger,
+        )
+        source_frame = agent.reset()
+        source_state = env.save_state()
+        source_signature = agent.current_frontier_signature
+        choice = (source_signature, Action.RIGHT, 1)
+        agent.pending_goal_milestone_checkpoint = _LifeHazardCheckpoint(
+            state=source_state,
+            frame=source_frame,
+            choice=choice,
+            decision=0,
+            frontier_signature=source_signature,
+            causal_context_signature=agent.current_causal_context_signature,
+            scene=agent.current_scene,
+            pose_action=None,
+            last_action=None,
+            last_duration=None,
+            action_streak=0,
+            goal_heart_slots=((7, 0),),
+            goal_player_slot=(0, 0),
+            kind="goal_milestone",
+            exploration_steps=1,
+            goal_target_heart_slots=((3, 0),),
+        )
+        agent.frame = env.step(Action.RIGHT, 1)
+        agent.goal_prior = PositionGoalPrior()
+        agent._calibrate_goal_prior = lambda _frame: None
+        agent._current_human_prior_graph_signature = (
+            lambda: "stagnant-goal"
+        )
+        agent.human_prior_graph_state_visits["stagnant-goal"] = 1
+        agent._search_human_prior_options = lambda: self.fail(
+            "frontier budget should restore before another exact search"
+        )
+
+        decision = agent.decide()
+
+        self.assertTrue(decision.restored_archive)
+        self.assertEqual(decision.frame.digest, source_frame.digest)
+        exhausted = [
+            event
+            for event in logger.events
+            if event["event"] == "goal_milestone_frontier_budget_exhausted"
+        ]
+        self.assertEqual(len(exhausted), 1)
+        self.assertEqual(exhausted[0]["exploration_steps"], 2)
+        self.assertEqual(exhausted[0]["frontier_budget"], 2)
+        self.assertIn(
+            (((7, 0),), ((3, 0),), False),
+            agent.human_prior_exhausted_milestone_transitions,
+        )
 
     def test_archive_restored_goal_milestone_preserves_source_checkpoint(
         self,
@@ -3945,6 +4292,63 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(len(created), 1)
         self.assertEqual(created[0]["checkpoint_source"], "archive_parent")
         self.assertEqual(created[0]["frame"], parent_frame.digest)
+
+    def test_seed_goal_milestone_checkpoint_restores_persisted_metadata(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = UniqueStateEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                human_prior_heart_reward=1.0,
+            ),
+            event_logger=logger,
+        )
+        frame = agent.reset()
+        state = env.save_state()
+        metadata = {
+            "choice": ["frontier", "right", 16],
+            "checkpoint_decision": 7,
+            "frontier_signature": "frontier",
+            "causal_context_signature": "causal",
+            "checkpoint_scene": agent.current_scene,
+            "pose_action": "down",
+            "last_action": "left",
+            "last_duration": 4,
+            "action_streak": 2,
+            "goal_heart_slots": [[1, 2], [3, 4]],
+            "goal_player_slot": [5, 6],
+            "goal_chest_obtained": False,
+            "human_prior_world_context_signature": "world",
+            "checkpoint_kind": "goal_milestone",
+            "exploration_steps": 11,
+        }
+
+        agent.seed_goal_milestone_checkpoint(
+            state, frame, metadata, "parent", "state-7"
+        )
+
+        checkpoint = agent.pending_goal_milestone_checkpoint
+        self.assertIsNotNone(checkpoint)
+        assert checkpoint is not None
+        self.assertEqual(checkpoint.choice, ("frontier", Action.RIGHT, 16))
+        self.assertEqual(checkpoint.decision, 7)
+        self.assertEqual(checkpoint.exploration_steps, 11)
+        self.assertEqual(checkpoint.goal_heart_slots, ((1, 2), (3, 4)))
+        created = [
+            event
+            for event in logger.events
+            if event["event"] == "goal_milestone_checkpoint_created"
+        ]
+        self.assertEqual(created[-1]["checkpoint_source"], "episodic_resume")
 
     def test_archive_restored_goal_milestone_rejects_unknown_parent(self) -> None:
         model = EnsembleVisualDynamicsModel(
@@ -4614,6 +5018,116 @@ class EnsemblePlannerTests(unittest.TestCase):
         ][-1]
         self.assertTrue(filtered["physical_frontier_preferred"])
         self.assertEqual(filtered["unvisited_player_positions"], 1)
+
+    def test_human_prior_restore_rejects_only_regressive_archive(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = UniqueStateEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                human_prior_best_first_archive=True,
+            ),
+            event_logger=logger,
+        )
+        source_frame = agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        agent.goal_prior.best_remaining_hearts = 1
+        state = env.save_state()
+        agent.archive = [
+            _ArchivedBranch(
+                state=state,
+                frame=source_frame,
+                plan=NeuralPlan((Action.RIGHT,), (1,), 1.0, 0.0),
+                score=1.0,
+                scene=agent._scene_signature(source_frame),
+                created=0,
+                goal_heart_slots=((1, 0), (7, 0)),
+                goal_remaining_hearts=2,
+                goal_total_hearts=2,
+                goal_player_slot=(0, 0),
+                goal_source_signature="source",
+                goal_target_signature="target",
+            )
+        ]
+        agent.human_prior_graph_recovery_pending = True
+
+        restored = agent._restore_if_stagnant()
+
+        self.assertIsNone(restored)
+        filtered = [
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_regressive_archives_filtered"
+        ]
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0]["alternatives_remaining"], 0)
+
+    def test_regressive_archive_does_not_defer_option_search(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = ActionEffectEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                human_prior_best_first_archive=True,
+                human_prior_graph_stagnation_visits=1,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=2,
+                human_prior_option_search_action_frames=1,
+            ),
+            event_logger=logger,
+        )
+        source = agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        agent._calibrate_goal_prior = lambda frame: None
+        agent.goal_prior.best_remaining_hearts = 1
+        source_signature = agent._current_human_prior_graph_signature()
+        agent.human_prior_graph_state_visits[source_signature] = 1
+        agent.human_prior_player_position_visits[(0, 0)] = 1
+        agent.archive = [
+            _ArchivedBranch(
+                state=env.save_state(),
+                frame=source,
+                plan=NeuralPlan((Action.RIGHT,), (1,), 1.0, 0.0),
+                score=1.0,
+                scene=agent._scene_signature(source),
+                created=0,
+                goal_heart_slots=((1, 0), (7, 0)),
+                goal_remaining_hearts=2,
+                goal_total_hearts=2,
+                goal_player_slot=(0, 0),
+                goal_source_signature=source_signature,
+                goal_target_signature="target",
+            )
+        ]
+
+        agent.decide()
+
+        self.assertFalse(
+            any(
+                event["event"] == "human_prior_option_search_deferred"
+                for event in logger.events
+            )
+        )
+        self.assertTrue(
+            any(
+                event["event"] == "human_prior_option_search_started"
+                for event in logger.events
+            )
+        )
 
     def test_human_prior_position_novelty_can_be_phase_conditioned(self) -> None:
         model = EnsembleVisualDynamicsModel(
