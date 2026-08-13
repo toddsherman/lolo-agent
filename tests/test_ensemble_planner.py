@@ -8520,6 +8520,82 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertTrue(filtered["physical_frontier_preferred"])
         self.assertEqual(filtered["unvisited_player_positions"], 1)
 
+    def test_human_prior_restore_preserves_new_semantic_state_at_seen_position(
+        self,
+    ) -> None:
+        env = UniqueStateEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                human_prior_best_first_archive=True,
+            ),
+            event_logger=logger,
+        )
+        source_frame = agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        source_signature = agent._current_human_prior_graph_signature()
+        root = env.save_state()
+        target_frame = env.step(Action.RIGHT, 1)
+        target_state = env.save_state()
+        env.load_state(root)
+        target_signature = "new-semantic-state-at-seen-position"
+        agent.frame = source_frame
+        agent.human_prior_player_position_visits[(1, 0)] = 3
+        agent.human_prior_graph_edge_verifications[
+            (target_signature, Action.RIGHT, 1)
+        ] = 1
+        agent.archive = [
+            _ArchivedBranch(
+                state=target_state,
+                frame=target_frame,
+                plan=NeuralPlan((Action.RIGHT,), (1,), -1.0, 0.0),
+                score=-1.0,
+                scene=agent._scene_signature(target_frame),
+                created=0,
+                origin_signature="source",
+                goal_heart_slots=((7, 0),),
+                goal_remaining_hearts=1,
+                goal_total_hearts=1,
+                goal_player_slot=(1, 0),
+                goal_progress_reward=-1.0,
+                goal_source_signature=source_signature,
+                goal_target_signature=target_signature,
+                human_prior_verified_option=True,
+                human_prior_unvisited_semantic_state=True,
+            )
+        ]
+        agent.human_prior_graph_recovery_pending = True
+
+        restored = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(restored)
+        assert restored is not None
+        self.assertTrue(restored.restored_archive)
+        self.assertEqual(env.position, 1)
+        self.assertFalse(
+            any(
+                event["event"] == "human_prior_semantic_archives_exhausted"
+                for event in logger.events
+            )
+        )
+        filtered = next(
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_best_first_archives_filtered"
+        )
+        self.assertFalse(filtered["physical_frontier_preferred"])
+        self.assertTrue(filtered["semantic_state_frontier_preferred"])
+        self.assertEqual(filtered["unvisited_player_positions"], 0)
+        self.assertEqual(filtered["unvisited_semantic_states"], 1)
+        env.release_state(root)
+
     def test_human_prior_restore_rejects_only_regressive_archive(self) -> None:
         model = EnsembleVisualDynamicsModel(
             latent_size=32, action_size=8, ensemble_size=2

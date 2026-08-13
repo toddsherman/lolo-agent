@@ -1656,6 +1656,16 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "human_prior_best_first_frontier_exhaustions": event_counts.get(
             "human_prior_best_first_frontier_exhausted", 0
         ),
+        "human_prior_best_first_semantic_state_preferences": sum(
+            event["event"] == "human_prior_best_first_archives_filtered"
+            and bool(event.get("semantic_state_frontier_preferred"))
+            for event in events
+        ),
+        "human_prior_best_first_semantic_state_frontiers": sum(
+            int(event.get("unvisited_semantic_states", 0))
+            for event in events
+            if event["event"] == "human_prior_best_first_archives_filtered"
+        ),
         "human_prior_graph_stagnation_events": event_counts.get(
             "human_prior_graph_stagnation_detected", 0
         ),

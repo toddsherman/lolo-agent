@@ -424,6 +424,12 @@ class RunLoggingTests(unittest.TestCase):
             self.assertIn(
                 "human_prior_best_first_frontier_exhaustions", summary
             )
+            self.assertIn(
+                "human_prior_best_first_semantic_state_preferences", summary
+            )
+            self.assertIn(
+                "human_prior_best_first_semantic_state_frontiers", summary
+            )
             self.assertIn("human_prior_graph_stagnation_events", summary)
             self.assertIn("human_prior_option_searches", summary)
             self.assertIn("human_prior_option_search_deferrals", summary)

@@ -213,6 +213,7 @@ class _ArchivedBranch:
     human_prior_episodic_graph_remaining_cost: Optional[int] = None
     goal_chest_obtained: bool = False
     goal_milestone_checkpoint: Optional["_LifeHazardCheckpoint"] = None
+    human_prior_unvisited_semantic_state: bool = False
 
 
 @dataclass
@@ -2788,8 +2789,8 @@ class VerifiedNeuralAgent:
 
     def _human_prior_archive_frontier_flags(
         self, branch: _ArchivedBranch
-    ) -> Tuple[bool, bool, bool]:
-        """Return physical, world-state, and local-control frontier flags.
+    ) -> Tuple[bool, bool, bool, bool]:
+        """Return physical, world, local-control, and semantic frontiers.
 
         Player detection can fail when the sprite overlaps another tile.  A
         stable action-dependent world-context change must therefore remain a
@@ -2801,7 +2802,7 @@ class VerifiedNeuralAgent:
             branch.plan.path[0] == Action.NOOP
             or not branch.goal_source_signature
         ):
-            return False, False, False
+            return False, False, False, False
         physical_frontier = bool(
             branch.goal_player_slot is not None
             and not (
@@ -2828,10 +2829,22 @@ class VerifiedNeuralAgent:
                 branch.goal_target_signature
             )
         )
+        semantic_state_frontier = bool(
+            branch.human_prior_unvisited_semantic_state
+            and branch.human_prior_verified_option
+            and branch.goal_player_slot is not None
+            and branch.goal_target_signature
+            and not branch.goal_world_effect_signature
+            and self.human_prior_graph_state_visits[
+                branch.goal_target_signature
+            ]
+            == 0
+        )
         return (
             physical_frontier,
             world_state_frontier,
             local_control_frontier,
+            semantic_state_frontier,
         )
 
     def _human_prior_archive_frontiers(
@@ -7992,6 +8005,9 @@ class VerifiedNeuralAgent:
                     goal_milestone_checkpoint=(
                         archived_milestone_checkpoint
                     ),
+                    human_prior_unvisited_semantic_state=(
+                        archived.target_state_visits == 0
+                    ),
                 )
                 self.archive.append(branch)
                 retained_state_ids.add(id(archived.state))
@@ -10422,6 +10438,10 @@ class VerifiedNeuralAgent:
                     goal_chest_obtained=bool(
                         metadata.get("human_prior_chest_obtained", False)
                     ),
+                    human_prior_unvisited_semantic_state=(
+                        int(metadata.get("target_graph_state_visits", 1))
+                        == 0
+                    ),
                 )
             except (KeyError, TypeError, ValueError) as error:
                 if release_state is not None:
@@ -10457,6 +10477,14 @@ class VerifiedNeuralAgent:
                     branch.target_causal_context_signature
                 ),
                 target_pose_action=branch.pose_action,
+                target_graph_state_visits=(
+                    0
+                    if branch.human_prior_unvisited_semantic_state
+                    else max(
+                        1,
+                        int(metadata.get("target_graph_state_visits", 1)),
+                    )
+                ),
                 human_prior_known_heart_slots=known_hearts,
                 human_prior_target_hearts=target_hearts,
                 human_prior_remaining_hearts=branch.goal_remaining_hearts,
@@ -18519,6 +18547,13 @@ class VerifiedNeuralAgent:
                         candidate
                     )[2]
                 ]
+                semantic_state_frontier_eligible = [
+                    candidate
+                    for candidate in human_prior_frontier_eligible
+                    if self._human_prior_archive_frontier_flags(
+                        candidate
+                    )[3]
+                ]
                 option_effect_frontier_eligible = [
                     candidate
                     for candidate in world_state_frontier_eligible
@@ -18535,6 +18570,7 @@ class VerifiedNeuralAgent:
                     or episodic_graph_eligible
                     or option_effect_frontier_eligible
                     or physical_frontier_eligible
+                    or semantic_state_frontier_eligible
                     or world_state_frontier_eligible
                     or local_control_frontier_eligible
                     or human_prior_unexpanded_eligible
@@ -18557,10 +18593,16 @@ class VerifiedNeuralAgent:
                         physical_frontier_eligible
                         and not immediate_option_effect_frontier_eligible
                     ),
+                    semantic_state_frontier_preferred=bool(
+                        semantic_state_frontier_eligible
+                        and not immediate_option_effect_frontier_eligible
+                        and not physical_frontier_eligible
+                    ),
                     world_state_frontier_preferred=bool(
                         world_state_frontier_eligible
                         and not immediate_option_effect_frontier_eligible
                         and not physical_frontier_eligible
+                        and not semantic_state_frontier_eligible
                     ),
                     option_effect_frontier_preferred=bool(
                         option_effect_frontier_eligible
@@ -18595,6 +18637,9 @@ class VerifiedNeuralAgent:
                     ),
                     unvisited_player_positions=len(
                         physical_frontier_eligible
+                    ),
+                    unvisited_semantic_states=len(
+                        semantic_state_frontier_eligible
                     ),
                     unvisited_world_states=len(
                         world_state_frontier_eligible
