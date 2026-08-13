@@ -6474,6 +6474,9 @@ class VerifiedNeuralAgent:
                     self.human_prior_option_exhausted_sources.add(
                         exhausted_key
                     )
+                    self.human_prior_exhausted_option_frontiers.add(
+                        source_signature
+                    )
                     self._emit(
                         "human_prior_option_search_completed",
                         decision=self.decision_index + 1,
@@ -7965,7 +7968,10 @@ class VerifiedNeuralAgent:
                     or ""
                 )
                 if option_source:
-                    if event.get("reason") == "no_unexpanded_endpoint":
+                    if event.get("reason") in {
+                        "no_unexpanded_endpoint",
+                        "only_exhausted_frontier_endpoints",
+                    }:
                         exhausted_option_frontiers.add(option_source)
                     elif (
                         int(event.get("archive_branches_added", 0)) > 0
@@ -9987,7 +9993,19 @@ class VerifiedNeuralAgent:
                 blocked.append(item)
             else:
                 filtered.append(item)
-        fail_open = bool(blocked and not filtered)
+        filtered_has_egress = False
+        for item in filtered:
+            source_signature, target_signature = graph_signatures.get(
+                id(item[2]), ("", "")
+            )
+            if (
+                source_signature
+                and target_signature
+                and target_signature != source_signature
+            ):
+                filtered_has_egress = True
+                break
+        fail_open = bool(blocked and not filtered_has_egress)
         return (verified if fail_open else filtered), blocked, fail_open
 
     @staticmethod

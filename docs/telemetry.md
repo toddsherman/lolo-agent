@@ -376,7 +376,10 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   decline to archive a route back into that state, and one-step selection
   emits `human_prior_exhausted_option_frontier_filter_evaluated`. Milestones
   and changed world contexts remain eligible; one-step selection fails open
-  if every branch is implicated. The observation is replayed across save-state
+  if no alternative graph egress remains. When every exact endpoint from a
+  source is already exhausted, the bounded observation propagates backward to
+  that source; this computes cul-de-sacs from interaction rather than object
+  labels. The observation is replayed across save-state
   resumes, cleared at room boundaries, and withdrawn when a later search from
   the same state finds a retainable endpoint. Telemetry explicitly reports
   `policy_effect=bounded_frontier_avoidance` and `hazard_evidence=false`;

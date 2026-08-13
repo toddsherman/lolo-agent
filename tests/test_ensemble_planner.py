@@ -2879,7 +2879,7 @@ class EnsemblePlannerTests(unittest.TestCase):
         }
         signatures = {
             id(dead_state): ("source", "exhausted"),
-            id(alternative_state): ("source", "source"),
+            id(alternative_state): ("source", "escape"),
         }
         agent.human_prior_exhausted_option_frontiers.add("exhausted")
 
@@ -2898,6 +2898,19 @@ class EnsemblePlannerTests(unittest.TestCase):
             )
         )
         self.assertEqual(only_blocked, [dead_branch])
+        self.assertEqual(blocked, [dead_branch])
+        self.assertTrue(fail_open)
+        stationary_signatures = dict(signatures)
+        stationary_signatures[id(alternative_state)] = (
+            "source",
+            "source",
+        )
+        stationary_fallback, blocked, fail_open = (
+            agent._filter_exhausted_option_frontiers(
+                verified, analyses, stationary_signatures
+            )
+        )
+        self.assertEqual(stationary_fallback, verified)
         self.assertEqual(blocked, [dead_branch])
         self.assertTrue(fail_open)
 
@@ -2992,6 +3005,11 @@ class EnsemblePlannerTests(unittest.TestCase):
         ][-1]
         self.assertEqual(
             completed["reason"], "only_exhausted_frontier_endpoints"
+        )
+        source_signature = agent._current_human_prior_graph_signature()
+        self.assertIn(
+            source_signature,
+            agent.human_prior_exhausted_option_frontiers,
         )
 
     def test_option_search_accepts_new_graph_state_at_seen_position(
@@ -6580,13 +6598,21 @@ class EnsemblePlannerTests(unittest.TestCase):
                 "reason": "no_unexpanded_endpoint",
                 "archive_branches_added": 0,
             },
+            {
+                "event": "human_prior_option_search_completed",
+                "run_id": "source-run",
+                "decision": 4,
+                "source_graph_signature": "parent-frontier",
+                "reason": "only_exhausted_frontier_endpoints",
+                "archive_branches_added": 0,
+            },
         ]
 
         agent.seed_human_prior_episodic_memory(events)
 
         self.assertEqual(
             agent.human_prior_exhausted_option_frontiers,
-            {"bounded-frontier"},
+            {"bounded-frontier", "parent-frontier"},
         )
         events.append(
             {
@@ -6601,7 +6627,10 @@ class EnsemblePlannerTests(unittest.TestCase):
 
         agent.seed_human_prior_episodic_memory(events)
 
-        self.assertEqual(agent.human_prior_exhausted_option_frontiers, set())
+        self.assertEqual(
+            agent.human_prior_exhausted_option_frontiers,
+            {"parent-frontier"},
+        )
 
     def test_seed_human_prior_option_archive_restores_promoted_branch(
         self,
