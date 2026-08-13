@@ -124,6 +124,8 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
     anonymous_behavior_rows: List[Dict[str, Any]] = []
     anonymous_behavior_types: set[int] = set()
     anonymous_behavior_outcomes: set[str] = set()
+    anonymous_shadow_prediction_rows: List[Dict[str, Any]] = []
+    anonymous_shadow_branch_rows: List[Dict[str, Any]] = []
     archive_rejections_by_reason: Counter[str] = Counter()
     spatial_shadow_rows: List[Dict[str, Any]] = []
     returnability_probe_rows: List[Dict[str, Any]] = []
@@ -152,6 +154,96 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
     edge_counts: Counter[Tuple[str, str, str, int]] = Counter()
     node_details: Dict[str, Dict[str, Any]] = {}
     for event in events:
+        if (
+            event["event"]
+            == "anonymous_entity_behavior_shadow_prediction"
+        ):
+            anonymous_shadow_prediction_rows.append(
+                {
+                    field: event.get(field)
+                    for field in (
+                        "seq",
+                        "elapsed_ms",
+                        "attempt",
+                        "decision",
+                        "branch_id",
+                        "candidate_rank",
+                        "action",
+                        "action_frames",
+                        "endpoint_state_id",
+                        "horizon_frames",
+                        "anchor_cell",
+                        "appearance_fingerprint",
+                        "appearance_occurrences",
+                        "anonymous_type_id",
+                        "appearance_distance",
+                        "context_signature",
+                        "controlled_cell",
+                        "context_matched",
+                        "predicted_outcome",
+                        "predicted_outcome_probability",
+                        "hazard_probability",
+                        "causal_hazard_probability",
+                        "causal_hazard_samples",
+                        "causal_hazard_known",
+                        "behavior_samples",
+                        "behavior_known",
+                        "behavior_confidence",
+                        "behavior_entropy",
+                        "unconditional_predicted_outcome",
+                        "unconditional_hazard_probability",
+                        "unconditional_behavior_samples",
+                        "unconditional_behavior_known",
+                        "shadow_hazard_threshold",
+                        "shadow_prediction_actionable",
+                        "shadow_would_reject",
+                        "shadow_policy_authority",
+                        "frame",
+                    )
+                }
+            )
+        elif (
+            event["event"]
+            == "anonymous_entity_behavior_shadow_branch_evaluated"
+        ):
+            anonymous_shadow_branch_rows.append(
+                {
+                    field: event.get(field)
+                    for field in (
+                        "seq",
+                        "elapsed_ms",
+                        "attempt",
+                        "decision",
+                        "branch_id",
+                        "candidate_rank",
+                        "action",
+                        "action_frames",
+                        "endpoint_state_id",
+                        "shadow_horizons",
+                        "shadow_hazard_threshold",
+                        "shadow_policy_authority",
+                        "shadow_selection_weight",
+                        "shadow_candidate_cells",
+                        "shadow_predictions",
+                        "shadow_known_predictions",
+                        "shadow_contextual_known_predictions",
+                        "shadow_causal_known_predictions",
+                        "shadow_max_hazard_probability",
+                        "shadow_max_empirical_hazard_probability",
+                        "shadow_max_unconditional_hazard_probability",
+                        "shadow_would_reject",
+                        "shadow_implicated_type_id",
+                        "shadow_implicated_appearance",
+                        "shadow_implicated_anchor",
+                        "shadow_implicated_context",
+                        "shadow_implicated_horizon",
+                        "model_parameter_sha256_before",
+                        "model_parameter_sha256_after",
+                        "model_parameters_unchanged",
+                        "frame",
+                    )
+                }
+            )
         if event["event"] == "anonymous_entity_behavior_observed":
             type_id = event.get("anonymous_type_id")
             if type_id is not None:
@@ -188,6 +280,9 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                         "behavior_confidence_before",
                         "behavior_entropy_before",
                         "hazard_probability_before",
+                        "causal_hazard_probability_before",
+                        "causal_hazard_samples_before",
+                        "causal_hazard_known_before",
                         "observed_outcome",
                         "observed_hazard",
                         "surprise",
@@ -195,6 +290,9 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                         "behavior_samples_after",
                         "behavior_confidence_after",
                         "hazard_probability_after",
+                        "causal_hazard_probability_after",
+                        "causal_hazard_samples_after",
+                        "causal_hazard_known_after",
                         "anchor_cell",
                         "relative_effect_cells",
                         "player_displacement",
@@ -208,6 +306,7 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                         "model_type_count",
                         "model_rule_count",
                         "model_observations",
+                        "model_causal_hazard_observations",
                         "frame",
                     )
                 }
@@ -441,6 +540,24 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                     ),
                     "spatial_selection_applied_to_commit": event.get(
                         "spatial_selection_applied_to_commit", False
+                    ),
+                    "anonymous_entity_hazard_veto_enabled": event.get(
+                        "anonymous_entity_hazard_veto_enabled", False
+                    ),
+                    "anonymous_entity_hazards_detected": event.get(
+                        "anonymous_entity_hazards_detected", 0
+                    ),
+                    "anonymous_entity_hazards_filtered": event.get(
+                        "anonymous_entity_hazards_filtered", 0
+                    ),
+                    "anonymous_entity_hazard_fail_open": event.get(
+                        "anonymous_entity_hazard_fail_open", False
+                    ),
+                    "anonymous_entity_committed_hazard_probability": event.get(
+                        "anonymous_entity_committed_hazard_probability", 0.0
+                    ),
+                    "anonymous_entity_committed_would_reject": event.get(
+                        "anonymous_entity_committed_would_reject", False
                     ),
                     "branches_examined": event.get("branches_examined", 0),
                     "parent_state_id": event.get("parent_state_id"),
@@ -704,6 +821,12 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "spatial_selection_weight",
         "spatial_selection_bonus",
         "spatial_selection_applied_to_commit",
+        "anonymous_entity_hazard_veto_enabled",
+        "anonymous_entity_hazards_detected",
+        "anonymous_entity_hazards_filtered",
+        "anonymous_entity_hazard_fail_open",
+        "anonymous_entity_committed_hazard_probability",
+        "anonymous_entity_committed_would_reject",
         "branches_examined",
         "parent_state_id",
         "parent_frame",
@@ -886,6 +1009,9 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "behavior_confidence_before",
         "behavior_entropy_before",
         "hazard_probability_before",
+        "causal_hazard_probability_before",
+        "causal_hazard_samples_before",
+        "causal_hazard_known_before",
         "observed_outcome",
         "observed_hazard",
         "surprise",
@@ -893,6 +1019,9 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "behavior_samples_after",
         "behavior_confidence_after",
         "hazard_probability_after",
+        "causal_hazard_probability_after",
+        "causal_hazard_samples_after",
+        "causal_hazard_known_after",
         "anchor_cell",
         "relative_effect_cells",
         "player_displacement",
@@ -906,6 +1035,7 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "model_type_count",
         "model_rule_count",
         "model_observations",
+        "model_causal_hazard_observations",
         "frame",
     ]
     with (run_dir / "entity_behaviors.csv").open(
@@ -916,6 +1046,96 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         )
         writer.writeheader()
         writer.writerows(anonymous_behavior_rows)
+
+    anonymous_shadow_prediction_columns = [
+        "seq",
+        "elapsed_ms",
+        "attempt",
+        "decision",
+        "branch_id",
+        "candidate_rank",
+        "action",
+        "action_frames",
+        "endpoint_state_id",
+        "horizon_frames",
+        "anchor_cell",
+        "appearance_fingerprint",
+        "appearance_occurrences",
+        "anonymous_type_id",
+        "appearance_distance",
+        "context_signature",
+        "controlled_cell",
+        "context_matched",
+        "predicted_outcome",
+        "predicted_outcome_probability",
+        "hazard_probability",
+        "causal_hazard_probability",
+        "causal_hazard_samples",
+        "causal_hazard_known",
+        "behavior_samples",
+        "behavior_known",
+        "behavior_confidence",
+        "behavior_entropy",
+        "unconditional_predicted_outcome",
+        "unconditional_hazard_probability",
+        "unconditional_behavior_samples",
+        "unconditional_behavior_known",
+        "shadow_hazard_threshold",
+        "shadow_prediction_actionable",
+        "shadow_would_reject",
+        "shadow_policy_authority",
+        "frame",
+    ]
+    with (run_dir / "entity_behavior_shadow.csv").open(
+        "w", encoding="utf-8", newline=""
+    ) as handle:
+        writer = csv.DictWriter(
+            handle, fieldnames=anonymous_shadow_prediction_columns
+        )
+        writer.writeheader()
+        writer.writerows(anonymous_shadow_prediction_rows)
+
+    anonymous_shadow_branch_columns = [
+        "seq",
+        "elapsed_ms",
+        "attempt",
+        "decision",
+        "branch_id",
+        "candidate_rank",
+        "action",
+        "action_frames",
+        "endpoint_state_id",
+        "shadow_horizons",
+        "shadow_hazard_threshold",
+        "shadow_policy_authority",
+        "shadow_selection_weight",
+        "shadow_candidate_cells",
+        "shadow_predictions",
+        "shadow_known_predictions",
+        "shadow_contextual_known_predictions",
+        "shadow_causal_known_predictions",
+        "shadow_max_hazard_probability",
+        "shadow_max_empirical_hazard_probability",
+        "shadow_max_unconditional_hazard_probability",
+        "shadow_would_reject",
+        "shadow_implicated_type_id",
+        "shadow_implicated_appearance",
+        "shadow_implicated_anchor",
+        "shadow_implicated_context",
+        "shadow_implicated_horizon",
+        "model_parameter_sha256_before",
+        "model_parameter_sha256_after",
+        "model_parameters_unchanged",
+        "frame",
+    ]
+    with (run_dir / "entity_behavior_shadow_branches.csv").open(
+        "w", encoding="utf-8", newline=""
+    ) as handle:
+        writer = csv.DictWriter(
+            handle, fieldnames=anonymous_shadow_branch_columns
+        )
+        writer.writeheader()
+        writer.writerows(anonymous_shadow_branch_rows)
 
     graph = {
         "schema_version": SCHEMA_VERSION,
@@ -956,6 +1176,73 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             if row.get(field) is not None
         ]
         return sum(values) / len(values) if values else 0.0
+
+    shadow_predictions_by_endpoint: Dict[
+        Tuple[int, str, int, int], List[Dict[str, Any]]
+    ] = defaultdict(list)
+    for row in anonymous_shadow_prediction_rows:
+        shadow_predictions_by_endpoint[
+            (
+                int(row.get("decision") or 0),
+                str(row.get("action") or ""),
+                int(row.get("action_frames") or 0),
+                int(row.get("horizon_frames") or 0),
+            )
+        ].append(row)
+    shadow_causal_confusion = Counter()
+    shadow_unconditional_matches = 0
+    shadow_persistence_matches = 0
+    shadow_causal_outcomes_evaluable = 0
+    for event in events:
+        if event["event"] != "anonymous_entity_causal_contrast_completed":
+            continue
+        rows = shadow_predictions_by_endpoint.get(
+            (
+                int(event.get("decision") or 0),
+                str(event.get("intervention_action") or ""),
+                int(event.get("intervention_frames") or 0),
+                int(event.get("wait_frames") or 0),
+            ),
+            (),
+        )
+        actionable = [
+            row
+            for row in rows
+            if bool(row.get("shadow_prediction_actionable"))
+        ]
+        if not actionable:
+            continue
+        shadow_causal_outcomes_evaluable += 1
+        observed_hazard = bool(event.get("factual_hazard"))
+        predicted_hazard = any(
+            bool(row.get("shadow_would_reject"))
+            for row in actionable
+        )
+        shadow_causal_confusion[
+            (
+                "true_positive"
+                if predicted_hazard and observed_hazard
+                else "false_positive"
+                if predicted_hazard
+                else "false_negative"
+                if observed_hazard
+                else "true_negative"
+            )
+        ] += 1
+        unconditional_hazard = any(
+            bool(row.get("unconditional_behavior_known"))
+            and float(
+                row.get("unconditional_hazard_probability") or 0.0
+            )
+            >= float(row.get("shadow_hazard_threshold") or 0.0)
+            for row in rows
+        )
+        shadow_unconditional_matches += int(
+            unconditional_hazard == observed_hazard
+        )
+        # A persistence-only baseline has no mechanism for anticipating a
+        # delayed terminal event and therefore always predicts no hazard.
+        shadow_persistence_matches += int(not observed_hazard)
 
     summary = {
         "schema_version": SCHEMA_VERSION,
@@ -1436,6 +1723,83 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             bool(row.get("causal_attribution"))
             and bool(row.get("observed_hazard"))
             for row in anonymous_behavior_rows
+        ),
+        "anonymous_entity_shadow_branch_evaluations": len(
+            anonymous_shadow_branch_rows
+        ),
+        "anonymous_entity_shadow_predictions": len(
+            anonymous_shadow_prediction_rows
+        ),
+        "anonymous_entity_shadow_known_predictions": sum(
+            bool(row.get("behavior_known"))
+            for row in anonymous_shadow_prediction_rows
+        ),
+        "anonymous_entity_shadow_contextual_known_predictions": sum(
+            bool(row.get("behavior_known"))
+            and bool(row.get("context_matched"))
+            for row in anonymous_shadow_prediction_rows
+        ),
+        "anonymous_entity_shadow_causal_known_predictions": sum(
+            bool(row.get("shadow_prediction_actionable"))
+            for row in anonymous_shadow_prediction_rows
+        ),
+        "anonymous_entity_shadow_would_reject_branches": sum(
+            bool(row.get("shadow_would_reject"))
+            for row in anonymous_shadow_branch_rows
+        ),
+        "anonymous_entity_shadow_policy_authority_branches": sum(
+            bool(row.get("shadow_policy_authority"))
+            for row in anonymous_shadow_branch_rows
+        ),
+        "anonymous_entity_shadow_parameter_audits_passed": sum(
+            bool(row.get("model_parameters_unchanged"))
+            for row in anonymous_shadow_branch_rows
+        ),
+        "anonymous_entity_shadow_causal_outcomes_evaluable": (
+            shadow_causal_outcomes_evaluable
+        ),
+        "anonymous_entity_shadow_causal_true_positives": (
+            shadow_causal_confusion["true_positive"]
+        ),
+        "anonymous_entity_shadow_causal_false_positives": (
+            shadow_causal_confusion["false_positive"]
+        ),
+        "anonymous_entity_shadow_causal_true_negatives": (
+            shadow_causal_confusion["true_negative"]
+        ),
+        "anonymous_entity_shadow_causal_false_negatives": (
+            shadow_causal_confusion["false_negative"]
+        ),
+        "anonymous_entity_shadow_causal_classification_matches": (
+            shadow_causal_confusion["true_positive"]
+            + shadow_causal_confusion["true_negative"]
+        ),
+        "anonymous_entity_shadow_unconditional_causal_matches": (
+            shadow_unconditional_matches
+        ),
+        "anonymous_entity_shadow_persistence_causal_matches": (
+            shadow_persistence_matches
+        ),
+        "anonymous_entity_hazard_veto_evaluations": event_counts.get(
+            "anonymous_entity_hazard_veto_evaluated", 0
+        ),
+        "anonymous_entity_hazard_veto_detections": sum(
+            int(event.get("hazards_detected") or 0)
+            for event in events
+            if event["event"]
+            == "anonymous_entity_hazard_veto_evaluated"
+        ),
+        "anonymous_entity_hazard_veto_filtered": sum(
+            int(event.get("hazards_filtered") or 0)
+            for event in events
+            if event["event"]
+            == "anonymous_entity_hazard_veto_evaluated"
+        ),
+        "anonymous_entity_hazard_veto_fail_opens": sum(
+            bool(event.get("fail_open"))
+            for event in events
+            if event["event"]
+            == "anonymous_entity_hazard_veto_evaluated"
         ),
         "human_prior_option_archives_added": event_counts.get(
             "human_prior_option_archive_added", 0

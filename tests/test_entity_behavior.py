@@ -221,7 +221,118 @@ class AnonymousEntityBehaviorModelTests(unittest.TestCase):
         prediction = model.predict(appearance, Action.RIGHT, 4)
 
         self.assertAlmostEqual(prediction.hazardous_probability, 2 / 3)
+        self.assertEqual(prediction.causal_hazardous_probability, 0.0)
+        self.assertEqual(prediction.causal_hazard_samples, 0)
+        self.assertFalse(prediction.causal_hazard_known)
         self.assertNotIn("hazard", model.to_dict()["types"][0])
+
+    def test_causal_hazard_provenance_excludes_correlated_terminal_rows(
+        self,
+    ) -> None:
+        model = AnonymousEntityBehaviorModel(
+            minimum_prediction_samples=2
+        )
+        appearance = (5, 2, 8, 1)
+        context = "controlled-relative:v1:distance=1"
+        for index in range(2):
+            model.observe(
+                appearance,
+                Action.NOOP,
+                224,
+                "correlated-reset",
+                context_signature=context,
+                hazardous=True,
+                autonomous=True,
+                evidence_id=f"passive-{index}",
+            )
+        correlated = model.predict(
+            appearance,
+            Action.NOOP,
+            224,
+            context_signature=context,
+            autonomous=True,
+        )
+        self.assertEqual(correlated.hazardous_probability, 1.0)
+        self.assertFalse(correlated.causal_hazard_known)
+
+        for index in range(2):
+            evidence_id = f"causal-{index}"
+            model.observe(
+                appearance,
+                Action.NOOP,
+                224,
+                "localized-reset",
+                context_signature=context,
+                hazardous=True,
+                autonomous=True,
+                evidence_id=evidence_id,
+            )
+            self.assertTrue(
+                model.backfill_causal_hazard_evidence(
+                    0,
+                    Action.NOOP,
+                    224,
+                    context,
+                    True,
+                    evidence_id,
+                    autonomous=True,
+                )
+            )
+        attributed = model.predict(
+            appearance,
+            Action.NOOP,
+            224,
+            context_signature=context,
+            autonomous=True,
+        )
+        self.assertTrue(attributed.causal_hazard_known)
+        self.assertEqual(attributed.causal_hazard_samples, 2)
+        self.assertEqual(
+            attributed.causal_hazardous_probability, 1.0
+        )
+        self.assertFalse(
+            model.backfill_causal_hazard_evidence(
+                0,
+                Action.NOOP,
+                224,
+                context,
+                True,
+                "causal-0",
+                autonomous=True,
+            )
+        )
+
+    def test_schema_four_checkpoint_has_no_inferred_causal_provenance(
+        self,
+    ) -> None:
+        model = AnonymousEntityBehaviorModel(
+            minimum_prediction_samples=1
+        )
+        appearance = (2, 3, 5)
+        model.observe(
+            appearance,
+            Action.NOOP,
+            224,
+            "terminal",
+            hazardous=True,
+            autonomous=True,
+            evidence_id="legacy-terminal",
+            causal_hazard_evidence=True,
+        )
+        payload = model.to_dict()
+        payload["schema_version"] = 4
+        payload.pop("causal_hazard_evidence_ids")
+        for rule in payload["rules"]:
+            rule.pop("causal_hazardous")
+            rule.pop("causal_hazard_samples")
+
+        restored = AnonymousEntityBehaviorModel.from_dict(payload)
+        prediction = restored.predict(
+            appearance, Action.NOOP, 224, autonomous=True
+        )
+
+        self.assertEqual(prediction.hazardous_probability, 1.0)
+        self.assertFalse(prediction.causal_hazard_known)
 
     def test_checkpoint_round_trip_preserves_predictions_and_digest(self) -> None:
         model = AnonymousEntityBehaviorModel(

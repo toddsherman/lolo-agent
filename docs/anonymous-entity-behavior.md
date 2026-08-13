@@ -16,6 +16,12 @@ Each type stores empirical distributions conditioned on:
 - the observed position-relative pixel outcome;
 - a pixel-derived life-loss observation.
 
+Terminal behavior has two separate posteriors. The empirical posterior retains
+all pixel-observed correlations for audit and representation learning. The
+causal hazard posterior counts only locally attributed intervention/control
+rows, preventing a whole-screen reset from granting policy authority to every
+rare patch on screen.
+
 There are no hand-authored mechanics in the checkpoint. A passive outcome can,
 for example, encode that the same appearance recurred one grid cell to the
 left. The model is not told that this means an enemy moved. An action-controlled
@@ -70,8 +76,7 @@ lolo-neural-run \
   --anonymous-entity-behavior-checkpoint \
     experiments/lolo1-entity/anonymous-behavior.json \
   --anonymous-entity-behavior-mode frozen \
-  --anonymous-entity-passive-horizons 16,32,64,224 \
-  --anonymous-entity-causal-horizons 16,32,64,224
+  --anonymous-entity-shadow-horizons 16,32,64,224
 ```
 
 Frozen runs record a before/after digest audit. Predicting an unfamiliar
@@ -98,13 +103,30 @@ If a later horizon loses a life in only one branch, terminal credit is limited
 to candidates localized earlier in that same matched contrast. A terminal
 contrast with no prior local differential produces no entity behavior sample.
 
+After frozen shadow evaluation passes its promotion gate, enable the optional
+commit filter explicitly:
+
+```bash
+lolo-neural-run \
+  ... \
+  --anonymous-entity-behavior-mode frozen \
+  --anonymous-entity-shadow-horizons 16,32,64,224 \
+  --anonymous-entity-shadow-hazard-threshold 0.9 \
+  --anonymous-entity-hazard-veto
+```
+
+The veto trusts only context-matched causal hazard rules with sufficient
+support. It does not add a score bonus or penalty. If every verified endpoint
+is hazardous it fails open, emits `anonymous_entity_hazard_veto_evaluated`, and
+keeps the original alternatives.
+
 ## Current research boundary
 
-The sidecar is observational and has selection weight zero. It logs whether a
-frozen prediction matched a later emulator observation, but it cannot yet
-change the selected controller action. Promotion requires held-out native
-evidence that type-conditioned predictions beat appearance-agnostic baselines
-and that confidence is calibrated.
+The sidecar remains observational by default and always has additive selection
+weight zero. The optional provenance-qualified hazard veto can now remove a
+verified endpoint after passing the native shadow gate documented in
+`anonymous-entity-policy-gate-2026-08-13.md`. It cannot rank safe alternatives,
+and unsupported or context-fallback predictions cannot veto.
 
 The current action-controlled collector uses the assisted track's pixel-derived
 controlled-sprite locator to define an interaction ray. Object types and their
@@ -120,7 +142,7 @@ collector can accept terminal entity evidence. It uses the assisted track's
 pixel-derived player and life detectors, so cross-room validation,
 appearance-agnostic and context-agnostic baselines, and a learned
 controllable-entity tracker are still required before hazard evidence can
-affect planning.
+qualify for the final strict evaluation.
 
 ## Native causal-attribution milestone
 

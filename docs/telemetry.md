@@ -624,6 +624,20 @@ the number that received local attribution.
 before/after parameter digests. Frozen evaluation instead emits
 `anonymous_entity_behavior_parameter_audit` and fails if the digest changes.
 
+`anonymous_entity_behavior_shadow_prediction` records one rare patch at one
+future horizon for a verified endpoint. It includes empirical, unconditional,
+and causally attributed hazard probabilities, causal support, relative context,
+and the simulated veto verdict. `anonymous_entity_behavior_shadow_branch_evaluated`
+aggregates these rows per endpoint. Summaries flatten them to
+`entity_behavior_shadow.csv` and `entity_behavior_shadow_branches.csv` and join
+supported predictions to matched causal contrasts for TP/TN/FP/FN counts.
+
+When policy authority is explicitly enabled,
+`anonymous_entity_hazard_veto_evaluated` records every detected endpoint,
+supporting anonymous identity/relation/horizon, how many branches were actually
+filtered, alternatives remaining, and whether the all-hazard fail-open fired.
+The committed decision repeats the veto status and its own predicted hazard.
+
 `lolo-log summarize` writes all behavior observations to
 `entity_behaviors.csv` and adds counts for accepted evidence, known predictions,
 prediction matches, known hazard predictions, hazard-classification matches,

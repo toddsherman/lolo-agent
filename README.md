@@ -165,13 +165,15 @@ The checkpoint contains no sprite names or supplied mechanics. Use
 `--anonymous-entity-behavior-mode frozen` for parameter-immutable held-out or
 sequel evaluation. Optional passive horizons restore the decision-root save
 state and advance an equal-action `NOOP` branch, exposing delayed visual
-dynamics without changing the committed controller action. The sidecar is
-currently observational. Causal horizons additionally compare each verified
+dynamics without changing the committed controller action. Causal horizons additionally compare each verified
 controller endpoint with an equal-duration neutral endpoint, then assign a
 later differential life loss only to rare patches that first showed a local
-differential outcome at an earlier nonterminal horizon. The sidecar must pass
-cross-room prediction gates before it can affect planning. See
-`docs/anonymous-entity-behavior.md`.
+differential outcome at an earlier nonterminal horizon. Use
+`--anonymous-entity-shadow-horizons 16,32,64,224` for policy-neutral endpoint
+predictions. After validation, `--anonymous-entity-hazard-veto` can filter only
+context-matched, provenance-qualified causal hazards; it fails open if every
+verified endpoint is marked. See `docs/anonymous-entity-behavior.md` and the
+dated policy-gate report.
 
 Train an observational relation head only after assigning complete strict runs
 to disjoint training and validation partitions:

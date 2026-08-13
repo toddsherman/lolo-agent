@@ -82,16 +82,57 @@ class RunLoggingTests(unittest.TestCase):
                 causal_attribution=True,
                 evidence_eligible=False,
             )
+            logger.log(
+                "anonymous_entity_behavior_shadow_prediction",
+                decision=1,
+                action=Action.RIGHT,
+                action_frames=1,
+                horizon_frames=3,
+                behavior_known=True,
+                shadow_prediction_actionable=True,
+                shadow_would_reject=True,
+                hazard_probability=1.0,
+                unconditional_behavior_known=True,
+                unconditional_hazard_probability=0.5,
+                shadow_hazard_threshold=0.9,
+                shadow_policy_authority=False,
+            )
+            logger.log(
+                "anonymous_entity_behavior_shadow_branch_evaluated",
+                decision=1,
+                action=Action.RIGHT,
+                action_frames=1,
+                shadow_would_reject=True,
+                shadow_policy_authority=False,
+                model_parameters_unchanged=True,
+            )
+            logger.log(
+                "anonymous_entity_hazard_veto_evaluated",
+                hazards_detected=1,
+                hazards_filtered=1,
+                fail_open=False,
+            )
             logger.log("anonymous_entity_passive_horizon_verified")
             logger.log("anonymous_entity_causal_horizon_verified")
             logger.log(
                 "anonymous_entity_causal_contrast_completed",
+                decision=1,
+                intervention_action=Action.RIGHT,
+                intervention_frames=1,
+                wait_frames=3,
+                factual_hazard=True,
                 hazard_contrast=True,
                 newly_localized_candidates=1,
             )
             logger.close()
 
             summary = build_run_summary(logger.run_dir)
+            shadow_csv_exists = (
+                logger.run_dir / "entity_behavior_shadow.csv"
+            ).is_file()
+            shadow_branch_csv_exists = (
+                logger.run_dir / "entity_behavior_shadow_branches.csv"
+            ).is_file()
 
         self.assertEqual(
             summary["anonymous_entity_behavior_hazard_observations"], 1
@@ -133,6 +174,54 @@ class RunLoggingTests(unittest.TestCase):
         self.assertEqual(
             summary["anonymous_entity_causal_hazard_attributions"], 1
         )
+        self.assertEqual(
+            summary["anonymous_entity_shadow_branch_evaluations"], 1
+        )
+        self.assertEqual(
+            summary["anonymous_entity_shadow_would_reject_branches"], 1
+        )
+        self.assertEqual(
+            summary["anonymous_entity_shadow_policy_authority_branches"], 0
+        )
+        self.assertEqual(
+            summary["anonymous_entity_shadow_parameter_audits_passed"], 1
+        )
+        self.assertEqual(
+            summary["anonymous_entity_shadow_causal_outcomes_evaluable"], 1
+        )
+        self.assertEqual(
+            summary["anonymous_entity_shadow_causal_true_positives"], 1
+        )
+        self.assertEqual(
+            summary[
+                "anonymous_entity_shadow_causal_classification_matches"
+            ],
+            1,
+        )
+        self.assertEqual(
+            summary[
+                "anonymous_entity_shadow_unconditional_causal_matches"
+            ],
+            0,
+        )
+        self.assertEqual(
+            summary["anonymous_entity_shadow_persistence_causal_matches"],
+            0,
+        )
+        self.assertEqual(
+            summary["anonymous_entity_hazard_veto_evaluations"], 1
+        )
+        self.assertEqual(
+            summary["anonymous_entity_hazard_veto_detections"], 1
+        )
+        self.assertEqual(
+            summary["anonymous_entity_hazard_veto_filtered"], 1
+        )
+        self.assertEqual(
+            summary["anonymous_entity_hazard_veto_fail_opens"], 0
+        )
+        self.assertTrue(shadow_csv_exists)
+        self.assertTrue(shadow_branch_csv_exists)
 
     def test_persistent_option_archive_round_trip_preserves_live_state(
         self,

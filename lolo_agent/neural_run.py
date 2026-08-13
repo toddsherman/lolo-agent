@@ -781,6 +781,31 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--anonymous-entity-shadow-horizons",
+        help=(
+            "comma-separated future NOOP horizons for observational hazard "
+            "predictions at every verified action endpoint; never affects "
+            "selection"
+        ),
+    )
+    parser.add_argument(
+        "--anonymous-entity-shadow-hazard-threshold",
+        type=float,
+        default=0.9,
+        help=(
+            "context-matched hazard probability reported as a simulated "
+            "veto by the observational entity shadow"
+        ),
+    )
+    parser.add_argument(
+        "--anonymous-entity-hazard-veto",
+        action="store_true",
+        help=(
+            "filter verified endpoints with provenance-qualified anonymous "
+            "hazard predictions; fails open if every endpoint is hazardous"
+        ),
+    )
+    parser.add_argument(
         "--human-prior-option-effect-local-minimum-cell-pixels",
         type=int,
         default=12,
@@ -1049,6 +1074,15 @@ def main() -> None:
         parser.error(
             "--anonymous-entity-minimum-prediction-samples must be positive"
         )
+    if not (
+        0.0
+        <= args.anonymous_entity_shadow_hazard_threshold
+        <= 1.0
+    ):
+        parser.error(
+            "--anonymous-entity-shadow-hazard-threshold must be between "
+            "zero and one"
+        )
     if args.anonymous_entity_behavior_mode != "off" and (
         args.anonymous_entity_behavior_checkpoint is None
     ):
@@ -1115,6 +1149,41 @@ def main() -> None:
     if entity_causal_horizons and args.anonymous_entity_behavior_mode == "off":
         parser.error(
             "--anonymous-entity-causal-horizons requires frozen or learn mode"
+        )
+    try:
+        entity_shadow_horizons = (
+            tuple(
+                sorted(
+                    {
+                        int(value)
+                        for value in (
+                            args.anonymous_entity_shadow_horizons.split(",")
+                        )
+                    }
+                )
+            )
+            if args.anonymous_entity_shadow_horizons
+            else ()
+        )
+    except ValueError:
+        parser.error(
+            "--anonymous-entity-shadow-horizons must contain integers"
+        )
+    if any(horizon <= 0 for horizon in entity_shadow_horizons):
+        parser.error(
+            "--anonymous-entity-shadow-horizons must contain positive integers"
+        )
+    if entity_shadow_horizons and args.anonymous_entity_behavior_mode == "off":
+        parser.error(
+            "--anonymous-entity-shadow-horizons requires frozen or learn mode"
+        )
+    if (
+        args.anonymous_entity_hazard_veto
+        and not entity_shadow_horizons
+    ):
+        parser.error(
+            "--anonymous-entity-hazard-veto requires "
+            "--anonymous-entity-shadow-horizons"
         )
     if args.anonymous_entity_behavior_mode != "off" and not (
         args.human_prior_hearts and args.human_prior_option_entity_frontier
@@ -1375,6 +1444,13 @@ def main() -> None:
         ),
         anonymous_entity_passive_horizons=entity_passive_horizons,
         anonymous_entity_causal_horizons=entity_causal_horizons,
+        anonymous_entity_shadow_horizons=entity_shadow_horizons,
+        anonymous_entity_shadow_hazard_threshold=(
+            args.anonymous_entity_shadow_hazard_threshold
+        ),
+        anonymous_entity_hazard_veto=(
+            args.anonymous_entity_hazard_veto
+        ),
         human_prior_option_effect_local_minimum_cell_pixels=(
             args.human_prior_option_effect_local_minimum_cell_pixels
         ),
@@ -1433,7 +1509,11 @@ def main() -> None:
             "type_count": entity_behavior_model.type_count,
             "rule_count": entity_behavior_model.rule_count,
             "observations": entity_behavior_model.observation_count,
+            "causal_hazard_observations": (
+                entity_behavior_model.causal_hazard_observation_count
+            ),
             "selection_weight": 0.0,
+            "hazard_veto": args.anonymous_entity_hazard_veto,
         }
         if entity_behavior_checkpoint_existed:
             entity_behavior_input["file_sha256"] = sha256_file(
@@ -1710,11 +1790,19 @@ def main() -> None:
                     status="pass",
                     mode="frozen",
                     selection_weight=0.0,
+                    hazard_veto=args.anonymous_entity_hazard_veto,
+                    shadow_horizons=entity_shadow_horizons,
+                    shadow_hazard_threshold=(
+                        args.anonymous_entity_shadow_hazard_threshold
+                    ),
                     parameter_sha256_before=entity_behavior_before,
                     parameter_sha256_after=entity_behavior_after,
                     type_count=entity_behavior_model.type_count,
                     rule_count=entity_behavior_model.rule_count,
                     observations=entity_behavior_model.observation_count,
+                    causal_hazard_observations=(
+                        entity_behavior_model.causal_hazard_observation_count
+                    ),
                 )
             else:
                 entity_behavior_model.save(entity_behavior_path)
@@ -1722,12 +1810,16 @@ def main() -> None:
                     "anonymous_entity_behavior_checkpoint_updated",
                     mode="learn",
                     selection_weight=0.0,
+                    hazard_veto=args.anonymous_entity_hazard_veto,
                     parameter_sha256_before=entity_behavior_before,
                     parameter_sha256_after=entity_behavior_after,
                     checkpoint=str(entity_behavior_path),
                     type_count=entity_behavior_model.type_count,
                     rule_count=entity_behavior_model.rule_count,
                     observations=entity_behavior_model.observation_count,
+                    causal_hazard_observations=(
+                        entity_behavior_model.causal_hazard_observation_count
+                    ),
                 )
         logger.close("complete")
     except BaseException as exc:

@@ -39,6 +39,9 @@ class BehaviorPrediction:
     known: bool
     context_matched: bool
     contexts_observed: int
+    causal_hazardous_probability: float
+    causal_hazard_samples: int
+    causal_hazard_known: bool
 
     @property
     def novelty(self) -> float:
@@ -64,6 +67,8 @@ class _RuleStats:
     hazardous: int = 0
     samples: int = 0
     contexts: set[str] = field(default_factory=set)
+    causal_hazardous: int = 0
+    causal_hazard_samples: int = 0
 
 
 class AnonymousEntityBehaviorModel:
@@ -80,7 +85,7 @@ class AnonymousEntityBehaviorModel:
     and contradictory evidence reduces confidence instead of being discarded.
     """
 
-    SCHEMA_VERSION = 4
+    SCHEMA_VERSION = 5
     _UNCONDITIONAL_CONTEXT = "*"
 
     def __init__(
@@ -98,6 +103,7 @@ class AnonymousEntityBehaviorModel:
         self._type_counts: list[int] = []
         self._rules: Dict[Tuple[int, str, int, bool, str], _RuleStats] = {}
         self._evidence_ids: set[str] = set()
+        self._causal_hazard_evidence_ids: set[str] = set()
 
     @property
     def type_count(self) -> int:
@@ -111,6 +117,14 @@ class AnonymousEntityBehaviorModel:
     def observation_count(self) -> int:
         return sum(
             rule.samples
+            for key, rule in self._rules.items()
+            if key[4] == self._UNCONDITIONAL_CONTEXT
+        )
+
+    @property
+    def causal_hazard_observation_count(self) -> int:
+        return sum(
+            rule.causal_hazard_samples
             for key, rule in self._rules.items()
             if key[4] == self._UNCONDITIONAL_CONTEXT
         )
@@ -373,6 +387,9 @@ class AnonymousEntityBehaviorModel:
                 known=False,
                 context_matched=context_matched,
                 contexts_observed=0,
+                causal_hazardous_probability=0.0,
+                causal_hazard_samples=0,
+                causal_hazard_known=False,
             )
         outcome, count = max(
             rule.outcomes.items(), key=lambda item: (item[1], item[0])
@@ -398,6 +415,15 @@ class AnonymousEntityBehaviorModel:
             known=rule.samples >= minimum_prediction_samples,
             context_matched=context_matched,
             contexts_observed=len(rule.contexts),
+            causal_hazardous_probability=(
+                rule.causal_hazardous / rule.causal_hazard_samples
+                if rule.causal_hazard_samples > 0
+                else 0.0
+            ),
+            causal_hazard_samples=rule.causal_hazard_samples,
+            causal_hazard_known=(
+                rule.causal_hazard_samples >= minimum_prediction_samples
+            ),
         )
 
     def predict(
@@ -465,6 +491,7 @@ class AnonymousEntityBehaviorModel:
         hazardous: bool = False,
         autonomous: bool = False,
         evidence_id: str = "",
+        causal_hazard_evidence: bool = False,
     ) -> BehaviorObservation:
         if not feature:
             raise ValueError("behavior appearance feature must be non-empty")
@@ -529,10 +556,15 @@ class AnonymousEntityBehaviorModel:
             rule.outcomes[outcome_signature] += 1
             rule.samples += 1
             rule.hazardous += int(hazardous)
+            if causal_hazard_evidence:
+                rule.causal_hazard_samples += 1
+                rule.causal_hazardous += int(hazardous)
             if context_signature:
                 rule.contexts.add(context_signature)
         if evidence_id:
             self._evidence_ids.add(evidence_id)
+            if causal_hazard_evidence:
+                self._causal_hazard_evidence_ids.add(evidence_id)
 
         prediction_after = self.predict(
             appearance,
@@ -551,6 +583,58 @@ class AnonymousEntityBehaviorModel:
             prediction_before=prediction_before,
             prediction_after=prediction_after,
         )
+
+    def backfill_causal_hazard_evidence(
+        self,
+        type_id: int,
+        action: Action,
+        duration: int,
+        context_signature: str,
+        hazardous: bool,
+        evidence_id: str,
+        autonomous: bool = False,
+    ) -> bool:
+        """Mark an already-recorded observation as causally attributed.
+
+        Older checkpoints stored terminal correlations but not their evidence
+        provenance.  This migration hook accepts only evidence already present
+        in the checkpoint and updates a separate hazard posterior without
+        changing appearance prototypes, outcome counts, or observation counts.
+        """
+
+        if not evidence_id:
+            raise ValueError("causal hazard backfill requires an evidence id")
+        if evidence_id not in self._evidence_ids:
+            raise ValueError(
+                "causal hazard backfill evidence is absent from checkpoint"
+            )
+        if evidence_id in self._causal_hazard_evidence_ids:
+            return False
+        if not 0 <= type_id < self.type_count:
+            raise ValueError("causal hazard backfill references missing type")
+        contexts = [self._UNCONDITIONAL_CONTEXT]
+        if context_signature:
+            contexts.append(context_signature)
+        rules = []
+        for condition in contexts:
+            key = self._rule_key(
+                type_id,
+                action,
+                duration,
+                autonomous,
+                condition,
+            )
+            rule = self._rules.get(key)
+            if rule is None:
+                raise ValueError(
+                    "causal hazard backfill references missing rule"
+                )
+            rules.append(rule)
+        for rule in rules:
+            rule.causal_hazard_samples += 1
+            rule.causal_hazardous += int(hazardous)
+        self._causal_hazard_evidence_ids.add(evidence_id)
+        return True
 
     def type_stats(self) -> Tuple[AnonymousTypeStats, ...]:
         return tuple(
@@ -577,6 +661,8 @@ class AnonymousEntityBehaviorModel:
                     "hazardous": stats.hazardous,
                     "samples": stats.samples,
                     "contexts": sorted(stats.contexts),
+                    "causal_hazardous": stats.causal_hazardous,
+                    "causal_hazard_samples": stats.causal_hazard_samples,
                 }
             )
         return {
@@ -593,6 +679,9 @@ class AnonymousEntityBehaviorModel:
             ],
             "rules": rules,
             "evidence_ids": sorted(self._evidence_ids),
+            "causal_hazard_evidence_ids": sorted(
+                self._causal_hazard_evidence_ids
+            ),
         }
 
     def to_json(self) -> str:
@@ -607,7 +696,7 @@ class AnonymousEntityBehaviorModel:
     @classmethod
     def from_dict(cls, payload: Dict[str, Any]) -> "AnonymousEntityBehaviorModel":
         schema_version = int(payload.get("schema_version", 0))
-        if schema_version not in (3, cls.SCHEMA_VERSION):
+        if schema_version not in (3, 4, cls.SCHEMA_VERSION):
             raise ValueError("unsupported anonymous behavior schema")
         model = cls(
             appearance_match_threshold=float(
@@ -652,15 +741,37 @@ class AnonymousEntityBehaviorModel:
             hazardous = int(row.get("hazardous", 0))
             if not 0 <= hazardous <= samples:
                 raise ValueError("anonymous behavior hazard count is invalid")
+            causal_hazard_samples = int(
+                row.get("causal_hazard_samples", 0)
+            )
+            causal_hazardous = int(row.get("causal_hazardous", 0))
+            if not 0 <= causal_hazardous <= causal_hazard_samples:
+                raise ValueError(
+                    "anonymous causal hazard count is invalid"
+                )
+            if causal_hazard_samples > samples:
+                raise ValueError(
+                    "anonymous causal hazard samples exceed rule samples"
+                )
             model._rules[key] = _RuleStats(
                 outcomes=outcomes,
                 hazardous=hazardous,
                 samples=samples,
                 contexts={str(value) for value in row.get("contexts") or ()},
+                causal_hazardous=causal_hazardous,
+                causal_hazard_samples=causal_hazard_samples,
             )
         model._evidence_ids = {
             str(value) for value in payload.get("evidence_ids") or ()
         }
+        model._causal_hazard_evidence_ids = {
+            str(value)
+            for value in payload.get("causal_hazard_evidence_ids") or ()
+        }
+        if not model._causal_hazard_evidence_ids <= model._evidence_ids:
+            raise ValueError(
+                "causal hazard evidence is absent from checkpoint evidence"
+            )
         return model
 
     @classmethod

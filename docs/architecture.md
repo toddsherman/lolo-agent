@@ -90,8 +90,11 @@ collect duration-conditioned passive dynamics. One appearance can therefore
 remain stationary in one relation and transform or precede a terminal visual
 transition in another. Exact save-state evidence is deduplicated,
 contradictory observations reduce confidence, and a frozen mode supports
-parameter-immutable evaluation. The sidecar currently has selection weight
-zero while native held-out calibration is collected.
+parameter-immutable evaluation. Empirical terminal correlation is stored
+separately from the localized causal hazard posterior. The sidecar has additive
+selection weight zero; after native shadow calibration, an optional conservative
+filter can veto a provenance-qualified hazardous endpoint while failing open if
+all verified endpoints are hazardous.
 
 The causal behavior collector pairs every verified non-neutral endpoint with
 an equal-duration neutral endpoint, then advances both with the same `NOOP`

@@ -3933,6 +3933,207 @@ class EnsemblePlannerTests(unittest.TestCase):
             )
         )
 
+    def test_entity_shadow_predicts_hazard_without_changing_policy(
+        self,
+    ) -> None:
+        behavior_model = AnonymousEntityBehaviorModel(
+            minimum_prediction_samples=1
+        )
+        learning_agent = VerifiedNeuralAgent(
+            CausalRareEntityEnv(),
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.NOOP),
+                planning_depth=1,
+                verify_actions=2,
+                action_frames=1,
+                human_prior_option_effect_stability_steps=1,
+                human_prior_option_effect_phase_offsets=1,
+                human_prior_option_effect_local_controls=True,
+                human_prior_option_entity_frontier=True,
+                anonymous_entity_behavior_learning=True,
+                anonymous_entity_causal_horizons=(2, 3),
+                causal_spatial_columns=4,
+                causal_spatial_rows=4,
+            ),
+            entity_behavior_model=behavior_model,
+        )
+        learning_agent.reset()
+        learning_agent.goal_prior = CausalEntityGoalPrior()
+        learning_agent.decide()
+        learning_agent.clear_archive()
+        learned_digest = behavior_model.digest
+
+        base = dict(
+            actions=(Action.RIGHT, Action.NOOP),
+            planning_depth=1,
+            verify_actions=2,
+            action_frames=1,
+            human_prior_option_effect_stability_steps=1,
+            human_prior_option_effect_phase_offsets=1,
+            human_prior_option_effect_local_controls=True,
+            human_prior_option_entity_frontier=True,
+            causal_spatial_columns=4,
+            causal_spatial_rows=4,
+        )
+        dynamics = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        control = VerifiedNeuralAgent(
+            CausalRareEntityEnv(),
+            dynamics,
+            "cpu",
+            NeuralPlanningConfig(**base),
+            entity_behavior_model=behavior_model,
+        )
+        logger = RecordingLogger()
+        shadow = VerifiedNeuralAgent(
+            CausalRareEntityEnv(),
+            dynamics,
+            "cpu",
+            NeuralPlanningConfig(
+                **base,
+                anonymous_entity_shadow_horizons=(2, 3),
+                anonymous_entity_shadow_hazard_threshold=0.9,
+            ),
+            event_logger=logger,
+            entity_behavior_model=behavior_model,
+        )
+        control.reset()
+        shadow.reset()
+        control.goal_prior = CausalEntityGoalPrior()
+        shadow.goal_prior = CausalEntityGoalPrior()
+
+        control_decision = control.decide()
+        shadow_decision = shadow.decide()
+        control.clear_archive()
+        shadow.clear_archive()
+
+        self.assertEqual(shadow_decision.action, control_decision.action)
+        self.assertEqual(
+            shadow_decision.action_frames,
+            control_decision.action_frames,
+        )
+        self.assertEqual(shadow_decision.frame, control_decision.frame)
+        self.assertAlmostEqual(shadow_decision.score, control_decision.score)
+        self.assertEqual(behavior_model.digest, learned_digest)
+
+        branch_events = [
+            event
+            for event in logger.events
+            if event["event"]
+            == "anonymous_entity_behavior_shadow_branch_evaluated"
+        ]
+        right_branch = next(
+            event
+            for event in branch_events
+            if event["action"] == Action.RIGHT
+        )
+        noop_branch = next(
+            event
+            for event in branch_events
+            if event["action"] == Action.NOOP
+        )
+        self.assertTrue(right_branch["shadow_would_reject"])
+        self.assertEqual(
+            right_branch["shadow_max_hazard_probability"], 1.0
+        )
+        self.assertEqual(right_branch["shadow_implicated_horizon"], 3)
+        self.assertFalse(noop_branch["shadow_would_reject"])
+        self.assertTrue(
+            all(
+                not event["shadow_policy_authority"]
+                and event["shadow_selection_weight"] == 0.0
+                and event["model_parameters_unchanged"]
+                for event in branch_events
+            )
+        )
+
+        entity_prediction = next(
+            event
+            for event in logger.events
+            if event["event"]
+            == "anonymous_entity_behavior_shadow_prediction"
+            and event["action"] == Action.RIGHT
+            and event["anchor_cell"] == (2, 1)
+            and event["horizon_frames"] == 3
+        )
+        self.assertTrue(entity_prediction["behavior_known"])
+        self.assertTrue(entity_prediction["context_matched"])
+        self.assertEqual(entity_prediction["hazard_probability"], 1.0)
+        self.assertEqual(
+            entity_prediction["unconditional_hazard_probability"],
+            0.5,
+        )
+        self.assertTrue(entity_prediction["shadow_would_reject"])
+
+        veto_logger = RecordingLogger()
+        veto = VerifiedNeuralAgent(
+            CausalRareEntityEnv(),
+            dynamics,
+            "cpu",
+            NeuralPlanningConfig(
+                **base,
+                anonymous_entity_shadow_horizons=(2, 3),
+                anonymous_entity_shadow_hazard_threshold=0.9,
+                anonymous_entity_hazard_veto=True,
+            ),
+            event_logger=veto_logger,
+            entity_behavior_model=behavior_model,
+        )
+        veto.reset()
+        veto.goal_prior = CausalEntityGoalPrior()
+        veto_decision = veto.decide()
+        veto.clear_archive()
+
+        self.assertEqual(control_decision.action, Action.RIGHT)
+        self.assertEqual(veto_decision.action, Action.NOOP)
+        veto_event = next(
+            event
+            for event in veto_logger.events
+            if event["event"]
+            == "anonymous_entity_hazard_veto_evaluated"
+        )
+        self.assertEqual(veto_event["hazards_detected"], 1)
+        self.assertEqual(veto_event["hazards_filtered"], 1)
+        self.assertEqual(veto_event["alternatives_remaining"], 1)
+        self.assertFalse(veto_event["fail_open"])
+
+        fail_open_logger = RecordingLogger()
+        fail_open = VerifiedNeuralAgent(
+            CausalRareEntityEnv(),
+            dynamics,
+            "cpu",
+            NeuralPlanningConfig(
+                **{
+                    **base,
+                    "actions": (Action.RIGHT,),
+                    "verify_actions": 1,
+                },
+                anonymous_entity_shadow_horizons=(2, 3),
+                anonymous_entity_hazard_veto=True,
+            ),
+            event_logger=fail_open_logger,
+            entity_behavior_model=behavior_model,
+        )
+        fail_open.reset()
+        fail_open.goal_prior = CausalEntityGoalPrior()
+        fail_open_decision = fail_open.decide()
+        fail_open.clear_archive()
+
+        self.assertEqual(fail_open_decision.action, Action.RIGHT)
+        fail_open_event = next(
+            event
+            for event in fail_open_logger.events
+            if event["event"]
+            == "anonymous_entity_hazard_veto_evaluated"
+        )
+        self.assertTrue(fail_open_event["fail_open"])
+        self.assertEqual(fail_open_event["hazards_filtered"], 0)
+
     def test_causal_wait_withholds_unlocalized_global_hazard(self) -> None:
         logger = RecordingLogger()
         agent = VerifiedNeuralAgent(

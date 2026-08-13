@@ -129,6 +129,9 @@ class NeuralPlanningConfig:
     anonymous_entity_behavior_learning: bool = False
     anonymous_entity_passive_horizons: Tuple[int, ...] = ()
     anonymous_entity_causal_horizons: Tuple[int, ...] = ()
+    anonymous_entity_shadow_horizons: Tuple[int, ...] = ()
+    anonymous_entity_shadow_hazard_threshold: float = 0.9
+    anonymous_entity_hazard_veto: bool = False
     human_prior_intrinsic_clip: float = 10.0
     spatial_selection_weight: float = 0.0
     returnability_probe_depth: int = 0
@@ -680,6 +683,36 @@ class VerifiedNeuralAgent:
         ):
             raise ValueError(
                 "anonymous entity causal horizons require a behavior model"
+            )
+        if any(
+            horizon <= 0
+            for horizon in self.config.anonymous_entity_shadow_horizons
+        ):
+            raise ValueError(
+                "anonymous entity shadow horizons must be positive"
+            )
+        if (
+            self.config.anonymous_entity_shadow_horizons
+            and self.entity_behavior_model is None
+        ):
+            raise ValueError(
+                "anonymous entity shadow horizons require a behavior model"
+            )
+        if not (
+            0.0
+            <= self.config.anonymous_entity_shadow_hazard_threshold
+            <= 1.0
+        ):
+            raise ValueError(
+                "anonymous entity shadow hazard threshold must be between "
+                "zero and one"
+            )
+        if (
+            self.config.anonymous_entity_hazard_veto
+            and not self.config.anonymous_entity_shadow_horizons
+        ):
+            raise ValueError(
+                "anonymous entity hazard veto requires shadow horizons"
             )
         if self.config.human_prior_intrinsic_clip <= 0.0:
             raise ValueError("human-prior intrinsic clip must be positive")
@@ -2480,6 +2513,356 @@ class VerifiedNeuralAgent:
         )
         return observed
 
+    def _evaluate_anonymous_entity_behavior_shadow(
+        self,
+        source_frame: Frame,
+        endpoint_frame: Frame,
+        action: Action,
+        action_frames: int,
+        candidate_rank: int,
+        endpoint_state: object,
+    ) -> Dict[str, Any]:
+        """Predict delayed endpoint hazards without influencing control.
+
+        Every uncommon pooled patch remains anonymous.  Predictions are made
+        for a passive wait from the verified endpoint and are conditioned on
+        the translation-invariant relation to the visually localized
+        controllable patch.  The unconditional behavior distribution is
+        recorded beside it as a baseline.  This method is deliberately
+        side-effect free: it neither steps the environment nor changes a
+        plan's score or rank.  A separately gated commit filter may consume
+        the returned causal verdict when explicitly enabled.
+        """
+
+        memory = self.unlabeled_entity_memory
+        model = self.entity_behavior_model
+        horizons = tuple(
+            sorted(set(self.config.anonymous_entity_shadow_horizons))
+        )
+        branch_id = (
+            f"decision-{self.decision_index + 1:08d}-"
+            f"branch-{candidate_rank:02d}"
+        )
+        if memory is None or model is None or not horizons:
+            return {
+                "candidate_cells": 0,
+                "predictions": 0,
+                "known_predictions": 0,
+                "contextual_known_predictions": 0,
+                "max_hazard_probability": 0.0,
+                "would_reject": False,
+            }
+
+        model_digest_before = model.digest
+        features = {
+            (column, row): memory.feature_at(
+                endpoint_frame, column, row
+            )
+            for row in range(memory.rows)
+            for column in range(memory.columns)
+        }
+        fingerprint_counts = CounterType(
+            model.appearance_fingerprint(feature)
+            for feature in features.values()
+        )
+        controlled_cells: set[Tuple[int, int]] = set()
+        target_player_slot: Optional[Tuple[int, int]] = None
+        if self.goal_prior is not None:
+            detect_player = getattr(
+                self.goal_prior, "detect_player", None
+            )
+            if detect_player is not None:
+                target_player_slot = detect_player(
+                    endpoint_frame,
+                    reference=getattr(
+                        self.goal_prior,
+                        "current_player_slot",
+                        None,
+                    ),
+                )
+            else:
+                # Lightweight test priors expose only analyze(); production's
+                # pixel prior takes the read-only detector path above.
+                analysis = self.goal_prior.analyze(
+                    source_frame, endpoint_frame
+                )
+                target_player_slot = (
+                    analysis.target_player_slot
+                    or analysis.source_player_slot
+                )
+        if target_player_slot is not None:
+            controlled_cells.add(
+                (
+                    min(
+                        memory.columns - 1,
+                        max(
+                            0,
+                            target_player_slot[0]
+                            * memory.columns
+                            // endpoint_frame.width,
+                        ),
+                    ),
+                    min(
+                        memory.rows - 1,
+                        max(
+                            0,
+                            target_player_slot[1]
+                            * memory.rows
+                            // endpoint_frame.height,
+                        ),
+                    ),
+                )
+            )
+        fallback_context_signature = model.context_signature(
+            feature
+            for cell, feature in features.items()
+            if cell not in controlled_cells
+        )
+        candidate_cells = tuple(
+            (cell, feature)
+            for cell, feature in sorted(features.items())
+            if cell not in controlled_cells
+            and fingerprint_counts[
+                model.appearance_fingerprint(feature)
+            ]
+            <= 4
+        )
+
+        prediction_count = 0
+        known_predictions = 0
+        contextual_known_predictions = 0
+        causal_known_predictions = 0
+        max_hazard_probability = 0.0
+        max_empirical_hazard_probability = 0.0
+        max_unconditional_hazard_probability = 0.0
+        implicated: Optional[Dict[str, Any]] = None
+        threshold = (
+            self.config.anonymous_entity_shadow_hazard_threshold
+        )
+        for anchor, feature in candidate_cells:
+            appearance_fingerprint = model.appearance_fingerprint(feature)
+            context_signature = model.relational_context_signature(
+                anchor,
+                controlled_cells,
+                fallback_context_signature,
+            )
+            for horizon in horizons:
+                prediction = model.predict(
+                    feature,
+                    Action.NOOP,
+                    horizon,
+                    context_signature=context_signature,
+                    autonomous=True,
+                )
+                unconditional = model.predict(
+                    feature,
+                    Action.NOOP,
+                    horizon,
+                    autonomous=True,
+                )
+                prediction_count += 1
+                known_predictions += int(prediction.known)
+                contextual_known = bool(
+                    controlled_cells
+                    and prediction.known
+                    and prediction.context_matched
+                )
+                contextual_known_predictions += int(contextual_known)
+                context_eligible = bool(
+                    controlled_cells
+                    and prediction.causal_hazard_known
+                    and prediction.context_matched
+                )
+                causal_known_predictions += int(context_eligible)
+                if contextual_known:
+                    max_empirical_hazard_probability = max(
+                        max_empirical_hazard_probability,
+                        prediction.hazardous_probability,
+                    )
+                max_unconditional_hazard_probability = max(
+                    max_unconditional_hazard_probability,
+                    (
+                        unconditional.hazardous_probability
+                        if unconditional.known
+                        else 0.0
+                    ),
+                )
+                would_reject = bool(
+                    context_eligible
+                    and prediction.causal_hazardous_probability
+                    >= threshold
+                )
+                if context_eligible and (
+                    implicated is None
+                    or prediction.causal_hazardous_probability
+                    > max_hazard_probability
+                ):
+                    max_hazard_probability = (
+                        prediction.causal_hazardous_probability
+                    )
+                    implicated = {
+                        "anonymous_type_id": prediction.type_id,
+                        "appearance_fingerprint": appearance_fingerprint,
+                        "anchor_cell": anchor,
+                        "context_signature": context_signature,
+                        "horizon_frames": horizon,
+                        "behavior_samples": prediction.samples,
+                        "behavior_confidence": prediction.confidence,
+                        "causal_hazard_samples": (
+                            prediction.causal_hazard_samples
+                        ),
+                        "predicted_outcome": (
+                            prediction.outcome_signature
+                        ),
+                    }
+                self._emit(
+                    "anonymous_entity_behavior_shadow_prediction",
+                    decision=self.decision_index + 1,
+                    branch_id=branch_id,
+                    candidate_rank=candidate_rank,
+                    action=action,
+                    action_frames=action_frames,
+                    endpoint_state_id=self._state_id(endpoint_state),
+                    horizon_frames=horizon,
+                    anchor_cell=anchor,
+                    appearance_fingerprint=appearance_fingerprint,
+                    appearance_occurrences=(
+                        fingerprint_counts[appearance_fingerprint]
+                    ),
+                    anonymous_type_id=prediction.type_id,
+                    appearance_distance=prediction.appearance_distance,
+                    context_signature=context_signature,
+                    controlled_cell=next(
+                        iter(controlled_cells), None
+                    ),
+                    context_matched=prediction.context_matched,
+                    predicted_outcome=prediction.outcome_signature,
+                    predicted_outcome_probability=(
+                        prediction.outcome_probability
+                    ),
+                    hazard_probability=(
+                        prediction.hazardous_probability
+                    ),
+                    causal_hazard_probability=(
+                        prediction.causal_hazardous_probability
+                    ),
+                    causal_hazard_samples=(
+                        prediction.causal_hazard_samples
+                    ),
+                    causal_hazard_known=(
+                        prediction.causal_hazard_known
+                    ),
+                    behavior_samples=prediction.samples,
+                    behavior_known=prediction.known,
+                    behavior_confidence=prediction.confidence,
+                    behavior_entropy=prediction.entropy,
+                    unconditional_predicted_outcome=(
+                        unconditional.outcome_signature
+                    ),
+                    unconditional_hazard_probability=(
+                        unconditional.hazardous_probability
+                    ),
+                    unconditional_behavior_samples=unconditional.samples,
+                    unconditional_behavior_known=unconditional.known,
+                    shadow_hazard_threshold=threshold,
+                    shadow_prediction_actionable=context_eligible,
+                    shadow_would_reject=would_reject,
+                    shadow_policy_authority=(
+                        self.config.anonymous_entity_hazard_veto
+                    ),
+                    agent_visible=True,
+                    **self._frame_fields(endpoint_frame),
+                )
+
+        model_digest_after = model.digest
+        if model_digest_after != model_digest_before:
+            raise RuntimeError(
+                "anonymous entity shadow evaluation changed model parameters"
+            )
+        would_reject = bool(
+            implicated is not None
+            and max_hazard_probability >= threshold
+        )
+        result = {
+            "candidate_cells": len(candidate_cells),
+            "predictions": prediction_count,
+            "known_predictions": known_predictions,
+            "contextual_known_predictions": (
+                contextual_known_predictions
+            ),
+            "causal_known_predictions": causal_known_predictions,
+            "max_hazard_probability": max_hazard_probability,
+            "max_empirical_hazard_probability": (
+                max_empirical_hazard_probability
+            ),
+            "max_unconditional_hazard_probability": (
+                max_unconditional_hazard_probability
+            ),
+            "would_reject": would_reject,
+            "implicated": implicated,
+        }
+        self._emit(
+            "anonymous_entity_behavior_shadow_branch_evaluated",
+            decision=self.decision_index + 1,
+            branch_id=branch_id,
+            candidate_rank=candidate_rank,
+            action=action,
+            action_frames=action_frames,
+            endpoint_state_id=self._state_id(endpoint_state),
+            shadow_horizons=horizons,
+            shadow_hazard_threshold=threshold,
+            shadow_policy_authority=(
+                self.config.anonymous_entity_hazard_veto
+            ),
+            shadow_selection_weight=0.0,
+            shadow_candidate_cells=len(candidate_cells),
+            shadow_predictions=prediction_count,
+            shadow_known_predictions=known_predictions,
+            shadow_contextual_known_predictions=(
+                contextual_known_predictions
+            ),
+            shadow_causal_known_predictions=causal_known_predictions,
+            shadow_max_hazard_probability=max_hazard_probability,
+            shadow_max_empirical_hazard_probability=(
+                max_empirical_hazard_probability
+            ),
+            shadow_max_unconditional_hazard_probability=(
+                max_unconditional_hazard_probability
+            ),
+            shadow_would_reject=would_reject,
+            shadow_implicated_type_id=(
+                None
+                if implicated is None
+                else implicated["anonymous_type_id"]
+            ),
+            shadow_implicated_appearance=(
+                None
+                if implicated is None
+                else implicated["appearance_fingerprint"]
+            ),
+            shadow_implicated_anchor=(
+                None
+                if implicated is None
+                else implicated["anchor_cell"]
+            ),
+            shadow_implicated_context=(
+                None
+                if implicated is None
+                else implicated["context_signature"]
+            ),
+            shadow_implicated_horizon=(
+                None
+                if implicated is None
+                else implicated["horizon_frames"]
+            ),
+            model_parameter_sha256_before=model_digest_before,
+            model_parameter_sha256_after=model_digest_after,
+            model_parameters_unchanged=True,
+            agent_visible=True,
+            **self._frame_fields(endpoint_frame),
+        )
+        return result
+
     def _record_anonymous_causal_sample(
         self,
         source_feature: Tuple[int, ...],
@@ -2528,6 +2911,7 @@ class VerifiedNeuralAgent:
                 hazardous=hazardous,
                 autonomous=True,
                 evidence_id=evidence_id,
+                causal_hazard_evidence=True,
             )
             prediction_after = observation.prediction_after
             type_id = observation.type_id
@@ -2574,6 +2958,15 @@ class VerifiedNeuralAgent:
             hazard_probability_before=(
                 prediction_before.hazardous_probability
             ),
+            causal_hazard_probability_before=(
+                prediction_before.causal_hazardous_probability
+            ),
+            causal_hazard_samples_before=(
+                prediction_before.causal_hazard_samples
+            ),
+            causal_hazard_known_before=(
+                prediction_before.causal_hazard_known
+            ),
             observed_outcome=outcome_signature,
             observed_hazard=hazardous,
             surprise=surprise,
@@ -2584,6 +2977,15 @@ class VerifiedNeuralAgent:
             behavior_confidence_after=prediction_after.confidence,
             hazard_probability_after=(
                 prediction_after.hazardous_probability
+            ),
+            causal_hazard_probability_after=(
+                prediction_after.causal_hazardous_probability
+            ),
+            causal_hazard_samples_after=(
+                prediction_after.causal_hazard_samples
+            ),
+            causal_hazard_known_after=(
+                prediction_after.causal_hazard_known
             ),
             anchor_cell=anchor,
             relative_effect_cells=tuple(sorted(relative_effect_cells)),
@@ -2598,6 +3000,9 @@ class VerifiedNeuralAgent:
             model_type_count=model.type_count,
             model_rule_count=model.rule_count,
             model_observations=model.observation_count,
+            model_causal_hazard_observations=(
+                model.causal_hazard_observation_count
+            ),
             **self._frame_fields(target_frame),
         )
 
@@ -6897,6 +7302,63 @@ class VerifiedNeuralAgent:
                 safe.append(item)
         return (safe or verified), filtered if safe else []
 
+    def _verified_without_anonymous_entity_hazards(
+        self,
+        verified: List[Tuple[Any, ...]],
+        shadow_results: Dict[int, Dict[str, Any]],
+    ) -> Tuple[
+        List[Tuple[Any, ...]], List[Dict[str, Any]], bool
+    ]:
+        """Apply causally supported endpoint vetoes without deadlocking.
+
+        The filter is disabled by default.  When enabled it consumes only the
+        provenance-qualified verdict produced before scoring.  If every
+        remaining branch is hazardous, the original set is returned so the
+        controller retains at least one executable action and telemetry marks
+        the fail-open condition.
+        """
+
+        if not self.config.anonymous_entity_hazard_veto:
+            return verified, [], False
+        safe = []
+        filtered = []
+        for item in verified:
+            result = shadow_results.get(id(item[2]))
+            if result is None or not result.get("would_reject"):
+                safe.append(item)
+                continue
+            plan = item[1]
+            implicated = result.get("implicated") or {}
+            filtered.append(
+                {
+                    "action": plan.path[0],
+                    "action_frames": plan.durations[0],
+                    "causal_hazard_probability": result.get(
+                        "max_hazard_probability", 0.0
+                    ),
+                    "hazard_threshold": (
+                        self.config.anonymous_entity_shadow_hazard_threshold
+                    ),
+                    "anonymous_type_id": implicated.get(
+                        "anonymous_type_id"
+                    ),
+                    "appearance_fingerprint": implicated.get(
+                        "appearance_fingerprint"
+                    ),
+                    "anchor_cell": implicated.get("anchor_cell"),
+                    "context_signature": implicated.get(
+                        "context_signature"
+                    ),
+                    "horizon_frames": implicated.get("horizon_frames"),
+                    "causal_hazard_samples": implicated.get(
+                        "causal_hazard_samples"
+                    ),
+                }
+            )
+        if safe:
+            return safe, filtered, False
+        return verified, filtered, bool(filtered)
+
     def _informative_signature(self, frame: Frame) -> bool:
         signature = frame.coarse_signature()
         return (
@@ -9279,6 +9741,7 @@ class VerifiedNeuralAgent:
         states = [root]
         pruned_state_ids: set[int] = set()
         raw_verified = []
+        anonymous_entity_shadow_results: Dict[int, Dict[str, Any]] = {}
         release_state = getattr(self.env, "release_state", None)
         try:
             for candidate_rank, plan in enumerate(ranked, 1):
@@ -9326,6 +9789,20 @@ class VerifiedNeuralAgent:
                         target_frontier_signature,
                     )
                 )
+
+            if self.config.anonymous_entity_shadow_horizons:
+                for item in raw_verified:
+                    plan, state, target = item[:3]
+                    anonymous_entity_shadow_results[id(state)] = (
+                        self._evaluate_anonymous_entity_behavior_shadow(
+                            source_frame,
+                            target,
+                            plan.path[0],
+                            plan.durations[0],
+                            item[11],
+                            state,
+                        )
+                    )
 
             neutral_outcomes = {
                 item[0].durations[0]: item[2]
@@ -10142,6 +10619,34 @@ class VerifiedNeuralAgent:
                     source_signature, verified
                 )
             )
+            (
+                selection_verified,
+                anonymous_entity_hazards,
+                anonymous_entity_hazard_fail_open,
+            ) = self._verified_without_anonymous_entity_hazards(
+                selection_verified,
+                anonymous_entity_shadow_results,
+            )
+            if self.config.anonymous_entity_hazard_veto:
+                self._emit(
+                    "anonymous_entity_hazard_veto_evaluated",
+                    decision=self.decision_index + 1,
+                    enabled=True,
+                    policy_authority=True,
+                    hazard_threshold=(
+                        self.config.anonymous_entity_shadow_hazard_threshold
+                    ),
+                    evaluated_branches=len(verified),
+                    hazards=anonymous_entity_hazards,
+                    hazards_detected=len(anonymous_entity_hazards),
+                    hazards_filtered=(
+                        0
+                        if anonymous_entity_hazard_fail_open
+                        else len(anonymous_entity_hazards)
+                    ),
+                    alternatives_remaining=len(selection_verified),
+                    fail_open=anonymous_entity_hazard_fail_open,
+                )
             milestone_goal_branches = [
                 item
                 for item in selection_verified
@@ -12181,6 +12686,9 @@ class VerifiedNeuralAgent:
                     self.decision_index
                 )
             committed_action_penalty_components = branch_action_penalties[id(state)]
+            committed_entity_shadow = (
+                anonymous_entity_shadow_results.get(id(state)) or {}
+            )
             self._emit(
                 "decision_committed",
                 decision=self.decision_index,
@@ -12196,6 +12704,28 @@ class VerifiedNeuralAgent:
                 spatial_selection_weight=self.config.spatial_selection_weight,
                 spatial_selection_bonus=spatial_bonus(plan),
                 spatial_selection_applied_to_commit=False,
+                anonymous_entity_hazard_veto_enabled=(
+                    self.config.anonymous_entity_hazard_veto
+                ),
+                anonymous_entity_hazards_detected=len(
+                    anonymous_entity_hazards
+                ),
+                anonymous_entity_hazards_filtered=(
+                    0
+                    if anonymous_entity_hazard_fail_open
+                    else len(anonymous_entity_hazards)
+                ),
+                anonymous_entity_hazard_fail_open=(
+                    anonymous_entity_hazard_fail_open
+                ),
+                anonymous_entity_committed_hazard_probability=(
+                    committed_entity_shadow.get(
+                        "max_hazard_probability", 0.0
+                    )
+                ),
+                anonymous_entity_committed_would_reject=(
+                    committed_entity_shadow.get("would_reject", False)
+                ),
                 branches_examined=len(verified),
                 restored_archive=False,
                 committed_state_id=self._state_id(state),
