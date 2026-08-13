@@ -2343,9 +2343,9 @@ class VerifiedNeuralAgent:
                 int,
                 int,
                 int,
-                int,
-                int,
                 str,
+                int,
+                int,
                 Tuple[Action, ...],
             ]
         ] = []
@@ -2378,9 +2378,9 @@ class VerifiedNeuralAgent:
                     -len(unexpanded_actions),
                     self.human_prior_graph_state_visits[signature],
                     self._human_prior_position_visits(signature, player),
-                    -displacement,
-                    route_cost,
                     signature,
+                    route_cost,
+                    -displacement,
                     unexpanded_actions,
                 )
             )
@@ -2391,9 +2391,9 @@ class VerifiedNeuralAgent:
             _unexpanded_rank,
             _state_visits,
             _position_visits,
-            _displacement_rank,
-            _route_cost,
             waypoint_signature,
+            _route_cost,
+            _displacement_rank,
             frontier_actions,
         ) = min(candidates)
         remaining_costs = self._human_prior_episodic_graph_distances(

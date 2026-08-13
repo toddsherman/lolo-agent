@@ -3475,6 +3475,51 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(plan.frontier_actions, (Action.DOWN,))
         self.assertEqual(plan.source_remaining_cost, 1)
 
+    def test_control_frontier_tie_break_is_stable_across_sources(
+        self,
+    ) -> None:
+        agent = VerifiedNeuralAgent(
+            ActionEffectEnv(),
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.UP,),
+                human_prior_heart_reward=1.0,
+                human_prior_episodic_graph_guidance=True,
+            ),
+        )
+        agent.reset()
+        signature = lambda player: agent._human_prior_graph_signature(
+            ((7, 0),), player, None, "life"
+        )
+        left_source = signature((0, 0))
+        right_source = signature((10, 0))
+        left_frontier = signature((2, 0))
+        right_frontier = signature((8, 0))
+        for source in (left_source, right_source):
+            agent._record_human_prior_episodic_graph_transition(
+                source, left_frontier, 1
+            )
+            agent._record_human_prior_episodic_graph_transition(
+                source, right_frontier, 1
+            )
+
+        left_plan = agent._human_prior_episodic_graph_plan(left_source)
+        right_plan = agent._human_prior_episodic_graph_plan(right_source)
+
+        self.assertIsNotNone(left_plan)
+        self.assertIsNotNone(right_plan)
+        assert left_plan is not None
+        assert right_plan is not None
+        self.assertEqual(
+            left_plan.waypoint_signature,
+            right_plan.waypoint_signature,
+        )
+        self.assertEqual(left_plan.frontier_actions, (Action.UP,))
+        self.assertEqual(right_plan.frontier_actions, (Action.UP,))
+
     def test_option_search_reuses_visited_control_frontier_route(
         self,
     ) -> None:

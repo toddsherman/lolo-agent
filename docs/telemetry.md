@@ -668,6 +668,11 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   branch. Once an endpoint's position, world state, and outgoing controls are
   all covered, `human_prior_semantic_archives_exhausted` records removal and
   release of that now-terminal save-state capability;
+- equally evidenced control-frontier waypoints use a source-independent
+  semantic-state tie-break. Intermediate archive restores therefore keep
+  advancing toward one empirically unfinished state instead of alternating
+  between whichever tied waypoint happens to be farther from the current
+  player position;
 - each exact search can retain multiple globally novel semantic endpoint
   representatives, bounded by
   `--human-prior-option-archive-representatives` and the global archive
