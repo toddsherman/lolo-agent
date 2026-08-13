@@ -1840,6 +1840,27 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             and bool(event.get("preparation_transition_learned"))
             for event in events
         ),
+        "goal_milestone_preparation_filter_evaluations": event_counts.get(
+            "human_prior_exhausted_milestone_filter_evaluated", 0
+        ),
+        "goal_milestone_preparation_branches_filtered": sum(
+            int(event.get("exhausted_branches_filtered") or 0)
+            for event in events
+            if event["event"]
+            == "human_prior_exhausted_milestone_filter_evaluated"
+        ),
+        "goal_milestone_preparation_filter_fail_opens": sum(
+            bool(event.get("fail_open"))
+            for event in events
+            if event["event"]
+            == "human_prior_exhausted_milestone_filter_evaluated"
+        ),
+        "goal_milestone_preparation_archives_preserved": sum(
+            int(event.get("preserved_branches") or 0)
+            for event in events
+            if event["event"]
+            == "human_prior_preparation_archives_preserved"
+        ),
         "goal_milestone_exhaustion_hazard_samples": sum(
             event["event"] == "goal_milestone_exhaustion_learned"
             and bool(event.get("hazard_evidence", True))

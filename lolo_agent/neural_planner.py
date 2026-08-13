@@ -8165,6 +8165,123 @@ class VerifiedNeuralAgent:
             in self.human_prior_exhausted_milestone_transitions
         )
 
+    def _human_prior_preparation_ordering_active(self) -> bool:
+        """Return whether the current visible goal set has a failed ordering.
+
+        The hint is semantic and room-local: it matches the current pixel-
+        detected heart set and chest phase, not a controller action.  This is
+        intentionally separate from the causal hazard filters.
+        """
+
+        if self.goal_prior is None:
+            return False
+        current_hearts = tuple(sorted(self.goal_prior.current_slots()))
+        current_chest_obtained = bool(
+            getattr(self.goal_prior, "chest_obtained", False)
+        )
+        return any(
+            tuple(source_hearts) == current_hearts
+            and bool(chest_obtained) == current_chest_obtained
+            for source_hearts, _target_hearts, chest_obtained in (
+                self.human_prior_exhausted_milestone_transitions
+            )
+        )
+
+    def _human_prior_archive_preserves_preparation(
+        self, branch: _ArchivedBranch
+    ) -> bool:
+        """Keep a pre-milestone branch while testing an alternate ordering."""
+
+        if (
+            self.goal_prior is None
+            or not self._human_prior_preparation_ordering_active()
+        ):
+            return False
+        current_hearts = tuple(sorted(self.goal_prior.current_slots()))
+        current_chest_obtained = bool(
+            getattr(self.goal_prior, "chest_obtained", False)
+        )
+        return bool(
+            branch.goal_total_hearts > 0
+            and tuple(sorted(branch.goal_heart_slots)) == current_hearts
+            and branch.goal_remaining_hearts == len(current_hearts)
+            and bool(branch.goal_chest_obtained)
+            == current_chest_obtained
+        )
+
+    def _human_prior_archive_is_non_regressive(
+        self,
+        branch: _ArchivedBranch,
+        best_remaining_hearts: Optional[int],
+    ) -> bool:
+        if best_remaining_hearts is None:
+            return True
+        return bool(
+            (
+                branch.goal_total_hearts > 0
+                and branch.goal_remaining_hearts <= best_remaining_hearts
+            )
+            or self._human_prior_archive_preserves_preparation(branch)
+        )
+
+    def _filter_exhausted_milestone_transitions(
+        self,
+        verified: List[Tuple[Any, ...]],
+        analyses: Dict[int, Optional[HeartGoalAnalysis]],
+        graph_signatures: Dict[int, Tuple[str, str]],
+    ) -> Tuple[List[Tuple[Any, ...]], List[Tuple[Any, ...]], int, bool]:
+        """Deprioritize an exact failed ordering when preparation is possible.
+
+        A transition is removed only when another verified, non-loss branch
+        changes semantic player/world state or reaches a different milestone.
+        If no such branch exists, selection fails open instead of turning the
+        soft ordering hint into a hard action veto.
+        """
+
+        exhausted = [
+            item
+            for item in verified
+            if analyses[id(item[2])] is not None
+            and self._human_prior_milestone_transition_exhausted(
+                analyses[id(item[2])]
+            )
+        ]
+        if not exhausted:
+            return verified, [], 0, False
+        exhausted_ids = {id(item[2]) for item in exhausted}
+        preparation_alternatives = 0
+        for item in verified:
+            if id(item[2]) in exhausted_ids:
+                continue
+            analysis = analyses[id(item[2])]
+            if analysis is None or analysis.life_loss_penalty < 0.0:
+                continue
+            source_signature, target_signature = graph_signatures[id(item[2])]
+            if (
+                analysis.milestone_reward > 0.0
+                or (
+                    analysis.source_player_slot is not None
+                    and analysis.target_player_slot is not None
+                    and analysis.target_player_slot
+                    != analysis.source_player_slot
+                )
+                or (
+                    bool(source_signature)
+                    and bool(target_signature)
+                    and target_signature != source_signature
+                )
+            ):
+                preparation_alternatives += 1
+        fail_open = preparation_alternatives == 0
+        if fail_open:
+            return verified, exhausted, 0, True
+        return (
+            [item for item in verified if id(item[2]) not in exhausted_ids],
+            exhausted,
+            preparation_alternatives,
+            False,
+        )
+
     @staticmethod
     def _human_prior_option_selection_key(
         node: _HumanPriorOptionNode,
@@ -9527,11 +9644,8 @@ class VerifiedNeuralAgent:
             non_regressive_archive = [
                 branch
                 for branch in self.archive
-                if current_best_hearts is None
-                or (
-                    branch.goal_total_hearts > 0
-                    and branch.goal_remaining_hearts
-                    <= current_best_hearts
+                if self._human_prior_archive_is_non_regressive(
+                    branch, current_best_hearts
                 )
             ]
             global_archive_frontiers = sum(
@@ -10752,6 +10866,68 @@ class VerifiedNeuralAgent:
                     ),
                     alternatives_remaining=len(selection_verified),
                     fail_open=anonymous_entity_hazard_fail_open,
+                )
+            (
+                selection_verified,
+                exhausted_milestone_branches,
+                preparation_alternatives,
+                exhausted_milestone_fail_open,
+            ) = self._filter_exhausted_milestone_transitions(
+                selection_verified,
+                branch_goal_analyses,
+                branch_goal_signatures,
+            )
+            if exhausted_milestone_branches:
+                transition_rows = []
+                transition_keys = set()
+                for item in exhausted_milestone_branches:
+                    analysis = branch_goal_analyses[id(item[2])]
+                    assert analysis is not None
+                    transition = self._human_prior_milestone_transition_key(
+                        analysis
+                    )
+                    if transition in transition_keys:
+                        continue
+                    transition_keys.add(transition)
+                    transition_rows.append(
+                        {
+                            "source_hearts": transition[0],
+                            "target_hearts": transition[1],
+                            "chest_obtained": transition[2],
+                        }
+                    )
+                self._emit(
+                    "human_prior_exhausted_milestone_filter_evaluated",
+                    decision=self.decision_index + 1,
+                    enabled=True,
+                    policy_authority=True,
+                    policy_effect="milestone_priority_only",
+                    hazard_evidence=False,
+                    exhausted_transitions=transition_rows,
+                    exhausted_branches=[
+                        {
+                            "action": item[1].path[0],
+                            "action_frames": item[1].durations[0],
+                            "source_hearts": branch_goal_analyses[
+                                id(item[2])
+                            ].source_present,
+                            "target_hearts": branch_goal_analyses[
+                                id(item[2])
+                            ].target_present,
+                        }
+                        for item in exhausted_milestone_branches
+                    ],
+                    exhausted_branches_detected=len(
+                        exhausted_milestone_branches
+                    ),
+                    exhausted_branches_filtered=(
+                        0
+                        if exhausted_milestone_fail_open
+                        else len(exhausted_milestone_branches)
+                    ),
+                    preparation_alternatives=preparation_alternatives,
+                    alternatives_remaining=len(selection_verified),
+                    fail_open=exhausted_milestone_fail_open,
                 )
             milestone_goal_branches = [
                 item
@@ -13752,15 +13928,40 @@ class VerifiedNeuralAgent:
             self.goal_prior is not None
             and self.goal_prior.best_remaining_hearts is not None
         ):
+            preparation_archives = [
+                branch
+                for branch in eligible
+                if (
+                    branch.goal_total_hearts > 0
+                    and branch.goal_remaining_hearts
+                    > self.goal_prior.best_remaining_hearts
+                    and self._human_prior_archive_preserves_preparation(
+                        branch
+                    )
+                )
+            ]
             non_regressive_goal_eligible = [
                 branch
                 for branch in eligible
-                if branch.goal_total_hearts > 0
-                and branch.goal_remaining_hearts
-                <= self.goal_prior.best_remaining_hearts
+                if self._human_prior_archive_is_non_regressive(
+                    branch, self.goal_prior.best_remaining_hearts
+                )
             ]
             removed = len(eligible) - len(non_regressive_goal_eligible)
             eligible = non_regressive_goal_eligible
+            if preparation_archives:
+                self._emit(
+                    "human_prior_preparation_archives_preserved",
+                    decision=self.decision_index + 1,
+                    best_remaining_hearts=(
+                        self.goal_prior.best_remaining_hearts
+                    ),
+                    current_heart_slots=self.goal_prior.current_slots(),
+                    preserved_branches=len(preparation_archives),
+                    alternatives_remaining=len(eligible),
+                    policy_effect="preparation_frontier_only",
+                    hazard_evidence=False,
+                )
             if removed:
                 self._emit(
                     "human_prior_regressive_archives_filtered",
@@ -13769,6 +13970,9 @@ class VerifiedNeuralAgent:
                         self.goal_prior.best_remaining_hearts
                     ),
                     filtered_branches=removed,
+                    preparation_branches_preserved=len(
+                        preparation_archives
+                    ),
                     alternatives_remaining=len(eligible),
                 )
         if human_prior_graph_stagnation:

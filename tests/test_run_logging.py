@@ -579,6 +579,18 @@ class RunLoggingTests(unittest.TestCase):
             self.assertIn("goal_milestone_exhaustions_learned", summary)
             self.assertIn("goal_milestone_exhaustion_restores", summary)
             self.assertIn(
+                "goal_milestone_preparation_filter_evaluations", summary
+            )
+            self.assertIn(
+                "goal_milestone_preparation_branches_filtered", summary
+            )
+            self.assertIn(
+                "goal_milestone_preparation_filter_fail_opens", summary
+            )
+            self.assertIn(
+                "goal_milestone_preparation_archives_preserved", summary
+            )
+            self.assertIn(
                 "goal_milestone_descendant_invalidations", summary
             )
             self.assertIn(

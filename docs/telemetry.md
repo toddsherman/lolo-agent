@@ -389,7 +389,19 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   but it cannot bypass the minimum exploration requirement. The preparation
   hint is scoped to the visible heart-set transition—including the valid empty
   set after the last heart—so later planning deprioritizes the same collection
-  order without hard-vetoing the controller action;
+  order without hard-vetoing the controller action.
+  `human_prior_exhausted_milestone_filter_evaluated` records each contextual
+  policy evaluation, the exact source/target heart sets, candidate controller
+  edges, available preparation alternatives, filtered count, and fail-open
+  status. Filtering occurs only when another verified non-loss branch changes
+  semantic player/world state or reaches a different milestone; otherwise the
+  hint fails open. `human_prior_preparation_archives_preserved` records archive
+  branches allowed to retain the current pre-milestone heart set even when the
+  historical best remaining-heart count is lower. This exemption is active
+  only for a current source heart set with a learned exhausted ordering and
+  does not weaken life-loss or causal entity-hazard filters. Summary fields
+  aggregate filter evaluations, filtered branches, fail-opens, and preserved
+  preparation archives;
 - `human_prior_option_milestone_settled` links the immediate action endpoint
   to the stable frame and state used for milestone analysis and archival.
   `human_prior_option_milestone_candidates_collapsed` reports the reduction in

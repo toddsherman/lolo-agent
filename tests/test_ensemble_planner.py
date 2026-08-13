@@ -2624,6 +2624,100 @@ class EnsemblePlannerTests(unittest.TestCase):
             milestone_depth["repeated_milestone_parents_retained"], 0
         )
 
+    def test_exhausted_milestone_transition_uses_semantic_alternative(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = ActionEffectEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(),
+        )
+        source = env.reset()
+        target = env.step(Action.RIGHT, 1)
+        base = PositionGoalPrior().analyze(source, target)
+        source_hearts = ((1, 0), (7, 0))
+        milestone = replace(
+            base,
+            known_slots=source_hearts,
+            source_present=source_hearts,
+            target_present=((7, 0),),
+            collected=((1, 0),),
+            heart_reward=25.0,
+            navigation_reward=0.0,
+            total_reward=25.0,
+        )
+        alternative = replace(
+            base,
+            known_slots=source_hearts,
+            source_present=source_hearts,
+            target_present=source_hearts,
+            collected=(),
+            heart_reward=0.0,
+            total_reward=base.navigation_reward,
+        )
+        milestone_state = object()
+        alternative_state = object()
+        milestone_branch = (
+            25.0,
+            NeuralPlan((Action.DOWN,), (1,), 0.0, 0.0),
+            milestone_state,
+            target,
+        )
+        alternative_branch = (
+            1.0,
+            NeuralPlan((Action.UP,), (1,), 0.0, 0.0),
+            alternative_state,
+            target,
+        )
+        verified = [milestone_branch, alternative_branch]
+        analyses = {
+            id(milestone_state): milestone,
+            id(alternative_state): alternative,
+        }
+        signatures = {
+            id(milestone_state): ("source", "milestone"),
+            id(alternative_state): ("source", "preparation"),
+        }
+        agent.human_prior_exhausted_milestone_transitions.add(
+            (source_hearts, ((7, 0),), False)
+        )
+
+        filtered, exhausted, alternatives, fail_open = (
+            agent._filter_exhausted_milestone_transitions(
+                verified, analyses, signatures
+            )
+        )
+
+        self.assertEqual(filtered, [alternative_branch])
+        self.assertEqual(exhausted, [milestone_branch])
+        self.assertEqual(alternatives, 1)
+        self.assertFalse(fail_open)
+
+        stationary = replace(
+            alternative,
+            target_player_slot=alternative.source_player_slot,
+            navigation_reward=0.0,
+            total_reward=0.0,
+        )
+        analyses[id(alternative_state)] = stationary
+        signatures[id(alternative_state)] = ("source", "source")
+
+        unfiltered, exhausted, alternatives, fail_open = (
+            agent._filter_exhausted_milestone_transitions(
+                verified, analyses, signatures
+            )
+        )
+
+        self.assertEqual(unfiltered, verified)
+        self.assertEqual(exhausted, [milestone_branch])
+        self.assertEqual(alternatives, 0)
+        self.assertTrue(fail_open)
+
     def test_human_prior_option_search_rejects_globally_visited_states(
         self,
     ) -> None:
@@ -6034,6 +6128,74 @@ class EnsemblePlannerTests(unittest.TestCase):
         ]
         self.assertEqual(len(filtered), 1)
         self.assertEqual(filtered[0]["alternatives_remaining"], 0)
+
+    def test_failed_ordering_preserves_pre_milestone_archive(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = UniqueStateEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                human_prior_best_first_archive=True,
+            ),
+            event_logger=logger,
+        )
+        source_frame = agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        source_hearts = ((1, 0), (7, 0))
+        agent.goal_prior.known_slots = set(source_hearts)
+        agent.goal_prior.current_present = set(source_hearts)
+        agent.goal_prior.best_remaining_hearts = 1
+        agent.human_prior_exhausted_milestone_transitions.add(
+            (source_hearts, ((7, 0),), False)
+        )
+        root = env.save_state()
+        target_frame = env.step(Action.RIGHT, 1)
+        target_state = env.save_state()
+        env.load_state(root)
+        agent.frame = source_frame
+        source_signature = agent._current_human_prior_graph_signature()
+        agent.archive = [
+            _ArchivedBranch(
+                state=target_state,
+                frame=target_frame,
+                plan=NeuralPlan((Action.RIGHT,), (1,), 1.0, 0.0),
+                score=1.0,
+                scene=agent._scene_signature(target_frame),
+                created=0,
+                goal_heart_slots=source_hearts,
+                goal_progress_reward=1.0,
+                goal_remaining_hearts=2,
+                goal_total_hearts=2,
+                goal_player_slot=(1, 0),
+                goal_source_signature=source_signature,
+                goal_target_signature="preparation-target",
+                human_prior_verified_option=True,
+            )
+        ]
+        agent.human_prior_graph_recovery_pending = True
+
+        restored = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(restored)
+        assert restored is not None
+        self.assertEqual(restored.planned_path, (Action.RIGHT,))
+        self.assertEqual(env.position, 1)
+        preserved = [
+            event
+            for event in logger.events
+            if event["event"]
+            == "human_prior_preparation_archives_preserved"
+        ]
+        self.assertEqual(len(preserved), 1)
+        self.assertEqual(preserved[0]["preserved_branches"], 1)
+        self.assertFalse(preserved[0]["hazard_evidence"])
 
     def test_regressive_archive_does_not_defer_option_search(self) -> None:
         model = EnsembleVisualDynamicsModel(

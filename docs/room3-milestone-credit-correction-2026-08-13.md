@@ -108,10 +108,53 @@ life losses, entity-hazard detections, or fail-opens. The frozen neural audit
 passed. This is the intended behavior on real emulator state, not only a unit
 test.
 
+## Ordering-exhaustion validation
+
+The chained native run
+`entity-v10-room3-ordering-recovery-from-lower-left-d8-d10` accumulated the
+remaining bounded evidence from the first-heart branch. It reached 16
+consecutive committed decisions without new semantic progress after exploring
+73 graph states and 37 player positions. The resulting event recorded the
+exact pixel-derived transition
+`[(128,64),(144,192)] -> [(144,192)]` with
+`hazard_evidence=false`, `learned_hazard_samples=0`, and
+`policy_effect=milestone_priority_only`, then restored the exact pre-heart
+state. The run contained 10 committed decisions, 28,367 telemetry events,
+2,145 exact option branches, one restore, zero life losses, and a passing
+frozen-parameter audit.
+
+The first decision after rollback exposed a separate policy handoff defect.
+Exact option search correctly refused to expand the exhausted transition and
+found a pre-milestone archive branch, but the generic archive filter discarded
+that branch because it retained two hearts while the historical best was one.
+Direct selection then treated the exhausted transition as an ordinary known
+milestone fallback and collected the same heart again. The evidence had been
+learned correctly; the policy was not honoring it.
+
+The policy now filters an exact exhausted milestone transition when at least
+one verified non-loss alternative changes semantic player/world state or
+reaches a different milestone. The filter fails open when no such alternative
+exists, so it remains a contextual ordering preference rather than a hard
+controller veto. Pre-milestone archive branches that preserve the current
+heart set are also exempt from the historical best-heart regression filter
+while that source heart set has a learned failed ordering. This lets the agent
+traverse preparation states with two hearts while searching for a different
+first collection.
+
 ## Next experiment
 
-Continue from decision 2 of the matched progress-reset validation toward the
-remaining heart or a downward route. If 16 consecutive decisions pass without
-a new reachable state, rollback may record a soft collection-order hint, but
-it still cannot label the collection action hazardous. Any future hard veto
-must be supported by actual causal hazard provenance.
+The matched two-decision replay
+`entity-v10-room3-ordering-filter-from-d9-d2` resumed decision 9 of the
+ordering-exhaustion validation, where both hearts were visible. Episodic memory
+reconstructed exactly one exhausted transition. The first decision restored a
+verified `UP, DOWN, DOWN` depth-3 preparation branch while retaining both
+hearts. On the next decision, direct verification detected the exact exhausted
+upper-heart transition, found one non-loss semantic alternative, filtered the
+transition, and selected `UP 16` from `(128,64)` to `(128,48)` with both hearts
+still present. The evaluation logged one filter evaluation, one filtered
+branch, zero fail-opens, zero life losses, zero global action-hazard samples,
+and a passing frozen-parameter audit.
+
+Continue from decision 2 of that replay and expand the two-heart graph toward
+the lower heart. Any future hard veto still requires observed loss or causal
+hazard provenance.
