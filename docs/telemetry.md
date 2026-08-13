@@ -264,9 +264,17 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   make that archive look useful under an unrelated plan. Restore events expose
   both the live fields above and the corresponding
   `human_prior_episodic_graph_stored_*` values;
+- `human_prior_archive_goal_revalidated` compares every archive target with
+  the current screen and current learned ordering before restore. A stored
+  shaping reward is only the delta from the archive's original source and is
+  not comparable after the agent moves. The event records changed rewards,
+  invalidated stale positives, and current positive alternatives. Restore and
+  commit events expose the decision-time value as
+  `human_prior_goal_reward` and retain its historical value as
+  `human_prior_stored_goal_reward`;
 - `human_prior_best_first_archives_filtered` records
   `positive_goal_frontier_constraint_applied` when at least one safe archive
-  has positive pixel-derived goal reward. In that case graph, semantic,
+  has positive current-state pixel-derived goal reward. In that case graph, semantic,
   physical, world, and local-control frontier ranking is performed only among
   the positive-reward archives. A completed graph route may still win over a
   less complete positive shaping route, but optional control-frontier progress

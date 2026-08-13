@@ -1842,6 +1842,23 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             if event["event"]
             == "human_prior_archive_episodic_graph_revalidated"
         ),
+        "human_prior_archive_goal_revalidations": event_counts.get(
+            "human_prior_archive_goal_revalidated", 0
+        ),
+        "human_prior_archive_stale_positive_goal_rewards_invalidated": sum(
+            int(
+                event.get(
+                    "stale_positive_goal_rewards_invalidated", 0
+                )
+            )
+            for event in events
+            if event["event"] == "human_prior_archive_goal_revalidated"
+        ),
+        "human_prior_archive_live_positive_goal_candidates": sum(
+            int(event.get("live_positive_goal_rewards", 0))
+            for event in events
+            if event["event"] == "human_prior_archive_goal_revalidated"
+        ),
         "human_prior_episodic_graph_maximum_progress": max(
             (
                 float(

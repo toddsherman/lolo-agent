@@ -18250,6 +18250,9 @@ class VerifiedNeuralAgent:
         archive_episodic_graph_metrics: Dict[
             int, Tuple[float, bool, Optional[int]]
         ] = {}
+        archive_goal_metrics: Dict[
+            int, Tuple[float, Optional[HeartGoalAnalysis]]
+        ] = {}
         if (
             self.config.human_prior_episodic_graph_guidance
             and self.goal_prior is not None
@@ -18278,6 +18281,38 @@ class VerifiedNeuralAgent:
                     candidate.human_prior_episodic_graph_remaining_cost,
                 )
             archive_episodic_graph_metrics[id(candidate)] = cached
+            return cached
+
+        def live_archive_goal_metrics(
+            candidate: _ArchivedBranch,
+        ) -> Tuple[float, Optional[HeartGoalAnalysis]]:
+            """Revalue an archived target from the current visual state.
+
+            Stored shaping reward is a transition-local observation from the
+            archive's original source.  It is valid telemetry but is not
+            comparable after the live agent has moved elsewhere.  Re-analyze
+            current and target pixels under the current learned ordering so
+            archive ranking uses a common source state.
+            """
+
+            cached = archive_goal_metrics.get(id(candidate))
+            if cached is not None:
+                return cached
+            if self.goal_prior is None:
+                cached = (candidate.goal_progress_reward, None)
+            else:
+                analysis = self.goal_prior.analyze(
+                    self.frame,
+                    candidate.frame,
+                    target_player_reference=candidate.goal_player_slot,
+                )
+                cached = (
+                    self._human_prior_ordering_adjusted_total_reward(
+                        analysis
+                    ),
+                    analysis,
+                )
+            archive_goal_metrics[id(candidate)] = cached
             return cached
 
         causal_cell_grace = self.config.causal_cell_recovery_grace_decisions
@@ -18617,13 +18652,60 @@ class VerifiedNeuralAgent:
                 ),
                 policy_effect="current_plan_only",
             )
+        if human_prior_graph_stagnation and self.goal_prior is not None:
+            stale_positive_goal_rewards = sum(
+                branch.goal_progress_reward > 0.0
+                and live_archive_goal_metrics(branch)[0] <= 0.0
+                for branch in eligible
+            )
+            live_positive_goal_rewards = sum(
+                live_archive_goal_metrics(branch)[0] > 0.0
+                for branch in eligible
+            )
+            goal_rewards_changed = sum(
+                not math.isclose(
+                    branch.goal_progress_reward,
+                    live_archive_goal_metrics(branch)[0],
+                    abs_tol=1e-9,
+                )
+                for branch in eligible
+            )
+            self._emit(
+                "human_prior_archive_goal_revalidated",
+                decision=self.decision_index + 1,
+                recovery_reason=recovery_reason,
+                alternatives_examined=len(eligible),
+                stale_positive_goal_rewards_invalidated=(
+                    stale_positive_goal_rewards
+                ),
+                live_positive_goal_rewards=(
+                    live_positive_goal_rewards
+                ),
+                goal_rewards_changed=goal_rewards_changed,
+                current_player_slot=self.goal_prior.current_player_slot,
+                current_heart_slots=self.goal_prior.current_slots(),
+                policy_effect="current_visual_state_only",
+                agent_visible=(
+                    self.goal_prior.current_player_slot is not None
+                ),
+                **self._frame_fields(self.frame),
+            )
         if human_prior_graph_stagnation:
             exhausted_semantic_branches = [
                 branch
                 for branch in eligible
                 if branch.goal_source_signature
                 and branch.goal_target_signature
-                and branch.goal_progress_reward <= 0.0
+                and live_archive_goal_metrics(branch)[0] <= 0.0
+                and not (
+                    branch.goal_total_hearts > 0
+                    and branch.goal_remaining_hearts
+                    < current_goal_heart_count
+                )
+                and not (
+                    branch.goal_chest_obtained
+                    and not current_goal_chest_obtained
+                )
                 and live_archive_episodic_graph_metrics(branch)[0] <= 0.0
                 and not any(
                     self._human_prior_archive_frontier_flags(branch)
@@ -18706,7 +18788,18 @@ class VerifiedNeuralAgent:
                 )
         behavioral_frontier_candidates = list(eligible)
         global_goal_eligible = [
-            branch for branch in eligible if branch.goal_progress_reward > 0.0
+            branch
+            for branch in eligible
+            if live_archive_goal_metrics(branch)[0] > 0.0
+            or (
+                branch.goal_total_hearts > 0
+                and branch.goal_remaining_hearts
+                < current_goal_heart_count
+            )
+            or (
+                branch.goal_chest_obtained
+                and not current_goal_chest_obtained
+            )
         ]
         global_causal_event_eligible = [
             branch for branch in eligible if branch.causal_event_outcome
@@ -18771,7 +18864,18 @@ class VerifiedNeuralAgent:
         safe_eligible = []
         hazardous_eligible = []
         for candidate in eligible:
-            if candidate.goal_progress_reward > 0.0:
+            if (
+                live_archive_goal_metrics(candidate)[0] > 0.0
+                or (
+                    candidate.goal_total_hearts > 0
+                    and candidate.goal_remaining_hearts
+                    < current_goal_heart_count
+                )
+                or (
+                    candidate.goal_chest_obtained
+                    and not current_goal_chest_obtained
+                )
+            ):
                 safe_eligible.append(candidate)
                 continue
             value, known = self._temporal_option_estimate(
@@ -18809,7 +18913,18 @@ class VerifiedNeuralAgent:
         behavioral_best_first_applied = False
         behavioral_frontier_safe = []
         for candidate in behavioral_frontier_candidates:
-            if candidate.goal_progress_reward > 0.0:
+            if (
+                live_archive_goal_metrics(candidate)[0] > 0.0
+                or (
+                    candidate.goal_total_hearts > 0
+                    and candidate.goal_remaining_hearts
+                    < current_goal_heart_count
+                )
+                or (
+                    candidate.goal_chest_obtained
+                    and not current_goal_chest_obtained
+                )
+            ):
                 behavioral_frontier_safe.append(candidate)
                 continue
             value, known = self._temporal_option_estimate(
@@ -19079,14 +19194,14 @@ class VerifiedNeuralAgent:
         goal_eligible = [
             candidate
             for candidate in eligible
-            if candidate.goal_progress_reward > 0.0
+            if live_archive_goal_metrics(candidate)[0] > 0.0
         ] if not human_prior_episodic_graph_best_first_applied else []
         if goal_eligible:
             eligible = goal_eligible
             affordance_breadth_first = False
             causal_event_eligible = []
             restore_key = lambda item: (
-                item.goal_progress_reward,
+                live_archive_goal_metrics(item)[0],
                 self._archive_frontier_score(item),
                 item.score,
             )
@@ -19179,6 +19294,9 @@ class VerifiedNeuralAgent:
         branch = max(
             eligible,
             key=restore_key,
+        )
+        restored_goal_reward, restored_goal_analysis = (
+            live_archive_goal_metrics(branch)
         )
         (
             restored_episodic_graph_progress,
@@ -19802,7 +19920,13 @@ class VerifiedNeuralAgent:
             human_prior_reward_track=(
                 "human_prior_v2" if self.goal_prior is not None else None
             ),
-            human_prior_goal_reward=branch.goal_progress_reward,
+            human_prior_goal_reward=restored_goal_reward,
+            human_prior_stored_goal_reward=(
+                branch.goal_progress_reward
+            ),
+            human_prior_goal_reward_revalidated=(
+                restored_goal_analysis is not None
+            ),
             human_prior_target_hearts=branch.goal_heart_slots,
             human_prior_remaining_hearts=branch.goal_remaining_hearts,
             human_prior_total_hearts=branch.goal_total_hearts,
@@ -19983,7 +20107,13 @@ class VerifiedNeuralAgent:
             human_prior_reward_track=(
                 "human_prior_v2" if self.goal_prior is not None else None
             ),
-            human_prior_goal_reward=branch.goal_progress_reward,
+            human_prior_goal_reward=restored_goal_reward,
+            human_prior_stored_goal_reward=(
+                branch.goal_progress_reward
+            ),
+            human_prior_goal_reward_revalidated=(
+                restored_goal_analysis is not None
+            ),
             human_prior_target_hearts=branch.goal_heart_slots,
             human_prior_remaining_hearts=branch.goal_remaining_hearts,
             human_prior_total_hearts=branch.goal_total_hearts,

@@ -279,3 +279,14 @@ now constrain the best-first candidate pool before graph/frontier ranking.
 Graph completion may still break ties among positive alternatives and remains
 available when no positive alternative exists, but optional exploration can
 no longer override verified progress with a regressive branch.
+
+The continuation from `(144,128)` exposed one more temporal-credit issue.
+Archived navigation rewards were stored as deltas from each option's original
+source. An old route to `(80,32)` still carried +1 from an early upper-room
+state and could therefore look positive after the agent had already reached
+the interior, even though restoring it moved away from the active lower goal.
+Archive recovery now re-analyzes current pixels against every candidate frame
+using the current learned ordering. Stored reward is retained for audit, while
+only this common-source live reward participates in shaping priority. Verified
+heart and chest milestones remain independently protected. Telemetry reports
+changed values and stale positive rewards invalidated at each recovery.

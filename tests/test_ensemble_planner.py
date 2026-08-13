@@ -4725,9 +4725,13 @@ class EnsemblePlannerTests(unittest.TestCase):
         regressive_frame = env.step(Action.RIGHT, 1)
         regressive_state = env.save_state()
         env.load_state(root)
-        progress_frame = env.step(Action.RIGHT, 2)
+        current_frame = env.step(Action.RIGHT, 3)
+        current_state = env.save_state()
+        agent.frame = current_frame
+        agent.goal_prior.current_player_slot = (3, 0)
+        progress_frame = env.step(Action.RIGHT, 1)
         progress_state = env.save_state()
-        env.load_state(root)
+        env.load_state(current_state)
         source_hearts = tuple(sorted(agent.goal_prior.current_slots()))
         regressive_graph = _ArchivedBranch(
             state=regressive_state,
@@ -4740,7 +4744,7 @@ class EnsemblePlannerTests(unittest.TestCase):
             goal_source_signature="graph-source",
             goal_target_signature="regressive-target",
             goal_heart_slots=source_hearts,
-            goal_progress_reward=-2.0,
+            goal_progress_reward=7.0,
             goal_remaining_hearts=2,
             goal_total_hearts=2,
             goal_player_slot=(1, 0),
@@ -4759,10 +4763,10 @@ class EnsemblePlannerTests(unittest.TestCase):
             goal_source_signature="graph-source",
             goal_target_signature="progress-target",
             goal_heart_slots=source_hearts,
-            goal_progress_reward=7.0,
+            goal_progress_reward=1.0,
             goal_remaining_hearts=2,
             goal_total_hearts=2,
-            goal_player_slot=(2, 0),
+            goal_player_slot=(4, 0),
         )
         agent.archive = [regressive_graph, goal_progress]
         agent.human_prior_graph_recovery_pending = True
@@ -4772,13 +4776,22 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertIsNotNone(decision)
         assert decision is not None
         self.assertTrue(decision.restored_archive)
-        self.assertEqual(env.position, 2)
+        self.assertEqual(env.position, 4)
         restored = next(
             event
             for event in logger.events
             if event["event"] == "archive_branch_restored"
         )
-        self.assertEqual(restored["human_prior_goal_reward"], 7.0)
+        self.assertEqual(restored["human_prior_goal_reward"], 1.0)
+        self.assertEqual(restored["human_prior_stored_goal_reward"], 1.0)
+        revalidated = next(
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_archive_goal_revalidated"
+        )
+        self.assertEqual(
+            revalidated["stale_positive_goal_rewards_invalidated"], 1
+        )
         filtered = next(
             event
             for event in logger.events
@@ -4790,6 +4803,7 @@ class EnsemblePlannerTests(unittest.TestCase):
         )
         self.assertFalse(filtered["episodic_graph_frontier_preferred"])
         env.release_state(root)
+        env.release_state(current_state)
 
     def test_archive_restore_invalidates_stale_episodic_graph_progress(
         self,
@@ -4811,7 +4825,7 @@ class EnsemblePlannerTests(unittest.TestCase):
             event_logger=logger,
         )
         source_frame = agent.reset()
-        agent.goal_prior = PositionGoalPrior()
+        agent.goal_prior = RegressivePositionGoalPrior()
         root = env.save_state()
         target_frame = env.step(Action.RIGHT, 1)
         target_state = env.save_state()
