@@ -1677,6 +1677,24 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "human_prior_option_search_budget_reopens": event_counts.get(
             "human_prior_option_search_reopened", 0
         ),
+        "human_prior_option_exhaustion_evidence_maximum_depth": max(
+            (
+                int(event.get("maximum_depth") or 0)
+                for event in events
+                if event["event"] == "human_prior_option_search_completed"
+                and event.get("reason")
+                in {
+                    "no_unexpanded_endpoint",
+                    "only_exhausted_frontier_endpoints",
+                }
+            ),
+            default=0,
+        ),
+        "human_prior_option_exhaustion_propagations": sum(
+            event["event"] == "human_prior_option_search_completed"
+            and event.get("reason") == "only_exhausted_frontier_endpoints"
+            for event in events
+        ),
         "human_prior_exhausted_option_frontier_filters": event_counts.get(
             "human_prior_exhausted_option_frontier_filter_evaluated", 0
         ),

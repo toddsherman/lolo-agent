@@ -928,7 +928,7 @@ class VerifiedNeuralAgent:
         self.human_prior_exhausted_milestone_transitions: set[tuple] = set()
         self.human_prior_ordering_progress_hypotheses: set[tuple] = set()
         self.human_prior_disproved_ordering_hypotheses: set[tuple] = set()
-        self.human_prior_exhausted_option_frontiers: set[str] = set()
+        self.human_prior_exhausted_option_frontiers: Dict[str, int] = {}
         self.human_prior_graph_recovery_pending = False
         self.current_human_prior_world_context_signature = (
             "human-prior-world-root"
@@ -6435,8 +6435,9 @@ class VerifiedNeuralAgent:
             exhausted_frontier_endpoints = [
                 endpoint
                 for endpoint in endpoints
-                if endpoint.target_signature
-                in self.human_prior_exhausted_option_frontiers
+                if self._human_prior_option_frontier_exhausted(
+                    endpoint.target_signature
+                )
                 and endpoint.target_signature != source_signature
                 and endpoint.analysis.milestone_reward <= 0.0
                 and not endpoint.confirmed_world_effect_signature
@@ -6466,6 +6467,18 @@ class VerifiedNeuralAgent:
                             }
                         )
                     ),
+                    exhausted_target_maximum_depths=tuple(
+                        sorted(
+                            {
+                                endpoint.target_signature: (
+                                    self.human_prior_exhausted_option_frontiers[
+                                        endpoint.target_signature
+                                    ]
+                                )
+                                for endpoint in exhausted_frontier_endpoints
+                            }.items()
+                        )
+                    ),
                     policy_effect="bounded_frontier_avoidance",
                     hazard_evidence=False,
                     **self._frame_fields(source_frame),
@@ -6474,13 +6487,17 @@ class VerifiedNeuralAgent:
                     self.human_prior_option_exhausted_sources.add(
                         exhausted_key
                     )
-                    self.human_prior_exhausted_option_frontiers.add(
-                        source_signature
+                    self._record_human_prior_exhausted_option_frontier(
+                        source_signature,
+                        self.config.human_prior_option_search_depth,
                     )
                     self._emit(
                         "human_prior_option_search_completed",
                         decision=self.decision_index + 1,
                         source_graph_signature=source_signature,
+                        maximum_depth=(
+                            self.config.human_prior_option_search_depth
+                        ),
                         branches_verified=branches_verified,
                         eligible_endpoints=0,
                         exhausted_frontier_endpoints=len(
@@ -6504,13 +6521,17 @@ class VerifiedNeuralAgent:
                 self.human_prior_option_exhausted_sources.add(
                     exhausted_key
                 )
-                self.human_prior_exhausted_option_frontiers.add(
-                    source_signature
+                self._record_human_prior_exhausted_option_frontier(
+                    source_signature,
+                    self.config.human_prior_option_search_depth,
                 )
                 self._emit(
                     "human_prior_option_search_completed",
                     decision=self.decision_index + 1,
                     source_graph_signature=source_signature,
+                    maximum_depth=(
+                        self.config.human_prior_option_search_depth
+                    ),
                     branches_verified=branches_verified,
                     eligible_endpoints=0,
                     archive_branches_added=0,
@@ -6568,6 +6589,9 @@ class VerifiedNeuralAgent:
                     "human_prior_option_search_completed",
                     decision=self.decision_index + 1,
                     source_graph_signature=source_signature,
+                    maximum_depth=(
+                        self.config.human_prior_option_search_depth
+                    ),
                     branches_verified=branches_verified,
                     eligible_endpoints=len(endpoints),
                     globally_novel_endpoints=0,
@@ -6885,6 +6909,7 @@ class VerifiedNeuralAgent:
                 "human_prior_option_search_completed",
                 decision=self.decision_index + 1,
                 source_graph_signature=source_signature,
+                maximum_depth=self.config.human_prior_option_search_depth,
                 branches_verified=branches_verified,
                 eligible_endpoints=len(endpoints),
                 ordinary_eligible_endpoints=len(ordinary_endpoints),
@@ -6916,8 +6941,8 @@ class VerifiedNeuralAgent:
                 selected_score=selected.score,
                 **self._frame_fields(selected.frame),
             )
-            self.human_prior_exhausted_option_frontiers.discard(
-                source_signature
+            self.human_prior_exhausted_option_frontiers.pop(
+                source_signature, None
             )
             return len(archived_endpoints)
         except BaseException:
@@ -7243,7 +7268,7 @@ class VerifiedNeuralAgent:
         self.human_prior_ordering_progress_hypotheses = set()
         self.human_prior_disproved_ordering_hypotheses = set()
         self.human_prior_option_exhausted_sources: set[tuple] = set()
-        self.human_prior_exhausted_option_frontiers = set()
+        self.human_prior_exhausted_option_frontiers = {}
         self.human_prior_graph_recovery_pending = False
         self.current_human_prior_world_context_signature = (
             "human-prior-world-root"
@@ -7759,7 +7784,7 @@ class VerifiedNeuralAgent:
         self.human_prior_ordering_progress_hypotheses = set()
         self.human_prior_disproved_ordering_hypotheses = set()
         self.human_prior_option_exhausted_sources = set()
-        self.human_prior_exhausted_option_frontiers = set()
+        self.human_prior_exhausted_option_frontiers = {}
         self.human_prior_graph_recovery_pending = False
         self.current_human_prior_world_context_signature = (
             "human-prior-world-root"
@@ -7895,8 +7920,10 @@ class VerifiedNeuralAgent:
         exhausted_milestone_transitions: set[tuple] = set()
         ordering_progress_hypotheses: set[tuple] = set()
         disproved_ordering_hypotheses: set[tuple] = set()
-        exhausted_option_frontiers: set[str] = set()
-        option_search_sources: Dict[Tuple[str, int], str] = {}
+        exhausted_option_frontiers: Dict[str, int] = {}
+        option_search_sources: Dict[
+            Tuple[str, int], Tuple[str, int]
+        ] = {}
         unqualified_exhaustion_hazards_ignored = 0
         milestone_outcomes_by_decision: Dict[
             Tuple[str, int], tuple
@@ -7960,19 +7987,32 @@ class VerifiedNeuralAgent:
                     event.get("source_graph_signature") or ""
                 )
                 if option_source:
-                    option_search_sources[event_key] = option_source
+                    option_search_sources[event_key] = (
+                        option_source,
+                        max(1, int(event.get("maximum_depth") or 1)),
+                    )
             elif event.get("event") == "human_prior_option_search_completed":
+                started_source, started_depth = option_search_sources.get(
+                    event_key, ("", 1)
+                )
                 option_source = str(
                     event.get("source_graph_signature")
-                    or option_search_sources.get(event_key)
+                    or started_source
                     or ""
+                )
+                option_depth = max(
+                    1,
+                    int(event.get("maximum_depth") or started_depth),
                 )
                 if option_source:
                     if event.get("reason") in {
                         "no_unexpanded_endpoint",
                         "only_exhausted_frontier_endpoints",
                     }:
-                        exhausted_option_frontiers.add(option_source)
+                        exhausted_option_frontiers[option_source] = max(
+                            option_depth,
+                            exhausted_option_frontiers.get(option_source, 0),
+                        )
                     elif (
                         int(event.get("archive_branches_added", 0)) > 0
                         or (
@@ -7980,7 +8020,7 @@ class VerifiedNeuralAgent:
                             and int(event.get("eligible_endpoints", 0)) > 0
                         )
                     ):
-                        exhausted_option_frontiers.discard(option_source)
+                        exhausted_option_frontiers.pop(option_source, None)
             if event.get("event") in (
                 "human_prior_ordering_progress_recorded",
                 "human_prior_option_archive_added",
@@ -8419,6 +8459,9 @@ class VerifiedNeuralAgent:
             ),
             exhausted_option_frontiers=len(
                 self.human_prior_exhausted_option_frontiers
+            ),
+            exhausted_option_frontier_depths=tuple(
+                sorted(self.human_prior_exhausted_option_frontiers.items())
             ),
             temporal_option_values=len(temporal_option_values),
             temporal_option_samples=sum(temporal_option_samples.values()),
@@ -9957,6 +10000,47 @@ class VerifiedNeuralAgent:
             or self._human_prior_archive_preserves_preparation(branch)
         )
 
+    def _record_human_prior_exhausted_option_frontier(
+        self,
+        signature: str,
+        maximum_depth: Optional[int] = None,
+    ) -> None:
+        if not signature:
+            return
+        depth = max(
+            1,
+            int(
+                self.config.human_prior_option_search_depth
+                if maximum_depth is None
+                else maximum_depth
+            ),
+        )
+        self.human_prior_exhausted_option_frontiers[signature] = max(
+            depth,
+            self.human_prior_exhausted_option_frontiers.get(signature, 0),
+        )
+
+    def _human_prior_option_frontier_exhausted(
+        self,
+        signature: str,
+        search_depth: Optional[int] = None,
+    ) -> bool:
+        required_depth = max(
+            1,
+            int(
+                self.config.human_prior_option_search_depth
+                if search_depth is None
+                else search_depth
+            ),
+        )
+        return bool(
+            signature
+            and self.human_prior_exhausted_option_frontiers.get(
+                signature, 0
+            )
+            >= required_depth
+        )
+
     def _filter_exhausted_option_frontiers(
         self,
         verified: List[Tuple[Any, ...]],
@@ -9986,8 +10070,9 @@ class VerifiedNeuralAgent:
             if (
                 analysis is not None
                 and analysis.milestone_reward <= 0.0
-                and target_signature
-                in self.human_prior_exhausted_option_frontiers
+                and self._human_prior_option_frontier_exhausted(
+                    target_signature
+                )
                 and target_signature != source_signature
             ):
                 blocked.append(item)
@@ -12834,6 +12919,11 @@ class VerifiedNeuralAgent:
                     hazard_evidence=False,
                     exhausted_frontiers=tuple(
                         sorted(self.human_prior_exhausted_option_frontiers)
+                    ),
+                    exhausted_frontier_depths=tuple(
+                        sorted(
+                            self.human_prior_exhausted_option_frontiers.items()
+                        )
                     ),
                     blocked_branches=tuple(
                         {

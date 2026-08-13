@@ -585,6 +585,13 @@ class RunLoggingTests(unittest.TestCase):
                 "human_prior_exhausted_option_frontier_filters", summary
             )
             self.assertIn(
+                "human_prior_option_exhaustion_evidence_maximum_depth",
+                summary,
+            )
+            self.assertIn(
+                "human_prior_option_exhaustion_propagations", summary
+            )
+            self.assertIn(
                 "human_prior_exhausted_option_frontier_branches_filtered",
                 summary,
             )

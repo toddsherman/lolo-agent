@@ -379,7 +379,10 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   if no alternative graph egress remains. When every exact endpoint from a
   source is already exhausted, the bounded observation propagates backward to
   that source; this computes cul-de-sacs from interaction rather than object
-  labels. The observation is replayed across save-state
+  labels. Each observation records the maximum exact-search depth that
+  supported it. A deeper search reopens shallower claims instead of filtering
+  them, while equal-or-deeper evidence remains active. The observation is
+  replayed across save-state
   resumes, cleared at room boundaries, and withdrawn when a later search from
   the same state finds a retainable endpoint. Telemetry explicitly reports
   `policy_effect=bounded_frontier_avoidance` and `hazard_evidence=false`;

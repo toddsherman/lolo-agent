@@ -2851,7 +2851,10 @@ class EnsemblePlannerTests(unittest.TestCase):
             env,
             model,
             "cpu",
-            NeuralPlanningConfig(planning_depth=1),
+            NeuralPlanningConfig(
+                planning_depth=1,
+                human_prior_option_search_depth=2,
+            ),
         )
         source = agent.reset()
         agent.goal_prior = PositionGoalPrior()
@@ -2881,7 +2884,7 @@ class EnsemblePlannerTests(unittest.TestCase):
             id(dead_state): ("source", "exhausted"),
             id(alternative_state): ("source", "escape"),
         }
-        agent.human_prior_exhausted_option_frontiers.add("exhausted")
+        agent._record_human_prior_exhausted_option_frontier("exhausted")
 
         filtered, blocked, fail_open = (
             agent._filter_exhausted_option_frontiers(
@@ -2913,6 +2916,15 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(stationary_fallback, verified)
         self.assertEqual(blocked, [dead_branch])
         self.assertTrue(fail_open)
+        agent.human_prior_exhausted_option_frontiers["exhausted"] = 1
+        reopened, blocked, fail_open = (
+            agent._filter_exhausted_option_frontiers(
+                verified, analyses, signatures
+            )
+        )
+        self.assertEqual(reopened, verified)
+        self.assertEqual(blocked, [])
+        self.assertFalse(fail_open)
 
     def test_option_exhaustion_egress_filter_prefers_graph_transition(
         self,
@@ -2983,7 +2995,7 @@ class EnsemblePlannerTests(unittest.TestCase):
             analysis
         )[1]
         env.load_state(root)
-        agent.human_prior_exhausted_option_frontiers.add(
+        agent._record_human_prior_exhausted_option_frontier(
             exhausted_signature
         )
 
@@ -3010,6 +3022,10 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertIn(
             source_signature,
             agent.human_prior_exhausted_option_frontiers,
+        )
+        self.assertEqual(
+            agent.human_prior_exhausted_option_frontiers[source_signature],
+            2,
         )
 
     def test_option_search_accepts_new_graph_state_at_seen_position(
@@ -6590,6 +6606,7 @@ class EnsemblePlannerTests(unittest.TestCase):
                 "run_id": "source-run",
                 "decision": 3,
                 "source_graph_signature": "bounded-frontier",
+                "maximum_depth": 5,
             },
             {
                 "event": "human_prior_option_search_completed",
@@ -6603,6 +6620,7 @@ class EnsemblePlannerTests(unittest.TestCase):
                 "run_id": "source-run",
                 "decision": 4,
                 "source_graph_signature": "parent-frontier",
+                "maximum_depth": 5,
                 "reason": "only_exhausted_frontier_endpoints",
                 "archive_branches_added": 0,
             },
@@ -6612,7 +6630,7 @@ class EnsemblePlannerTests(unittest.TestCase):
 
         self.assertEqual(
             agent.human_prior_exhausted_option_frontiers,
-            {"bounded-frontier", "parent-frontier"},
+            {"bounded-frontier": 5, "parent-frontier": 5},
         )
         events.append(
             {
@@ -6620,6 +6638,7 @@ class EnsemblePlannerTests(unittest.TestCase):
                 "run_id": "later-run",
                 "decision": 1,
                 "source_graph_signature": "bounded-frontier",
+                "maximum_depth": 8,
                 "eligible_endpoints": 1,
                 "archive_branches_added": 0,
             }
@@ -6629,7 +6648,7 @@ class EnsemblePlannerTests(unittest.TestCase):
 
         self.assertEqual(
             agent.human_prior_exhausted_option_frontiers,
-            {"parent-frontier"},
+            {"parent-frontier": 5},
         )
 
     def test_seed_human_prior_option_archive_restores_promoted_branch(
