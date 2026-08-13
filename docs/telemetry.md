@@ -336,7 +336,11 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   `human_prior_option_search_reopened` records when the same semantic pixel
   source is searched again under a different budget; a bounded depth-4 result
   therefore cannot permanently suppress a later depth-6 experiment. Summary
-  telemetry counts these budget reopens;
+  telemetry counts these budget reopens. Endpoint eligibility treats an exact
+  unvisited graph state as novel even when its raw player coordinate was seen
+  in another heart set or world context. The branch event exposes both
+  `target_graph_state_visits` and `target_player_position_visits`, making that
+  distinction auditable;
 - `human_prior_option_recovery_armed` and
   `human_prior_option_recovery_deferred`, which record whether a branch added
   by the current exact search may be restored in the same decision. Immediate

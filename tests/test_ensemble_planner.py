@@ -2790,6 +2790,56 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(completed["reason"], "no_globally_novel_endpoint")
         self.assertEqual(completed["globally_novel_endpoints"], 0)
 
+    def test_option_search_accepts_new_graph_state_at_seen_position(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = UniqueStateEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=1,
+                human_prior_option_search_action_frames=1,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        source_signature = agent._current_human_prior_graph_signature()
+        agent.human_prior_graph_state_visits[source_signature] = 1
+        agent.human_prior_player_position_visits.update(
+            {(0, 0): 1, (1, 0): 4, (2, 0): 9}
+        )
+
+        added = agent._search_human_prior_options()
+
+        self.assertEqual(added, 1)
+        self.assertEqual(len(agent.archive), 1)
+        self.assertEqual(agent.archive[0].goal_player_slot, (2, 0))
+        self.assertEqual(agent.archive[0].goal_remaining_hearts, 1)
+        depth_two = [
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_branch_verified"
+            and event["depth"] == 2
+            and event["human_prior_target_player_slot"] == (2, 0)
+        ]
+        self.assertEqual(len(depth_two), 1)
+        self.assertEqual(depth_two[0]["target_graph_state_visits"], 0)
+        self.assertEqual(depth_two[0]["target_player_position_visits"], 9)
+        self.assertTrue(depth_two[0]["endpoint_eligible"])
+
     def test_human_prior_option_archive_uses_whole_path_coverage(self) -> None:
         model = EnsembleVisualDynamicsModel(
             latent_size=32, action_size=8, ensemble_size=2

@@ -4554,7 +4554,8 @@ class VerifiedNeuralAgent:
                                     and target_signature != source_signature
                                     and analysis.target_player_slot is not None
                                     and (
-                                        target_position_visits == 0
+                                        target_state_visits == 0
+                                        or target_position_visits == 0
                                         or analysis.total_reward > 0.0
                                     )
                                 )

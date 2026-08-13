@@ -215,3 +215,19 @@ while a changed budget emits `human_prior_option_search_reopened` and may
 investigate the same pixel source again. The next native experiment should
 resume the interior state with a deeper budget and test whether the obstacle
 cluster requires a longer action sequence rather than another reward change.
+
+The depth-6, beam-32 matched experiment verified 1,364 branches and retained
+74 novel candidates at depth 6. It reached `(192,160)` through
+`RIGHT x4, DOWN x2`, but the endpoint was not archived despite its exact
+two-heart graph state having zero visits. The raw coordinate had nine visits
+from other semantic contexts, and the early endpoint gate checked only raw
+position novelty; later archive ranking already recognized graph-state
+novelty. The search therefore reported 143 eligible endpoints but zero
+globally novel endpoints and committed another local `RIGHT`.
+
+Endpoint eligibility now accepts either an unvisited exact graph state or an
+unvisited raw player position. Familiar coordinates can therefore become new
+frontiers after a different heart set or learned world context, while a state
+whose graph signature and coordinate were both visited remains rejected. The
+next matched replay should use the same deeper budget and confirm that the
+verified `(192,160)` route is archived and restored.
