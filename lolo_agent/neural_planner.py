@@ -127,6 +127,7 @@ class NeuralPlanningConfig:
     human_prior_option_effect_controllability_depth: int = 1
     human_prior_option_entity_frontier: bool = False
     anonymous_entity_behavior_learning: bool = False
+    anonymous_entity_passive_horizons: Tuple[int, ...] = ()
     human_prior_intrinsic_clip: float = 10.0
     spatial_selection_weight: float = 0.0
     returnability_probe_depth: int = 0
@@ -650,6 +651,20 @@ class VerifiedNeuralAgent:
         ):
             raise ValueError(
                 "anonymous entity behavior requires the unlabeled entity frontier"
+            )
+        if any(
+            horizon <= 0
+            for horizon in self.config.anonymous_entity_passive_horizons
+        ):
+            raise ValueError(
+                "anonymous entity passive horizons must be positive"
+            )
+        if (
+            self.config.anonymous_entity_passive_horizons
+            and self.entity_behavior_model is None
+        ):
+            raise ValueError(
+                "anonymous entity passive horizons require a behavior model"
             )
         if self.config.human_prior_intrinsic_clip <= 0.0:
             raise ValueError("human-prior intrinsic clip must be positive")
@@ -2008,10 +2023,43 @@ class VerifiedNeuralAgent:
             player_displacement=player_displacement,
             terminal_visual_change=differential_terminal_change,
         )
-        context_signature = model.context_signature(
+        fallback_context_signature = model.context_signature(
             patch.feature
             for patch in before_observation.patches
             if (patch.column, patch.row) != anchor
+        )
+        source_player = (
+            factual_analysis.source_player_slot
+            or control_analysis.source_player_slot
+        )
+        controlled_cells: set[Tuple[int, int]] = set()
+        if source_player is not None:
+            controlled_cells.add(
+                (
+                    min(
+                        memory.columns - 1,
+                        max(
+                            0,
+                            source_player[0]
+                            * memory.columns
+                            // before_frame.width,
+                        ),
+                    ),
+                    min(
+                        memory.rows - 1,
+                        max(
+                            0,
+                            source_player[1]
+                            * memory.rows
+                            // before_frame.height,
+                        ),
+                    ),
+                )
+            )
+        context_signature = model.relational_context_signature(
+            anchor,
+            controlled_cells,
+            fallback_context_signature,
         )
         prediction_before = model.predict(
             source_feature,
@@ -2156,13 +2204,14 @@ class VerifiedNeuralAgent:
                 ] += 1
 
         player_cells: set[Tuple[int, int]] = set()
+        passive_analysis: Optional[HeartGoalAnalysis] = None
         if self.goal_prior is not None:
-            analysis = self.goal_prior.analyze(
+            passive_analysis = self.goal_prior.analyze(
                 source_frame, neutral_frame
             )
             for slot in {
-                analysis.source_player_slot,
-                analysis.target_player_slot,
+                passive_analysis.source_player_slot,
+                passive_analysis.target_player_slot,
             }:
                 if slot is None:
                     continue
@@ -2199,10 +2248,21 @@ class VerifiedNeuralAgent:
             )
             <= 1
         }
-        context_signature = model.context_signature(
+        fallback_context_signature = model.context_signature(
             feature
             for cell, feature in source_features.items()
             if cell not in excluded_cells
+        )
+        passive_hazard = bool(
+            passive_analysis is not None
+            and passive_analysis.life_counter_changed
+        )
+        passive_terminal_visual_change = bool(
+            passive_analysis is not None
+            and (
+                passive_analysis.life_counter_changed
+                or passive_analysis.dark_transition_started
+            )
         )
         observed = 0
         for anchor, source_feature in sorted(source_features.items()):
@@ -2233,11 +2293,17 @@ class VerifiedNeuralAgent:
                     for column, row in matching_offsets
                     if abs(column) + abs(row) == nearest_distance
                 ]
+            context_signature = model.relational_context_signature(
+                anchor,
+                player_cells,
+                fallback_context_signature,
+            )
             outcome_signature = model.effect_signature(
                 source_feature,
                 target_features[anchor],
                 source_feature,
                 relative_effect_cells=tuple(matching_offsets),
+                terminal_visual_change=passive_terminal_visual_change,
             )
             prediction_before = model.predict(
                 source_feature,
@@ -2269,6 +2335,7 @@ class VerifiedNeuralAgent:
                     duration,
                     outcome_signature,
                     context_signature=context_signature,
+                    hazardous=passive_hazard,
                     autonomous=True,
                     evidence_id=evidence_id,
                 )
@@ -2324,7 +2391,7 @@ class VerifiedNeuralAgent:
                     prediction_before.hazardous_probability
                 ),
                 observed_outcome=outcome_signature,
-                observed_hazard=False,
+                observed_hazard=passive_hazard,
                 surprise=surprise,
                 outcome_matched_prediction=bool(
                     prediction_before.outcome_signature
@@ -2338,7 +2405,9 @@ class VerifiedNeuralAgent:
                 anchor_cell=anchor,
                 relative_effect_cells=tuple(sorted(matching_offsets)),
                 player_displacement=None,
-                differential_terminal_visual_change=False,
+                differential_terminal_visual_change=(
+                    passive_terminal_visual_change
+                ),
                 model_type_count=model.type_count,
                 model_rule_count=model.rule_count,
                 model_observations=model.observation_count,
@@ -8800,6 +8869,26 @@ class VerifiedNeuralAgent:
                     action_frames=duration,
                     env_step_seq=getattr(self.env, "last_step_seq", None),
                     source_state_id=self._state_id(root),
+                    **self._frame_fields(neutral_target),
+                )
+
+            for duration in sorted(
+                set(self.config.anonymous_entity_passive_horizons)
+                - set(neutral_outcomes)
+            ):
+                self.env.load_state(root)
+                neutral_target = self.env.step(Action.NOOP, duration)
+                neutral_outcomes[duration] = neutral_target
+                self._emit(
+                    "anonymous_entity_passive_horizon_verified",
+                    decision=self.decision_index + 1,
+                    action=Action.NOOP,
+                    action_frames=duration,
+                    env_step_seq=getattr(
+                        self.env, "last_step_seq", None
+                    ),
+                    source_state_id=self._state_id(root),
+                    agent_visible=True,
                     **self._frame_fields(neutral_target),
                 )
 

@@ -1066,5 +1066,35 @@ each completed depth while allocating the beam to states in which both hearts
 remain visible. This is an exploration-policy change, not a change to the
 heart, chest, completion, or life-loss reward magnitudes.
 
-The complete test suite now passes: 252 tests, with 4 expected native-platform
+At that milestone the complete test suite passed: 252 tests, with 4 expected
+native-platform skips.
+
+## Relational anonymous dynamics
+
+The object-centric sidecar now conditions recurring anonymous appearances on a
+translation-invariant coarse relation to the action-correlated controllable
+patch. Separate root-state `NOOP` branches at configured horizons collect
+duration-conditioned passive outcomes without changing the committed action.
+Schema-3 behavior checkpoints remain readable through the unconditional
+fallback.
+
+Native Room 2 development evidence assigned recurring appearance fingerprint
+`cce8d09a9ec5ef55` to anonymous type 7. Two frozen, separately captured states
+then split by relation: at distance two on a diagonal it remained stationary
+and safe through 224 frames; at distance two in the same column it transformed
+at 32 and 64 frames and preceded a terminal pixel-derived life loss at 224.
+All eight type/duration predictions matched, including hazard probabilities
+`0.0` and `1.0` at the long horizon, and both parameter digest audits passed.
+The full-run known-outcome match rates were 88/112 and 108/112 respectively.
+Across all tracked patches, hazard-classification accuracy was 94/112 on the
+safe branch and 112/112 on the hazardous branch; the safe false positives
+quantify the current global-credit problem.
+
+This sidecar still has selection weight zero. Passive life loss is globally
+associated with rare patches in the interval rather than causally attributed
+to one patch, and both final states came from Room 2. Planning promotion
+therefore waits for intervention-based hazard localization, cross-room folds,
+and context-agnostic baselines.
+
+The complete test suite now passes: 257 tests, with 4 expected native-platform
 skips.

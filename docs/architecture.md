@@ -82,11 +82,16 @@ clusters pooled RGB patches into anonymous appearance types and learns
 conditional empirical outcome distributions from matched controls and passive
 intervals. Outcomes are position-relative pixel-effect hashes; types have no
 sprite names or supplied mechanics. Context-specific distributions can differ
-from the cross-room fallback, so one appearance may be stationary in one
-anonymous visual context and mobile in another. Exact save-state evidence is
-deduplicated, contradictory observations reduce confidence, and a frozen mode
-supports parameter-immutable evaluation. The sidecar currently has selection
-weight zero while native held-out calibration is collected.
+from the cross-room fallback. The primary context is a translation-invariant,
+coarsely binned distance and alignment between the anonymous patch and the
+action-correlated controllable patch; an anonymous whole-scene hash is used
+only when that patch cannot be localized. Optional save-state `NOOP` horizons
+collect duration-conditioned passive dynamics. One appearance can therefore
+remain stationary in one relation and transform or precede a terminal visual
+transition in another. Exact save-state evidence is deduplicated,
+contradictory observations reduce confidence, and a frozen mode supports
+parameter-immutable evaluation. The sidecar currently has selection weight
+zero while native held-out calibration is collected.
 
 The remaining successor milestones are:
 

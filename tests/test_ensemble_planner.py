@@ -55,17 +55,24 @@ class AutonomousAnimationEnv:
 
 
 class PassiveRareEntityEnv:
-    def __init__(self, duplicate: bool = False) -> None:
+    def __init__(
+        self,
+        duplicate: bool = False,
+        minimum_motion_frames: int = 1,
+    ) -> None:
         self.moved = False
         self.duplicate = duplicate
+        self.minimum_motion_frames = minimum_motion_frames
 
     def reset(self) -> Frame:
         self.moved = False
         return self._frame()
 
     def step(self, action: Action, frames: int = 1) -> Frame:
-        del frames
-        if action == Action.NOOP:
+        if (
+            action == Action.NOOP
+            and frames >= self.minimum_motion_frames
+        ):
             self.moved = True
         return self._frame()
 
@@ -320,6 +327,10 @@ class PositionGoalPrior:
     def current_slots(self):
         return tuple(sorted(self.current_present))
 
+    def observe_room(self, frame: Frame):
+        del frame
+        return ()
+
     def analyze(
         self,
         source: Frame,
@@ -378,6 +389,33 @@ class PositionGoalPrior:
     def distance_to_hearts(self, frame: Frame, slots) -> float:
         player = self._position(frame)
         return float(min(abs(player[0] - slot[0]) for slot in slots))
+
+
+class HazardPositionGoalPrior(PositionGoalPrior):
+    @staticmethod
+    def _position(frame: Frame) -> tuple[int, int]:
+        del frame
+        return 0, 0
+
+    def analyze(
+        self,
+        source: Frame,
+        target: Frame,
+        *,
+        target_player_reference=None,
+    ) -> HeartGoalAnalysis:
+        analysis = super().analyze(
+            source,
+            target,
+            target_player_reference=target_player_reference,
+        )
+        hazard = source.pixels != target.pixels
+        return replace(
+            analysis,
+            target_life_signature="changed" if hazard else "life",
+            life_counter_changed=hazard,
+            life_loss_confirmed=hazard,
+        )
 
 
 class OverlappingPlayerGoalPrior(PositionGoalPrior):
@@ -3685,6 +3723,71 @@ class EnsemblePlannerTests(unittest.TestCase):
         ]
         self.assertEqual(moving[0]["relative_effect_cells"], ((1, 0),))
         self.assertEqual(stationary[0]["relative_effect_cells"], ((0, 0),))
+
+    def test_passive_horizon_discovers_delayed_anonymous_motion(self) -> None:
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            PassiveRareEntityEnv(minimum_motion_frames=2),
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.NOOP,),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_option_effect_stability_steps=1,
+                human_prior_option_effect_phase_offsets=1,
+                human_prior_option_effect_local_controls=True,
+                human_prior_option_entity_frontier=True,
+                anonymous_entity_behavior_learning=True,
+                anonymous_entity_passive_horizons=(1, 2),
+                causal_spatial_columns=4,
+                causal_spatial_rows=4,
+            ),
+            event_logger=logger,
+            entity_behavior_model=AnonymousEntityBehaviorModel(
+                minimum_prediction_samples=1
+            ),
+        )
+        agent.reset()
+        agent.goal_prior = HazardPositionGoalPrior()
+        agent.decide()
+        agent.clear_archive()
+
+        observations = [
+            event
+            for event in logger.events
+            if event["event"] == "anonymous_entity_behavior_observed"
+            and event["anchor_cell"] == (1, 1)
+        ]
+        horizons = [
+            event
+            for event in logger.events
+            if event["event"]
+            == "anonymous_entity_passive_horizon_verified"
+        ]
+        self.assertEqual(
+            {
+                event["action_frames"]: event["relative_effect_cells"]
+                for event in observations
+            },
+            {1: ((0, 0),), 2: ((1, 0),)},
+        )
+        self.assertEqual(
+            [event["action_frames"] for event in horizons],
+            [2],
+        )
+        delayed = next(
+            event
+            for event in observations
+            if event["action_frames"] == 2
+        )
+        self.assertTrue(delayed["observed_hazard"])
+        self.assertTrue(
+            delayed["differential_terminal_visual_change"]
+        )
+        self.assertEqual(delayed["hazard_probability_after"], 1.0)
 
     def test_option_search_can_add_long_direction_edges(self) -> None:
         model = EnsembleVisualDynamicsModel(

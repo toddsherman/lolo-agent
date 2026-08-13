@@ -611,16 +611,19 @@ deduplicated evidence ID. It never contains a supplied sprite or mechanic name.
 
 `anonymous_entity_passive_scan_completed` records how many rare patches were
 tracked through each matched passive interval and how many controlled-sprite
-cells were excluded. `anonymous_entity_behavior_checkpoint_updated` binds a
-clean learning run to before/after parameter digests. Frozen evaluation instead
-emits `anonymous_entity_behavior_parameter_audit` and fails if the digest
-changes.
+cells were excluded. Each additional configured duration-only save-state
+branch emits `anonymous_entity_passive_horizon_verified`, including the root
+state, frame duration, resulting frame, and linked environment-step sequence.
+`anonymous_entity_behavior_checkpoint_updated` binds a clean learning run to
+before/after parameter digests. Frozen evaluation instead emits
+`anonymous_entity_behavior_parameter_audit` and fails if the digest changes.
 
 `lolo-log summarize` writes all behavior observations to
 `entity_behaviors.csv` and adds counts for accepted evidence, known predictions,
-prediction matches, anonymous types, and distinct outcome signatures to
-`summary.json`. See `anonymous-entity-behavior.md` for the learning and freeze
-protocol.
+prediction matches, known hazard predictions, hazard-classification matches,
+observed hazards, terminal observations, passive-horizon branches, anonymous
+types, and distinct outcome signatures to `summary.json`. See
+`anonymous-entity-behavior.md` for the learning and freeze protocol.
 
 ## Episodic resume
 

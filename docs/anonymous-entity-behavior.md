@@ -11,9 +11,10 @@ Each type stores empirical distributions conditioned on:
 
 - the NES hardware action and duration;
 - passive versus action-controlled observation;
-- an anonymous, order-independent visual-context signature;
+- a translation-invariant pixel relation to the action-correlated controllable
+  patch, with an anonymous scene signature as a localization fallback;
 - the observed position-relative pixel outcome;
-- a pixel-derived life-loss observation when it is causally isolated.
+- a pixel-derived life-loss observation.
 
 There are no hand-authored mechanics in the checkpoint. A passive outcome can,
 for example, encode that the same appearance recurred one grid cell to the
@@ -31,9 +32,10 @@ override the cross-context fallback. Conflicting evidence lowers confidence
 instead of being silently overwritten.
 
 This is the mechanism needed for activation rules: the trigger need not be
-named. The room's anonymous visual context before and after the trigger is
-enough to support different predictions while sharing the same appearance
-type.
+named. Coarsely binned distance, row/column/diagonal alignment, and relative
+direction can support different predictions while sharing the same appearance
+type. These relations transfer under translation instead of memorizing an
+absolute room location.
 
 ## Persistence and evaluation
 
@@ -50,7 +52,8 @@ lolo-neural-run \
   --human-prior-option-entity-frontier \
   --anonymous-entity-behavior-checkpoint \
     experiments/lolo1-entity/anonymous-behavior.json \
-  --anonymous-entity-behavior-mode learn
+  --anonymous-entity-behavior-mode learn \
+  --anonymous-entity-passive-horizons 16,32,64,224
 ```
 
 For withheld rooms or *Lolo 2*, load the same checkpoint frozen:
@@ -65,12 +68,19 @@ lolo-neural-run \
   --human-prior-option-entity-frontier \
   --anonymous-entity-behavior-checkpoint \
     experiments/lolo1-entity/anonymous-behavior.json \
-  --anonymous-entity-behavior-mode frozen
+  --anonymous-entity-behavior-mode frozen \
+  --anonymous-entity-passive-horizons 16,32,64,224
 ```
 
 Frozen runs record a before/after digest audit. Predicting an unfamiliar
 appearance does not create a new type. Exact replay of the same save-state
 evidence is deduplicated and cannot inflate confidence.
+
+The optional passive horizons restore the decision-root save state separately
+for each duration and advance only `NOOP`. They do not change action selection
+or the live trajectory. This makes delayed transformations and terminal visual
+changes observable without forcing a short action interval to stand in for an
+entity's full dynamics.
 
 ## Current research boundary
 
@@ -86,6 +96,60 @@ outcomes remain unlabeled, but this locator is not yet part of the strict
 rule-free architecture. Passive rare-patch tracking does not need the locator
 except to mask the controlled sprite. A learned action-correlated tracker must
 replace that assisted component before the final strict evaluation.
+
+A life-signature change during a passive horizon is currently associated with
+every rare candidate tracked across that interval. This is useful observational
+evidence but does not prove which candidate caused the loss. The next causal
+gate must compare interventions that change the controllable patch's relation
+before waiting, and must show that type-conditioned hazard predictions beat
+appearance-agnostic and context-agnostic baselines. Until then, hazard evidence
+cannot affect planning.
+
+## Native relational-dynamics milestone
+
+Room 2 development branches produced an anonymous appearance with fingerprint
+`cce8d09a9ec5ef55`, assigned checkpoint type 7. The system was not supplied a
+sprite name, object class, activation rule, or death rule. It learned two
+supported relational contexts and was then run frozen from separately captured
+Room 2 states.
+
+| Frozen target | Relation at type 7 | 16 frames | 32 frames | 64 frames | 224 frames |
+| --- | --- | --- | --- | --- | --- |
+| Safe heldout | distance 2, diagonal | stationary, safe | stationary, safe | stationary, safe | stationary, safe |
+| Hazard heldout | distance 2, same column | stationary, safe | transformed, safe | transformed, safe | terminal life loss |
+
+For type 7, all eight duration-conditioned predictions matched the native
+outcomes. At 224 frames the safe context predicted hazard probability `0.0`
+and observed no life loss; the aligned context predicted `1.0` and observed a
+life loss. Each contextual rule had two independent training observations.
+Both heldout runs rejected all evidence updates and passed the behavior-model
+before/after digest audit. Across all anonymous patches, the safe run matched
+88 of 112 known outcome predictions and the hazard run matched 108 of 112.
+Hazard classification across every tracked patch was 94/112 in the safe run
+and 112/112 in the hazardous run. The safe-run false positives are direct
+evidence of the global-credit limitation described above; the type-7
+contextual result is promising, but the aggregate model is not ready to steer
+the policy.
+
+An earlier frozen development run had predicted a hazard from an unconditional
+rule where waiting was safe. That failure exposed the context alias and led to
+the relational representation plus separately supported safe and hazardous
+examples. It remains in the audit trail rather than being counted as a final
+heldout result.
+
+Reproducible artifacts:
+
+```text
+experiments/lolo1-entity-v7/anonymous-behavior.json
+experiments/lolo1-entity-v7/evaluations/entity-v7-room2-safe-heldout-frozen-v19-d65
+experiments/lolo1-entity-v7/evaluations/entity-v7-room2-aligned-hazard-heldout-frozen-v19-d79
+experiments/lolo1-entity-v7/evaluations/entity-v7-room2-hazard-heldout-frozen-v16-d34
+```
+
+This is a same-room, separately captured state/episode milestone, not yet a
+withheld-room or sequel generalization result. Its value is that a recurring
+anonymous visual type now retains reusable, context-dependent delayed behavior
+instead of being rediscovered as unrelated pixels.
 
 ## Initial native sanity result
 
@@ -127,5 +191,7 @@ whether learning accepted the evidence. `entity_behaviors.csv` provides the
 same records as a flat visualization-ready artifact.
 
 `anonymous_entity_passive_scan_completed` describes each passive scan.
+`anonymous_entity_passive_horizon_verified` records each additional neutral
+duration branch from the root save state.
 Learning runs end with `anonymous_entity_behavior_checkpoint_updated`; frozen
 runs end with `anonymous_entity_behavior_parameter_audit`.

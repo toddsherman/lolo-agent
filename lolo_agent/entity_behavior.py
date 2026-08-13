@@ -80,7 +80,7 @@ class AnonymousEntityBehaviorModel:
     and contradictory evidence reduces confidence instead of being discarded.
     """
 
-    SCHEMA_VERSION = 3
+    SCHEMA_VERSION = 4
     _UNCONDITIONAL_CONTEXT = "*"
 
     def __init__(
@@ -143,6 +143,75 @@ class AnonymousEntityBehaviorModel:
             for fingerprint, count in sorted(counts.items())
         )
         return hashlib.sha256(payload.encode("ascii")).hexdigest()[:16]
+
+    @staticmethod
+    def relational_context_signature(
+        anchor: RelativeCell,
+        controlled_cells: Iterable[RelativeCell],
+        fallback_signature: str = "",
+    ) -> str:
+        """Describe only the translation-invariant controlled-entity relation.
+
+        The controlled entity is whichever visual patch has already been
+        localized from action correlation.  No object or mechanic label is
+        represented.  Coarse distance bins deliberately pool nearby layouts
+        while retaining evidence that an appearance can behave differently
+        when the controllable patch is near, aligned, or far away.
+        """
+
+        cells = tuple(
+            sorted(
+                (int(column), int(row))
+                for column, row in controlled_cells
+            )
+        )
+        if not cells:
+            return (
+                f"anonymous-scene:{fallback_signature}"
+                if fallback_signature
+                else "controlled-relative:unknown"
+            )
+        target = min(
+            cells,
+            key=lambda cell: (
+                abs(cell[0] - anchor[0]) + abs(cell[1] - anchor[1]),
+                cell[0],
+                cell[1],
+            ),
+        )
+        dx = target[0] - anchor[0]
+        dy = target[1] - anchor[1]
+        distance = abs(dx) + abs(dy)
+        if distance <= 2:
+            distance_bin = str(distance)
+        elif distance <= 4:
+            distance_bin = "3-4"
+        elif distance <= 8:
+            distance_bin = "5-8"
+        else:
+            distance_bin = "9+"
+
+        def sign(value: int) -> str:
+            if value < 0:
+                return "negative"
+            if value > 0:
+                return "positive"
+            return "zero"
+
+        alignment = (
+            "overlap"
+            if dx == 0 and dy == 0
+            else "column"
+            if dx == 0
+            else "row"
+            if dy == 0
+            else "diagonal"
+        )
+        return (
+            "controlled-relative:v1:"
+            f"distance={distance_bin}:alignment={alignment}:"
+            f"dx={sign(dx)}:dy={sign(dy)}"
+        )
 
     @classmethod
     def effect_signature(
@@ -537,7 +606,8 @@ class AnonymousEntityBehaviorModel:
 
     @classmethod
     def from_dict(cls, payload: Dict[str, Any]) -> "AnonymousEntityBehaviorModel":
-        if int(payload.get("schema_version", 0)) != cls.SCHEMA_VERSION:
+        schema_version = int(payload.get("schema_version", 0))
+        if schema_version not in (3, cls.SCHEMA_VERSION):
             raise ValueError("unsupported anonymous behavior schema")
         model = cls(
             appearance_match_threshold=float(

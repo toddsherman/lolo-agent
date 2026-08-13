@@ -92,6 +92,71 @@ class AnonymousEntityBehaviorModelTests(unittest.TestCase):
         self.assertEqual(unseen.samples, 5)
         self.assertGreater(unseen.entropy, 0.0)
 
+    def test_controlled_relation_context_is_translation_invariant(self) -> None:
+        first = AnonymousEntityBehaviorModel.relational_context_signature(
+            (5, 2),
+            ((5, 4),),
+        )
+        translated = AnonymousEntityBehaviorModel.relational_context_signature(
+            (11, 7),
+            ((11, 9),),
+        )
+        farther = AnonymousEntityBehaviorModel.relational_context_signature(
+            (5, 2),
+            ((2, 3),),
+        )
+
+        self.assertEqual(first, translated)
+        self.assertNotEqual(first, farther)
+        self.assertIn("distance=2", first)
+        self.assertIn("distance=3-4", farther)
+
+    def test_controlled_relation_context_separates_near_and_far_behavior(
+        self,
+    ) -> None:
+        model = AnonymousEntityBehaviorModel(minimum_prediction_samples=2)
+        appearance = (9, 2, 6, 5)
+        near = model.relational_context_signature((5, 2), ((5, 4),))
+        far = model.relational_context_signature((5, 2), ((2, 3),))
+        for _ in range(2):
+            model.observe(
+                appearance,
+                Action.NOOP,
+                16,
+                "transformed",
+                context_signature=near,
+                autonomous=True,
+            )
+            model.observe(
+                appearance,
+                Action.NOOP,
+                16,
+                "stationary",
+                context_signature=far,
+                autonomous=True,
+            )
+
+        self.assertEqual(
+            model.predict(
+                appearance,
+                Action.NOOP,
+                16,
+                context_signature=near,
+                autonomous=True,
+            ).outcome_signature,
+            "transformed",
+        )
+        self.assertEqual(
+            model.predict(
+                appearance,
+                Action.NOOP,
+                16,
+                context_signature=far,
+                autonomous=True,
+            ).outcome_signature,
+            "stationary",
+        )
+
     def test_contradictory_evidence_reduces_confidence(self) -> None:
         model = AnonymousEntityBehaviorModel(minimum_prediction_samples=1)
         appearance = (3, 1, 4, 1)
@@ -199,6 +264,35 @@ class AnonymousEntityBehaviorModelTests(unittest.TestCase):
                 context_signature="context",
             ),
         )
+
+    def test_schema_three_checkpoint_loads_with_unconditional_fallback(
+        self,
+    ) -> None:
+        model = AnonymousEntityBehaviorModel(minimum_prediction_samples=1)
+        appearance = (1, 7, 2, 8)
+        model.observe(
+            appearance,
+            Action.NOOP,
+            16,
+            "stationary",
+            context_signature="legacy-scene-hash",
+            autonomous=True,
+        )
+        payload = model.to_dict()
+        payload["schema_version"] = 3
+
+        restored = AnonymousEntityBehaviorModel.from_dict(payload)
+        prediction = restored.predict(
+            appearance,
+            Action.NOOP,
+            16,
+            context_signature="controlled-relative:v1:distance=2",
+            autonomous=True,
+        )
+
+        self.assertTrue(prediction.known)
+        self.assertFalse(prediction.context_matched)
+        self.assertEqual(prediction.outcome_signature, "stationary")
 
     def test_exact_replayed_evidence_does_not_inflate_confidence(self) -> None:
         model = AnonymousEntityBehaviorModel(minimum_prediction_samples=2)

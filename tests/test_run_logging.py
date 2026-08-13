@@ -67,6 +67,46 @@ class PersistentStateEnv:
 
 
 class RunLoggingTests(unittest.TestCase):
+    def test_anonymous_behavior_hazard_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            logger = RunLogger(Path(directory), run_id="behavior-summary")
+            logger.log(
+                "anonymous_entity_behavior_observed",
+                anonymous_type_id=7,
+                observed_outcome="terminal",
+                behavior_known_before=True,
+                hazard_probability_before=1.0,
+                observed_hazard=True,
+                outcome_matched_prediction=True,
+                differential_terminal_visual_change=True,
+            )
+            logger.log("anonymous_entity_passive_horizon_verified")
+            logger.close()
+
+            summary = build_run_summary(logger.run_dir)
+
+        self.assertEqual(
+            summary["anonymous_entity_behavior_hazard_observations"], 1
+        )
+        self.assertEqual(
+            summary[
+                "anonymous_entity_behavior_known_hazard_predictions"
+            ],
+            1,
+        )
+        self.assertEqual(
+            summary[
+                "anonymous_entity_behavior_hazard_classification_matches"
+            ],
+            1,
+        )
+        self.assertEqual(
+            summary["anonymous_entity_behavior_terminal_observations"], 1
+        )
+        self.assertEqual(
+            summary["anonymous_entity_passive_horizon_branches"], 1
+        )
+
     def test_persistent_option_archive_round_trip_preserves_live_state(
         self,
     ) -> None:
@@ -339,6 +379,23 @@ class RunLoggingTests(unittest.TestCase):
             )
             self.assertIn(
                 "anonymous_entity_behavior_prediction_matches", summary
+            )
+            self.assertIn(
+                "anonymous_entity_behavior_hazard_observations", summary
+            )
+            self.assertIn(
+                "anonymous_entity_behavior_known_hazard_predictions",
+                summary,
+            )
+            self.assertIn(
+                "anonymous_entity_behavior_hazard_classification_matches",
+                summary,
+            )
+            self.assertIn(
+                "anonymous_entity_behavior_terminal_observations", summary
+            )
+            self.assertIn(
+                "anonymous_entity_passive_horizon_branches", summary
             )
             self.assertIn(
                 "anonymous_entity_behavior_types_observed", summary

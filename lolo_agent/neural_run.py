@@ -767,6 +767,13 @@ def main() -> None:
         help="minimum supporting outcomes before an anonymous behavior is known",
     )
     parser.add_argument(
+        "--anonymous-entity-passive-horizons",
+        help=(
+            "comma-separated evaluator-neutral NOOP frame horizons branched "
+            "from each decision root for duration-conditioned behavior evidence"
+        ),
+    )
+    parser.add_argument(
         "--human-prior-option-effect-local-minimum-cell-pixels",
         type=int,
         default=12,
@@ -1048,6 +1055,33 @@ def main() -> None:
         parser.error(
             "--anonymous-entity-behavior-checkpoint requires frozen or learn mode"
         )
+    try:
+        entity_passive_horizons = (
+            tuple(
+                sorted(
+                    {
+                        int(value)
+                        for value in (
+                            args.anonymous_entity_passive_horizons.split(",")
+                        )
+                    }
+                )
+            )
+            if args.anonymous_entity_passive_horizons
+            else ()
+        )
+    except ValueError:
+        parser.error(
+            "--anonymous-entity-passive-horizons must contain integers"
+        )
+    if any(horizon <= 0 for horizon in entity_passive_horizons):
+        parser.error(
+            "--anonymous-entity-passive-horizons must contain positive integers"
+        )
+    if entity_passive_horizons and args.anonymous_entity_behavior_mode == "off":
+        parser.error(
+            "--anonymous-entity-passive-horizons requires frozen or learn mode"
+        )
     if args.anonymous_entity_behavior_mode != "off" and not (
         args.human_prior_hearts and args.human_prior_option_entity_frontier
     ):
@@ -1305,6 +1339,7 @@ def main() -> None:
         anonymous_entity_behavior_learning=(
             args.anonymous_entity_behavior_mode == "learn"
         ),
+        anonymous_entity_passive_horizons=entity_passive_horizons,
         human_prior_option_effect_local_minimum_cell_pixels=(
             args.human_prior_option_effect_local_minimum_cell_pixels
         ),

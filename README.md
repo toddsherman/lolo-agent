@@ -156,13 +156,17 @@ lolo-neural-run \
   --human-prior-option-effect-local-controls \
   --human-prior-option-entity-frontier \
   --anonymous-entity-behavior-checkpoint experiments/lolo1-entity/anonymous-behavior.json \
-  --anonymous-entity-behavior-mode learn
+  --anonymous-entity-behavior-mode learn \
+  --anonymous-entity-passive-horizons 16,32,64,224
 ```
 
 The checkpoint contains no sprite names or supplied mechanics. Use
 `--anonymous-entity-behavior-mode frozen` for parameter-immutable held-out or
-sequel evaluation. The sidecar is currently observational and must pass native
-held-out prediction gates before it can affect planning. See
+sequel evaluation. Optional passive horizons restore the decision-root save
+state and advance an equal-action `NOOP` branch, exposing delayed visual
+dynamics without changing the committed controller action. The sidecar is
+currently observational and must pass native held-out prediction gates before
+it can affect planning. See
 `docs/anonymous-entity-behavior.md`.
 
 Train an observational relation head only after assigning complete strict runs

@@ -1351,6 +1351,29 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             and bool(row.get("outcome_matched_prediction"))
             for row in anonymous_behavior_rows
         ),
+        "anonymous_entity_behavior_hazard_observations": sum(
+            bool(row.get("observed_hazard"))
+            for row in anonymous_behavior_rows
+        ),
+        "anonymous_entity_behavior_known_hazard_predictions": sum(
+            bool(row.get("behavior_known_before"))
+            and float(row.get("hazard_probability_before") or 0.0)
+            >= 0.5
+            for row in anonymous_behavior_rows
+        ),
+        "anonymous_entity_behavior_hazard_classification_matches": sum(
+            bool(row.get("behavior_known_before"))
+            and (
+                float(row.get("hazard_probability_before") or 0.0)
+                >= 0.5
+            )
+            == bool(row.get("observed_hazard"))
+            for row in anonymous_behavior_rows
+        ),
+        "anonymous_entity_behavior_terminal_observations": sum(
+            bool(row.get("differential_terminal_visual_change"))
+            for row in anonymous_behavior_rows
+        ),
         "anonymous_entity_behavior_types_observed": len(
             anonymous_behavior_types
         ),
@@ -1365,6 +1388,9 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         ),
         "anonymous_entity_passive_scans": event_counts.get(
             "anonymous_entity_passive_scan_completed", 0
+        ),
+        "anonymous_entity_passive_horizon_branches": event_counts.get(
+            "anonymous_entity_passive_horizon_verified", 0
         ),
         "human_prior_option_archives_added": event_counts.get(
             "human_prior_option_archive_added", 0
