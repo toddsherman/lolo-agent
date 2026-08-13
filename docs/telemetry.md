@@ -500,6 +500,16 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   option with positive ordering-adjusted progress remains archive-eligible at
   a previously visited graph state; visibility novelty is not allowed to erase
   a useful detour learned from the room's transition topology.
+  `human_prior_ordering_progress_recorded` starts a bounded alternate-order
+  trial. If a later exact search from that progress frontier yields no
+  retainable endpoint, `human_prior_ordering_hypothesis_disproved` preserves
+  the original exhaustion observation but removes its policy authority,
+  discards archive scores derived from it, and permits the formerly excluded
+  milestone to be reconsidered. A later independently exhausted trial can
+  reactivate the hypothesis. These events explicitly report search budget,
+  failed and alternate slots, discarded archives, `hazard_evidence=false`, and
+  policy effect; `summary.json` counts progress trials, disproofs, discarded
+  archives, and reactivations.
   Every verified source/action edge is also reconstructed from the resume
   chain, whether or not that branch was committed. Thus "unexpanded" means
   that a controller action has not yet been tested from the semantic source,

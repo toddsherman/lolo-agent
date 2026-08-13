@@ -926,6 +926,8 @@ class VerifiedNeuralAgent:
         ] = Counter()
         self.human_prior_milestone_outcomes: set[tuple] = set()
         self.human_prior_exhausted_milestone_transitions: set[tuple] = set()
+        self.human_prior_ordering_progress_hypotheses: set[tuple] = set()
+        self.human_prior_disproved_ordering_hypotheses: set[tuple] = set()
         self.human_prior_graph_recovery_pending = False
         self.current_human_prior_world_context_signature = (
             "human-prior-world-root"
@@ -1317,6 +1319,108 @@ class VerifiedNeuralAgent:
             - analysis.navigation_reward
             + ordering_reward
         )
+
+    def _record_human_prior_ordering_progress(
+        self,
+        analysis: HeartGoalAnalysis,
+        source_signature: str,
+        path: Sequence[Action],
+        durations: Sequence[int],
+        frame: Frame,
+    ) -> bool:
+        fields = self._human_prior_ordering_navigation_fields(analysis)
+        if (
+            not fields["human_prior_navigation_retargeted"]
+            or float(
+                fields["human_prior_navigation_ordering_reward"]
+            )
+            <= 0.0
+        ):
+            return False
+        ordering_key = self._human_prior_ordering_hypothesis_key(
+            analysis.source_present,
+            analysis.chest_obtained,
+        )
+        if (
+            ordering_key is None
+            or ordering_key
+            in self.human_prior_ordering_progress_hypotheses
+        ):
+            return False
+        self.human_prior_ordering_progress_hypotheses.add(ordering_key)
+        self._emit(
+            "human_prior_ordering_progress_recorded",
+            decision=self.decision_index + 1,
+            source_graph_signature=source_signature,
+            source_heart_slots=ordering_key[0],
+            failed_ordering_targets=ordering_key[1],
+            chest_obtained=ordering_key[2],
+            path=tuple(path),
+            durations=tuple(durations),
+            policy_effect="ordering_hypothesis_trial",
+            hazard_evidence=False,
+            **fields,
+            **self._frame_fields(frame),
+        )
+        return True
+
+    def _maybe_disprove_human_prior_ordering_hypothesis(
+        self,
+        source_analysis: HeartGoalAnalysis,
+        source_signature: str,
+        reason: str,
+    ) -> bool:
+        ordering_key = self._human_prior_ordering_hypothesis_key(
+            source_analysis.source_present,
+            source_analysis.chest_obtained,
+        )
+        if (
+            ordering_key is None
+            or ordering_key
+            not in self.human_prior_ordering_progress_hypotheses
+            or ordering_key
+            in self.human_prior_disproved_ordering_hypotheses
+        ):
+            return False
+        active_targets = tuple(
+            sorted(set(ordering_key[0]) - set(ordering_key[1]))
+        )
+        active_distance = self._human_prior_slot_distance(
+            source_analysis.target_player_slot,
+            active_targets,
+        )
+        self.human_prior_disproved_ordering_hypotheses.add(ordering_key)
+        self.human_prior_ordering_progress_hypotheses.discard(ordering_key)
+        stale_archives = [
+            branch
+            for branch in self.archive
+            if branch.human_prior_verified_option
+            and tuple(sorted(branch.goal_heart_slots)) == ordering_key[0]
+            and branch.goal_progress_reward > 0.0
+        ]
+        removed_archives = self._remove_archive_branches(
+            stale_archives,
+            "ordering_hypothesis_disproved",
+        )
+        self._emit(
+            "human_prior_ordering_hypothesis_disproved",
+            decision=self.decision_index + 1,
+            reason=reason,
+            source_graph_signature=source_signature,
+            source_heart_slots=ordering_key[0],
+            failed_ordering_targets=ordering_key[1],
+            alternate_targets=active_targets,
+            alternate_target_distance=active_distance,
+            chest_obtained=ordering_key[2],
+            maximum_depth=self.config.human_prior_option_search_depth,
+            beam_width=self.config.human_prior_option_search_beam_width,
+            stale_ordering_archives_removed=removed_archives,
+            policy_effect="ordering_retarget_disabled",
+            hazard_evidence=False,
+            agent_visible=(source_analysis.target_player_slot is not None),
+            **self._frame_fields(self.frame),
+        )
+        return True
 
     def _human_prior_navigation_recovery_grace_active(self) -> bool:
         grace = self.config.human_prior_navigation_recovery_grace
@@ -6213,7 +6317,9 @@ class VerifiedNeuralAgent:
                 outcome_key = self._human_prior_milestone_outcome_key(
                     endpoint.analysis
                 )
-                if outcome_key in self.human_prior_milestone_outcomes:
+                if self._human_prior_milestone_outcome_known(
+                    endpoint.analysis
+                ):
                     self._emit(
                         "human_prior_option_milestone_duplicate_rejected",
                         decision=self.decision_index + 1,
@@ -6250,6 +6356,13 @@ class VerifiedNeuralAgent:
             endpoints = processed_endpoints
 
             if not endpoints:
+                ordering_hypothesis_disproved = (
+                    self._maybe_disprove_human_prior_ordering_hypothesis(
+                        source_analysis,
+                        source_signature,
+                        "no_unexpanded_endpoint_after_ordering_progress",
+                    )
+                )
                 self.human_prior_option_exhausted_sources.add(
                     exhausted_key
                 )
@@ -6260,6 +6373,9 @@ class VerifiedNeuralAgent:
                     eligible_endpoints=0,
                     archive_branches_added=0,
                     reason="no_unexpanded_endpoint",
+                    ordering_hypothesis_disproved=(
+                        ordering_hypothesis_disproved
+                    ),
                     search_budget_sha256=search_budget_sha256,
                     **self._frame_fields(source_frame),
                 )
@@ -6293,6 +6409,13 @@ class VerifiedNeuralAgent:
             ]
             selection_endpoints = ordinary_endpoints or causal_endpoints
             if not selection_endpoints:
+                ordering_hypothesis_disproved = (
+                    self._maybe_disprove_human_prior_ordering_hypothesis(
+                        source_analysis,
+                        source_signature,
+                        "no_retainable_endpoint_after_ordering_progress",
+                    )
+                )
                 self.human_prior_option_exhausted_sources.add(
                     exhausted_key
                 )
@@ -6304,6 +6427,9 @@ class VerifiedNeuralAgent:
                     globally_novel_endpoints=0,
                     archive_branches_added=0,
                     reason="no_globally_novel_endpoint",
+                    ordering_hypothesis_disproved=(
+                        ordering_hypothesis_disproved
+                    ),
                     search_budget_sha256=search_budget_sha256,
                     **self._frame_fields(source_frame),
                 )
@@ -6518,6 +6644,13 @@ class VerifiedNeuralAgent:
                         archived.frame,
                         self.decision_index + 1,
                     )
+                self._record_human_prior_ordering_progress(
+                    archived.analysis,
+                    archived.source_signature,
+                    archived.path,
+                    archived.durations,
+                    archived.frame,
+                )
                 self._emit(
                     "human_prior_option_archive_added",
                     decision=self.decision_index + 1,
@@ -6957,6 +7090,8 @@ class VerifiedNeuralAgent:
         self.human_prior_phase_player_position_visits = Counter()
         self.human_prior_milestone_outcomes = set()
         self.human_prior_exhausted_milestone_transitions = set()
+        self.human_prior_ordering_progress_hypotheses = set()
+        self.human_prior_disproved_ordering_hypotheses = set()
         self.human_prior_option_exhausted_sources: set[tuple] = set()
         self.human_prior_graph_recovery_pending = False
         self.current_human_prior_world_context_signature = (
@@ -7470,6 +7605,8 @@ class VerifiedNeuralAgent:
         self.human_prior_phase_player_position_visits = Counter()
         self.human_prior_milestone_outcomes = set()
         self.human_prior_exhausted_milestone_transitions = set()
+        self.human_prior_ordering_progress_hypotheses = set()
+        self.human_prior_disproved_ordering_hypotheses = set()
         self.human_prior_option_exhausted_sources = set()
         self.human_prior_graph_recovery_pending = False
         self.current_human_prior_world_context_signature = (
@@ -7604,6 +7741,8 @@ class VerifiedNeuralAgent:
             Tuple[str, Action, int]
         ] = Counter()
         exhausted_milestone_transitions: set[tuple] = set()
+        ordering_progress_hypotheses: set[tuple] = set()
+        disproved_ordering_hypotheses: set[tuple] = set()
         unqualified_exhaustion_hazards_ignored = 0
         milestone_outcomes_by_decision: Dict[
             Tuple[str, int], tuple
@@ -7640,6 +7779,8 @@ class VerifiedNeuralAgent:
                 graph_edge_verifications.clear()
                 option_paths.clear()
                 milestone_outcomes_by_decision.clear()
+                ordering_progress_hypotheses.clear()
+                disproved_ordering_hypotheses.clear()
                 known_slots = {
                     (int(slot[0]), int(slot[1]))
                     for slot in (
@@ -7654,6 +7795,79 @@ class VerifiedNeuralAgent:
                 event_chest_obtained = False
                 latest_decision_has_semantic_state = False
                 continue
+            if event.get("event") in (
+                "human_prior_ordering_progress_recorded",
+                "human_prior_option_archive_added",
+                "human_prior_ordering_hypothesis_disproved",
+            ):
+                ordering_reward_value = event.get(
+                    "human_prior_navigation_ordering_reward", 0.0
+                )
+                inferred_progress = bool(
+                    event.get("event")
+                    == "human_prior_option_archive_added"
+                    and event.get("human_prior_navigation_retargeted")
+                    and isinstance(ordering_reward_value, (int, float))
+                    and ordering_reward_value > 0.0
+                )
+                if (
+                    event.get("event")
+                    != "human_prior_option_archive_added"
+                    or inferred_progress
+                ):
+                    try:
+                        source_values = (
+                            event.get("source_heart_slots")
+                            or event.get("human_prior_source_hearts")
+                            or ()
+                        )
+                        failed_values = (
+                            event.get("failed_ordering_targets")
+                            or event.get(
+                                "human_prior_navigation_failed_targets"
+                            )
+                            or ()
+                        )
+                        ordering_key = (
+                            tuple(
+                                sorted(
+                                    (int(slot[0]), int(slot[1]))
+                                    for slot in source_values
+                                )
+                            ),
+                            tuple(
+                                sorted(
+                                    (int(slot[0]), int(slot[1]))
+                                    for slot in failed_values
+                                )
+                            ),
+                            bool(
+                                event.get(
+                                    "chest_obtained",
+                                    event.get(
+                                        "human_prior_chest_obtained",
+                                        False,
+                                    ),
+                                )
+                            ),
+                        )
+                        if ordering_key[0] and ordering_key[1]:
+                            if (
+                                event.get("event")
+                                == "human_prior_ordering_hypothesis_disproved"
+                            ):
+                                disproved_ordering_hypotheses.add(
+                                    ordering_key
+                                )
+                                ordering_progress_hypotheses.discard(
+                                    ordering_key
+                                )
+                            else:
+                                ordering_progress_hypotheses.add(
+                                    ordering_key
+                                )
+                    except (TypeError, ValueError):
+                        pass
             if event.get("event") == "human_prior_milestone_outcome_recorded":
                 try:
                     milestone_event_key = (
@@ -7706,19 +7920,37 @@ class VerifiedNeuralAgent:
                 )
                 if transition_values:
                     try:
-                        exhausted_milestone_transitions.add(
-                            (
-                                tuple(
-                                    (int(slot[0]), int(slot[1]))
-                                    for slot in transition_values[0]
-                                ),
-                                tuple(
-                                    (int(slot[0]), int(slot[1]))
-                                    for slot in transition_values[1]
-                                ),
-                                bool(transition_values[2]),
-                            )
+                        parsed_transition = (
+                            tuple(
+                                (int(slot[0]), int(slot[1]))
+                                for slot in transition_values[0]
+                            ),
+                            tuple(
+                                (int(slot[0]), int(slot[1]))
+                                for slot in transition_values[1]
+                            ),
+                            bool(transition_values[2]),
                         )
+                        exhausted_milestone_transitions.add(
+                            parsed_transition
+                        )
+                        if event.get("ordering_hypothesis_reactivated"):
+                            reactivated_key = (
+                                tuple(sorted(parsed_transition[0])),
+                                tuple(
+                                    sorted(
+                                        set(parsed_transition[0])
+                                        - set(parsed_transition[1])
+                                    )
+                                ),
+                                parsed_transition[2],
+                            )
+                            disproved_ordering_hypotheses.discard(
+                                reactivated_key
+                            )
+                            ordering_progress_hypotheses.discard(
+                                reactivated_key
+                            )
                     except (IndexError, TypeError, ValueError):
                         pass
                 choice_values = tuple(event.get("milestone_choice") or ())
@@ -7930,6 +8162,13 @@ class VerifiedNeuralAgent:
         self.human_prior_exhausted_milestone_transitions = (
             exhausted_milestone_transitions
         )
+        self.human_prior_ordering_progress_hypotheses = (
+            ordering_progress_hypotheses
+            - disproved_ordering_hypotheses
+        )
+        self.human_prior_disproved_ordering_hypotheses = (
+            disproved_ordering_hypotheses
+        )
         self.temporal_option_values.update(temporal_option_values)
         self.temporal_option_samples.update(temporal_option_samples)
         if latest_decision_has_semantic_state:
@@ -7982,6 +8221,12 @@ class VerifiedNeuralAgent:
             milestone_outcomes=len(self.human_prior_milestone_outcomes),
             exhausted_milestone_transitions=len(
                 self.human_prior_exhausted_milestone_transitions
+            ),
+            ordering_progress_hypotheses=len(
+                self.human_prior_ordering_progress_hypotheses
+            ),
+            disproved_ordering_hypotheses=len(
+                self.human_prior_disproved_ordering_hypotheses
             ),
             temporal_option_values=len(temporal_option_values),
             temporal_option_samples=sum(temporal_option_samples.values()),
@@ -9283,11 +9528,26 @@ class VerifiedNeuralAgent:
     def _human_prior_milestone_outcome_known(
         self, analysis: HeartGoalAnalysis
     ) -> bool:
-        return bool(
-            analysis.milestone_reward > 0.0
-            and self._human_prior_milestone_outcome_key(analysis)
-            in self.human_prior_milestone_outcomes
+        if (
+            analysis.milestone_reward <= 0.0
+            or self._human_prior_milestone_outcome_key(analysis)
+            not in self.human_prior_milestone_outcomes
+        ):
+            return False
+        ordering_key = self._human_prior_ordering_hypothesis_key(
+            analysis.source_present,
+            analysis.chest_obtained,
         )
+        if (
+            ordering_key
+            in self.human_prior_disproved_ordering_hypotheses
+            and set(analysis.collected).intersection(ordering_key[1])
+        ):
+            # The outcome remains in factual episodic memory, but its
+            # anti-repetition interpretation no longer has policy authority
+            # after the alternate-order hypothesis is disproven.
+            return False
+        return True
 
     @staticmethod
     def _human_prior_milestone_transition_key(
@@ -9302,13 +9562,19 @@ class VerifiedNeuralAgent:
     def _human_prior_milestone_transition_exhausted(
         self, analysis: HeartGoalAnalysis
     ) -> bool:
+        ordering_key = self._human_prior_ordering_hypothesis_key(
+            analysis.source_present,
+            analysis.chest_obtained,
+        )
         return bool(
             analysis.milestone_reward > 0.0
             and self._human_prior_milestone_transition_key(analysis)
             in self.human_prior_exhausted_milestone_transitions
+            and ordering_key
+            not in self.human_prior_disproved_ordering_hypotheses
         )
 
-    def _human_prior_failed_ordering_targets(
+    def _human_prior_raw_failed_ordering_targets(
         self,
         source_hearts: Tuple[Tuple[int, int], ...],
         chest_obtained: bool,
@@ -9329,6 +9595,39 @@ class VerifiedNeuralAgent:
                 set(transition_source) - set(transition_target)
             )
         return tuple(sorted(removed))
+
+    def _human_prior_ordering_hypothesis_key(
+        self,
+        source_hearts: Tuple[Tuple[int, int], ...],
+        chest_obtained: bool,
+    ) -> Optional[tuple]:
+        normalized_source = tuple(sorted(source_hearts))
+        removed = self._human_prior_raw_failed_ordering_targets(
+            normalized_source,
+            chest_obtained,
+        )
+        if not removed:
+            return None
+        return normalized_source, removed, bool(chest_obtained)
+
+    def _human_prior_failed_ordering_targets(
+        self,
+        source_hearts: Tuple[Tuple[int, int], ...],
+        chest_obtained: bool,
+    ) -> Tuple[Tuple[int, int], ...]:
+        """Return active targets, excluding disproven interpretations."""
+
+        ordering_key = self._human_prior_ordering_hypothesis_key(
+            source_hearts,
+            chest_obtained,
+        )
+        if (
+            ordering_key is None
+            or ordering_key
+            in self.human_prior_disproved_ordering_hypotheses
+        ):
+            return ()
+        return ordering_key[1]
 
     def _human_prior_milestone_preparation_precursor(
         self, analysis: HeartGoalAnalysis
@@ -9371,11 +9670,10 @@ class VerifiedNeuralAgent:
         current_chest_obtained = bool(
             getattr(self.goal_prior, "chest_obtained", False)
         )
-        return any(
-            tuple(source_hearts) == current_hearts
-            and bool(chest_obtained) == current_chest_obtained
-            for source_hearts, _target_hearts, chest_obtained in (
-                self.human_prior_exhausted_milestone_transitions
+        return bool(
+            self._human_prior_failed_ordering_targets(
+                current_hearts,
+                current_chest_obtained,
             )
         )
 
@@ -9412,6 +9710,10 @@ class VerifiedNeuralAgent:
             return False
         source_hearts = tuple(sorted(self.goal_prior.current_slots()))
         target_hearts = tuple(sorted(branch.goal_heart_slots))
+        ordering_key = self._human_prior_ordering_hypothesis_key(
+            source_hearts,
+            bool(branch.goal_chest_obtained),
+        )
         return bool(
             source_hearts != target_hearts
             and (
@@ -9420,6 +9722,8 @@ class VerifiedNeuralAgent:
                 bool(branch.goal_chest_obtained),
             )
             in self.human_prior_exhausted_milestone_transitions
+            and ordering_key
+            not in self.human_prior_disproved_ordering_hypotheses
         )
 
     def _human_prior_archive_preparation_precursor(
@@ -14657,6 +14961,21 @@ class VerifiedNeuralAgent:
         self.human_prior_exhausted_milestone_transitions.add(
             exhausted_transition
         )
+        ordering_key = self._human_prior_ordering_hypothesis_key(
+            exhausted_transition[0],
+            exhausted_transition[2],
+        )
+        ordering_hypothesis_reactivated = bool(
+            ordering_key
+            in self.human_prior_disproved_ordering_hypotheses
+        )
+        if ordering_hypothesis_reactivated:
+            self.human_prior_disproved_ordering_hypotheses.discard(
+                ordering_key
+            )
+            self.human_prior_ordering_progress_hypotheses.discard(
+                ordering_key
+            )
         if self.pending_life_recovery is not None:
             self._release_life_hazard_checkpoint(
                 self.pending_life_recovery,
@@ -14688,6 +15007,9 @@ class VerifiedNeuralAgent:
             policy_effect="milestone_priority_only",
             preparation_transition_learned=(
                 exhausted_transition is not None
+            ),
+            ordering_hypothesis_reactivated=(
+                ordering_hypothesis_reactivated
             ),
             exhausted_milestone_transition=exhausted_transition,
             recovery_state_id=checkpoint.state_id,

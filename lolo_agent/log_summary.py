@@ -1600,6 +1600,23 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             if event["event"] == "decision_committed"
             and bool(event.get("human_prior_navigation_retargeted"))
         ),
+        "human_prior_ordering_progress_hypotheses": event_counts.get(
+            "human_prior_ordering_progress_recorded", 0
+        ),
+        "human_prior_ordering_hypotheses_disproved": event_counts.get(
+            "human_prior_ordering_hypothesis_disproved", 0
+        ),
+        "human_prior_ordering_stale_archives_removed": sum(
+            int(event.get("stale_ordering_archives_removed", 0))
+            for event in events
+            if event["event"]
+            == "human_prior_ordering_hypothesis_disproved"
+        ),
+        "human_prior_ordering_hypotheses_reactivated": sum(
+            event["event"] == "goal_milestone_exhaustion_learned"
+            and bool(event.get("ordering_hypothesis_reactivated"))
+            for event in events
+        ),
         "human_prior_option_searches": event_counts.get(
             "human_prior_option_search_started", 0
         ),

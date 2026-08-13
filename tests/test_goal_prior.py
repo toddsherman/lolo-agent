@@ -925,6 +925,76 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
             analysis.navigation_reward,
         )
 
+    def test_exhausted_alternate_trial_disproves_ordering_interpretation(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        agent = VerifiedNeuralAgent(
+            HeartNavigationEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                human_prior_heart_reward=25.0,
+                human_prior_navigation_reward=1.0,
+                human_prior_option_search_depth=2,
+            ),
+        )
+        agent.reset()
+        hearts = ((48, 128), (144, 128))
+        source = room_frame(hearts, player=(80, 128))
+        moved = room_frame(hearts, player=(96, 128))
+        collected = room_frame(((144, 128),), player=(48, 128))
+        assert agent.goal_prior is not None
+        agent.goal_prior.known_slots = set(hearts)
+        agent.goal_prior.current_present = set(hearts)
+        agent.goal_prior.current_player_slot = (80, 128)
+        moved_analysis = agent.goal_prior.analyze(source, moved)
+        collected_analysis = agent.goal_prior.analyze(source, collected)
+        transition = (hearts, ((144, 128),), False)
+        agent.human_prior_exhausted_milestone_transitions.add(transition)
+        ordering_key = agent._human_prior_ordering_hypothesis_key(
+            hearts, False
+        )
+        assert ordering_key is not None
+        agent.human_prior_ordering_progress_hypotheses.add(ordering_key)
+        agent.human_prior_milestone_outcomes.add(
+            agent._human_prior_milestone_outcome_key(collected_analysis)
+        )
+
+        disproved = (
+            agent._maybe_disprove_human_prior_ordering_hypothesis(
+                moved_analysis,
+                "source",
+                "test_frontier_exhausted",
+            )
+        )
+        fields = agent._human_prior_ordering_navigation_fields(
+            moved_analysis
+        )
+
+        self.assertTrue(disproved)
+        self.assertIn(
+            ordering_key,
+            agent.human_prior_disproved_ordering_hypotheses,
+        )
+        self.assertFalse(fields["human_prior_navigation_retargeted"])
+        self.assertEqual(
+            fields["human_prior_navigation_ordering_reward"],
+            moved_analysis.navigation_reward,
+        )
+        self.assertFalse(
+            agent._human_prior_milestone_transition_exhausted(
+                collected_analysis
+            )
+        )
+        self.assertFalse(
+            agent._human_prior_milestone_outcome_known(
+                collected_analysis
+            )
+        )
+
     def test_archive_recovery_softly_prefers_a_closer_goal_checkpoint(self) -> None:
         model = EnsembleVisualDynamicsModel(
             latent_size=32, action_size=8, ensemble_size=2

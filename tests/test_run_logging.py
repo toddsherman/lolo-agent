@@ -559,6 +559,18 @@ class RunLoggingTests(unittest.TestCase):
                 summary,
             )
             self.assertIn(
+                "human_prior_ordering_progress_hypotheses", summary
+            )
+            self.assertIn(
+                "human_prior_ordering_hypotheses_disproved", summary
+            )
+            self.assertIn(
+                "human_prior_ordering_stale_archives_removed", summary
+            )
+            self.assertIn(
+                "human_prior_ordering_hypotheses_reactivated", summary
+            )
+            self.assertIn(
                 "anonymous_entity_behavior_observations", summary
             )
             self.assertIn(

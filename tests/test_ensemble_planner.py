@@ -3188,6 +3188,10 @@ class EnsemblePlannerTests(unittest.TestCase):
         agent.human_prior_exhausted_milestone_transitions.add(
             (hearts, ((32, 0),), False)
         )
+        ordering_key = agent._human_prior_ordering_hypothesis_key(
+            hearts, False
+        )
+        assert ordering_key is not None
         source_signature = agent._current_human_prior_graph_signature()
         agent.human_prior_graph_state_visits[source_signature] = 1
         agent.human_prior_player_position_visits[(0, 0)] = 1
@@ -3206,6 +3210,71 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertAlmostEqual(
             agent.archive[0].goal_progress_reward, 0.125
         )
+        self.assertIn(
+            ordering_key,
+            agent.human_prior_ordering_progress_hypotheses,
+        )
+
+    def test_option_search_disproves_exhausted_ordering_trial(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = ActionEffectEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                human_prior_navigation_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=2,
+                human_prior_option_search_action_frames=1,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        env.position = 63
+        agent.frame = env._frame()
+        agent.goal_prior = OrderingPositionGoalPrior()
+        agent.goal_prior.current_player_slot = (63, 0)
+        hearts = ((-16, 0), (32, 0))
+        agent.human_prior_exhausted_milestone_transitions.add(
+            (hearts, ((32, 0),), False)
+        )
+        ordering_key = agent._human_prior_ordering_hypothesis_key(
+            hearts, False
+        )
+        assert ordering_key is not None
+        agent.human_prior_ordering_progress_hypotheses.add(ordering_key)
+
+        added = agent._search_human_prior_options()
+
+        self.assertEqual(added, 0)
+        self.assertIn(
+            ordering_key,
+            agent.human_prior_disproved_ordering_hypotheses,
+        )
+        disproved = [
+            event
+            for event in logger.events
+            if event["event"]
+            == "human_prior_ordering_hypothesis_disproved"
+        ]
+        self.assertEqual(len(disproved), 1)
+        self.assertEqual(
+            disproved[0]["policy_effect"],
+            "ordering_retarget_disabled",
+        )
+        completed = [
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_search_completed"
+        ][-1]
+        self.assertTrue(completed["ordering_hypothesis_disproved"])
 
     def test_decide_immediately_restores_new_verified_option(self) -> None:
         model = EnsembleVisualDynamicsModel(
@@ -6204,6 +6273,66 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(seeded[0]["pose_action"], Action.RIGHT)
         self.assertEqual(
             seeded[0]["unqualified_exhaustion_hazards_ignored"], 1
+        )
+
+    def test_seed_human_prior_memory_restores_disproved_ordering(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        agent = VerifiedNeuralAgent(
+            ActionEffectEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(human_prior_navigation_reward=1.0),
+        )
+        agent.reset()
+        source_hearts = ((32, 32), (64, 32))
+        failed_targets = ((32, 32),)
+        events = [
+            {
+                "event": "goal_milestone_exhaustion_learned",
+                "exhausted_milestone_transition": [
+                    [[32, 32], [64, 32]],
+                    [[64, 32]],
+                    False,
+                ],
+            },
+            {
+                "event": "human_prior_option_archive_added",
+                "human_prior_source_hearts": [[32, 32], [64, 32]],
+                "human_prior_navigation_failed_targets": [[32, 32]],
+                "human_prior_navigation_retargeted": True,
+                "human_prior_navigation_ordering_reward": 1.0,
+                "human_prior_chest_obtained": False,
+            },
+            {
+                "event": "human_prior_ordering_hypothesis_disproved",
+                "source_heart_slots": [[32, 32], [64, 32]],
+                "failed_ordering_targets": [[32, 32]],
+                "chest_obtained": False,
+            },
+        ]
+
+        agent.seed_human_prior_episodic_memory(events)
+
+        ordering_key = (source_hearts, failed_targets, False)
+        self.assertIn(
+            (source_hearts, ((64, 32),), False),
+            agent.human_prior_exhausted_milestone_transitions,
+        )
+        self.assertIn(
+            ordering_key,
+            agent.human_prior_disproved_ordering_hypotheses,
+        )
+        self.assertNotIn(
+            ordering_key,
+            agent.human_prior_ordering_progress_hypotheses,
+        )
+        self.assertEqual(
+            agent._human_prior_failed_ordering_targets(
+                source_hearts, False
+            ),
+            (),
         )
 
     def test_seed_human_prior_option_archive_restores_promoted_branch(
