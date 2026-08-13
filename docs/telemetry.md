@@ -200,6 +200,20 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   episodic resume, these verified paths reconstruct temporary option coverage
   even when they were not selected or committed, preventing the same exact
   experiment from being treated as unseen after a process restart;
+- `human_prior_episodic_graph_plan_selected`, emitted by the opt-in
+  `--human-prior-episodic-graph-guidance` policy. It records the current
+  pixel-state signature, the reachable waypoint, the nearest state in a
+  component that previously preceded a positive visual outcome, their pixel
+  gap, and the verified action cost remaining to the waypoint. `known_route`
+  distinguishes replaying progress along an already connected transition
+  graph from investigating one missing bridge. The policy reconstructs only
+  emulator-verified source/target signatures from temporary telemetry; it does
+  not store an object label or supplied action sequence. Every exact branch,
+  archived endpoint, restore, and commit carries
+  `human_prior_episodic_graph_progress`,
+  `human_prior_episodic_graph_bridge_reached`, and
+  `human_prior_episodic_graph_remaining_cost`, so route reuse and the first
+  newly connected component can be visualized decision by decision;
 - `human_prior_option_search_depth_completed`, which makes beam loss and
   tracker failure directly auditable at every depth. It records raw
   candidates, globally deduplicated and novel candidates, detected- and
@@ -395,9 +409,11 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
 - `human_prior_option_recovery_armed` and
   `human_prior_option_recovery_deferred`, which record whether a branch added
   by the current exact search may be restored in the same decision. Immediate
-  recovery requires positive verified root-relative assisted goal progress.
-  Ordinary neutral or regressive endpoints stay in the archive for later
-  best-first exploration but cannot preempt the normal planner. Option archive
+  recovery requires positive verified root-relative assisted goal progress or,
+  when episodic graph guidance is explicitly enabled, lower verified action
+  cost to its selected waypoint. Ordinary neutral or regressive endpoints stay
+  in the archive for later best-first exploration but cannot preempt the normal
+  planner. Option archive
   `goal_progress_reward` is signed total assisted progress rather than an
   unsigned milestone-only bonus;
 - semantic recovery does not discard a confirmed physical, world-effect,

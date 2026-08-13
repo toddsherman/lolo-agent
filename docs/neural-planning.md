@@ -33,6 +33,18 @@ is persisted across evaluator resumes and can be restored after exhaustive
 search or after a configured frontier-decision budget. A visible heart-set
 transition learned to strand the search is not expanded again within temporary
 episodic memory, preserving beam capacity for a different collection order.
+An optional episodic-graph guidance policy reconstructs emulator-verified
+pixel-state transitions and the source states of previously observed positive
+outcomes. If the current component is disconnected, it guides exact search to
+the reachable state with the smallest player-pixel gap to the outcome's
+predecessor component, then rewards only a newly verified bridge. If the graph
+is already connected, it can reuse visited transitions that reduce verified
+action cost to the outcome. This addresses the case where novelty-only search
+rejects every useful intermediate precisely because it learned those
+intermediates earlier. The graph is room-local temporary memory and is cleared
+at a visually detected room boundary. A newly verified pixel milestone always
+outranks graph progress during archive recovery; graph guidance supplies a
+route to discovery, never a substitute reward for the outcome.
 None of these mechanisms changes neural parameters or introduces object names,
 room solutions, or ROM memory.
 

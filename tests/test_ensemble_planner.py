@@ -2842,6 +2842,137 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(completed["reason"], "no_globally_novel_endpoint")
         self.assertEqual(completed["globally_novel_endpoints"], 0)
 
+    def test_episodic_graph_plan_targets_closest_missing_bridge(
+        self,
+    ) -> None:
+        agent = VerifiedNeuralAgent(
+            ActionEffectEnv(),
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                human_prior_heart_reward=1.0,
+                human_prior_episodic_graph_guidance=True,
+            ),
+        )
+        agent.reset()
+        signature = lambda player: agent._human_prior_graph_signature(
+            ((7, 0),), player, None, "life"
+        )
+        source = signature((0, 0))
+        route = signature((1, 0))
+        frontier = signature((2, 0))
+        bridge = signature((3, 0))
+        milestone = signature((4, 0))
+        agent._record_human_prior_episodic_graph_transition(
+            source, route, 1
+        )
+        agent._record_human_prior_episodic_graph_transition(
+            route, frontier, 1
+        )
+        agent._record_human_prior_episodic_graph_transition(
+            bridge, milestone, 1
+        )
+        agent._record_human_prior_episodic_graph_transition(
+            milestone, "", 1, milestone=True
+        )
+
+        plan = agent._human_prior_episodic_graph_plan(source)
+
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertFalse(plan.known_route)
+        self.assertEqual(plan.waypoint_signature, frontier)
+        self.assertEqual(plan.bridge_target_signature, bridge)
+        self.assertEqual(plan.gap_distance, 1)
+        self.assertEqual(plan.source_remaining_cost, 2)
+        progress, reached, remaining = (
+            agent._human_prior_episodic_graph_progress(plan, source)
+        )
+        self.assertEqual(progress, 0.0)
+        self.assertFalse(reached)
+        self.assertEqual(remaining, 2)
+        progress, reached, remaining = (
+            agent._human_prior_episodic_graph_progress(plan, route)
+        )
+        self.assertEqual(progress, 0.5)
+        self.assertFalse(reached)
+        self.assertEqual(remaining, 1)
+        progress, reached, remaining = (
+            agent._human_prior_episodic_graph_progress(plan, bridge)
+        )
+        self.assertEqual(progress, 2.0)
+        self.assertTrue(reached)
+        self.assertIsNone(remaining)
+
+    def test_option_search_reuses_visited_episodic_graph_progress(
+        self,
+    ) -> None:
+        env = UniqueStateEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=1,
+                human_prior_option_search_action_frames=1,
+                human_prior_episodic_graph_guidance=True,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        signatures = [
+            agent._human_prior_graph_signature(
+                ((7, 0),), (position, 0), None, "life"
+            )
+            for position in range(4)
+        ]
+        for source, target in zip(signatures, signatures[1:]):
+            agent._record_human_prior_episodic_graph_transition(
+                source, target, 1
+            )
+        agent._record_human_prior_episodic_graph_transition(
+            signatures[-1], "", 1, milestone=True
+        )
+        for position, signature in enumerate(signatures[:3]):
+            agent.human_prior_graph_state_visits[signature] = 1
+            agent.human_prior_player_position_visits[(position, 0)] = 1
+
+        added = agent._search_human_prior_options()
+
+        self.assertEqual(added, 1)
+        self.assertEqual(len(agent.archive), 1)
+        self.assertEqual(agent.archive[0].goal_player_slot, (2, 0))
+        self.assertGreater(
+            agent.archive[0].human_prior_episodic_graph_progress, 0.0
+        )
+        selected = next(
+            event
+            for event in logger.events
+            if event["event"]
+            == "human_prior_episodic_graph_plan_selected"
+        )
+        self.assertTrue(selected["known_route"])
+        completed = next(
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_search_completed"
+        )
+        self.assertGreater(
+            completed["human_prior_episodic_graph_progress"], 0.0
+        )
+
     def test_exhausted_option_frontier_filter_avoids_reentry(self) -> None:
         model = EnsembleVisualDynamicsModel(
             latent_size=32, action_size=8, ensemble_size=2
@@ -3610,6 +3741,150 @@ class EnsemblePlannerTests(unittest.TestCase):
                 for event in logger.events
             )
         )
+
+    def test_decide_restores_verified_episodic_graph_progress(self) -> None:
+        env = UniqueStateEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                verify_actions=1,
+                human_prior_best_first_archive=True,
+                human_prior_graph_stagnation_visits=1,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=1,
+                human_prior_option_search_action_frames=1,
+                human_prior_episodic_graph_guidance=True,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.goal_prior = RegressivePositionGoalPrior()
+        agent._calibrate_goal_prior = lambda _frame: None
+        signatures = [
+            agent._human_prior_graph_signature(
+                ((7, 0),), (position, 0), None, "life"
+            )
+            for position in range(4)
+        ]
+        for source, target in zip(signatures, signatures[1:]):
+            agent._record_human_prior_episodic_graph_transition(
+                source, target, 1
+            )
+        agent._record_human_prior_episodic_graph_transition(
+            signatures[-1], "", 1, milestone=True
+        )
+        for position, signature in enumerate(signatures[:3]):
+            agent.human_prior_graph_state_visits[signature] = 1
+            agent.human_prior_player_position_visits[(position, 0)] = 1
+
+        decision = agent.decide()
+
+        self.assertTrue(decision.restored_archive)
+        self.assertEqual(decision.planned_path, (Action.RIGHT, Action.RIGHT))
+        self.assertEqual(env.position, 2)
+        armed = next(
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_recovery_armed"
+        )
+        self.assertEqual(
+            armed["reason"],
+            "positive_verified_episodic_graph_progress",
+        )
+        restored = next(
+            event
+            for event in logger.events
+            if event["event"] == "decision_committed"
+        )
+        self.assertGreater(
+            restored["human_prior_episodic_graph_progress"], 0.0
+        )
+
+    def test_archive_restore_prefers_milestone_over_graph_progress(
+        self,
+    ) -> None:
+        env = UniqueStateEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                behavioral_best_first_archive=True,
+                human_prior_best_first_archive=True,
+            ),
+            event_logger=logger,
+        )
+        source = agent.reset()
+        agent.goal_prior = OrderingPositionGoalPrior()
+        root = env.save_state()
+        milestone_frame = env.step(Action.RIGHT, 1)
+        milestone_state = env.save_state()
+        env.load_state(root)
+        graph_frame = env.step(Action.RIGHT, 2)
+        graph_state = env.save_state()
+        env.load_state(root)
+        source_hearts = tuple(sorted(agent.goal_prior.current_slots()))
+        milestone = _ArchivedBranch(
+            state=milestone_state,
+            frame=milestone_frame,
+            plan=NeuralPlan((Action.RIGHT,), (1,), 25.0, 0.0),
+            score=25.0,
+            scene=agent._scene_signature(milestone_frame),
+            created=0,
+            origin_signature="source",
+            goal_source_signature="graph-source",
+            goal_target_signature="milestone-target",
+            goal_heart_slots=(source_hearts[1],),
+            goal_progress_reward=25.0,
+            goal_remaining_hearts=1,
+            goal_total_hearts=2,
+            goal_player_slot=(1, 0),
+        )
+        graph_progress = _ArchivedBranch(
+            state=graph_state,
+            frame=graph_frame,
+            plan=NeuralPlan((Action.RIGHT,), (2,), 40.0, 0.0),
+            score=40.0,
+            scene=agent._scene_signature(graph_frame),
+            created=0,
+            origin_signature="source",
+            goal_source_signature="graph-source",
+            goal_target_signature="graph-target",
+            goal_heart_slots=source_hearts,
+            goal_progress_reward=3.0,
+            goal_remaining_hearts=2,
+            goal_total_hearts=2,
+            goal_player_slot=(2, 0),
+            human_prior_episodic_graph_progress=2.0,
+            human_prior_episodic_graph_bridge_reached=True,
+        )
+        agent.archive = [graph_progress, milestone]
+        agent.human_prior_graph_recovery_pending = True
+
+        decision = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(decision)
+        assert decision is not None
+        self.assertTrue(decision.restored_archive)
+        self.assertEqual(env.position, 1)
+        self.assertEqual(agent.goal_prior.current_slots(), (source_hearts[1],))
+        filtered = next(
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_best_first_archives_filtered"
+        )
+        self.assertTrue(filtered["milestone_goal_frontier_preferred"])
+        env.release_state(root)
 
     def test_option_effect_probe_prioritizes_closer_goal_state(self) -> None:
         model = EnsembleVisualDynamicsModel(

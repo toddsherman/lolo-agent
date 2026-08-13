@@ -822,6 +822,15 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                     "human_prior_option_world_effect_signature": event.get(
                         "human_prior_option_world_effect_signature"
                     ),
+                    "human_prior_episodic_graph_progress": event.get(
+                        "human_prior_episodic_graph_progress", 0.0
+                    ),
+                    "human_prior_episodic_graph_bridge_reached": event.get(
+                        "human_prior_episodic_graph_bridge_reached", False
+                    ),
+                    "human_prior_episodic_graph_remaining_cost": event.get(
+                        "human_prior_episodic_graph_remaining_cost"
+                    ),
                     "human_prior_graph_source_signature": event.get(
                         "human_prior_graph_source_signature"
                     ),
@@ -983,6 +992,9 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "human_prior_option_depth",
         "human_prior_option_path_visits_before",
         "human_prior_option_world_effect_signature",
+        "human_prior_episodic_graph_progress",
+        "human_prior_episodic_graph_bridge_reached",
+        "human_prior_episodic_graph_remaining_cost",
         "human_prior_graph_source_signature",
         "human_prior_graph_target_signature",
         "human_prior_world_source_context",
@@ -1521,6 +1533,33 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             ),
             default=0,
         ),
+        "episodic_human_prior_seeded_transition_graph_nodes": max(
+            (
+                int(event.get("episodic_graph_nodes", 0))
+                for event in events
+                if event["event"]
+                == "episodic_human_prior_memory_seeded"
+            ),
+            default=0,
+        ),
+        "episodic_human_prior_seeded_transition_graph_edges": max(
+            (
+                int(event.get("episodic_graph_edges", 0))
+                for event in events
+                if event["event"]
+                == "episodic_human_prior_memory_seeded"
+            ),
+            default=0,
+        ),
+        "episodic_human_prior_seeded_milestone_sources": max(
+            (
+                int(event.get("episodic_milestone_sources", 0))
+                for event in events
+                if event["event"]
+                == "episodic_human_prior_memory_seeded"
+            ),
+            default=0,
+        ),
         "episodic_human_prior_seeded_temporal_options": max(
             (
                 int(event.get("temporal_option_values", 0))
@@ -1676,6 +1715,47 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         ),
         "human_prior_option_search_budget_reopens": event_counts.get(
             "human_prior_option_search_reopened", 0
+        ),
+        "human_prior_episodic_graph_plans": event_counts.get(
+            "human_prior_episodic_graph_plan_selected", 0
+        ),
+        "human_prior_episodic_graph_known_routes": sum(
+            event["event"]
+            == "human_prior_episodic_graph_plan_selected"
+            and bool(event.get("known_route"))
+            for event in events
+        ),
+        "human_prior_episodic_graph_missing_bridge_plans": sum(
+            event["event"]
+            == "human_prior_episodic_graph_plan_selected"
+            and not bool(event.get("known_route"))
+            for event in events
+        ),
+        "human_prior_episodic_graph_bridges_reached": sum(
+            event["event"] == "human_prior_option_archive_added"
+            and bool(
+                event.get(
+                    "human_prior_episodic_graph_bridge_reached"
+                )
+            )
+            for event in events
+        ),
+        "human_prior_episodic_graph_maximum_progress": max(
+            (
+                float(
+                    event.get(
+                        "human_prior_episodic_graph_progress", 0.0
+                    )
+                )
+                for event in events
+                if event["event"]
+                in {
+                    "human_prior_option_branch_verified",
+                    "human_prior_option_archive_added",
+                    "decision_committed",
+                }
+            ),
+            default=0.0,
         ),
         "human_prior_option_exhaustion_evidence_maximum_depth": max(
             (

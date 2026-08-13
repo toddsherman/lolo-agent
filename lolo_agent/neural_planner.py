@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import heapq
 import math
 from collections import Counter
 from dataclasses import dataclass, field, replace
@@ -118,6 +119,7 @@ class NeuralPlanningConfig:
     human_prior_option_search_missing_player_max_streak: int = 2
     human_prior_option_search_action_frames: int = 0
     human_prior_option_search_long_direction_frames: int = 0
+    human_prior_episodic_graph_guidance: bool = False
     human_prior_option_archive_representatives: int = 1
     human_prior_option_effect_stability_steps: int = 0
     human_prior_option_effect_probe_limit: int = 8
@@ -204,6 +206,9 @@ class _ArchivedBranch:
     human_prior_option_world_effect_signature: str = ""
     human_prior_option_entity_state_signature: str = ""
     human_prior_option_effect_frontier_reason: str = ""
+    human_prior_episodic_graph_progress: float = 0.0
+    human_prior_episodic_graph_bridge_reached: bool = False
+    human_prior_episodic_graph_remaining_cost: Optional[int] = None
     goal_chest_obtained: bool = False
     goal_milestone_checkpoint: Optional["_LifeHazardCheckpoint"] = None
 
@@ -256,6 +261,31 @@ class _HumanPriorOptionNode:
     entity_inert_penalty_eligible: bool = False
     entity_inert_penalty_suppressed: bool = False
     entity_measured_effect_probability: float = 0.0
+    episodic_graph_progress: float = 0.0
+    episodic_graph_bridge_reached: bool = False
+    episodic_graph_remaining_cost: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class _HumanPriorEpisodicGraphPlan:
+    """Temporary pixel-transition route toward an observed milestone.
+
+    The plan contains no controller solution or object rule.  It joins two
+    components of emulator-verified pixel transitions: states reachable from
+    the current state and states known to precede a positive visual outcome.
+    Exact save-state search remains responsible for verifying the route and
+    discovering the missing bridge.
+    """
+
+    source_signature: str
+    waypoint_signature: str
+    bridge_target_signature: str
+    milestone_source_signature: str
+    known_route: bool
+    gap_distance: int
+    source_remaining_cost: int
+    remaining_costs: Dict[str, int]
+    milestone_component: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -929,6 +959,13 @@ class VerifiedNeuralAgent:
         self.human_prior_ordering_progress_hypotheses: set[tuple] = set()
         self.human_prior_disproved_ordering_hypotheses: set[tuple] = set()
         self.human_prior_exhausted_option_frontiers: Dict[str, int] = {}
+        self.human_prior_episodic_graph_edges: Dict[
+            str, Dict[str, int]
+        ] = {}
+        self.human_prior_episodic_graph_reverse_edges: Dict[
+            str, Dict[str, int]
+        ] = {}
+        self.human_prior_episodic_milestone_sources: set[str] = set()
         self.human_prior_graph_recovery_pending = False
         self.current_human_prior_world_context_signature = (
             "human-prior-world-root"
@@ -2041,6 +2078,245 @@ class VerifiedNeuralAgent:
             f"hearts={fields.get('hearts', '')}|"
             f"treasure={fields.get('treasure', 'pending')}"
         )
+
+    @staticmethod
+    def _human_prior_episodic_graph_phase(signature: str) -> str:
+        """Return the room configuration while omitting player position."""
+
+        return "|".join(
+            field
+            for field in signature.split("|")
+            if field and not field.startswith("player=")
+        )
+
+    @staticmethod
+    def _human_prior_graph_player_slot(
+        signature: str,
+    ) -> Optional[Tuple[int, int]]:
+        for field in signature.split("|"):
+            if not field.startswith("player="):
+                continue
+            value = field.split("=", 1)[1]
+            if not value or value == "none":
+                return None
+            try:
+                x_value, y_value = value.split(",", 1)
+                return int(x_value), int(y_value)
+            except ValueError:
+                return None
+        return None
+
+    def _record_human_prior_episodic_graph_transition(
+        self,
+        source_signature: str,
+        target_signature: str,
+        action_cost: int,
+        *,
+        milestone: bool = False,
+    ) -> None:
+        """Remember an emulator-verified pixel transition for this room."""
+
+        if milestone and source_signature:
+            self.human_prior_episodic_milestone_sources.add(
+                source_signature
+            )
+        if (
+            not source_signature
+            or not target_signature
+            or source_signature == target_signature
+        ):
+            return
+        cost = max(1, int(action_cost))
+        targets = self.human_prior_episodic_graph_edges.setdefault(
+            source_signature, {}
+        )
+        targets[target_signature] = min(
+            cost, targets.get(target_signature, cost)
+        )
+        sources = self.human_prior_episodic_graph_reverse_edges.setdefault(
+            target_signature, {}
+        )
+        sources[source_signature] = min(
+            cost, sources.get(source_signature, cost)
+        )
+
+    @staticmethod
+    def _human_prior_episodic_graph_distances(
+        starts: Sequence[str],
+        edges: Dict[str, Dict[str, int]],
+        allowed: set[str],
+    ) -> Dict[str, int]:
+        distances: Dict[str, int] = {}
+        queue: List[Tuple[int, str]] = []
+        for start in starts:
+            if start not in allowed or start in distances:
+                continue
+            distances[start] = 0
+            heapq.heappush(queue, (0, start))
+        while queue:
+            distance, source = heapq.heappop(queue)
+            if distance != distances[source]:
+                continue
+            for target, cost in edges.get(source, {}).items():
+                if target not in allowed:
+                    continue
+                candidate = distance + max(1, int(cost))
+                if candidate >= distances.get(target, math.inf):
+                    continue
+                distances[target] = candidate
+                heapq.heappush(queue, (candidate, target))
+        return distances
+
+    def _human_prior_episodic_graph_plan(
+        self, source_signature: str
+    ) -> Optional[_HumanPriorEpisodicGraphPlan]:
+        """Find a known route or the closest missing milestone bridge."""
+
+        if (
+            not self.config.human_prior_episodic_graph_guidance
+            or not source_signature
+            or not self.human_prior_episodic_milestone_sources
+        ):
+            return None
+        source_phase = self._human_prior_episodic_graph_phase(
+            source_signature
+        )
+        nodes = {source_signature}
+        nodes.update(self.human_prior_episodic_milestone_sources)
+        for source, targets in self.human_prior_episodic_graph_edges.items():
+            nodes.add(source)
+            nodes.update(targets)
+        allowed = {
+            signature
+            for signature in nodes
+            if self._human_prior_episodic_graph_phase(signature)
+            == source_phase
+        }
+        milestone_sources = sorted(
+            self.human_prior_episodic_milestone_sources.intersection(
+                allowed
+            )
+        )
+        if source_signature not in allowed or not milestone_sources:
+            return None
+        milestone_distances = self._human_prior_episodic_graph_distances(
+            milestone_sources,
+            self.human_prior_episodic_graph_reverse_edges,
+            allowed,
+        )
+        if source_signature in milestone_distances:
+            return _HumanPriorEpisodicGraphPlan(
+                source_signature=source_signature,
+                waypoint_signature=min(milestone_sources),
+                bridge_target_signature=min(milestone_sources),
+                milestone_source_signature=min(milestone_sources),
+                known_route=True,
+                gap_distance=0,
+                source_remaining_cost=milestone_distances[
+                    source_signature
+                ],
+                remaining_costs=milestone_distances,
+                milestone_component=frozenset(milestone_distances),
+            )
+
+        forward_distances = self._human_prior_episodic_graph_distances(
+            (source_signature,),
+            self.human_prior_episodic_graph_edges,
+            allowed,
+        )
+        bridge_candidates: List[
+            Tuple[int, int, int, str, str]
+        ] = []
+        for reachable_signature, route_cost in forward_distances.items():
+            reachable_player = self._human_prior_graph_player_slot(
+                reachable_signature
+            )
+            if reachable_player is None:
+                continue
+            for milestone_signature, milestone_cost in (
+                milestone_distances.items()
+            ):
+                milestone_player = self._human_prior_graph_player_slot(
+                    milestone_signature
+                )
+                if milestone_player is None:
+                    continue
+                gap = abs(reachable_player[0] - milestone_player[0]) + abs(
+                    reachable_player[1] - milestone_player[1]
+                )
+                bridge_candidates.append(
+                    (
+                        gap,
+                        route_cost,
+                        milestone_cost,
+                        reachable_signature,
+                        milestone_signature,
+                    )
+                )
+        if not bridge_candidates:
+            return None
+        (
+            gap_distance,
+            _route_cost,
+            _milestone_cost,
+            waypoint_signature,
+            bridge_target_signature,
+        ) = min(bridge_candidates)
+        remaining_costs = self._human_prior_episodic_graph_distances(
+            (waypoint_signature,),
+            self.human_prior_episodic_graph_reverse_edges,
+            allowed,
+        )
+        source_remaining_cost = remaining_costs.get(source_signature)
+        if source_remaining_cost is None:
+            return None
+        return _HumanPriorEpisodicGraphPlan(
+            source_signature=source_signature,
+            waypoint_signature=waypoint_signature,
+            bridge_target_signature=bridge_target_signature,
+            milestone_source_signature=min(milestone_sources),
+            known_route=False,
+            gap_distance=gap_distance,
+            source_remaining_cost=source_remaining_cost,
+            remaining_costs=remaining_costs,
+            milestone_component=frozenset(milestone_distances),
+        )
+
+    @staticmethod
+    def _human_prior_episodic_graph_progress(
+        plan: Optional[_HumanPriorEpisodicGraphPlan],
+        target_signature: str,
+    ) -> Tuple[float, bool, Optional[int]]:
+        if plan is None or not target_signature:
+            return 0.0, False, None
+        if target_signature == plan.source_signature:
+            return (
+                0.0,
+                False,
+                plan.remaining_costs.get(target_signature),
+            )
+        bridge_reached = bool(
+            not plan.known_route
+            and target_signature in plan.milestone_component
+        )
+        target_remaining = plan.remaining_costs.get(target_signature)
+        progress = 0.0
+        if target_remaining is not None and plan.source_remaining_cost > 0:
+            progress = max(
+                0.0,
+                (
+                    plan.source_remaining_cost - target_remaining
+                )
+                / plan.source_remaining_cost,
+            )
+        if bridge_reached:
+            progress = max(2.0, progress)
+        elif (
+            plan.known_route
+            and target_remaining == 0
+        ):
+            progress = max(1.0, progress)
+        return progress, bridge_reached, target_remaining
 
     def _human_prior_position_visits(
         self, signature: str, player_slot: Tuple[int, int]
@@ -4926,6 +5202,7 @@ class VerifiedNeuralAgent:
             float(
                 self.config.human_prior_option_entity_inert_penalty_weight
             ),
+            bool(self.config.human_prior_episodic_graph_guidance),
             tuple(
                 (action.value, int(edge_duration))
                 for action, edge_duration in action_edges
@@ -4943,6 +5220,34 @@ class VerifiedNeuralAgent:
         )[1]
         if not source_signature:
             return 0
+        episodic_graph_plan = self._human_prior_episodic_graph_plan(
+            source_signature
+        )
+        if episodic_graph_plan is not None:
+            self._emit(
+                "human_prior_episodic_graph_plan_selected",
+                decision=self.decision_index + 1,
+                source_graph_signature=source_signature,
+                waypoint_graph_signature=(
+                    episodic_graph_plan.waypoint_signature
+                ),
+                bridge_target_graph_signature=(
+                    episodic_graph_plan.bridge_target_signature
+                ),
+                milestone_source_graph_signature=(
+                    episodic_graph_plan.milestone_source_signature
+                ),
+                known_route=episodic_graph_plan.known_route,
+                gap_distance=episodic_graph_plan.gap_distance,
+                source_remaining_cost=(
+                    episodic_graph_plan.source_remaining_cost
+                ),
+                milestone_component_states=len(
+                    episodic_graph_plan.milestone_component
+                ),
+                policy_effect="verified_transition_waypoint",
+                **self._frame_fields(source_frame),
+            )
         exhausted_key = (source_signature, search_budget)
         if exhausted_key in self.human_prior_option_exhausted_sources:
             self._emit(
@@ -5232,8 +5537,16 @@ class VerifiedNeuralAgent:
                                 analysis
                             )
                         )
+                        (
+                            episodic_graph_progress,
+                            episodic_graph_bridge_reached,
+                            episodic_graph_remaining_cost,
+                        ) = self._human_prior_episodic_graph_progress(
+                            episodic_graph_plan, target_signature
+                        )
                         score = (
                             ordering_adjusted_goal_reward
+                            + 20.0 * episodic_graph_progress
                             + 4.0 * position_novelty
                             + 2.0 * state_novelty
                             + 0.25
@@ -5353,16 +5666,38 @@ class VerifiedNeuralAgent:
                                     "measured_effect_probability", 0.0
                                 )
                             ),
+                            episodic_graph_progress=(
+                                episodic_graph_progress
+                            ),
+                            episodic_graph_bridge_reached=(
+                                episodic_graph_bridge_reached
+                            ),
+                            episodic_graph_remaining_cost=(
+                                episodic_graph_remaining_cost
+                            ),
                         )
                         depth_candidates.append(node)
                         branches_verified += 1
+                        self._record_human_prior_episodic_graph_transition(
+                            source_signature,
+                            target_signature,
+                            len(path),
+                            milestone=(analysis.milestone_reward > 0.0),
+                        )
                         endpoint_eligible = bool(
-                            depth >= 2
-                            and option_unexpanded
+                            (
+                                depth >= 2
+                                or episodic_graph_bridge_reached
+                            )
+                            and (
+                                option_unexpanded
+                                or episodic_graph_progress > 0.0
+                            )
                             and not analysis.life_counter_changed
                             and not analysis.dark_transition_started
                             and (
                                 analysis.milestone_reward > 0.0
+                                or episodic_graph_progress > 0.0
                                 or (
                                     target_signature
                                     and target_signature != source_signature
@@ -5408,6 +5743,18 @@ class VerifiedNeuralAgent:
                             ),
                             option_path_visits_before=option_visits,
                             option_path_unexpanded=option_unexpanded,
+                            human_prior_episodic_graph_guidance=(
+                                episodic_graph_plan is not None
+                            ),
+                            human_prior_episodic_graph_progress=(
+                                episodic_graph_progress
+                            ),
+                            human_prior_episodic_graph_bridge_reached=(
+                                episodic_graph_bridge_reached
+                            ),
+                            human_prior_episodic_graph_remaining_cost=(
+                                episodic_graph_remaining_cost
+                            ),
                             human_prior_option_world_effect_signature=(
                                 option_world_effect_signature or None
                             ),
@@ -5542,6 +5889,9 @@ class VerifiedNeuralAgent:
                                 )
                             )
                         ),
+                        node.episodic_graph_bridge_reached,
+                        node.episodic_graph_progress > 0.0,
+                        node.episodic_graph_progress,
                         (
                             node.analysis.target_player_slot is not None
                             and node.target_position_visits == 0
@@ -6549,6 +6899,7 @@ class VerifiedNeuralAgent:
                 if not node.confirmed_world_effect_signature
                 and (
                     node.analysis.milestone_reward > 0.0
+                    or node.episodic_graph_progress > 0.0
                     or node.target_state_visits == 0
                     or node.target_position_visits == 0
                     or (
@@ -6799,6 +7150,15 @@ class VerifiedNeuralAgent:
                     human_prior_option_effect_frontier_reason=(
                         archived.confirmed_effect_frontier_reason
                     ),
+                    human_prior_episodic_graph_progress=(
+                        archived.episodic_graph_progress
+                    ),
+                    human_prior_episodic_graph_bridge_reached=(
+                        archived.episodic_graph_bridge_reached
+                    ),
+                    human_prior_episodic_graph_remaining_cost=(
+                        archived.episodic_graph_remaining_cost
+                    ),
                     goal_milestone_checkpoint=(
                         archived_milestone_checkpoint
                     ),
@@ -6878,6 +7238,18 @@ class VerifiedNeuralAgent:
                     human_prior_option_immediate_frame=(
                         archived.immediate_frame_digest or None
                     ),
+                    human_prior_episodic_graph_guidance=(
+                        episodic_graph_plan is not None
+                    ),
+                    human_prior_episodic_graph_progress=(
+                        archived.episodic_graph_progress
+                    ),
+                    human_prior_episodic_graph_bridge_reached=(
+                        archived.episodic_graph_bridge_reached
+                    ),
+                    human_prior_episodic_graph_remaining_cost=(
+                        archived.episodic_graph_remaining_cost
+                    ),
                     human_prior_world_source_context=(
                         self.current_human_prior_world_context_signature
                     ),
@@ -6939,6 +7311,18 @@ class VerifiedNeuralAgent:
                 selected_path=selected.path,
                 selected_durations=selected.durations,
                 selected_score=selected.score,
+                human_prior_episodic_graph_guidance=(
+                    episodic_graph_plan is not None
+                ),
+                human_prior_episodic_graph_progress=(
+                    selected.episodic_graph_progress
+                ),
+                human_prior_episodic_graph_bridge_reached=(
+                    selected.episodic_graph_bridge_reached
+                ),
+                human_prior_episodic_graph_remaining_cost=(
+                    selected.episodic_graph_remaining_cost
+                ),
                 **self._frame_fields(selected.frame),
             )
             self.human_prior_exhausted_option_frontiers.pop(
@@ -7269,6 +7653,9 @@ class VerifiedNeuralAgent:
         self.human_prior_disproved_ordering_hypotheses = set()
         self.human_prior_option_exhausted_sources: set[tuple] = set()
         self.human_prior_exhausted_option_frontiers = {}
+        self.human_prior_episodic_graph_edges = {}
+        self.human_prior_episodic_graph_reverse_edges = {}
+        self.human_prior_episodic_milestone_sources = set()
         self.human_prior_graph_recovery_pending = False
         self.current_human_prior_world_context_signature = (
             "human-prior-world-root"
@@ -7785,6 +8172,9 @@ class VerifiedNeuralAgent:
         self.human_prior_disproved_ordering_hypotheses = set()
         self.human_prior_option_exhausted_sources = set()
         self.human_prior_exhausted_option_frontiers = {}
+        self.human_prior_episodic_graph_edges = {}
+        self.human_prior_episodic_graph_reverse_edges = {}
+        self.human_prior_episodic_milestone_sources = set()
         self.human_prior_graph_recovery_pending = False
         self.current_human_prior_world_context_signature = (
             "human-prior-world-root"
@@ -7921,6 +8311,9 @@ class VerifiedNeuralAgent:
         ordering_progress_hypotheses: set[tuple] = set()
         disproved_ordering_hypotheses: set[tuple] = set()
         exhausted_option_frontiers: Dict[str, int] = {}
+        episodic_graph_edges: Dict[str, Dict[str, int]] = {}
+        episodic_graph_reverse_edges: Dict[str, Dict[str, int]] = {}
+        episodic_milestone_sources: set[str] = set()
         option_search_sources: Dict[
             Tuple[str, int], Tuple[str, int]
         ] = {}
@@ -7950,6 +8343,35 @@ class VerifiedNeuralAgent:
         latest_decision_has_semantic_state = False
         decisions = 0
         room_boundaries = 0
+
+        def record_episodic_transition(
+            source_signature: str,
+            target_signature: str,
+            action_cost: int,
+            milestone: bool,
+        ) -> None:
+            if milestone and source_signature:
+                episodic_milestone_sources.add(source_signature)
+            if (
+                not source_signature
+                or not target_signature
+                or source_signature == target_signature
+            ):
+                return
+            cost = max(1, int(action_cost))
+            targets = episodic_graph_edges.setdefault(
+                source_signature, {}
+            )
+            targets[target_signature] = min(
+                cost, targets.get(target_signature, cost)
+            )
+            sources = episodic_graph_reverse_edges.setdefault(
+                target_signature, {}
+            )
+            sources[source_signature] = min(
+                cost, sources.get(source_signature, cost)
+            )
+
         for event in events:
             if event.get("event") == "pixel_novel_room_started":
                 room_boundaries += 1
@@ -7963,6 +8385,9 @@ class VerifiedNeuralAgent:
                 ordering_progress_hypotheses.clear()
                 disproved_ordering_hypotheses.clear()
                 exhausted_option_frontiers.clear()
+                episodic_graph_edges.clear()
+                episodic_graph_reverse_edges.clear()
+                episodic_milestone_sources.clear()
                 option_search_sources.clear()
                 known_slots = {
                     (int(slot[0]), int(slot[1]))
@@ -7978,6 +8403,52 @@ class VerifiedNeuralAgent:
                 event_chest_obtained = False
                 latest_decision_has_semantic_state = False
                 continue
+            event_type = str(event.get("event") or "")
+            graph_source_signature = ""
+            graph_target_signature = ""
+            graph_action_cost = 1
+            if event_type == "human_prior_option_branch_verified":
+                graph_source_signature = str(
+                    event.get("source_graph_signature") or ""
+                )
+                graph_target_signature = str(
+                    event.get("target_graph_signature") or ""
+                )
+                graph_action_cost = max(
+                    1, len(tuple(event.get("path") or ()))
+                )
+            elif event_type in {"branch_verified", "decision_committed"}:
+                graph_source_signature = str(
+                    event.get("human_prior_graph_source_signature") or ""
+                )
+                graph_target_signature = str(
+                    event.get("human_prior_graph_target_signature") or ""
+                )
+                if event_type == "decision_committed" and (
+                    event.get("restored_archive")
+                    or event.get("human_prior_verified_option")
+                ):
+                    graph_action_cost = max(
+                        1, len(tuple(event.get("path") or ()))
+                    )
+            try:
+                positive_milestone = bool(
+                    float(event.get("human_prior_milestone_reward", 0.0))
+                    > 0.0
+                    or int(event.get("human_prior_collected_hearts", 0)) > 0
+                    or event.get("human_prior_chest_completed")
+                )
+            except (TypeError, ValueError):
+                positive_milestone = bool(
+                    event.get("human_prior_chest_completed")
+                )
+            if graph_source_signature:
+                record_episodic_transition(
+                    graph_source_signature,
+                    graph_target_signature,
+                    graph_action_cost,
+                    positive_milestone,
+                )
             event_key = (
                 str(event.get("run_id") or ""),
                 int(event.get("decision", 0)),
@@ -8398,6 +8869,13 @@ class VerifiedNeuralAgent:
         self.human_prior_exhausted_option_frontiers = (
             exhausted_option_frontiers
         )
+        self.human_prior_episodic_graph_edges = episodic_graph_edges
+        self.human_prior_episodic_graph_reverse_edges = (
+            episodic_graph_reverse_edges
+        )
+        self.human_prior_episodic_milestone_sources = (
+            episodic_milestone_sources
+        )
         self.temporal_option_values.update(temporal_option_values)
         self.temporal_option_samples.update(temporal_option_samples)
         if latest_decision_has_semantic_state:
@@ -8462,6 +8940,22 @@ class VerifiedNeuralAgent:
             ),
             exhausted_option_frontier_depths=tuple(
                 sorted(self.human_prior_exhausted_option_frontiers.items())
+            ),
+            episodic_graph_nodes=len(
+                {
+                    *self.human_prior_episodic_graph_edges,
+                    *self.human_prior_episodic_graph_reverse_edges,
+                }
+            ),
+            episodic_graph_edges=sum(
+                len(targets)
+                for targets in self.human_prior_episodic_graph_edges.values()
+            ),
+            episodic_milestone_sources=len(
+                self.human_prior_episodic_milestone_sources
+            ),
+            episodic_graph_guidance_enabled=(
+                self.config.human_prior_episodic_graph_guidance
             ),
             temporal_option_values=len(temporal_option_values),
             temporal_option_samples=sum(temporal_option_samples.values()),
@@ -8647,6 +9141,29 @@ class VerifiedNeuralAgent:
                     human_prior_option_effect_frontier_reason=(
                         frontier_reason
                     ),
+                    human_prior_episodic_graph_progress=float(
+                        metadata.get(
+                            "human_prior_episodic_graph_progress", 0.0
+                        )
+                    ),
+                    human_prior_episodic_graph_bridge_reached=bool(
+                        metadata.get(
+                            "human_prior_episodic_graph_bridge_reached",
+                            False,
+                        )
+                    ),
+                    human_prior_episodic_graph_remaining_cost=(
+                        None
+                        if metadata.get(
+                            "human_prior_episodic_graph_remaining_cost"
+                        )
+                        is None
+                        else int(
+                            metadata[
+                                "human_prior_episodic_graph_remaining_cost"
+                            ]
+                        )
+                    ),
                     goal_chest_obtained=bool(
                         metadata.get("human_prior_chest_obtained", False)
                     ),
@@ -8705,6 +9222,15 @@ class VerifiedNeuralAgent:
                 ),
                 human_prior_option_effect_frontier_reason=(
                     frontier_reason or None
+                ),
+                human_prior_episodic_graph_progress=(
+                    branch.human_prior_episodic_graph_progress
+                ),
+                human_prior_episodic_graph_bridge_reached=(
+                    branch.human_prior_episodic_graph_bridge_reached
+                ),
+                human_prior_episodic_graph_remaining_cost=(
+                    branch.human_prior_episodic_graph_remaining_cost
                 ),
                 human_prior_world_source_context=source_world_context,
                 human_prior_world_target_context=target_world_context,
@@ -10215,6 +10741,10 @@ class VerifiedNeuralAgent:
         )
         return (
             node.analysis.milestone_reward,
+            bool(
+                getattr(node, "episodic_graph_bridge_reached", False)
+            ),
+            float(getattr(node, "episodic_graph_progress", 0.0)),
             node.analysis.total_reward,
             followthrough_distance is not None,
             -(
@@ -10236,10 +10766,10 @@ class VerifiedNeuralAgent:
         base = self._human_prior_option_selection_key(node)
         return (
             base[0],
-            self._human_prior_ordering_adjusted_total_reward(
-                node.analysis
-            ),
-            *base[2:],
+            base[1],
+            base[2],
+            self._human_prior_ordering_adjusted_total_reward(node.analysis),
+            *base[4:],
         )
 
     def _settle_human_prior_milestone_endpoint(
@@ -11634,7 +12164,11 @@ class VerifiedNeuralAgent:
                         for branch in self.archive
                         if branch.created == self.decision_index
                         and branch.human_prior_verified_option
-                        and branch.goal_progress_reward > 0.0
+                        and (
+                            branch.goal_progress_reward > 0.0
+                            or branch.human_prior_episodic_graph_progress
+                            > 0.0
+                        )
                     ]
                     if immediate_progress_options:
                         # Stagnation was detected before the exact option
@@ -11646,13 +12180,28 @@ class VerifiedNeuralAgent:
                         self._emit(
                             "human_prior_option_recovery_armed",
                             decision=self.decision_index + 1,
-                            reason="positive_verified_goal_progress",
+                            reason=(
+                                "positive_verified_goal_progress"
+                                if any(
+                                    branch.goal_progress_reward > 0.0
+                                    for branch in immediate_progress_options
+                                )
+                                else "positive_verified_episodic_graph_progress"
+                            ),
                             archive_branches_added=option_search_added,
                             immediate_progress_options=len(
                                 immediate_progress_options
                             ),
                             maximum_goal_progress=max(
                                 branch.goal_progress_reward
+                                for branch in immediate_progress_options
+                            ),
+                            maximum_episodic_graph_progress=max(
+                                branch.human_prior_episodic_graph_progress
+                                for branch in immediate_progress_options
+                            ),
+                            episodic_graph_bridge_options=sum(
+                                branch.human_prior_episodic_graph_bridge_reached
                                 for branch in immediate_progress_options
                             ),
                             archive_size=len(self.archive),
@@ -12488,6 +13037,15 @@ class VerifiedNeuralAgent:
                 branch_goal_signatures[id(state)] = (
                     goal_source_signature,
                     goal_target_signature,
+                )
+                self._record_human_prior_episodic_graph_transition(
+                    goal_source_signature,
+                    goal_target_signature,
+                    1,
+                    milestone=bool(
+                        goal_analysis is not None
+                        and goal_analysis.milestone_reward > 0.0
+                    ),
                 )
                 if goal_source_signature:
                     verified_goal_edges.append(
@@ -16147,6 +16705,7 @@ class VerifiedNeuralAgent:
                 if branch.goal_source_signature
                 and branch.goal_target_signature
                 and branch.goal_progress_reward <= 0.0
+                and branch.human_prior_episodic_graph_progress <= 0.0
                 and not any(
                     self._human_prior_archive_frontier_flags(branch)
                 )
@@ -16375,6 +16934,24 @@ class VerifiedNeuralAgent:
             self.config.human_prior_best_first_archive
             and human_prior_intervention_eligible
         ):
+            current_remaining_hearts = (
+                0
+                if self.goal_prior is None
+                else len(self.goal_prior.current_slots())
+            )
+            milestone_goal_eligible = [
+                candidate
+                for candidate in human_prior_intervention_eligible
+                if candidate.goal_total_hearts > 0
+                and candidate.goal_remaining_hearts
+                < current_remaining_hearts
+                and candidate.goal_progress_reward > 0.0
+            ]
+            episodic_graph_eligible = [
+                candidate
+                for candidate in human_prior_intervention_eligible
+                if candidate.human_prior_episodic_graph_progress > 0.0
+            ]
             human_prior_frontier_eligible = [
                 candidate
                 for candidate in human_prior_intervention_eligible
@@ -16388,7 +16965,9 @@ class VerifiedNeuralAgent:
                 if self._human_prior_archive_edge_coverage(candidate)[1]
             ]
             if (
-                human_prior_frontier_eligible
+                milestone_goal_eligible
+                or episodic_graph_eligible
+                or human_prior_frontier_eligible
                 or human_prior_unexpanded_eligible
             ):
                 alternatives_before = len(behavioral_frontier_candidates)
@@ -16425,7 +17004,9 @@ class VerifiedNeuralAgent:
                     == "immediate_reachability_gain"
                 ]
                 eligible = (
-                    option_effect_frontier_eligible
+                    milestone_goal_eligible
+                    or episodic_graph_eligible
+                    or option_effect_frontier_eligible
                     or physical_frontier_eligible
                     or world_state_frontier_eligible
                     or local_control_frontier_eligible
@@ -16456,6 +17037,24 @@ class VerifiedNeuralAgent:
                     ),
                     immediate_option_effect_frontier_preferred=bool(
                         immediate_option_effect_frontier_eligible
+                    ),
+                    episodic_graph_frontier_preferred=bool(
+                        episodic_graph_eligible
+                        and eligible is episodic_graph_eligible
+                    ),
+                    milestone_goal_frontier_preferred=bool(
+                        milestone_goal_eligible
+                        and eligible is milestone_goal_eligible
+                    ),
+                    milestone_goal_frontiers=len(
+                        milestone_goal_eligible
+                    ),
+                    episodic_graph_frontiers=len(
+                        episodic_graph_eligible
+                    ),
+                    episodic_graph_bridges=sum(
+                        candidate.human_prior_episodic_graph_bridge_reached
+                        for candidate in episodic_graph_eligible
                     ),
                     confirmed_option_effects=len(
                         option_effect_frontier_eligible
@@ -16562,6 +17161,8 @@ class VerifiedNeuralAgent:
         elif human_prior_best_first_applied:
             affordance_breadth_first = False
             restore_key = lambda item: (
+                item.human_prior_episodic_graph_bridge_reached,
+                item.human_prior_episodic_graph_progress,
                 self._archive_frontier_score(item),
                 -item.created,
                 self.novelty.score(self._signature(item.frame)),
@@ -16882,6 +17483,12 @@ class VerifiedNeuralAgent:
             branch
         )
         self._record_human_prior_archive_edge(branch)
+        self._record_human_prior_episodic_graph_transition(
+            branch.goal_source_signature,
+            branch.goal_target_signature,
+            len(branch.plan.path),
+            milestone=(archive_goal_milestone),
+        )
         restored_goal_graph_state_visits_before = (
             0
             if not branch.goal_target_signature
@@ -17124,6 +17731,15 @@ class VerifiedNeuralAgent:
             human_prior_option_effect_frontier_reason=(
                 branch.human_prior_option_effect_frontier_reason or None
             ),
+            human_prior_episodic_graph_progress=(
+                branch.human_prior_episodic_graph_progress
+            ),
+            human_prior_episodic_graph_bridge_reached=(
+                branch.human_prior_episodic_graph_bridge_reached
+            ),
+            human_prior_episodic_graph_remaining_cost=(
+                branch.human_prior_episodic_graph_remaining_cost
+            ),
             human_prior_graph_source_signature=(
                 branch.goal_source_signature or None
             ),
@@ -17287,6 +17903,15 @@ class VerifiedNeuralAgent:
             ),
             human_prior_option_effect_frontier_reason=(
                 branch.human_prior_option_effect_frontier_reason or None
+            ),
+            human_prior_episodic_graph_progress=(
+                branch.human_prior_episodic_graph_progress
+            ),
+            human_prior_episodic_graph_bridge_reached=(
+                branch.human_prior_episodic_graph_bridge_reached
+            ),
+            human_prior_episodic_graph_remaining_cost=(
+                branch.human_prior_episodic_graph_remaining_cost
             ),
             human_prior_graph_source_signature=(
                 branch.goal_source_signature or None

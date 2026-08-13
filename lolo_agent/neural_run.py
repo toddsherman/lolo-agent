@@ -720,6 +720,15 @@ def main() -> None:
         help="pixel endpoints retained at each assisted option-search depth",
     )
     parser.add_argument(
+        "--human-prior-episodic-graph-guidance",
+        action="store_true",
+        help=(
+            "use emulator-verified pixel transition memory to guide exact "
+            "search toward a known positive-outcome component or its closest "
+            "unobserved bridge"
+        ),
+    )
+    parser.add_argument(
         "--human-prior-option-archive-representatives",
         type=int,
         default=1,
@@ -1129,6 +1138,14 @@ def main() -> None:
     if args.human_prior_option_search_depth < 0:
         parser.error(
             "--human-prior-option-search-depth must be non-negative"
+        )
+    if args.human_prior_episodic_graph_guidance and (
+        not args.human_prior_hearts
+        or args.human_prior_option_search_depth < 2
+    ):
+        parser.error(
+            "--human-prior-episodic-graph-guidance requires the assisted "
+            "heart track and option search depth of at least two"
         )
     if args.human_prior_option_search_beam_width <= 0:
         parser.error(
@@ -1583,6 +1600,11 @@ def main() -> None:
         ),
         human_prior_option_search_long_direction_frames=(
             args.human_prior_option_search_long_direction_frames
+        ),
+        human_prior_episodic_graph_guidance=(
+            args.human_prior_episodic_graph_guidance
+            if args.human_prior_hearts
+            else False
         ),
         human_prior_option_archive_representatives=(
             args.human_prior_option_archive_representatives
