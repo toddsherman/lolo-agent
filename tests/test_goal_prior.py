@@ -847,6 +847,45 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
             (),
         )
 
+    def test_navigation_regression_penalty_survives_revisited_endpoint(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        agent = VerifiedNeuralAgent(
+            HeartNavigationEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                human_prior_heart_reward=25.0,
+                human_prior_navigation_reward=1.0,
+            ),
+        )
+        agent.reset()
+        source = room_frame(((80, 48),), player=(80, 176))
+        target = room_frame(((80, 48),), player=(80, 192))
+        assert agent.goal_prior is not None
+        agent.goal_prior.current_player_slot = (80, 176)
+        analysis = agent.goal_prior.analyze(source, target)
+        target_signature = agent._human_prior_graph_signatures(analysis)[1]
+        agent._record_human_prior_player_position(
+            target_signature, (80, 192)
+        )
+
+        score, _ = agent._human_prior_score(
+            3.0, analysis, target_signature
+        )
+
+        self.assertEqual(analysis.navigation_reward, -1.0)
+        self.assertEqual(
+            agent._human_prior_effective_navigation_reward(
+                analysis, target_signature
+            ),
+            -1.0,
+        )
+        self.assertEqual(score, 2.0)
+
     def test_exhausted_goal_ordering_retargets_navigation_to_alternate(
         self,
     ) -> None:

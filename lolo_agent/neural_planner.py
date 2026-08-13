@@ -1225,9 +1225,13 @@ class VerifiedNeuralAgent:
             or analysis.target_player_slot is None
         ):
             return adjusted_reward
-        if self._human_prior_position_visits(
-            target_signature, analysis.target_player_slot
-        ) > 0:
+        if (
+            adjusted_reward > 0.0
+            and self._human_prior_position_visits(
+                target_signature, analysis.target_player_slot
+            )
+            > 0
+        ):
             return 0.0
         return adjusted_reward
 
