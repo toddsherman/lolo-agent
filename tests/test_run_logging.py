@@ -297,10 +297,9 @@ class RunLoggingTests(unittest.TestCase):
                 root_frame,
                 source_run_id="parent",
                 source_state_id="state-1",
-                metadata={
-                    "choice": ["frontier", "right", 1],
-                    "checkpoint_kind": "goal_milestone",
-                },
+                # Resume loading returns the complete immutable source event,
+                # including logger-owned decision, state, and frame fields.
+                metadata=stored,
             )
             self.assertEqual(env.observe(), live_frame)
             self.assertEqual(env.load_state(imported), root_frame)
@@ -318,6 +317,19 @@ class RunLoggingTests(unittest.TestCase):
                     "episodic_goal_milestone_checkpoint_state_imported"
                 ],
                 1,
+            )
+            snapshots = [
+                event
+                for event in events
+                if event["event"]
+                == "goal_milestone_checkpoint_snapshot_stored"
+            ]
+            self.assertEqual(snapshots[-1]["decision"], 0)
+            self.assertEqual(
+                snapshots[-1]["source_snapshot_decision"], 1
+            )
+            self.assertEqual(
+                snapshots[-1]["choice"], ["frontier", "right", 1]
             )
             self.assertEqual(native.active_states, set())
 

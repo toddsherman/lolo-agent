@@ -590,12 +590,42 @@ class LoggedEnvironment:
         assert imported_handle is not None
         imported_state_id = self.state_id(imported_handle)
         assert imported_state_id is not None
+        reserved_metadata = {
+            "schema_version",
+            "run_id",
+            "seq",
+            "time_utc",
+            "elapsed_ms",
+            "event",
+            "attempt",
+            "decision",
+            "state_id",
+            "state_file",
+            "state_sha256",
+            "state_bytes",
+            "agent_visible",
+            "frame",
+            "frame_width",
+            "frame_height",
+            "frame_channels",
+            "visual_signature",
+            "scene_signature",
+        }
+        snapshot_metadata = {
+            key: value
+            for key, value in metadata.items()
+            if key not in reserved_metadata
+        }
+        if metadata.get("decision") is not None:
+            snapshot_metadata["source_snapshot_decision"] = metadata[
+                "decision"
+            ]
         stored = self.logger.store_goal_milestone_checkpoint_snapshot(
             0,
             imported_state_id,
             state,
             frame,
-            **metadata,
+            **snapshot_metadata,
         )
         self._persisted_milestone_state_ids.add(imported_state_id)
         saved = self.logger.log(
