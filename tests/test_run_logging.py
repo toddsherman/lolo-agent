@@ -571,6 +571,17 @@ class RunLoggingTests(unittest.TestCase):
                 "human_prior_ordering_hypotheses_reactivated", summary
             )
             self.assertIn(
+                "human_prior_navigation_reconsidered_option_branches",
+                summary,
+            )
+            self.assertIn(
+                "human_prior_navigation_reconsidered_commits", summary
+            )
+            self.assertIn(
+                "human_prior_navigation_reconsidered_committed_reward_total",
+                summary,
+            )
+            self.assertIn(
                 "anonymous_entity_behavior_observations", summary
             )
             self.assertIn(

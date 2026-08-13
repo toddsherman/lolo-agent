@@ -3215,6 +3215,72 @@ class EnsemblePlannerTests(unittest.TestCase):
             agent.human_prior_ordering_progress_hypotheses,
         )
 
+    def test_option_search_retains_reconsidered_progress_at_known_state(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = ActionEffectEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                human_prior_navigation_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=2,
+                human_prior_option_search_action_frames=1,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.goal_prior = OrderingPositionGoalPrior()
+        hearts = ((-16, 0), (32, 0))
+        agent.human_prior_exhausted_milestone_transitions.add(
+            (hearts, ((-16, 0),), False)
+        )
+        ordering_key = agent._human_prior_ordering_hypothesis_key(
+            hearts, False
+        )
+        assert ordering_key is not None
+        agent.human_prior_disproved_ordering_hypotheses.add(ordering_key)
+        source_signature = agent._current_human_prior_graph_signature()
+        agent.human_prior_graph_state_visits[source_signature] = 1
+        agent.human_prior_player_position_visits[(0, 0)] = 1
+        agent.human_prior_player_position_visits[(2, 0)] = 1
+        root = env.save_state()
+        target = env.step(Action.RIGHT, 2)
+        analysis = agent.goal_prior.analyze(agent.frame, target)
+        target_signature = agent._human_prior_graph_signatures(analysis)[1]
+        agent.human_prior_graph_state_visits[target_signature] = 1
+        env.load_state(root)
+
+        added = agent._search_human_prior_options()
+
+        self.assertEqual(added, 1)
+        self.assertEqual(agent.archive[0].goal_player_slot, (2, 0))
+        archived = next(
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_archive_added"
+        )
+        self.assertTrue(
+            archived["human_prior_navigation_reconsidered"]
+        )
+        self.assertEqual(
+            archived["human_prior_navigation_reconsidered_targets"],
+            ((32, 0),),
+        )
+        self.assertAlmostEqual(
+            archived["human_prior_navigation_reconsidered_reward"],
+            0.125,
+        )
+
     def test_option_search_disproves_exhausted_ordering_trial(self) -> None:
         model = EnsembleVisualDynamicsModel(
             latent_size=32, action_size=8, ensemble_size=2

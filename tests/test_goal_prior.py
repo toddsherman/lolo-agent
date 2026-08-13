@@ -980,6 +980,11 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
             agent.human_prior_disproved_ordering_hypotheses,
         )
         self.assertFalse(fields["human_prior_navigation_retargeted"])
+        self.assertTrue(fields["human_prior_navigation_reconsidered"])
+        self.assertEqual(
+            fields["human_prior_navigation_reconsidered_targets"],
+            ((48, 128),),
+        )
         self.assertEqual(
             fields["human_prior_navigation_ordering_reward"],
             moved_analysis.navigation_reward,

@@ -505,8 +505,12 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   retainable endpoint, `human_prior_ordering_hypothesis_disproved` preserves
   the original exhaustion observation but removes its policy authority,
   discards archive scores derived from it, and permits the formerly excluded
-  milestone to be reconsidered. A later independently exhausted trial can
-  reactivate the hypothesis. These events explicitly report search budget,
+  milestone to be reconsidered. During that bounded reconsideration,
+  `human_prior_navigation_reconsidered*` fields allow positive progress toward
+  only the reopened slot to survive the global visited-state filter; unrelated
+  visited states remain ineligible, preserving the anti-loop gate. A later
+  independently exhausted trial can reactivate the hypothesis. These events
+  explicitly report search budget,
   failed and alternate slots, discarded archives, `hazard_evidence=false`, and
   policy effect; `summary.json` counts progress trials, disproofs, discarded
   archives, and reactivations.

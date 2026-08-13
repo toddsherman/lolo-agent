@@ -1256,9 +1256,20 @@ class VerifiedNeuralAgent:
         source set no longer matches and ordinary shaping resumes.
         """
 
+        ordering_key = self._human_prior_ordering_hypothesis_key(
+            analysis.source_present,
+            analysis.chest_obtained,
+        )
         failed_targets = self._human_prior_failed_ordering_targets(
             analysis.source_present,
             analysis.chest_obtained,
+        )
+        reconsidered_targets = (
+            ()
+            if ordering_key is None
+            or ordering_key
+            not in self.human_prior_disproved_ordering_hypotheses
+            else ordering_key[1]
         )
         active_targets = tuple(
             sorted(
@@ -1291,6 +1302,40 @@ class VerifiedNeuralAgent:
                 reward = self.config.human_prior_navigation_reward * (
                     source_distance - target_distance
                 )
+        reconsidered = bool(
+            analysis.reliable
+            and reconsidered_targets
+            and not analysis.collected
+            and tuple(sorted(analysis.source_present))
+            == tuple(sorted(analysis.target_present))
+            and analysis.source_player_slot is not None
+            and analysis.target_player_slot is not None
+        )
+        reconsidered_source_distance = None
+        reconsidered_target_distance = None
+        reconsidered_reward = 0.0
+        if reconsidered:
+            reconsidered_source_distance = self._human_prior_slot_distance(
+                analysis.source_player_slot,
+                reconsidered_targets,
+            )
+            reconsidered_target_distance = self._human_prior_slot_distance(
+                analysis.target_player_slot,
+                reconsidered_targets,
+            )
+            if (
+                reconsidered_source_distance is None
+                or reconsidered_target_distance is None
+            ):
+                reconsidered = False
+            else:
+                reconsidered_reward = (
+                    self.config.human_prior_navigation_reward
+                    * (
+                        reconsidered_source_distance
+                        - reconsidered_target_distance
+                    )
+                )
         return {
             "human_prior_navigation_retargeted": retargeted,
             "human_prior_navigation_failed_targets": failed_targets,
@@ -1304,6 +1349,19 @@ class VerifiedNeuralAgent:
                 target_distance
             ),
             "human_prior_navigation_ordering_reward": reward,
+            "human_prior_navigation_reconsidered": reconsidered,
+            "human_prior_navigation_reconsidered_targets": (
+                reconsidered_targets if reconsidered else ()
+            ),
+            "human_prior_navigation_reconsidered_source_distance": (
+                reconsidered_source_distance
+            ),
+            "human_prior_navigation_reconsidered_target_distance": (
+                reconsidered_target_distance
+            ),
+            "human_prior_navigation_reconsidered_reward": (
+                reconsidered_reward
+            ),
         }
 
     def _human_prior_ordering_adjusted_total_reward(
@@ -1318,6 +1376,20 @@ class VerifiedNeuralAgent:
             analysis.total_reward
             - analysis.navigation_reward
             + ordering_reward
+        )
+
+    def _human_prior_reconsidered_ordering_progress(
+        self, analysis: HeartGoalAnalysis
+    ) -> bool:
+        fields = self._human_prior_ordering_navigation_fields(analysis)
+        return bool(
+            fields["human_prior_navigation_reconsidered"]
+            and float(
+                fields[
+                    "human_prior_navigation_reconsidered_reward"
+                ]
+            )
+            > 0.0
         )
 
     def _record_human_prior_ordering_progress(
@@ -6398,6 +6470,9 @@ class VerifiedNeuralAgent:
                             node.analysis
                         )
                         > 0.0
+                    )
+                    or self._human_prior_reconsidered_ordering_progress(
+                        node.analysis
                     )
                 )
             ]
