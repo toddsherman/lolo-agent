@@ -157,6 +157,7 @@ lolo-neural-run \
   --human-prior-option-entity-frontier \
   --human-prior-option-entity-curiosity-weight 2.0 \
   --human-prior-option-entity-curiosity-reserve 4 \
+  --human-prior-option-entity-inert-penalty-weight 3.0 \
   --anonymous-entity-behavior-checkpoint experiments/lolo1-entity/anonymous-behavior.json \
   --anonymous-entity-behavior-mode learn \
   --anonymous-entity-passive-horizons 16,32,64,224 \
@@ -167,8 +168,11 @@ The checkpoint contains no sprite names or supplied mechanics. Use
 `--anonymous-entity-behavior-mode frozen` for parameter-immutable held-out or
 sequel evaluation. Optional passive horizons restore the decision-root save
 state and advance an equal-action `NOOP` branch, exposing delayed visual
-dynamics without changing the committed controller action. Causal horizons additionally compare each verified
-controller endpoint with an equal-duration neutral endpoint, then assign a
+dynamics without changing the committed controller action. The optional inert
+penalty uses only learned factual/control pixel matches to down-rank supported
+interventions that previously had no measured effect; it is not an object rule
+or label. Causal horizons additionally compare each verified controller
+endpoint with an equal-duration neutral endpoint, then assign a
 later differential life loss only to rare patches that first showed a local
 differential outcome at an earlier nonterminal horizon. Use
 `--anonymous-entity-shadow-horizons 16,32,64,224` for policy-neutral endpoint

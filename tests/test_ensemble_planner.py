@@ -3935,6 +3935,7 @@ class EnsemblePlannerTests(unittest.TestCase):
                     human_prior_option_effect_local_controls=True,
                     human_prior_option_entity_frontier=True,
                     human_prior_option_entity_curiosity_reserve=1,
+                    human_prior_option_entity_inert_penalty_weight=2.0,
                     anonymous_entity_behavior_learning=learning,
                     causal_spatial_columns=8,
                     causal_spatial_rows=8,
@@ -3975,6 +3976,11 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertTrue(learned_probe["interaction_cell_matched"])
         self.assertFalse(learned_probe["behavior_known_before"])
         self.assertTrue(frozen_probe["behavior_known_before"])
+        self.assertGreaterEqual(frozen_probe["semantic_samples_before"], 1)
+        self.assertEqual(frozen_probe["semantic_coverage_before"], 1.0)
+        self.assertEqual(frozen_probe["inert_probability_before"], 1.0)
+        self.assertGreater(frozen_probe["inert_confidence_before"], 0.0)
+        self.assertGreater(frozen_probe["inert_penalty"], 0.0)
         self.assertFalse(frozen_probe["evidence_accepted"])
         self.assertEqual(behavior_model.digest, learned_digest)
         self.assertTrue(
@@ -3987,6 +3993,16 @@ class EnsemblePlannerTests(unittest.TestCase):
                 == 1
                 for event in learned.events
             )
+        )
+        learned_observation = next(
+            event
+            for event in learned.events
+            if event["event"] == "anonymous_entity_behavior_observed"
+            and event["evidence_accepted"]
+        )
+        self.assertTrue(learned_observation["observed_intervention_inert"])
+        self.assertIsNotNone(
+            learned_observation["observed_outcome_descriptor"]
         )
 
     def test_entity_curiosity_reserve_cannot_exceed_option_beam(self) -> None:
@@ -4009,6 +4025,91 @@ class EnsemblePlannerTests(unittest.TestCase):
                 ),
                 entity_behavior_model=AnonymousEntityBehaviorModel(),
             )
+
+    def test_learned_inert_prior_cannot_override_verified_movement(
+        self,
+    ) -> None:
+        behavior_model = AnonymousEntityBehaviorModel(
+            minimum_prediction_samples=1
+        )
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            ActionEffectEnv(),
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=1,
+                human_prior_option_search_action_frames=1,
+                human_prior_option_effect_stability_steps=1,
+                human_prior_option_effect_probe_limit=1,
+                human_prior_option_effect_phase_offsets=1,
+                human_prior_option_effect_local_controls=True,
+                human_prior_option_entity_frontier=True,
+                human_prior_option_entity_inert_penalty_weight=2.0,
+                causal_spatial_columns=8,
+                causal_spatial_rows=8,
+            ),
+            event_logger=logger,
+            entity_behavior_model=behavior_model,
+        )
+        frame = agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        feature_index = agent._human_prior_option_entity_feature_index(
+            frame
+        )
+        prior = agent._human_prior_option_entity_curiosity(
+            frame,
+            (0, 0),
+            None,
+            Action.RIGHT,
+            1,
+            feature_index,
+        )
+        feature = feature_index[0][(1, 0)]
+        descriptor = behavior_model.effect_descriptor(
+            feature, feature, feature
+        )
+        behavior_model.observe(
+            feature,
+            Action.RIGHT,
+            1,
+            descriptor.signature,
+            context_signature=prior["context_signature"],
+            outcome_descriptor=descriptor,
+        )
+        source_signature = agent._current_human_prior_graph_signature()
+        agent.human_prior_graph_state_visits[source_signature] = 1
+        agent.human_prior_player_position_visits[(0, 0)] = 1
+
+        agent._search_human_prior_options()
+
+        branch = next(
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_branch_verified"
+            and event["path"] == (Action.RIGHT,)
+        )
+        self.assertGreater(
+            branch["anonymous_entity_predicted_inert_penalty"], 0.0
+        )
+        self.assertTrue(
+            branch["anonymous_entity_current_branch_measured_effect"]
+        )
+        self.assertTrue(
+            branch["anonymous_entity_inert_penalty_suppressed"]
+        )
+        self.assertFalse(
+            branch["anonymous_entity_inert_penalty_eligible"]
+        )
+        self.assertEqual(branch["anonymous_entity_inert_penalty"], 0.0)
 
     def test_entity_curiosity_prefers_transferable_appearance_type(
         self,

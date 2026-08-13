@@ -324,6 +324,18 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   and accepted learning evidence. Both settings are part of
   `search_budget_sha256`, so enabling curiosity reopens a source that was
   exhausted under the policy-neutral budget;
+- with nonzero `--human-prior-option-entity-inert-penalty-weight`, exact
+  branches additionally record semantic sample coverage, learned inert and
+  measured-effect probabilities, evidence confidence, and the exact score
+  subtraction. `anonymous_entity_behavior_observed` stores the full
+  pixel-derived outcome descriptor and before/after semantic posteriors.
+  Summary telemetry counts semantic/inert observations and penalized branches.
+  `anonymous_entity_predicted_inert_penalty` preserves the learned prior while
+  `anonymous_entity_inert_penalty`, `_eligible`, and `_suppressed` record the
+  applied decision after current verified effects take precedence.
+  Legacy checkpoints remain readable but opaque outcomes contribute no penalty
+  until a matching descriptor is observed. The weight is included in
+  `search_budget_sha256`;
 - assisted best-first recovery prefers a confirmed
   `immediate_reachability_gain` effect over an ordinary physical frontier, but
   does not give the same precedence to a `delayed_causal_effect` hypothesis.

@@ -193,6 +193,115 @@ class AnonymousEntityBehaviorModelTests(unittest.TestCase):
 
         self.assertEqual(first, second)
 
+    def test_pixel_outcome_descriptor_exposes_learned_inert_semantics(
+        self,
+    ) -> None:
+        model = AnonymousEntityBehaviorModel(minimum_prediction_samples=2)
+        appearance = (10, 10, 10)
+        descriptor = model.effect_descriptor(
+            appearance,
+            appearance,
+            appearance,
+            player_displacement=(0, 0),
+        )
+        for index in range(2):
+            model.observe(
+                appearance,
+                Action.LEFT,
+                16,
+                descriptor.signature,
+                evidence_id=f"inert-{index}",
+                outcome_descriptor=descriptor,
+            )
+
+        prediction = model.predict(
+            appearance, Action.LEFT, 16
+        )
+
+        self.assertTrue(descriptor.intervention_inert)
+        self.assertFalse(descriptor.measured_effect)
+        self.assertTrue(prediction.known)
+        self.assertEqual(prediction.outcome_descriptor, descriptor)
+        self.assertEqual(prediction.semantic_samples, 2)
+        self.assertEqual(prediction.semantic_coverage, 1.0)
+        self.assertEqual(prediction.inert_probability, 1.0)
+        self.assertGreater(prediction.inert_confidence, 0.6)
+        self.assertEqual(prediction.measured_effect_probability, 0.0)
+
+    def test_descriptor_distinguishes_movement_and_local_change(self) -> None:
+        appearance = (10, 10, 10)
+        moved = AnonymousEntityBehaviorModel.effect_descriptor(
+            appearance,
+            appearance,
+            appearance,
+            player_displacement=(1, 0),
+        )
+        changed = AnonymousEntityBehaviorModel.effect_descriptor(
+            appearance,
+            (90, 90, 90),
+            appearance,
+            relative_effect_cells=((0, 0),),
+        )
+
+        self.assertTrue(moved.controlled_movement)
+        self.assertTrue(moved.measured_effect)
+        self.assertFalse(moved.intervention_inert)
+        self.assertTrue(changed.local_visual_change)
+        self.assertTrue(changed.measured_effect)
+        self.assertFalse(changed.intervention_inert)
+
+    def test_passive_stationarity_is_not_an_intervention_effect(self) -> None:
+        model = AnonymousEntityBehaviorModel(minimum_prediction_samples=1)
+        appearance = (10, 10, 10)
+        stationary = model.effect_descriptor(
+            appearance,
+            appearance,
+            appearance,
+            relative_effect_cells=((0, 0),),
+        )
+        model.observe(
+            appearance,
+            Action.NOOP,
+            16,
+            stationary.signature,
+            autonomous=True,
+            outcome_descriptor=stationary,
+        )
+
+        prediction = model.predict(
+            appearance, Action.NOOP, 16, autonomous=True
+        )
+
+        self.assertFalse(stationary.autonomous_visual_change)
+        self.assertEqual(prediction.inert_probability, 0.0)
+        self.assertEqual(prediction.local_visual_change_probability, 0.0)
+        self.assertEqual(prediction.measured_effect_probability, 0.0)
+
+    def test_schema_five_loads_with_unknown_outcome_semantics(self) -> None:
+        model = AnonymousEntityBehaviorModel(minimum_prediction_samples=1)
+        appearance = (2, 3, 5)
+        descriptor = model.effect_descriptor(
+            appearance, appearance, appearance
+        )
+        model.observe(
+            appearance,
+            Action.A,
+            4,
+            descriptor.signature,
+            outcome_descriptor=descriptor,
+        )
+        payload = model.to_dict()
+        payload["schema_version"] = 5
+        payload.pop("outcome_descriptors")
+
+        restored = AnonymousEntityBehaviorModel.from_dict(payload)
+        prediction = restored.predict(appearance, Action.A, 4)
+
+        self.assertTrue(prediction.known)
+        self.assertIsNone(prediction.outcome_descriptor)
+        self.assertEqual(prediction.semantic_samples, 0)
+        self.assertEqual(prediction.inert_probability, 0.0)
+
     def test_hazard_probability_is_empirical_not_a_type_label(self) -> None:
         model = AnonymousEntityBehaviorModel(minimum_prediction_samples=2)
         appearance = (5, 5, 5)
@@ -347,12 +456,20 @@ class AnonymousEntityBehaviorModelTests(unittest.TestCase):
             relative_effect_cells=((0, 0), (1, 0)),
             player_displacement=(1, 0),
         )
+        descriptor = model.effect_descriptor(
+            source,
+            (2, 7, 2, 8),
+            source,
+            relative_effect_cells=((0, 0), (1, 0)),
+            player_displacement=(1, 0),
+        )
         model.observe(
             source,
             Action.RIGHT,
             16,
             outcome,
             context_signature="context",
+            outcome_descriptor=descriptor,
         )
 
         with tempfile.TemporaryDirectory() as directory:

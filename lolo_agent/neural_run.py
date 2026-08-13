@@ -863,6 +863,16 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--human-prior-option-entity-inert-penalty-weight",
+        type=float,
+        default=0.0,
+        help=(
+            "subtract a confidence-weighted score for recurring anonymous "
+            "appearance/action outcomes learned from pixels to match an "
+            "equal-duration control with no measured effect"
+        ),
+    )
+    parser.add_argument(
         "--anonymous-entity-behavior-checkpoint",
         type=Path,
         help=(
@@ -1206,6 +1216,11 @@ def main() -> None:
             "--human-prior-option-entity-curiosity-reserve must be "
             "non-negative"
         )
+    if args.human_prior_option_entity_inert_penalty_weight < 0.0:
+        parser.error(
+            "--human-prior-option-entity-inert-penalty-weight must be "
+            "non-negative"
+        )
     if (
         args.human_prior_option_entity_curiosity_reserve
         > args.human_prior_option_search_beam_width
@@ -1217,12 +1232,13 @@ def main() -> None:
     if (
         args.human_prior_option_entity_curiosity_weight > 0.0
         or args.human_prior_option_entity_curiosity_reserve > 0
+        or args.human_prior_option_entity_inert_penalty_weight > 0.0
     ) and (
         not args.human_prior_option_entity_frontier
         or args.anonymous_entity_behavior_mode == "off"
     ):
         parser.error(
-            "anonymous entity curiosity requires "
+            "anonymous entity policy guidance requires "
             "--human-prior-option-entity-frontier and frozen or learn "
             "anonymous behavior mode"
         )
@@ -1614,6 +1630,11 @@ def main() -> None:
             if args.human_prior_hearts
             else 0
         ),
+        human_prior_option_entity_inert_penalty_weight=(
+            args.human_prior_option_entity_inert_penalty_weight
+            if args.human_prior_hearts
+            else 0.0
+        ),
         anonymous_entity_behavior_learning=(
             args.anonymous_entity_behavior_mode == "learn"
         ),
@@ -1658,6 +1679,23 @@ def main() -> None:
             "source_reward_track": resume_reward_track,
             "compatible_host_migration": args.allow_compatible_resume_host,
         }
+    entity_curiosity_selection_enabled = bool(
+        args.human_prior_option_entity_curiosity_weight > 0.0
+        or args.human_prior_option_entity_curiosity_reserve > 0
+    )
+    entity_inert_selection_enabled = bool(
+        args.human_prior_option_entity_inert_penalty_weight > 0.0
+    )
+    if entity_curiosity_selection_enabled and entity_inert_selection_enabled:
+        entity_behavior_selection_mode = (
+            "entity_curiosity_and_learned_inert"
+        )
+    elif entity_curiosity_selection_enabled:
+        entity_behavior_selection_mode = "entity_curiosity"
+    elif entity_inert_selection_enabled:
+        entity_behavior_selection_mode = "learned_inert"
+    else:
+        entity_behavior_selection_mode = "observational"
     inputs = {
         "rom": {"name": args.rom.name, "sha256": rom_sha256},
         "core": {"name": args.core.name, "sha256": sha256_file(args.core)},
@@ -1687,6 +1725,9 @@ def main() -> None:
             "causal_hazard_observations": (
                 entity_behavior_model.causal_hazard_observation_count
             ),
+            "outcome_descriptors": (
+                entity_behavior_model.outcome_descriptor_count
+            ),
             "selection_weight": (
                 args.human_prior_option_entity_curiosity_weight
             ),
@@ -1696,14 +1737,10 @@ def main() -> None:
             "curiosity_reserve": (
                 args.human_prior_option_entity_curiosity_reserve
             ),
-            "selection_mode": (
-                "entity_curiosity"
-                if (
-                    args.human_prior_option_entity_curiosity_weight > 0.0
-                    or args.human_prior_option_entity_curiosity_reserve > 0
-                )
-                else "observational"
+            "inert_penalty_weight": (
+                args.human_prior_option_entity_inert_penalty_weight
             ),
+            "selection_mode": entity_behavior_selection_mode,
             "hazard_veto": args.anonymous_entity_hazard_veto,
         }
         if entity_behavior_checkpoint_existed:
@@ -1989,6 +2026,9 @@ def main() -> None:
                     curiosity_reserve=(
                         args.human_prior_option_entity_curiosity_reserve
                     ),
+                    inert_penalty_weight=(
+                        args.human_prior_option_entity_inert_penalty_weight
+                    ),
                     hazard_veto=args.anonymous_entity_hazard_veto,
                     shadow_horizons=entity_shadow_horizons,
                     shadow_hazard_threshold=(
@@ -2001,6 +2041,9 @@ def main() -> None:
                     observations=entity_behavior_model.observation_count,
                     causal_hazard_observations=(
                         entity_behavior_model.causal_hazard_observation_count
+                    ),
+                    outcome_descriptors=(
+                        entity_behavior_model.outcome_descriptor_count
                     ),
                 )
             else:
@@ -2017,6 +2060,9 @@ def main() -> None:
                     curiosity_reserve=(
                         args.human_prior_option_entity_curiosity_reserve
                     ),
+                    inert_penalty_weight=(
+                        args.human_prior_option_entity_inert_penalty_weight
+                    ),
                     hazard_veto=args.anonymous_entity_hazard_veto,
                     parameter_sha256_before=entity_behavior_before,
                     parameter_sha256_after=entity_behavior_after,
@@ -2026,6 +2072,9 @@ def main() -> None:
                     observations=entity_behavior_model.observation_count,
                     causal_hazard_observations=(
                         entity_behavior_model.causal_hazard_observation_count
+                    ),
+                    outcome_descriptors=(
+                        entity_behavior_model.outcome_descriptor_count
                     ),
                 )
         logger.close("complete")

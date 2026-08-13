@@ -6,7 +6,16 @@ import math
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Counter as CounterType, Dict, Iterable, Optional, Sequence, Tuple
+from typing import (
+    Any,
+    Callable,
+    Counter as CounterType,
+    Dict,
+    Iterable,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 from .environment import Action
 
@@ -22,6 +31,150 @@ class AnonymousTypeStats:
     type_id: int
     observations: int
     feature: Tuple[float, ...]
+
+
+@dataclass(frozen=True)
+class BehaviorOutcomeDescriptor:
+    """Auditable, label-free semantics for one pixel outcome signature.
+
+    Every field is measured from factual and equal-duration control images.
+    The descriptor deliberately says nothing about what an appearance *is*;
+    it only preserves how the two pixel outcomes related to one another.
+    """
+
+    factual_source_relation: str
+    control_source_relation: str
+    factual_control_relation: str
+    relative_effect_cells: Tuple[RelativeCell, ...] = ()
+    player_displacement: Optional[RelativeCell] = None
+    terminal_visual_change: bool = False
+
+    _APPEARANCE_RELATIONS = frozenset(("same", "near", "different"))
+
+    def __post_init__(self) -> None:
+        for relation in (
+            self.factual_source_relation,
+            self.control_source_relation,
+            self.factual_control_relation,
+        ):
+            if relation not in self._APPEARANCE_RELATIONS:
+                raise ValueError("invalid behavior appearance relation")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "factual_source_relation": self.factual_source_relation,
+            "control_source_relation": self.control_source_relation,
+            "factual_control_relation": self.factual_control_relation,
+            "relative_effect_cells": [
+                [int(column), int(row)]
+                for column, row in self.relative_effect_cells
+            ],
+            "player_displacement": (
+                None
+                if self.player_displacement is None
+                else [
+                    int(self.player_displacement[0]),
+                    int(self.player_displacement[1]),
+                ]
+            ),
+            "terminal_visual_change": bool(self.terminal_visual_change),
+        }
+
+    @classmethod
+    def from_dict(
+        cls, payload: Dict[str, Any]
+    ) -> "BehaviorOutcomeDescriptor":
+        displacement = payload.get("player_displacement")
+        return cls(
+            factual_source_relation=str(
+                payload["factual_source_relation"]
+            ),
+            control_source_relation=str(
+                payload["control_source_relation"]
+            ),
+            factual_control_relation=str(
+                payload["factual_control_relation"]
+            ),
+            relative_effect_cells=tuple(
+                sorted(
+                    (int(cell[0]), int(cell[1]))
+                    for cell in payload.get("relative_effect_cells") or ()
+                )
+            ),
+            player_displacement=(
+                None
+                if displacement is None
+                else (int(displacement[0]), int(displacement[1]))
+            ),
+            terminal_visual_change=bool(
+                payload.get("terminal_visual_change", False)
+            ),
+        )
+
+    @property
+    def signature(self) -> str:
+        encoded = json.dumps(
+            self.to_dict(), sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()[:24]
+
+    @property
+    def intervention_inert(self) -> bool:
+        """Whether an intervention produced no measured control contrast."""
+
+        return bool(
+            self.factual_control_relation == "same"
+            and not self.relative_effect_cells
+            and self.player_displacement in (None, (0, 0))
+            and not self.terminal_visual_change
+        )
+
+    @property
+    def controlled_movement(self) -> bool:
+        return bool(
+            self.player_displacement is not None
+            and self.player_displacement != (0, 0)
+        )
+
+    @property
+    def local_visual_change(self) -> bool:
+        return bool(
+            self.factual_control_relation != "same"
+            or self.relative_effect_cells
+        )
+
+    @property
+    def autonomous_visual_change(self) -> bool:
+        """Whether a passive outcome changed or translated the appearance."""
+
+        return bool(
+            self.factual_source_relation != "same"
+            or any(
+                cell != (0, 0) for cell in self.relative_effect_cells
+            )
+        )
+
+    def local_visual_change_for(self, autonomous: bool) -> bool:
+        return (
+            self.autonomous_visual_change
+            if autonomous
+            else self.local_visual_change
+        )
+
+    def measured_effect_for(self, autonomous: bool) -> bool:
+        return bool(
+            self.local_visual_change_for(autonomous)
+            or (not autonomous and self.controlled_movement)
+            or self.terminal_visual_change
+        )
+
+    @property
+    def measured_effect(self) -> bool:
+        return bool(
+            self.controlled_movement
+            or self.local_visual_change
+            or self.terminal_visual_change
+        )
 
 
 @dataclass(frozen=True)
@@ -42,6 +195,15 @@ class BehaviorPrediction:
     causal_hazardous_probability: float
     causal_hazard_samples: int
     causal_hazard_known: bool
+    outcome_descriptor: Optional[BehaviorOutcomeDescriptor]
+    semantic_samples: int
+    semantic_coverage: float
+    inert_probability: float
+    inert_confidence: float
+    measured_effect_probability: float
+    controlled_movement_probability: float
+    local_visual_change_probability: float
+    terminal_visual_change_probability: float
 
     @property
     def novelty(self) -> float:
@@ -85,7 +247,7 @@ class AnonymousEntityBehaviorModel:
     and contradictory evidence reduces confidence instead of being discarded.
     """
 
-    SCHEMA_VERSION = 5
+    SCHEMA_VERSION = 6
     _UNCONDITIONAL_CONTEXT = "*"
 
     def __init__(
@@ -102,6 +264,9 @@ class AnonymousEntityBehaviorModel:
         self._type_means: list[list[float]] = []
         self._type_counts: list[int] = []
         self._rules: Dict[Tuple[int, str, int, bool, str], _RuleStats] = {}
+        self._outcome_descriptors: Dict[
+            str, BehaviorOutcomeDescriptor
+        ] = {}
         self._evidence_ids: set[str] = set()
         self._causal_hazard_evidence_ids: set[str] = set()
 
@@ -128,6 +293,29 @@ class AnonymousEntityBehaviorModel:
             for key, rule in self._rules.items()
             if key[4] == self._UNCONDITIONAL_CONTEXT
         )
+
+    @property
+    def outcome_descriptor_count(self) -> int:
+        return len(self._outcome_descriptors)
+
+    def register_outcome_descriptor(
+        self,
+        outcome_signature: str,
+        descriptor: BehaviorOutcomeDescriptor,
+    ) -> bool:
+        """Attach auditable semantics without changing empirical counts."""
+
+        if descriptor.signature != outcome_signature:
+            raise ValueError(
+                "behavior outcome descriptor does not match its signature"
+            )
+        previous = self._outcome_descriptors.get(outcome_signature)
+        if previous is not None and previous != descriptor:
+            raise ValueError("conflicting behavior outcome descriptor")
+        if previous is not None:
+            return False
+        self._outcome_descriptors[outcome_signature] = descriptor
+        return True
 
     @staticmethod
     def _feature_distance(
@@ -228,7 +416,7 @@ class AnonymousEntityBehaviorModel:
         )
 
     @classmethod
-    def effect_signature(
+    def effect_descriptor(
         cls,
         source_feature: Sequence[int],
         factual_feature: Sequence[int],
@@ -236,8 +424,8 @@ class AnonymousEntityBehaviorModel:
         relative_effect_cells: Sequence[RelativeCell] = (),
         player_displacement: Optional[RelativeCell] = None,
         terminal_visual_change: bool = False,
-    ) -> str:
-        """Create a position-invariant outcome key from pixel-derived facts."""
+    ) -> BehaviorOutcomeDescriptor:
+        """Describe a position-invariant outcome from pixel-derived facts."""
 
         def appearance_relation(
             first: Sequence[int], second: Sequence[int]
@@ -249,24 +437,26 @@ class AnonymousEntityBehaviorModel:
                 return "near"
             return "different"
 
-        payload = {
+        return BehaviorOutcomeDescriptor(
             # The source appearance identifies the anonymous type and does not
             # belong in the outcome.  Storing its exact fingerprint here made
             # harmless animation phases look like different mechanics.
-            "factual_source_relation": appearance_relation(
+            factual_source_relation=appearance_relation(
                 factual_feature, source_feature
             ),
-            "control_source_relation": appearance_relation(
+            control_source_relation=appearance_relation(
                 control_feature, source_feature
             ),
-            "factual_control_relation": appearance_relation(
+            factual_control_relation=appearance_relation(
                 factual_feature, control_feature
             ),
-            "relative_effect_cells": sorted(
-                (int(column), int(row))
-                for column, row in relative_effect_cells
+            relative_effect_cells=tuple(
+                sorted(
+                    (int(column), int(row))
+                    for column, row in relative_effect_cells
+                )
             ),
-            "player_displacement": (
+            player_displacement=(
                 None
                 if player_displacement is None
                 else (
@@ -274,12 +464,29 @@ class AnonymousEntityBehaviorModel:
                     int(player_displacement[1]),
                 )
             ),
-            "terminal_visual_change": bool(terminal_visual_change),
-        }
-        encoded = json.dumps(
-            payload, sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
-        return hashlib.sha256(encoded).hexdigest()[:24]
+            terminal_visual_change=bool(terminal_visual_change),
+        )
+
+    @classmethod
+    def effect_signature(
+        cls,
+        source_feature: Sequence[int],
+        factual_feature: Sequence[int],
+        control_feature: Sequence[int],
+        relative_effect_cells: Sequence[RelativeCell] = (),
+        player_displacement: Optional[RelativeCell] = None,
+        terminal_visual_change: bool = False,
+    ) -> str:
+        """Create a stable key for a pixel-derived outcome descriptor."""
+
+        return cls.effect_descriptor(
+            source_feature,
+            factual_feature,
+            control_feature,
+            relative_effect_cells=relative_effect_cells,
+            player_displacement=player_displacement,
+            terminal_visual_change=terminal_visual_change,
+        ).signature
 
     def _nearest_type(
         self, feature: Sequence[int]
@@ -366,13 +573,14 @@ class AnonymousEntityBehaviorModel:
             False,
         )
 
-    @staticmethod
     def _prediction_from_rule(
+        self,
         type_id: Optional[int],
         distance: float,
         rule: Optional[_RuleStats],
         minimum_prediction_samples: int,
         context_matched: bool,
+        autonomous: bool,
     ) -> BehaviorPrediction:
         if rule is None or rule.samples <= 0:
             return BehaviorPrediction(
@@ -390,6 +598,15 @@ class AnonymousEntityBehaviorModel:
                 causal_hazardous_probability=0.0,
                 causal_hazard_samples=0,
                 causal_hazard_known=False,
+                outcome_descriptor=None,
+                semantic_samples=0,
+                semantic_coverage=0.0,
+                inert_probability=0.0,
+                inert_confidence=0.0,
+                measured_effect_probability=0.0,
+                controlled_movement_probability=0.0,
+                local_visual_change_probability=0.0,
+                terminal_visual_change_probability=0.0,
             )
         outcome, count = max(
             rule.outcomes.items(), key=lambda item: (item[1], item[0])
@@ -402,6 +619,34 @@ class AnonymousEntityBehaviorModel:
         )
         evidence = 1.0 - math.exp(
             -rule.samples / minimum_prediction_samples
+        )
+        described_outcomes = {
+            signature: self._outcome_descriptors[signature]
+            for signature in rule.outcomes
+            if signature in self._outcome_descriptors
+        }
+        semantic_samples = sum(
+            rule.outcomes[signature] for signature in described_outcomes
+        )
+
+        def semantic_probability(
+            predicate: Callable[[BehaviorOutcomeDescriptor], bool]
+        ) -> float:
+            return (
+                sum(
+                    rule.outcomes[signature]
+                    for signature, descriptor in described_outcomes.items()
+                    if bool(predicate(descriptor))
+                )
+                / rule.samples
+            )
+
+        inert_probability = (
+            0.0
+            if autonomous
+            else semantic_probability(
+                lambda descriptor: descriptor.intervention_inert
+            )
         )
         return BehaviorPrediction(
             type_id=type_id,
@@ -424,6 +669,29 @@ class AnonymousEntityBehaviorModel:
             causal_hazard_known=(
                 rule.causal_hazard_samples >= minimum_prediction_samples
             ),
+            outcome_descriptor=self._outcome_descriptors.get(outcome),
+            semantic_samples=semantic_samples,
+            semantic_coverage=semantic_samples / rule.samples,
+            inert_probability=inert_probability,
+            inert_confidence=inert_probability * evidence,
+            measured_effect_probability=semantic_probability(
+                lambda descriptor: descriptor.measured_effect_for(
+                    autonomous
+                )
+            ),
+            controlled_movement_probability=semantic_probability(
+                lambda descriptor: (
+                    not autonomous and descriptor.controlled_movement
+                )
+            ),
+            local_visual_change_probability=semantic_probability(
+                lambda descriptor: descriptor.local_visual_change_for(
+                    autonomous
+                )
+            ),
+            terminal_visual_change_probability=semantic_probability(
+                lambda descriptor: descriptor.terminal_visual_change
+            ),
         )
 
     def predict(
@@ -442,6 +710,7 @@ class AnonymousEntityBehaviorModel:
                 None,
                 self.minimum_prediction_samples,
                 False,
+                autonomous,
             )
         rule, contextual = self._select_rule(
             type_id,
@@ -456,6 +725,7 @@ class AnonymousEntityBehaviorModel:
             rule,
             self.minimum_prediction_samples,
             contextual,
+            autonomous,
         )
 
     def outcome_probability(
@@ -492,11 +762,19 @@ class AnonymousEntityBehaviorModel:
         autonomous: bool = False,
         evidence_id: str = "",
         causal_hazard_evidence: bool = False,
+        outcome_descriptor: Optional[BehaviorOutcomeDescriptor] = None,
     ) -> BehaviorObservation:
         if not feature:
             raise ValueError("behavior appearance feature must be non-empty")
         if not outcome_signature:
             raise ValueError("behavior outcome signature must be non-empty")
+        if (
+            outcome_descriptor is not None
+            and outcome_descriptor.signature != outcome_signature
+        ):
+            raise ValueError(
+                "behavior outcome descriptor does not match its signature"
+            )
         appearance = tuple(int(value) for value in feature)
         prediction_before = self.predict(
             appearance,
@@ -536,6 +814,10 @@ class AnonymousEntityBehaviorModel:
                 ),
                 prediction_before=prediction_before,
                 prediction_after=prediction_before,
+            )
+        if outcome_descriptor is not None:
+            self.register_outcome_descriptor(
+                outcome_signature, outcome_descriptor
             )
         type_id, _distance, created = self._assign(appearance)
         previous_count = self._type_counts[type_id]
@@ -678,6 +960,12 @@ class AnonymousEntityBehaviorModel:
                 for stats in self.type_stats()
             ],
             "rules": rules,
+            "outcome_descriptors": {
+                signature: descriptor.to_dict()
+                for signature, descriptor in sorted(
+                    self._outcome_descriptors.items()
+                )
+            },
             "evidence_ids": sorted(self._evidence_ids),
             "causal_hazard_evidence_ids": sorted(
                 self._causal_hazard_evidence_ids
@@ -696,7 +984,7 @@ class AnonymousEntityBehaviorModel:
     @classmethod
     def from_dict(cls, payload: Dict[str, Any]) -> "AnonymousEntityBehaviorModel":
         schema_version = int(payload.get("schema_version", 0))
-        if schema_version not in (3, 4, cls.SCHEMA_VERSION):
+        if schema_version not in (3, 4, 5, cls.SCHEMA_VERSION):
             raise ValueError("unsupported anonymous behavior schema")
         model = cls(
             appearance_match_threshold=float(
@@ -717,6 +1005,15 @@ class AnonymousEntityBehaviorModel:
                 raise ValueError("anonymous type feature dimensions differ")
             model._type_means.append(feature)
             model._type_counts.append(int(row["observations"]))
+        for signature, descriptor_payload in dict(
+            payload.get("outcome_descriptors") or {}
+        ).items():
+            descriptor = BehaviorOutcomeDescriptor.from_dict(
+                dict(descriptor_payload)
+            )
+            model.register_outcome_descriptor(
+                str(signature), descriptor
+            )
         for row in payload.get("rules") or ():
             type_id = int(row["type_id"])
             if not 0 <= type_id < model.type_count:

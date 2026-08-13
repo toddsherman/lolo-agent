@@ -120,6 +120,51 @@ change still has to pass the existing persistence, phase, player-mask, and
 action-control gates before it can become a world-state frontier. Both knobs
 default to zero, preserving the policy-neutral observational configuration.
 
+## Learned outcome semantics
+
+Schema 6 checkpoints retain an auditable descriptor beside each opaque outcome
+hash. The descriptor contains only relations measured from pixels: anonymous
+patch appearance in the factual and equal-duration control endpoints, relative
+changed cells, controlled-patch displacement, and terminal visual change. From
+those facts the model can distinguish a measured local change or displacement
+from a factual/control match. It still receives no object names, mechanics, or
+good/bad labels.
+
+The same descriptor payload preserves passive recurrence offsets. Prediction
+interprets `(0, 0)` as passive stationarity and a nonzero offset or appearance
+change as autonomous visual change. The no-effect planning posterior is exposed
+only for action-controlled rules, so passive stationarity cannot become a
+controller-action penalty.
+
+Once the configured minimum sample count makes an appearance/action rule known,
+the exact planner can use the learned probability that it produced no measured
+effect:
+
+```bash
+lolo-neural-run \
+  ... \
+  --human-prior-option-entity-inert-penalty-weight 3.0
+```
+
+The penalty is continuous rather than a veto: `weight × posterior inert
+probability × empirical evidence confidence`. Unknown outcomes and legacy
+schema-5 hashes have zero penalty. A single newly observed descriptor can safely
+describe older samples with the same cryptographic outcome signature, while a
+conflicting descriptor is rejected. This lets a recurring visual type teach the
+planner that a previously tested intervention was unproductive without encoding
+what that visual type represents. All semantic probabilities and the exact
+score subtraction are logged per branch.
+
+The learned value remains a prior, not an override of direct experimentation.
+Exact search suppresses the penalty whenever the current branch visibly moves
+the controlled patch, changes the world, reaches a milestone, or enters a
+terminal transition. It also suppresses the penalty when controlled-patch
+localization is unavailable. Telemetry records both the predicted subtraction
+and the applied or suppressed result.
+
+The first native promotion gate for this mechanism is recorded in
+`anonymous-entity-semantics-gate-2026-08-13.md`.
+
 Causal horizons are more expensive and stricter. For each verified
 non-neutral controller endpoint they construct an equal-duration `NOOP`
 endpoint from the same root, then wait identically from both endpoints. A rare
@@ -153,9 +198,10 @@ keeps the original alternatives.
 
 ## Current research boundary
 
-The sidecar remains observational by default. With both curiosity knobs at
-zero, it has additive selection weight zero. The opt-in curiosity policy can
-rank safe alternatives by uncertainty, while the optional
+The sidecar remains observational by default. With both curiosity knobs and the
+inert-penalty weight at zero, it has additive selection weight zero. The opt-in
+curiosity policy can rank safe alternatives by uncertainty, learned inert
+outcomes can down-rank empirically unproductive interactions, and the optional
 provenance-qualified hazard veto can remove a verified endpoint after passing
 the native shadow gate documented in
 `anonymous-entity-policy-gate-2026-08-13.md`. Unsupported or context-fallback

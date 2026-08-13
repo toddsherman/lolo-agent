@@ -12,7 +12,10 @@ from torch import Tensor
 
 from .agent import Decision
 from .bidirectional_probe import BidirectionalProbeCollector
-from .entity_behavior import AnonymousEntityBehaviorModel
+from .entity_behavior import (
+    AnonymousEntityBehaviorModel,
+    BehaviorOutcomeDescriptor,
+)
 from .ensemble_world_model import EnsembleVisualDynamicsModel
 from .environment import Action, PixelSaveStateEnv
 from .goal_prior import HeartGoalAnalysis, PixelHeartGoalPrior
@@ -129,6 +132,7 @@ class NeuralPlanningConfig:
     human_prior_option_entity_frontier: bool = False
     human_prior_option_entity_curiosity_weight: float = 0.0
     human_prior_option_entity_curiosity_reserve: int = 0
+    human_prior_option_entity_inert_penalty_weight: float = 0.0
     anonymous_entity_behavior_learning: bool = False
     anonymous_entity_passive_horizons: Tuple[int, ...] = ()
     anonymous_entity_causal_horizons: Tuple[int, ...] = ()
@@ -243,6 +247,15 @@ class _HumanPriorOptionNode:
     entity_spatial_rarity: float = 0.0
     entity_appearance_transferability: float = 0.0
     entity_curiosity: float = 0.0
+    entity_semantic_samples: int = 0
+    entity_semantic_coverage: float = 0.0
+    entity_inert_probability: float = 0.0
+    entity_inert_confidence: float = 0.0
+    entity_predicted_inert_penalty: float = 0.0
+    entity_inert_penalty: float = 0.0
+    entity_inert_penalty_eligible: bool = False
+    entity_inert_penalty_suppressed: bool = False
+    entity_measured_effect_probability: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -676,6 +689,14 @@ class VerifiedNeuralAgent:
                 "non-negative"
             )
         if (
+            self.config.human_prior_option_entity_inert_penalty_weight
+            < 0.0
+        ):
+            raise ValueError(
+                "human-prior option entity inert penalty weight must be "
+                "non-negative"
+            )
+        if (
             self.config.human_prior_option_entity_curiosity_reserve
             > self.config.human_prior_option_search_beam_width
         ):
@@ -686,13 +707,15 @@ class VerifiedNeuralAgent:
         if (
             self.config.human_prior_option_entity_curiosity_weight > 0.0
             or self.config.human_prior_option_entity_curiosity_reserve > 0
+            or self.config.human_prior_option_entity_inert_penalty_weight
+            > 0.0
         ) and (
             not self.config.human_prior_option_entity_frontier
             or self.entity_behavior_model is None
         ):
             raise ValueError(
-                "human-prior option entity curiosity requires the unlabeled "
-                "entity frontier and a behavior model"
+                "human-prior option entity policy guidance requires the "
+                "unlabeled entity frontier and a behavior model"
             )
         if (
             self.config.anonymous_entity_behavior_learning
@@ -1516,6 +1539,13 @@ class VerifiedNeuralAgent:
             * behavior_novelty
             * appearance_transferability
         )
+        inert_confidence = (
+            prediction.inert_confidence if prediction.known else 0.0
+        )
+        inert_penalty = (
+            self.config.human_prior_option_entity_inert_penalty_weight
+            * inert_confidence
+        )
         signature_payload = (
             f"{appearance_fingerprint}|{action.value}|{duration}|"
             f"{context_signature}"
@@ -1539,6 +1569,28 @@ class VerifiedNeuralAgent:
             "spatial_rarity": spatial_rarity,
             "appearance_transferability": appearance_transferability,
             "curiosity": curiosity,
+            "semantic_samples": prediction.semantic_samples,
+            "semantic_coverage": prediction.semantic_coverage,
+            "predicted_outcome_descriptor": (
+                None
+                if prediction.outcome_descriptor is None
+                else prediction.outcome_descriptor.to_dict()
+            ),
+            "inert_probability": prediction.inert_probability,
+            "inert_confidence": inert_confidence,
+            "inert_penalty": inert_penalty,
+            "measured_effect_probability": (
+                prediction.measured_effect_probability
+            ),
+            "controlled_movement_probability": (
+                prediction.controlled_movement_probability
+            ),
+            "local_visual_change_probability": (
+                prediction.local_visual_change_probability
+            ),
+            "terminal_visual_change_probability": (
+                prediction.terminal_visual_change_probability
+            ),
         }
 
     def _human_prior_nonlocal_world_effect_cells(
@@ -2323,7 +2375,7 @@ class VerifiedNeuralAgent:
             factual_analysis.life_counter_changed
             and not control_analysis.life_counter_changed
         )
-        outcome_signature = model.effect_signature(
+        outcome_descriptor = model.effect_descriptor(
             source_feature,
             factual_feature,
             control_feature,
@@ -2331,6 +2383,7 @@ class VerifiedNeuralAgent:
             player_displacement=player_displacement,
             terminal_visual_change=differential_terminal_change,
         )
+        outcome_signature = outcome_descriptor.signature
         fallback_context_signature = model.context_signature(
             patch.feature
             for patch in before_observation.patches
@@ -2402,6 +2455,7 @@ class VerifiedNeuralAgent:
                 context_signature=context_signature,
                 hazardous=hazardous,
                 evidence_id=evidence_id,
+                outcome_descriptor=outcome_descriptor,
             )
             prediction_after = observation.prediction_after
             accepted = observation.accepted
@@ -2442,6 +2496,18 @@ class VerifiedNeuralAgent:
             "predicted_outcome_probability_before": (
                 prediction_before.outcome_probability
             ),
+            "predicted_outcome_descriptor_before": (
+                None
+                if prediction_before.outcome_descriptor is None
+                else prediction_before.outcome_descriptor.to_dict()
+            ),
+            "semantic_samples_before": prediction_before.semantic_samples,
+            "semantic_coverage_before": prediction_before.semantic_coverage,
+            "inert_probability_before": prediction_before.inert_probability,
+            "inert_confidence_before": prediction_before.inert_confidence,
+            "measured_effect_probability_before": (
+                prediction_before.measured_effect_probability
+            ),
             "observed_outcome_probability_before": observed_probability,
             "behavior_samples_before": prediction_before.samples,
             "behavior_known_before": prediction_before.known,
@@ -2451,6 +2517,16 @@ class VerifiedNeuralAgent:
                 prediction_before.hazardous_probability
             ),
             "observed_outcome": outcome_signature,
+            "observed_outcome_descriptor": outcome_descriptor.to_dict(),
+            "observed_intervention_inert": (
+                outcome_descriptor.intervention_inert
+            ),
+            "observed_controlled_movement": (
+                outcome_descriptor.controlled_movement
+            ),
+            "observed_local_visual_change": (
+                outcome_descriptor.local_visual_change
+            ),
             "observed_hazard": hazardous,
             "surprise": surprise,
             "outcome_matched_prediction": bool(
@@ -2458,6 +2534,13 @@ class VerifiedNeuralAgent:
             ),
             "behavior_samples_after": prediction_after.samples,
             "behavior_confidence_after": prediction_after.confidence,
+            "semantic_samples_after": prediction_after.semantic_samples,
+            "semantic_coverage_after": prediction_after.semantic_coverage,
+            "inert_probability_after": prediction_after.inert_probability,
+            "inert_confidence_after": prediction_after.inert_confidence,
+            "measured_effect_probability_after": (
+                prediction_after.measured_effect_probability
+            ),
             "hazard_probability_after": (
                 prediction_after.hazardous_probability
             ),
@@ -2638,13 +2721,14 @@ class VerifiedNeuralAgent:
                 context_player_cells,
                 fallback_context_signature,
             )
-            outcome_signature = model.effect_signature(
+            outcome_descriptor = model.effect_descriptor(
                 source_feature,
                 target_features[anchor],
                 source_feature,
                 relative_effect_cells=tuple(matching_offsets),
                 terminal_visual_change=passive_terminal_visual_change,
             )
+            outcome_signature = outcome_descriptor.signature
             prediction_before = model.predict(
                 source_feature,
                 Action.NOOP,
@@ -2682,6 +2766,7 @@ class VerifiedNeuralAgent:
                     hazardous=passive_hazard,
                     autonomous=True,
                     evidence_id=evidence_id,
+                    outcome_descriptor=outcome_descriptor,
                 )
                 prediction_after = observation.prediction_after
                 type_id = observation.type_id
@@ -2725,6 +2810,22 @@ class VerifiedNeuralAgent:
                 predicted_outcome_probability_before=(
                     prediction_before.outcome_probability
                 ),
+                predicted_outcome_descriptor_before=(
+                    None
+                    if prediction_before.outcome_descriptor is None
+                    else prediction_before.outcome_descriptor.to_dict()
+                ),
+                semantic_samples_before=prediction_before.semantic_samples,
+                semantic_coverage_before=(
+                    prediction_before.semantic_coverage
+                ),
+                inert_probability_before=(
+                    prediction_before.inert_probability
+                ),
+                inert_confidence_before=prediction_before.inert_confidence,
+                measured_effect_probability_before=(
+                    prediction_before.measured_effect_probability
+                ),
                 observed_outcome_probability_before=(
                     observed_probability
                 ),
@@ -2736,6 +2837,14 @@ class VerifiedNeuralAgent:
                     prediction_before.hazardous_probability
                 ),
                 observed_outcome=outcome_signature,
+                observed_outcome_descriptor=outcome_descriptor.to_dict(),
+                observed_intervention_inert=None,
+                observed_controlled_movement=(
+                    outcome_descriptor.controlled_movement
+                ),
+                observed_local_visual_change=(
+                    outcome_descriptor.local_visual_change_for(True)
+                ),
                 observed_hazard=passive_hazard,
                 surprise=surprise,
                 outcome_matched_prediction=bool(
@@ -2744,6 +2853,13 @@ class VerifiedNeuralAgent:
                 ),
                 behavior_samples_after=prediction_after.samples,
                 behavior_confidence_after=prediction_after.confidence,
+                semantic_samples_after=prediction_after.semantic_samples,
+                semantic_coverage_after=prediction_after.semantic_coverage,
+                inert_probability_after=prediction_after.inert_probability,
+                inert_confidence_after=prediction_after.inert_confidence,
+                measured_effect_probability_after=(
+                    prediction_after.measured_effect_probability
+                ),
                 hazard_probability_after=(
                     prediction_after.hazardous_probability
                 ),
@@ -3131,6 +3247,7 @@ class VerifiedNeuralAgent:
         self,
         source_feature: Tuple[int, ...],
         outcome_signature: str,
+        outcome_descriptor: BehaviorOutcomeDescriptor,
         context_signature: str,
         duration: int,
         hazardous: bool,
@@ -3176,6 +3293,7 @@ class VerifiedNeuralAgent:
                 autonomous=True,
                 evidence_id=evidence_id,
                 causal_hazard_evidence=True,
+                outcome_descriptor=outcome_descriptor,
             )
             prediction_after = observation.prediction_after
             type_id = observation.type_id
@@ -3214,6 +3332,18 @@ class VerifiedNeuralAgent:
             predicted_outcome_probability_before=(
                 prediction_before.outcome_probability
             ),
+            predicted_outcome_descriptor_before=(
+                None
+                if prediction_before.outcome_descriptor is None
+                else prediction_before.outcome_descriptor.to_dict()
+            ),
+            semantic_samples_before=prediction_before.semantic_samples,
+            semantic_coverage_before=prediction_before.semantic_coverage,
+            inert_probability_before=prediction_before.inert_probability,
+            inert_confidence_before=prediction_before.inert_confidence,
+            measured_effect_probability_before=(
+                prediction_before.measured_effect_probability
+            ),
             observed_outcome_probability_before=observed_probability,
             behavior_samples_before=prediction_before.samples,
             behavior_known_before=prediction_before.known,
@@ -3232,6 +3362,14 @@ class VerifiedNeuralAgent:
                 prediction_before.causal_hazard_known
             ),
             observed_outcome=outcome_signature,
+            observed_outcome_descriptor=outcome_descriptor.to_dict(),
+            observed_intervention_inert=None,
+            observed_controlled_movement=(
+                outcome_descriptor.controlled_movement
+            ),
+            observed_local_visual_change=(
+                outcome_descriptor.local_visual_change_for(True)
+            ),
             observed_hazard=hazardous,
             surprise=surprise,
             outcome_matched_prediction=bool(
@@ -3239,6 +3377,13 @@ class VerifiedNeuralAgent:
             ),
             behavior_samples_after=prediction_after.samples,
             behavior_confidence_after=prediction_after.confidence,
+            semantic_samples_after=prediction_after.semantic_samples,
+            semantic_coverage_after=prediction_after.semantic_coverage,
+            inert_probability_after=prediction_after.inert_probability,
+            inert_confidence_after=prediction_after.inert_confidence,
+            measured_effect_probability_after=(
+                prediction_after.measured_effect_probability
+            ),
             hazard_probability_after=(
                 prediction_after.hazardous_probability
             ),
@@ -3522,13 +3667,14 @@ class VerifiedNeuralAgent:
                     control_wait,
                 ),
             ):
-                outcome_signature = model.effect_signature(
+                outcome_descriptor = model.effect_descriptor(
                     source_feature,
                     target_feature,
                     source_feature,
                     relative_effect_cells=offsets,
                     terminal_visual_change=branch_terminal,
                 )
+                outcome_signature = outcome_descriptor.signature
                 evidence_payload = (
                     f"causal-wait|{factual_start.digest}|"
                     f"{factual_wait.digest}|{control_start.digest}|"
@@ -3541,6 +3687,7 @@ class VerifiedNeuralAgent:
                 self._record_anonymous_causal_sample(
                     source_feature,
                     outcome_signature,
+                    outcome_descriptor,
                     context,
                     duration,
                     branch_hazard,
@@ -4501,6 +4648,9 @@ class VerifiedNeuralAgent:
             int(
                 self.config.human_prior_option_entity_curiosity_reserve
             ),
+            float(
+                self.config.human_prior_option_entity_inert_penalty_weight
+            ),
             tuple(
                 (action.value, int(edge_duration))
                 for action, edge_duration in action_edges
@@ -4755,8 +4905,43 @@ class VerifiedNeuralAgent:
                                 > 0.0
                                 or self.config.human_prior_option_entity_curiosity_reserve
                                 > 0
+                                or self.config.human_prior_option_entity_inert_penalty_weight
+                                > 0.0
                             )
                             else {}
+                        )
+                        predicted_inert_penalty = float(
+                            entity_curiosity.get("inert_penalty", 0.0)
+                        )
+                        parent_player = (
+                            parent.analysis.target_player_slot
+                        )
+                        target_player = analysis.target_player_slot
+                        last_action_position_known = bool(
+                            parent_player is not None
+                            and target_player is not None
+                        )
+                        current_branch_measured_effect = bool(
+                            last_action_position_known
+                            and parent_player != target_player
+                            or option_world_effect_signature
+                            or analysis.milestone_reward > 0.0
+                            or analysis.life_counter_changed
+                            or analysis.dark_transition_started
+                        )
+                        inert_penalty_eligible = bool(
+                            predicted_inert_penalty > 0.0
+                            and last_action_position_known
+                            and not current_branch_measured_effect
+                        )
+                        inert_penalty = (
+                            predicted_inert_penalty
+                            if inert_penalty_eligible
+                            else 0.0
+                        )
+                        inert_penalty_suppressed = bool(
+                            predicted_inert_penalty > 0.0
+                            and not inert_penalty_eligible
                         )
                         state_novelty = 1.0 / math.sqrt(
                             target_state_visits + 1
@@ -4775,6 +4960,7 @@ class VerifiedNeuralAgent:
                             * self.novelty.score(self._signature(target))
                             + self.config.human_prior_option_entity_curiosity_weight
                             * float(entity_curiosity.get("curiosity", 0.0))
+                            - inert_penalty
                             - 0.05 * depth
                             - 2.0 * option_visits
                         )
@@ -4851,6 +5037,41 @@ class VerifiedNeuralAgent:
                             ),
                             entity_curiosity=float(
                                 entity_curiosity.get("curiosity", 0.0)
+                            ),
+                            entity_semantic_samples=int(
+                                entity_curiosity.get("semantic_samples", 0)
+                            ),
+                            entity_semantic_coverage=float(
+                                entity_curiosity.get(
+                                    "semantic_coverage", 0.0
+                                )
+                            ),
+                            entity_inert_probability=float(
+                                entity_curiosity.get(
+                                    "inert_probability", 0.0
+                                )
+                            ),
+                            entity_inert_confidence=float(
+                                entity_curiosity.get(
+                                    "inert_confidence", 0.0
+                                )
+                            ),
+                            entity_inert_penalty=float(
+                                inert_penalty
+                            ),
+                            entity_predicted_inert_penalty=(
+                                predicted_inert_penalty
+                            ),
+                            entity_inert_penalty_eligible=(
+                                inert_penalty_eligible
+                            ),
+                            entity_inert_penalty_suppressed=(
+                                inert_penalty_suppressed
+                            ),
+                            entity_measured_effect_probability=float(
+                                entity_curiosity.get(
+                                    "measured_effect_probability", 0.0
+                                )
                             ),
                         )
                         depth_candidates.append(node)
@@ -4962,6 +5183,36 @@ class VerifiedNeuralAgent:
                             ),
                             anonymous_entity_curiosity=(
                                 node.entity_curiosity
+                            ),
+                            anonymous_entity_semantic_samples=(
+                                node.entity_semantic_samples
+                            ),
+                            anonymous_entity_semantic_coverage=(
+                                node.entity_semantic_coverage
+                            ),
+                            anonymous_entity_inert_probability=(
+                                node.entity_inert_probability
+                            ),
+                            anonymous_entity_inert_confidence=(
+                                node.entity_inert_confidence
+                            ),
+                            anonymous_entity_predicted_inert_penalty=(
+                                node.entity_predicted_inert_penalty
+                            ),
+                            anonymous_entity_inert_penalty=(
+                                node.entity_inert_penalty
+                            ),
+                            anonymous_entity_inert_penalty_eligible=(
+                                node.entity_inert_penalty_eligible
+                            ),
+                            anonymous_entity_inert_penalty_suppressed=(
+                                node.entity_inert_penalty_suppressed
+                            ),
+                            anonymous_entity_current_branch_measured_effect=(
+                                current_branch_measured_effect
+                            ),
+                            anonymous_entity_measured_effect_probability=(
+                                node.entity_measured_effect_probability
                             ),
                             endpoint_eligible=endpoint_eligible,
                             score=score,
@@ -5408,6 +5659,31 @@ class VerifiedNeuralAgent:
                                 node.entity_appearance_transferability
                             ),
                             curiosity=node.entity_curiosity,
+                            semantic_samples_before=(
+                                node.entity_semantic_samples
+                            ),
+                            semantic_coverage_before=(
+                                node.entity_semantic_coverage
+                            ),
+                            inert_probability_before=(
+                                node.entity_inert_probability
+                            ),
+                            inert_confidence_before=(
+                                node.entity_inert_confidence
+                            ),
+                            predicted_inert_penalty=(
+                                node.entity_predicted_inert_penalty
+                            ),
+                            inert_penalty=node.entity_inert_penalty,
+                            inert_penalty_eligible=(
+                                node.entity_inert_penalty_eligible
+                            ),
+                            inert_penalty_suppressed=(
+                                node.entity_inert_penalty_suppressed
+                            ),
+                            measured_effect_probability_before=(
+                                node.entity_measured_effect_probability
+                            ),
                             control_confirmed=bool(
                                 curiosity_action_control.get("confirmed")
                             ),

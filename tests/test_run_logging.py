@@ -530,6 +530,21 @@ class RunLoggingTests(unittest.TestCase):
                 summary,
             )
             self.assertIn(
+                "human_prior_option_entity_inert_penalized_branches",
+                summary,
+            )
+            self.assertIn(
+                "human_prior_option_entity_inert_penalty_total", summary
+            )
+            self.assertIn(
+                "human_prior_option_entity_predicted_inert_penalty_total",
+                summary,
+            )
+            self.assertIn(
+                "human_prior_option_entity_inert_penalty_suppressions",
+                summary,
+            )
+            self.assertIn(
                 "anonymous_entity_behavior_observations", summary
             )
             self.assertIn(
@@ -540,6 +555,16 @@ class RunLoggingTests(unittest.TestCase):
             )
             self.assertIn(
                 "anonymous_entity_behavior_prediction_matches", summary
+            )
+            self.assertIn(
+                "anonymous_entity_behavior_semantic_observations", summary
+            )
+            self.assertIn(
+                "anonymous_entity_behavior_inert_observations", summary
+            )
+            self.assertIn(
+                "anonymous_entity_behavior_known_semantic_predictions",
+                summary,
             )
             self.assertIn(
                 "anonymous_entity_behavior_hazard_observations", summary

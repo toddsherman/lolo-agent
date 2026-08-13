@@ -251,66 +251,89 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             outcome = event.get("observed_outcome")
             if outcome:
                 anonymous_behavior_outcomes.add(str(outcome))
-            anonymous_behavior_rows.append(
-                {
-                    field: event.get(field)
-                    for field in (
-                        "seq",
-                        "elapsed_ms",
-                        "attempt",
-                        "decision",
-                        "evidence_id",
-                        "learning_enabled",
-                        "evidence_accepted",
-                        "evidence_eligible",
-                        "anonymous_type_id",
-                        "anonymous_type_created",
-                        "appearance_fingerprint",
-                        "appearance_distance",
-                        "action",
-                        "action_frames",
-                        "autonomous",
-                        "context_signature",
-                        "context_matched_before",
-                        "predicted_outcome_before",
-                        "predicted_outcome_probability_before",
-                        "observed_outcome_probability_before",
-                        "behavior_samples_before",
-                        "behavior_known_before",
-                        "behavior_confidence_before",
-                        "behavior_entropy_before",
-                        "hazard_probability_before",
-                        "causal_hazard_probability_before",
-                        "causal_hazard_samples_before",
-                        "causal_hazard_known_before",
-                        "observed_outcome",
-                        "observed_hazard",
-                        "surprise",
-                        "outcome_matched_prediction",
-                        "behavior_samples_after",
-                        "behavior_confidence_after",
-                        "hazard_probability_after",
-                        "causal_hazard_probability_after",
-                        "causal_hazard_samples_after",
-                        "causal_hazard_known_after",
-                        "anchor_cell",
-                        "relative_effect_cells",
-                        "player_displacement",
-                        "differential_terminal_visual_change",
-                        "causal_attribution",
-                        "causal_role",
-                        "causal_intervention_action",
-                        "causal_intervention_frames",
-                        "causal_other_branch_hazard",
-                        "causal_localization_horizon",
-                        "model_type_count",
-                        "model_rule_count",
-                        "model_observations",
-                        "model_causal_hazard_observations",
-                        "frame",
+            behavior_row = {
+                field: event.get(field)
+                for field in (
+                    "seq",
+                    "elapsed_ms",
+                    "attempt",
+                    "decision",
+                    "evidence_id",
+                    "learning_enabled",
+                    "evidence_accepted",
+                    "evidence_eligible",
+                    "anonymous_type_id",
+                    "anonymous_type_created",
+                    "appearance_fingerprint",
+                    "appearance_distance",
+                    "action",
+                    "action_frames",
+                    "autonomous",
+                    "context_signature",
+                    "context_matched_before",
+                    "predicted_outcome_before",
+                    "predicted_outcome_probability_before",
+                    "predicted_outcome_descriptor_before",
+                    "semantic_samples_before",
+                    "semantic_coverage_before",
+                    "inert_probability_before",
+                    "inert_confidence_before",
+                    "measured_effect_probability_before",
+                    "observed_outcome_probability_before",
+                    "behavior_samples_before",
+                    "behavior_known_before",
+                    "behavior_confidence_before",
+                    "behavior_entropy_before",
+                    "hazard_probability_before",
+                    "causal_hazard_probability_before",
+                    "causal_hazard_samples_before",
+                    "causal_hazard_known_before",
+                    "observed_outcome",
+                    "observed_outcome_descriptor",
+                    "observed_intervention_inert",
+                    "observed_controlled_movement",
+                    "observed_local_visual_change",
+                    "observed_hazard",
+                    "surprise",
+                    "outcome_matched_prediction",
+                    "behavior_samples_after",
+                    "behavior_confidence_after",
+                    "semantic_samples_after",
+                    "semantic_coverage_after",
+                    "inert_probability_after",
+                    "inert_confidence_after",
+                    "measured_effect_probability_after",
+                    "hazard_probability_after",
+                    "causal_hazard_probability_after",
+                    "causal_hazard_samples_after",
+                    "causal_hazard_known_after",
+                    "anchor_cell",
+                    "relative_effect_cells",
+                    "player_displacement",
+                    "differential_terminal_visual_change",
+                    "causal_attribution",
+                    "causal_role",
+                    "causal_intervention_action",
+                    "causal_intervention_frames",
+                    "causal_other_branch_hazard",
+                    "causal_localization_horizon",
+                    "model_type_count",
+                    "model_rule_count",
+                    "model_observations",
+                    "model_causal_hazard_observations",
+                    "frame",
+                )
+            }
+            for descriptor_field in (
+                "predicted_outcome_descriptor_before",
+                "observed_outcome_descriptor",
+            ):
+                descriptor = behavior_row.get(descriptor_field)
+                if descriptor is not None:
+                    behavior_row[descriptor_field] = json.dumps(
+                        descriptor, sort_keys=True, separators=(",", ":")
                     )
-                }
-            )
+            anonymous_behavior_rows.append(behavior_row)
         if event["event"] == "bidirectional_probe_step":
             returnability_probe_rows.append(
                 {
@@ -1003,6 +1026,12 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "context_matched_before",
         "predicted_outcome_before",
         "predicted_outcome_probability_before",
+        "predicted_outcome_descriptor_before",
+        "semantic_samples_before",
+        "semantic_coverage_before",
+        "inert_probability_before",
+        "inert_confidence_before",
+        "measured_effect_probability_before",
         "observed_outcome_probability_before",
         "behavior_samples_before",
         "behavior_known_before",
@@ -1013,11 +1042,20 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "causal_hazard_samples_before",
         "causal_hazard_known_before",
         "observed_outcome",
+        "observed_outcome_descriptor",
+        "observed_intervention_inert",
+        "observed_controlled_movement",
+        "observed_local_visual_change",
         "observed_hazard",
         "surprise",
         "outcome_matched_prediction",
         "behavior_samples_after",
         "behavior_confidence_after",
+        "semantic_samples_after",
+        "semantic_coverage_after",
+        "inert_probability_after",
+        "inert_confidence_after",
+        "measured_effect_probability_after",
         "hazard_probability_after",
         "causal_hazard_probability_after",
         "causal_hazard_samples_after",
@@ -1691,6 +1729,34 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             and bool(event.get("evidence_accepted"))
             for event in events
         ),
+        "human_prior_option_entity_inert_penalized_branches": sum(
+            event["event"] == "human_prior_option_branch_verified"
+            and float(
+                event.get("anonymous_entity_inert_penalty") or 0.0
+            )
+            > 0.0
+            for event in events
+        ),
+        "human_prior_option_entity_inert_penalty_total": sum(
+            float(event.get("anonymous_entity_inert_penalty") or 0.0)
+            for event in events
+            if event["event"] == "human_prior_option_branch_verified"
+        ),
+        "human_prior_option_entity_predicted_inert_penalty_total": sum(
+            float(
+                event.get("anonymous_entity_predicted_inert_penalty")
+                or 0.0
+            )
+            for event in events
+            if event["event"] == "human_prior_option_branch_verified"
+        ),
+        "human_prior_option_entity_inert_penalty_suppressions": sum(
+            event["event"] == "human_prior_option_branch_verified"
+            and bool(
+                event.get("anonymous_entity_inert_penalty_suppressed")
+            )
+            for event in events
+        ),
         "anonymous_entity_behavior_observations": len(
             anonymous_behavior_rows
         ),
@@ -1709,6 +1775,18 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "anonymous_entity_behavior_prediction_matches": sum(
             bool(row.get("behavior_known_before"))
             and bool(row.get("outcome_matched_prediction"))
+            for row in anonymous_behavior_rows
+        ),
+        "anonymous_entity_behavior_semantic_observations": sum(
+            row.get("observed_outcome_descriptor") is not None
+            for row in anonymous_behavior_rows
+        ),
+        "anonymous_entity_behavior_inert_observations": sum(
+            bool(row.get("observed_intervention_inert"))
+            for row in anonymous_behavior_rows
+        ),
+        "anonymous_entity_behavior_known_semantic_predictions": sum(
+            int(row.get("semantic_samples_before") or 0) > 0
             for row in anonymous_behavior_rows
         ),
         "anonymous_entity_behavior_hazard_observations": sum(
