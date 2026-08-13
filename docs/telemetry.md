@@ -355,13 +355,21 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   threshold, `goal_milestone_exhaustion_deferred` records the bounded search
   result and the remaining evidence budget without changing policy. The
   threshold is configurable with
-  `--human-prior-goal-exhaustion-minimum-steps`. The exhaustion event preserves
-  the exact milestone choice, graph/position coverage, exhausted option
-  sources, pre-milestone state ID, descendant invalidations, and restored pixel
-  goal state. It records the observed heart-set transition as a soft
-  preparation-ordering hint; it does not create a negative temporal-option
-  hazard sample. Those samples remain reserved for observed loss or causal
-  recoverability evidence. The compatibility event name remains
+  `--human-prior-goal-exhaustion-minimum-steps`. A verified new graph state,
+  player position, or world context emits
+  `goal_milestone_exhaustion_progress_reset` and restarts this consecutive
+  no-progress clock. The exhaustion event preserves the exact milestone
+  choice, graph/position coverage, exhausted option sources, pre-milestone
+  state ID, descendant invalidations, and restored pixel goal state. Rollback
+  also requires an explicitly known, changed source/target heart set; legacy
+  checkpoints without that metadata remain valid for observed life-loss
+  recovery but cannot assert bounded exhaustion. The event records the
+  observed heart-set transition as a soft preparation-ordering hint; it does
+  not create a negative temporal-option hazard sample. Those samples remain
+  reserved for observed loss or causal recoverability evidence. Legacy
+  unqualified goal-exhaustion values are counted by
+  `episodic_human_prior_memory_seeded.unqualified_exhaustion_hazards_ignored`
+  and are not restored into policy. The compatibility event name remains
   `goal_milestone_exhaustion_learned`, while
   `hazard_evidence=false`, `policy_effect=milestone_priority_only`, and
   `preparation_transition_learned` make the semantics explicit;

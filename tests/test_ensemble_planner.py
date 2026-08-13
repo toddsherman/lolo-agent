@@ -4991,7 +4991,9 @@ class EnsemblePlannerTests(unittest.TestCase):
 
         self.assertFalse(decision.restored_archive)
         self.assertIs(agent.pending_goal_milestone_checkpoint, checkpoint)
-        self.assertEqual(checkpoint.exploration_steps, 1)
+        # The bounded search is deferred at step one; the subsequently
+        # committed new reachable state then restarts the no-progress clock.
+        self.assertEqual(checkpoint.exploration_steps, 0)
         self.assertNotIn(choice, agent.temporal_option_values)
         deferred = [
             event
@@ -5000,8 +5002,146 @@ class EnsemblePlannerTests(unittest.TestCase):
         ]
         self.assertEqual(len(deferred), 1)
         self.assertEqual(deferred[0]["remaining_exploration_steps"], 1)
+        self.assertTrue(
+            any(
+                event["event"]
+                == "goal_milestone_exhaustion_progress_reset"
+                for event in logger.events
+            )
+        )
         self.assertEqual(
             agent.human_prior_exhausted_milestone_transitions, set()
+        )
+
+    def test_goal_milestone_exhaustion_requires_transition_metadata(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = ActionEffectEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                human_prior_best_first_archive=True,
+                human_prior_graph_stagnation_visits=1,
+                human_prior_goal_exhaustion_rollback=True,
+                human_prior_goal_exhaustion_minimum_steps=0,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=1,
+                human_prior_option_search_action_frames=1,
+            ),
+            event_logger=logger,
+        )
+        source_frame = agent.reset()
+        choice = (agent.current_frontier_signature, Action.RIGHT, 1)
+        checkpoint = _LifeHazardCheckpoint(
+            state=env.save_state(),
+            frame=source_frame,
+            choice=choice,
+            decision=0,
+            frontier_signature=agent.current_frontier_signature,
+            causal_context_signature=agent.current_causal_context_signature,
+            scene=agent.current_scene,
+            pose_action=None,
+            last_action=None,
+            last_duration=None,
+            action_streak=0,
+            goal_heart_slots=((7, 0),),
+            goal_player_slot=(0, 0),
+            kind="goal_milestone",
+            goal_target_heart_slots=(),
+            goal_target_heart_slots_known=False,
+        )
+        agent.pending_goal_milestone_checkpoint = checkpoint
+
+        decision = agent._restore_goal_milestone_after_exhaustion(
+            "bounded-search", 4
+        )
+
+        self.assertIsNone(decision)
+        self.assertIs(agent.pending_goal_milestone_checkpoint, checkpoint)
+        self.assertNotIn(choice, agent.temporal_option_values)
+        self.assertEqual(
+            agent.human_prior_exhausted_milestone_transitions, set()
+        )
+        deferred = [
+            event
+            for event in logger.events
+            if event["event"] == "goal_milestone_exhaustion_deferred"
+        ]
+        self.assertEqual(len(deferred), 1)
+        self.assertEqual(deferred[0]["reason"], "unknown_milestone_transition")
+        self.assertFalse(deferred[0]["transition_metadata_known"])
+
+    def test_goal_milestone_exhaustion_progress_resets_clock(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = ActionEffectEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_graph_stagnation_visits=99,
+                human_prior_goal_exhaustion_rollback=True,
+                human_prior_goal_exhaustion_minimum_steps=16,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=1,
+                human_prior_option_search_action_frames=1,
+            ),
+            event_logger=logger,
+        )
+        source_frame = agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        source_signature = agent.current_frontier_signature
+        checkpoint = _LifeHazardCheckpoint(
+            state=env.save_state(),
+            frame=source_frame,
+            choice=(source_signature, Action.RIGHT, 1),
+            decision=0,
+            frontier_signature=source_signature,
+            causal_context_signature=agent.current_causal_context_signature,
+            scene=agent.current_scene,
+            pose_action=None,
+            last_action=None,
+            last_duration=None,
+            action_streak=0,
+            goal_heart_slots=((7, 0),),
+            goal_player_slot=(0, 0),
+            kind="goal_milestone",
+            exploration_steps=5,
+            goal_target_heart_slots=(),
+            goal_target_heart_slots_known=True,
+        )
+        agent.pending_goal_milestone_checkpoint = checkpoint
+
+        decision = agent.decide()
+
+        self.assertEqual(decision.action, Action.RIGHT)
+        self.assertIs(agent.pending_goal_milestone_checkpoint, checkpoint)
+        self.assertEqual(checkpoint.exploration_steps, 0)
+        resets = [
+            event
+            for event in logger.events
+            if event["event"] == "goal_milestone_exhaustion_progress_reset"
+        ]
+        self.assertEqual(len(resets), 1)
+        self.assertEqual(resets[0]["previous_exploration_steps"], 6)
+        self.assertIn(
+            resets[0]["reason"],
+            {"new_goal_graph_state", "new_player_position"},
         )
 
     def test_archive_restored_goal_milestone_preserves_source_checkpoint(
@@ -5366,6 +5506,13 @@ class EnsemblePlannerTests(unittest.TestCase):
                 "milestone_choice": ["state-2", "left", 1],
                 "learned_hazard_value": -0.5,
                 "learned_hazard_samples": 2,
+                "hazard_evidence": True,
+            },
+            {
+                "event": "goal_milestone_exhaustion_learned",
+                "milestone_choice": ["legacy-state", "up", 4],
+                "learned_hazard_value": -2.0,
+                "learned_hazard_samples": 1,
             },
         ]
 
@@ -5426,6 +5573,10 @@ class EnsemblePlannerTests(unittest.TestCase):
             ],
             2,
         )
+        self.assertNotIn(
+            ("legacy-state", Action.UP, 4),
+            agent.temporal_option_values,
+        )
         self.assertIn(
             (((32, 32),), (), (32, 0), False, False),
             agent.human_prior_milestone_outcomes,
@@ -5445,6 +5596,9 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(seeded[0]["player_positions"], 2)
         self.assertEqual(seeded[0]["verified_option_paths"], 2)
         self.assertEqual(seeded[0]["pose_action"], Action.RIGHT)
+        self.assertEqual(
+            seeded[0]["unqualified_exhaustion_hazards_ignored"], 1
+        )
 
     def test_seed_human_prior_option_archive_restores_promoted_branch(
         self,

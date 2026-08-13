@@ -908,6 +908,35 @@ class VerifiedNeuralAgent:
             exploration_steps=checkpoint.exploration_steps,
         )
 
+    def _reset_goal_milestone_exhaustion_evidence(
+        self,
+        reason: str,
+        *,
+        target_graph_signature: str,
+        target_player_slot: Optional[Tuple[int, int]],
+    ) -> None:
+        """Restart the stagnation clock after verified reachable progress."""
+
+        checkpoint = self.pending_goal_milestone_checkpoint
+        if checkpoint is None or checkpoint.exploration_steps <= 0:
+            return
+        previous_steps = checkpoint.exploration_steps
+        checkpoint.exploration_steps = 0
+        self._persist_goal_milestone_checkpoint(checkpoint)
+        self._emit(
+            "goal_milestone_exhaustion_progress_reset",
+            decision=self.decision_index,
+            reason=reason,
+            milestone_choice=checkpoint.choice,
+            milestone_decision=checkpoint.decision,
+            previous_exploration_steps=previous_steps,
+            exploration_steps=0,
+            target_graph_signature=target_graph_signature or None,
+            target_player_slot=target_player_slot,
+            agent_visible=True,
+            **self._frame_fields(self.frame),
+        )
+
     def seed_goal_milestone_checkpoint(
         self,
         state: object,
@@ -6418,6 +6447,7 @@ class VerifiedNeuralAgent:
             Tuple[str, Action, int]
         ] = Counter()
         exhausted_milestone_transitions: set[tuple] = set()
+        unqualified_exhaustion_hazards_ignored = 0
         milestone_outcomes_by_decision: Dict[
             Tuple[str, int], tuple
         ] = {}
@@ -6535,7 +6565,15 @@ class VerifiedNeuralAgent:
                     except (IndexError, TypeError, ValueError):
                         pass
                 choice_values = tuple(event.get("milestone_choice") or ())
-                if len(choice_values) == 3:
+                if (
+                    event.get("learned_hazard_value") is not None
+                    and event.get("hazard_evidence") is not True
+                ):
+                    unqualified_exhaustion_hazards_ignored += 1
+                if (
+                    len(choice_values) == 3
+                    and event.get("hazard_evidence") is True
+                ):
                     try:
                         choice = (
                             str(choice_values[0]),
@@ -6790,6 +6828,9 @@ class VerifiedNeuralAgent:
             ),
             temporal_option_values=len(temporal_option_values),
             temporal_option_samples=sum(temporal_option_samples.values()),
+            unqualified_exhaustion_hazards_ignored=(
+                unqualified_exhaustion_hazards_ignored
+            ),
             known_heart_slots=tuple(sorted(known_slots)),
             present_heart_slots=present_slots,
             player_slot=player_slot,
@@ -11676,6 +11717,35 @@ class VerifiedNeuralAgent:
                 committed_causal_spatial_signature is not None
             )
             self.decision_index += 1
+            milestone_progress_reason = None
+            if (
+                committed_goal_target_signature
+                and committed_goal_graph_state_visits_before == 0
+            ):
+                milestone_progress_reason = "new_goal_graph_state"
+            elif (
+                committed_goal_analysis is not None
+                and committed_goal_analysis.target_player_slot is not None
+                and committed_goal_target_position_visits_before == 0
+            ):
+                milestone_progress_reason = "new_player_position"
+            elif (
+                committed_goal_source_world_context
+                != committed_goal_target_world_context
+            ):
+                milestone_progress_reason = "new_world_context"
+            if milestone_progress_reason is not None:
+                self._reset_goal_milestone_exhaustion_evidence(
+                    milestone_progress_reason,
+                    target_graph_signature=(
+                        committed_goal_target_signature
+                    ),
+                    target_player_slot=(
+                        None
+                        if committed_goal_analysis is None
+                        else committed_goal_analysis.target_player_slot
+                    ),
+                )
             self._observe_persistent_changes(
                 target,
                 action_dependent=(
@@ -12992,21 +13062,44 @@ class VerifiedNeuralAgent:
         checkpoint = self.pending_goal_milestone_checkpoint
         if checkpoint is None:
             return None
-        self.pending_goal_milestone_checkpoint = None
-        exhausted_transition = None
         if (
-            checkpoint.goal_target_heart_slots_known
-            and checkpoint.goal_target_heart_slots
-            != checkpoint.goal_heart_slots
+            not checkpoint.goal_target_heart_slots_known
+            or checkpoint.goal_target_heart_slots
+            == checkpoint.goal_heart_slots
         ):
-            exhausted_transition = (
-                tuple(checkpoint.goal_heart_slots),
-                tuple(checkpoint.goal_target_heart_slots),
-                checkpoint.goal_chest_obtained,
+            self._emit(
+                "goal_milestone_exhaustion_deferred",
+                decision=self.decision_index + 1,
+                reason=(
+                    "unknown_milestone_transition"
+                    if not checkpoint.goal_target_heart_slots_known
+                    else "unchanged_milestone_transition"
+                ),
+                milestone_choice=checkpoint.choice,
+                milestone_decision=checkpoint.decision,
+                exploration_steps=checkpoint.exploration_steps,
+                minimum_exploration_steps=(
+                    self.config.human_prior_goal_exhaustion_minimum_steps
+                ),
+                remaining_exploration_steps=0,
+                exhausted_graph_signature=exhausted_graph_signature,
+                exhausted_graph_visits=exhausted_graph_visits,
+                transition_metadata_known=(
+                    checkpoint.goal_target_heart_slots_known
+                ),
+                agent_visible=True,
+                **self._frame_fields(self.frame),
             )
-            self.human_prior_exhausted_milestone_transitions.add(
-                exhausted_transition
-            )
+            return None
+        self.pending_goal_milestone_checkpoint = None
+        exhausted_transition = (
+            tuple(checkpoint.goal_heart_slots),
+            tuple(checkpoint.goal_target_heart_slots),
+            checkpoint.goal_chest_obtained,
+        )
+        self.human_prior_exhausted_milestone_transitions.add(
+            exhausted_transition
+        )
         if self.pending_life_recovery is not None:
             self._release_life_hazard_checkpoint(
                 self.pending_life_recovery,
@@ -14398,6 +14491,28 @@ class VerifiedNeuralAgent:
             self._record_human_prior_player_position(
                 branch.goal_target_signature,
                 branch.goal_player_slot,
+            )
+        milestone_progress_reason = None
+        if (
+            branch.goal_target_signature
+            and restored_goal_graph_state_visits_before == 0
+        ):
+            milestone_progress_reason = "new_goal_graph_state_archive"
+        elif (
+            restored_goal_player_slot is not None
+            and restored_target_position_visits_before == 0
+        ):
+            milestone_progress_reason = "new_player_position_archive"
+        elif (
+            branch.goal_source_world_context
+            != branch.goal_target_world_context
+        ):
+            milestone_progress_reason = "new_world_context_archive"
+        if milestone_progress_reason is not None:
+            self._reset_goal_milestone_exhaustion_evidence(
+                milestone_progress_reason,
+                target_graph_signature=branch.goal_target_signature,
+                target_player_slot=restored_goal_player_slot,
             )
         restored_visual_cluster = self._abstract_signature(branch.frame)
         restored_frontier_signature = (

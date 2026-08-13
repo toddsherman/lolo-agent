@@ -1832,6 +1832,9 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "goal_milestone_exhaustion_deferrals": event_counts.get(
             "goal_milestone_exhaustion_deferred", 0
         ),
+        "goal_milestone_exhaustion_progress_resets": event_counts.get(
+            "goal_milestone_exhaustion_progress_reset", 0
+        ),
         "goal_milestone_preparation_transitions": sum(
             event["event"] == "goal_milestone_exhaustion_learned"
             and bool(event.get("preparation_transition_learned"))

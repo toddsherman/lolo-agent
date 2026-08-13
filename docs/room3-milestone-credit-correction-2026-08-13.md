@@ -26,8 +26,10 @@ transition-scoped credit for final-heart milestones.
 
 Goal-exhaustion rollback now has three separate semantics:
 
-- the default minimum is 16 committed post-milestone decisions, configured by
-  `--human-prior-goal-exhaustion-minimum-steps`;
+- the default minimum is 16 consecutive committed post-milestone decisions
+  without verified reachable progress, configured by
+  `--human-prior-goal-exhaustion-minimum-steps`; a new graph state, player
+  position, or world context resets this clock;
 - an earlier exact-search failure emits
   `goal_milestone_exhaustion_deferred` and leaves the checkpoint and policy
   intact;
@@ -40,7 +42,11 @@ Goal checkpoint metadata now carries
 tuple is therefore a valid final-heart transition. The compatibility event
 `goal_milestone_exhaustion_learned` explicitly reports
 `hazard_evidence=false`, `policy_effect=milestone_priority_only`, and whether a
-transition hint was recorded.
+transition hint was recorded. Rollback now requires that transition metadata;
+older checkpoints that cannot distinguish an unknown target from a known empty
+heart set remain usable after observed life loss but cannot trigger bounded
+exhaustion. Old unqualified goal-exhaustion values are ignored during episodic
+seeding.
 
 ## Native matched replay
 
@@ -71,12 +77,32 @@ post-heart reachable frontier from `(128,48)` to `(128,32)`, `(144,32)`,
 new endpoint. This directly falsifies the earlier conclusion that the
 post-heart state was exhausted.
 
+A second eight-decision continuation verified that the exploration counter
+survived resume, then expanded the same post-heart frontier leftward through
+`(112,32)`, `(96,32)`, `(80,32)`, and `(64,32)`. This exposed a subtler issue:
+the first correction still counted total elapsed decisions, so it reached 16
+and restored the pre-heart checkpoint despite those new states. That replay is
+retained as negative evidence in
+`entity-v10-room3-soft-exhaustion-continue-from-d8-d8`. The progress-reset and
+known-transition requirements above are the resulting correction; progress
+can no longer be accumulated as exhaustion evidence.
+
+The matched native validation
+`entity-v10-room3-progress-reset-from-d8-d2` resumed the same decision-8 state
+with the final semantics. It imported the counter at 8 and no unqualified
+hazard values. The first exact search deferred at step 9, then reaching the new
+`(112,32)` graph state emitted a progress reset from 9 to 0. The next decision
+incremented only to 1 and reaching `(96,32)` reset it again. Across two
+decisions it verified 869 exact option branches, recorded two deferrals and
+two progress resets, and produced zero exhaustion rollbacks, hazard samples,
+life losses, entity-hazard detections, or fail-opens. The frozen neural audit
+passed. This is the intended behavior on real emulator state, not only a unit
+test.
+
 ## Next experiment
 
-Continue from decision 8 with the corrected credit semantics and the updated
-anonymous behavior checkpoint. Success is either collection of the remaining
-heart, a persistent new object/world state, or expansion toward the lower
-route. If 16 committed post-heart decisions pass without progress, rollback
-may record a soft collection-order hint, but it still cannot label the
-collection action hazardous. Any future hard veto must be supported by actual
-causal hazard provenance.
+Continue from decision 2 of the matched progress-reset validation toward the
+remaining heart or a downward route. If 16 consecutive decisions pass without
+a new reachable state, rollback may record a soft collection-order hint, but
+it still cannot label the collection action hazardous. Any future hard veto
+must be supported by actual causal hazard provenance.
