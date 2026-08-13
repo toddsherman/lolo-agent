@@ -3832,6 +3832,13 @@ class EnsemblePlannerTests(unittest.TestCase):
         agent.human_prior_player_position_visits.update(
             {(0, 0): 1, (1, 0): 4, (2, 0): 9}
         )
+        agent.human_prior_option_visits[
+            agent._human_prior_option_key(
+                source_signature,
+                (Action.RIGHT, Action.RIGHT),
+                (1, 1),
+            )
+        ] = 1
 
         added = agent._search_human_prior_options()
 
@@ -3849,6 +3856,8 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(len(depth_two), 1)
         self.assertEqual(depth_two[0]["target_graph_state_visits"], 0)
         self.assertEqual(depth_two[0]["target_player_position_visits"], 9)
+        self.assertEqual(depth_two[0]["option_path_visits_before"], 1)
+        self.assertFalse(depth_two[0]["option_path_unexpanded"])
         self.assertTrue(depth_two[0]["endpoint_eligible"])
 
     def test_human_prior_option_archive_uses_whole_path_coverage(self) -> None:

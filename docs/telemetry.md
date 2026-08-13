@@ -643,7 +643,10 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   Every verified source/action edge is also reconstructed from the resume
   chain, whether or not that branch was committed. Thus "unexpanded" means
   that a controller action has not yet been tested from the semantic source,
-  rather than merely that it has not won selection.
+  rather than merely that it has not won selection. Whole-option coverage does
+  not suppress an action-dependent endpoint whose pixel-derived target graph
+  state has never been committed; archive recovery must first get a chance to
+  consume that semantic frontier.
   `human_prior_semantic_frontier_choice` records when a repeated graph state
   selects a new player endpoint or a least-visited endpoint whose outgoing
   actions still need expansion. `human_prior_graph_recovery_suppressed` records

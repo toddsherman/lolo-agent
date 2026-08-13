@@ -6254,6 +6254,7 @@ class VerifiedNeuralAgent:
                             )
                             and (
                                 option_unexpanded
+                                or target_state_visits == 0
                                 or episodic_graph_progress > 0.0
                             )
                             and not analysis.life_counter_changed
