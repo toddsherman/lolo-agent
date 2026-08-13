@@ -496,7 +496,10 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   collected, its changed visible-goal set stops matching the failed ordering
   and ordinary navigation resumes automatically. `decisions.csv` contains the
   same fields, while `summary.json` counts retargeted evaluations, exact-search
-  branches, commits, and the total committed ordering reward.
+  branches, commits, and the total committed ordering reward. A verified
+  option with positive ordering-adjusted progress remains archive-eligible at
+  a previously visited graph state; visibility novelty is not allowed to erase
+  a useful detour learned from the room's transition topology.
   Every verified source/action edge is also reconstructed from the resume
   chain, whether or not that branch was committed. Thus "unexpanded" means
   that a controller action has not yet been tested from the semantic source,

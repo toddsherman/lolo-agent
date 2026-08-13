@@ -6272,6 +6272,17 @@ class VerifiedNeuralAgent:
                     node.analysis.milestone_reward > 0.0
                     or node.target_state_visits == 0
                     or node.target_position_visits == 0
+                    or (
+                        bool(
+                            self._human_prior_ordering_navigation_fields(
+                                node.analysis
+                            )["human_prior_navigation_retargeted"]
+                        )
+                        and self._human_prior_ordering_adjusted_total_reward(
+                            node.analysis
+                        )
+                        > 0.0
+                    )
                 )
             ]
             causal_endpoints = [

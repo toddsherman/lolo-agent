@@ -563,6 +563,34 @@ class RegressivePositionGoalPrior(PositionGoalPrior):
         )
 
 
+class OrderingPositionGoalPrior(PositionGoalPrior):
+    def __init__(self) -> None:
+        super().__init__()
+        self.known_slots = {(-16, 0), (32, 0)}
+        self.current_present = set(self.known_slots)
+        self.best_remaining_hearts = 2
+
+    def analyze(
+        self,
+        source: Frame,
+        target: Frame,
+        *,
+        target_player_reference=None,
+    ) -> HeartGoalAnalysis:
+        analysis = super().analyze(
+            source,
+            target,
+            target_player_reference=target_player_reference,
+        )
+        hearts = tuple(sorted(self.current_present))
+        return replace(
+            analysis,
+            known_slots=tuple(sorted(self.known_slots)),
+            source_present=hearts,
+            target_present=hearts,
+        )
+
+
 class WorldEffectEnv:
     def __init__(
         self, persistent: bool, world_index: int | tuple[int, ...] = 63
@@ -3105,8 +3133,9 @@ class EnsemblePlannerTests(unittest.TestCase):
         model = EnsembleVisualDynamicsModel(
             latent_size=32, action_size=8, ensemble_size=2
         )
+        env = ActionEffectEnv()
         agent = VerifiedNeuralAgent(
-            ActionEffectEnv(),
+            env,
             model,
             "cpu",
             NeuralPlanningConfig(
@@ -3131,6 +3160,52 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(agent.archive[0].plan.path, (Action.RIGHT, Action.RIGHT))
         self.assertEqual(agent.archive[0].goal_player_slot, (2, 0))
         self.assertEqual(agent.archive[0].goal_progress_reward, 2.0)
+
+    def test_option_search_retains_ordering_progress_at_known_graph_state(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = ActionEffectEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                human_prior_navigation_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=2,
+                human_prior_option_search_action_frames=1,
+            ),
+        )
+        agent.reset()
+        agent.goal_prior = OrderingPositionGoalPrior()
+        hearts = ((-16, 0), (32, 0))
+        agent.human_prior_exhausted_milestone_transitions.add(
+            (hearts, ((32, 0),), False)
+        )
+        source_signature = agent._current_human_prior_graph_signature()
+        agent.human_prior_graph_state_visits[source_signature] = 1
+        agent.human_prior_player_position_visits[(0, 0)] = 1
+        agent.human_prior_player_position_visits[(2, 0)] = 1
+        root = env.save_state()
+        target = env.step(Action.RIGHT, 2)
+        analysis = agent.goal_prior.analyze(agent.frame, target)
+        target_signature = agent._human_prior_graph_signatures(analysis)[1]
+        agent.human_prior_graph_state_visits[target_signature] = 1
+        env.load_state(root)
+
+        added = agent._search_human_prior_options()
+
+        self.assertEqual(added, 1)
+        self.assertEqual(agent.archive[0].goal_player_slot, (2, 0))
+        self.assertAlmostEqual(
+            agent.archive[0].goal_progress_reward, 0.125
+        )
 
     def test_decide_immediately_restores_new_verified_option(self) -> None:
         model = EnsembleVisualDynamicsModel(
