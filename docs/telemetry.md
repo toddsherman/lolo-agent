@@ -575,7 +575,15 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   `repeated_milestone_candidates` and
   `repeated_milestone_parents_retained`. Previously observed or exhausted
   heart-set transitions remain auditable endpoints but are not expanded as
-  beam parents, preserving capacity for alternative collection orders;
+  beam parents, preserving capacity for alternative collection orders. In a
+  `human_prior_option_branch_verified` event, `endpoint_eligible=true` means
+  the branch is a candidate for terminal post-processing; it is not evidence
+  that the branch was selected or archived. A later
+  `human_prior_option_ordering_endpoint_rejected` records removal of an
+  exhausted transition or precursor, while
+  `human_prior_option_archive_added` and
+  `human_prior_option_search_completed.selected_path` identify the outcomes
+  that actually received policy authority;
 - navigation shaping is endpoint-novelty gated. `branch_verified` records
   `human_prior_effective_navigation_reward` and
   `human_prior_navigation_reward_suppressed`, plus target graph-state visits,

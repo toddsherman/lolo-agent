@@ -2925,7 +2925,7 @@ class EnsemblePlannerTests(unittest.TestCase):
             (((7, 0),), (), False)
         )
 
-        agent._search_human_prior_options()
+        added = agent._search_human_prior_options()
 
         depths = [
             event
@@ -2938,6 +2938,23 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(
             milestone_depth["repeated_milestone_parents_retained"], 0
         )
+        self.assertEqual(added, 1)
+        self.assertTrue(agent.archive)
+        self.assertTrue(
+            all(branch.goal_heart_slots == ((7, 0),) for branch in agent.archive)
+        )
+        ordering_rejections = [
+            event
+            for event in logger.events
+            if event["event"]
+            == "human_prior_option_ordering_endpoint_rejected"
+        ]
+        self.assertEqual(len(ordering_rejections), 1)
+        self.assertEqual(
+            ordering_rejections[0]["path"], (Action.RIGHT, Action.A)
+        )
+        self.assertTrue(ordering_rejections[0]["exhausted_transition"])
+        self.assertFalse(ordering_rejections[0]["exhausted_precursor"])
 
     def test_exhausted_milestone_transition_uses_semantic_alternative(
         self,
