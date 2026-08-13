@@ -442,6 +442,8 @@ def load_episodic_decision_events(
             "human_prior_milestone_outcome_recorded",
             "human_prior_option_archive_added",
             "human_prior_option_branch_verified",
+            "human_prior_option_search_completed",
+            "human_prior_option_search_started",
             "human_prior_ordering_hypothesis_disproved",
             "human_prior_ordering_progress_recorded",
             "pixel_novel_room_started",

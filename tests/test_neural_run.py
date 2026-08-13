@@ -126,6 +126,16 @@ class StableSceneChangeDetectorTests(unittest.TestCase):
                             "marker": "child-option-archive",
                         },
                         {
+                            "event": "human_prior_option_search_started",
+                            "decision": 1,
+                            "marker": "child-option-search-started",
+                        },
+                        {
+                            "event": "human_prior_option_search_completed",
+                            "decision": 1,
+                            "marker": "child-option-search-completed",
+                        },
+                        {
                             "event": "human_prior_ordering_progress_recorded",
                             "decision": 1,
                             "marker": "child-ordering-progress",
@@ -154,6 +164,8 @@ class StableSceneChangeDetectorTests(unittest.TestCase):
                 "child-milestone-outcome",
                 "child-option-branch",
                 "child-option-archive",
+                "child-option-search-started",
+                "child-option-search-completed",
                 "child-ordering-progress",
                 "child-ordering-disproof",
             ],

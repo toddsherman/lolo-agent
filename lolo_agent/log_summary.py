@@ -1677,6 +1677,33 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "human_prior_option_search_budget_reopens": event_counts.get(
             "human_prior_option_search_reopened", 0
         ),
+        "human_prior_exhausted_option_frontier_filters": event_counts.get(
+            "human_prior_exhausted_option_frontier_filter_evaluated", 0
+        ),
+        "human_prior_exhausted_option_frontier_branches_detected": sum(
+            int(event.get("branches_detected", 0))
+            for event in events
+            if event["event"]
+            == "human_prior_exhausted_option_frontier_filter_evaluated"
+        ),
+        "human_prior_exhausted_option_frontier_branches_filtered": sum(
+            int(event.get("branches_filtered", 0))
+            for event in events
+            if event["event"]
+            == "human_prior_exhausted_option_frontier_filter_evaluated"
+        ),
+        "human_prior_exhausted_option_frontier_fail_opens": sum(
+            event["event"]
+            == "human_prior_exhausted_option_frontier_filter_evaluated"
+            and bool(event.get("fail_open"))
+            for event in events
+        ),
+        "human_prior_option_exhausted_frontier_endpoints_filtered": sum(
+            int(event.get("endpoints_filtered", 0))
+            for event in events
+            if event["event"]
+            == "human_prior_option_exhausted_frontiers_filtered"
+        ),
         "human_prior_option_cleanup_failures": event_counts.get(
             "human_prior_option_cleanup_failed", 0
         ),

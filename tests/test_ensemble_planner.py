@@ -2842,6 +2842,118 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(completed["reason"], "no_globally_novel_endpoint")
         self.assertEqual(completed["globally_novel_endpoints"], 0)
 
+    def test_exhausted_option_frontier_filter_avoids_reentry(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = ActionEffectEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(planning_depth=1),
+        )
+        source = agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        target = env.step(Action.RIGHT, 1)
+        dead_analysis = agent.goal_prior.analyze(source, target)
+        stationary_analysis = agent.goal_prior.analyze(source, source)
+        dead_state = object()
+        alternative_state = object()
+        dead_branch = (
+            2.0,
+            NeuralPlan((Action.RIGHT,), (1,), 2.0, 0.0),
+            dead_state,
+            target,
+        )
+        alternative_branch = (
+            1.0,
+            NeuralPlan((Action.NOOP,), (1,), 1.0, 0.0),
+            alternative_state,
+            source,
+        )
+        verified = [dead_branch, alternative_branch]
+        analyses = {
+            id(dead_state): dead_analysis,
+            id(alternative_state): stationary_analysis,
+        }
+        signatures = {
+            id(dead_state): ("source", "exhausted"),
+            id(alternative_state): ("source", "source"),
+        }
+        agent.human_prior_exhausted_option_frontiers.add("exhausted")
+
+        filtered, blocked, fail_open = (
+            agent._filter_exhausted_option_frontiers(
+                verified, analyses, signatures
+            )
+        )
+
+        self.assertEqual(filtered, [alternative_branch])
+        self.assertEqual(blocked, [dead_branch])
+        self.assertFalse(fail_open)
+        only_blocked, blocked, fail_open = (
+            agent._filter_exhausted_option_frontiers(
+                [dead_branch], analyses, signatures
+            )
+        )
+        self.assertEqual(only_blocked, [dead_branch])
+        self.assertEqual(blocked, [dead_branch])
+        self.assertTrue(fail_open)
+
+    def test_option_search_does_not_archive_exhausted_frontier(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = ActionEffectEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=2,
+                human_prior_option_search_action_frames=1,
+            ),
+            event_logger=logger,
+        )
+        source = agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        root = env.save_state()
+        target = env.step(Action.RIGHT, 2)
+        analysis = agent.goal_prior.analyze(source, target)
+        exhausted_signature = agent._human_prior_graph_signatures(
+            analysis
+        )[1]
+        env.load_state(root)
+        agent.human_prior_exhausted_option_frontiers.add(
+            exhausted_signature
+        )
+
+        agent._search_human_prior_options()
+
+        self.assertEqual(agent.archive, [])
+        filtered = [
+            event
+            for event in logger.events
+            if event["event"]
+            == "human_prior_option_exhausted_frontiers_filtered"
+        ]
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0]["endpoints_filtered"], 1)
+        completed = [
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_search_completed"
+        ][-1]
+        self.assertEqual(
+            completed["reason"], "only_exhausted_frontier_endpoints"
+        )
+
     def test_option_search_accepts_new_graph_state_at_seen_position(
         self,
     ) -> None:
@@ -6400,6 +6512,56 @@ class EnsemblePlannerTests(unittest.TestCase):
             ),
             (),
         )
+
+    def test_seed_human_prior_memory_restores_exhausted_option_frontier(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        agent = VerifiedNeuralAgent(
+            ActionEffectEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(human_prior_navigation_reward=1.0),
+        )
+        agent.reset()
+        events = [
+            {
+                "event": "human_prior_option_search_started",
+                "run_id": "source-run",
+                "decision": 3,
+                "source_graph_signature": "bounded-frontier",
+            },
+            {
+                "event": "human_prior_option_search_completed",
+                "run_id": "source-run",
+                "decision": 3,
+                "reason": "no_unexpanded_endpoint",
+                "archive_branches_added": 0,
+            },
+        ]
+
+        agent.seed_human_prior_episodic_memory(events)
+
+        self.assertEqual(
+            agent.human_prior_exhausted_option_frontiers,
+            {"bounded-frontier"},
+        )
+        events.append(
+            {
+                "event": "human_prior_option_search_completed",
+                "run_id": "later-run",
+                "decision": 1,
+                "source_graph_signature": "bounded-frontier",
+                "eligible_endpoints": 1,
+                "archive_branches_added": 0,
+            }
+        )
+
+        agent.seed_human_prior_episodic_memory(events)
+
+        self.assertEqual(agent.human_prior_exhausted_option_frontiers, set())
 
     def test_seed_human_prior_option_archive_restores_promoted_branch(
         self,

@@ -582,6 +582,17 @@ class RunLoggingTests(unittest.TestCase):
                 summary,
             )
             self.assertIn(
+                "human_prior_exhausted_option_frontier_filters", summary
+            )
+            self.assertIn(
+                "human_prior_exhausted_option_frontier_branches_filtered",
+                summary,
+            )
+            self.assertIn(
+                "human_prior_option_exhausted_frontier_endpoints_filtered",
+                summary,
+            )
+            self.assertIn(
                 "anonymous_entity_behavior_observations", summary
             )
             self.assertIn(

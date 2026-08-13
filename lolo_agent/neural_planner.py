@@ -928,6 +928,7 @@ class VerifiedNeuralAgent:
         self.human_prior_exhausted_milestone_transitions: set[tuple] = set()
         self.human_prior_ordering_progress_hypotheses: set[tuple] = set()
         self.human_prior_disproved_ordering_hypotheses: set[tuple] = set()
+        self.human_prior_exhausted_option_frontiers: set[str] = set()
         self.human_prior_graph_recovery_pending = False
         self.current_human_prior_world_context_signature = (
             "human-prior-world-root"
@@ -6431,6 +6432,61 @@ class VerifiedNeuralAgent:
             processed_endpoints.extend(milestone_representatives.values())
             endpoints = processed_endpoints
 
+            exhausted_frontier_endpoints = [
+                endpoint
+                for endpoint in endpoints
+                if endpoint.target_signature
+                in self.human_prior_exhausted_option_frontiers
+                and endpoint.target_signature != source_signature
+                and endpoint.analysis.milestone_reward <= 0.0
+                and not endpoint.confirmed_world_effect_signature
+                and not endpoint.confirmed_entity_state_signature
+            ]
+            if exhausted_frontier_endpoints:
+                exhausted_endpoint_ids = {
+                    id(endpoint)
+                    for endpoint in exhausted_frontier_endpoints
+                }
+                endpoints = [
+                    endpoint
+                    for endpoint in endpoints
+                    if id(endpoint) not in exhausted_endpoint_ids
+                ]
+                self._emit(
+                    "human_prior_option_exhausted_frontiers_filtered",
+                    decision=self.decision_index + 1,
+                    source_graph_signature=source_signature,
+                    endpoints_filtered=len(exhausted_frontier_endpoints),
+                    alternatives_remaining=len(endpoints),
+                    exhausted_target_signatures=tuple(
+                        sorted(
+                            {
+                                endpoint.target_signature
+                                for endpoint in exhausted_frontier_endpoints
+                            }
+                        )
+                    ),
+                    policy_effect="bounded_frontier_avoidance",
+                    hazard_evidence=False,
+                    **self._frame_fields(source_frame),
+                )
+                if not endpoints:
+                    self._emit(
+                        "human_prior_option_search_completed",
+                        decision=self.decision_index + 1,
+                        source_graph_signature=source_signature,
+                        branches_verified=branches_verified,
+                        eligible_endpoints=0,
+                        exhausted_frontier_endpoints=len(
+                            exhausted_frontier_endpoints
+                        ),
+                        archive_branches_added=0,
+                        reason="only_exhausted_frontier_endpoints",
+                        search_budget_sha256=search_budget_sha256,
+                        **self._frame_fields(source_frame),
+                    )
+                    return 0
+
             if not endpoints:
                 ordering_hypothesis_disproved = (
                     self._maybe_disprove_human_prior_ordering_hypothesis(
@@ -6442,9 +6498,13 @@ class VerifiedNeuralAgent:
                 self.human_prior_option_exhausted_sources.add(
                     exhausted_key
                 )
+                self.human_prior_exhausted_option_frontiers.add(
+                    source_signature
+                )
                 self._emit(
                     "human_prior_option_search_completed",
                     decision=self.decision_index + 1,
+                    source_graph_signature=source_signature,
                     branches_verified=branches_verified,
                     eligible_endpoints=0,
                     archive_branches_added=0,
@@ -6501,6 +6561,7 @@ class VerifiedNeuralAgent:
                 self._emit(
                     "human_prior_option_search_completed",
                     decision=self.decision_index + 1,
+                    source_graph_signature=source_signature,
                     branches_verified=branches_verified,
                     eligible_endpoints=len(endpoints),
                     globally_novel_endpoints=0,
@@ -6817,6 +6878,7 @@ class VerifiedNeuralAgent:
             self._emit(
                 "human_prior_option_search_completed",
                 decision=self.decision_index + 1,
+                source_graph_signature=source_signature,
                 branches_verified=branches_verified,
                 eligible_endpoints=len(endpoints),
                 ordinary_eligible_endpoints=len(ordinary_endpoints),
@@ -6847,6 +6909,9 @@ class VerifiedNeuralAgent:
                 selected_durations=selected.durations,
                 selected_score=selected.score,
                 **self._frame_fields(selected.frame),
+            )
+            self.human_prior_exhausted_option_frontiers.discard(
+                source_signature
             )
             return len(archived_endpoints)
         except BaseException:
@@ -7172,6 +7237,7 @@ class VerifiedNeuralAgent:
         self.human_prior_ordering_progress_hypotheses = set()
         self.human_prior_disproved_ordering_hypotheses = set()
         self.human_prior_option_exhausted_sources: set[tuple] = set()
+        self.human_prior_exhausted_option_frontiers = set()
         self.human_prior_graph_recovery_pending = False
         self.current_human_prior_world_context_signature = (
             "human-prior-world-root"
@@ -7687,6 +7753,7 @@ class VerifiedNeuralAgent:
         self.human_prior_ordering_progress_hypotheses = set()
         self.human_prior_disproved_ordering_hypotheses = set()
         self.human_prior_option_exhausted_sources = set()
+        self.human_prior_exhausted_option_frontiers = set()
         self.human_prior_graph_recovery_pending = False
         self.current_human_prior_world_context_signature = (
             "human-prior-world-root"
@@ -7822,6 +7889,8 @@ class VerifiedNeuralAgent:
         exhausted_milestone_transitions: set[tuple] = set()
         ordering_progress_hypotheses: set[tuple] = set()
         disproved_ordering_hypotheses: set[tuple] = set()
+        exhausted_option_frontiers: set[str] = set()
+        option_search_sources: Dict[Tuple[str, int], str] = {}
         unqualified_exhaustion_hazards_ignored = 0
         milestone_outcomes_by_decision: Dict[
             Tuple[str, int], tuple
@@ -7860,6 +7929,8 @@ class VerifiedNeuralAgent:
                 milestone_outcomes_by_decision.clear()
                 ordering_progress_hypotheses.clear()
                 disproved_ordering_hypotheses.clear()
+                exhausted_option_frontiers.clear()
+                option_search_sources.clear()
                 known_slots = {
                     (int(slot[0]), int(slot[1]))
                     for slot in (
@@ -7874,6 +7945,33 @@ class VerifiedNeuralAgent:
                 event_chest_obtained = False
                 latest_decision_has_semantic_state = False
                 continue
+            event_key = (
+                str(event.get("run_id") or ""),
+                int(event.get("decision", 0)),
+            )
+            if event.get("event") == "human_prior_option_search_started":
+                option_source = str(
+                    event.get("source_graph_signature") or ""
+                )
+                if option_source:
+                    option_search_sources[event_key] = option_source
+            elif event.get("event") == "human_prior_option_search_completed":
+                option_source = str(
+                    event.get("source_graph_signature")
+                    or option_search_sources.get(event_key)
+                    or ""
+                )
+                if option_source:
+                    if event.get("reason") == "no_unexpanded_endpoint":
+                        exhausted_option_frontiers.add(option_source)
+                    elif (
+                        int(event.get("archive_branches_added", 0)) > 0
+                        or (
+                            not event.get("reason")
+                            and int(event.get("eligible_endpoints", 0)) > 0
+                        )
+                    ):
+                        exhausted_option_frontiers.discard(option_source)
             if event.get("event") in (
                 "human_prior_ordering_progress_recorded",
                 "human_prior_option_archive_added",
@@ -8248,6 +8346,9 @@ class VerifiedNeuralAgent:
         self.human_prior_disproved_ordering_hypotheses = (
             disproved_ordering_hypotheses
         )
+        self.human_prior_exhausted_option_frontiers = (
+            exhausted_option_frontiers
+        )
         self.temporal_option_values.update(temporal_option_values)
         self.temporal_option_samples.update(temporal_option_samples)
         if latest_decision_has_semantic_state:
@@ -8306,6 +8407,9 @@ class VerifiedNeuralAgent:
             ),
             disproved_ordering_hypotheses=len(
                 self.human_prior_disproved_ordering_hypotheses
+            ),
+            exhausted_option_frontiers=len(
+                self.human_prior_exhausted_option_frontiers
             ),
             temporal_option_values=len(temporal_option_values),
             temporal_option_samples=sum(temporal_option_samples.values()),
@@ -9843,6 +9947,45 @@ class VerifiedNeuralAgent:
             )
             or self._human_prior_archive_preserves_preparation(branch)
         )
+
+    def _filter_exhausted_option_frontiers(
+        self,
+        verified: List[Tuple[Any, ...]],
+        analyses: Dict[int, Optional[HeartGoalAnalysis]],
+        graph_signatures: Dict[int, Tuple[str, str]],
+    ) -> Tuple[List[Tuple[Any, ...]], List[Tuple[Any, ...]], bool]:
+        """Avoid re-entering a bounded, empirically exhausted frontier.
+
+        The observation is topological rather than hazardous: exact search
+        found no retainable endpoint from a pixel-derived graph state.  A
+        branch that changes the milestone or world context has a distinct
+        target signature and remains eligible.  If every verified branch is
+        blocked, selection fails open so bounded search cannot invent an
+        absolute wall.
+        """
+
+        if not self.human_prior_exhausted_option_frontiers:
+            return verified, [], False
+        filtered: List[Tuple[Any, ...]] = []
+        blocked: List[Tuple[Any, ...]] = []
+        for item in verified:
+            state = item[2]
+            analysis = analyses.get(id(state))
+            source_signature, target_signature = graph_signatures.get(
+                id(state), ("", "")
+            )
+            if (
+                analysis is not None
+                and analysis.milestone_reward <= 0.0
+                and target_signature
+                in self.human_prior_exhausted_option_frontiers
+                and target_signature != source_signature
+            ):
+                blocked.append(item)
+            else:
+                filtered.append(item)
+        fail_open = bool(blocked and not filtered)
+        return (verified if fail_open else filtered), blocked, fail_open
 
     def _filter_exhausted_milestone_transitions(
         self,
@@ -12626,6 +12769,57 @@ class VerifiedNeuralAgent:
                     preparation_alternatives=preparation_alternatives,
                     alternatives_remaining=len(selection_verified),
                     fail_open=exhausted_milestone_fail_open,
+                )
+            (
+                selection_verified,
+                exhausted_option_frontier_branches,
+                exhausted_option_frontier_fail_open,
+            ) = self._filter_exhausted_option_frontiers(
+                selection_verified,
+                branch_goal_analyses,
+                branch_goal_signatures,
+            )
+            if exhausted_option_frontier_branches:
+                self._emit(
+                    "human_prior_exhausted_option_frontier_filter_evaluated",
+                    decision=self.decision_index + 1,
+                    enabled=True,
+                    policy_authority=True,
+                    policy_effect="bounded_frontier_avoidance",
+                    hazard_evidence=False,
+                    exhausted_frontiers=tuple(
+                        sorted(self.human_prior_exhausted_option_frontiers)
+                    ),
+                    blocked_branches=tuple(
+                        {
+                            "action": item[1].path[0],
+                            "action_frames": item[1].durations[0],
+                            "source_graph_signature": (
+                                branch_goal_signatures[id(item[2])][0]
+                            ),
+                            "target_graph_signature": (
+                                branch_goal_signatures[id(item[2])][1]
+                            ),
+                            "target_player_slot": (
+                                None
+                                if branch_goal_analyses[id(item[2])] is None
+                                else branch_goal_analyses[
+                                    id(item[2])
+                                ].target_player_slot
+                            ),
+                        }
+                        for item in exhausted_option_frontier_branches
+                    ),
+                    branches_detected=len(
+                        exhausted_option_frontier_branches
+                    ),
+                    branches_filtered=(
+                        0
+                        if exhausted_option_frontier_fail_open
+                        else len(exhausted_option_frontier_branches)
+                    ),
+                    alternatives_remaining=len(selection_verified),
+                    fail_open=exhausted_option_frontier_fail_open,
                 )
             milestone_goal_branches = [
                 item

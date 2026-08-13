@@ -368,7 +368,18 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   unvisited graph state as novel even when its raw player coordinate was seen
   in another heart set or world context. The branch event exposes both
   `target_graph_state_visits` and `target_player_position_visits`, making that
-  distinction auditable;
+  distinction auditable. A completed search with no unexpanded endpoint also
+  records a room-local bounded topological observation. A search that merely
+  finds only globally visited endpoints does not make this stronger claim.
+  Subsequent exact
+  searches emit `human_prior_option_exhausted_frontiers_filtered` when they
+  decline to archive a route back into that state, and one-step selection
+  emits `human_prior_exhausted_option_frontier_filter_evaluated`. Milestones
+  and changed world contexts remain eligible; one-step selection fails open
+  if every branch is implicated. The observation is replayed across save-state
+  resumes, cleared at room boundaries, and withdrawn when a later search from
+  the same state finds a retainable endpoint. Telemetry explicitly reports
+  `policy_effect=bounded_frontier_avoidance` and `hazard_evidence=false`;
 - `human_prior_option_recovery_armed` and
   `human_prior_option_recovery_deferred`, which record whether a branch added
   by the current exact search may be restored in the same decision. Immediate
