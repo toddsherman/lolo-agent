@@ -1096,5 +1096,38 @@ to one patch, and both final states came from Room 2. Planning promotion
 therefore waits for intervention-based hazard localization, cross-room folds,
 and context-agnostic baselines.
 
-The complete test suite now passes: 257 tests, with 4 expected native-platform
+At that milestone the complete test suite passed: 257 tests, with 4 expected
+native-platform skips.
+
+## Causal anonymous hazard attribution
+
+Matched causal horizons now compare every verified non-neutral endpoint with
+an equal-duration neutral endpoint, then advance both by identical `NOOP`
+durations. A rare anonymous patch must retain the same pre-wait appearance,
+change its controllable-patch relation, and show a local differential outcome
+while both branches are nonterminal. A later differential life loss is
+credited only to a patch localized at an earlier horizon. A synthetic negative
+confirms that a life-loss contrast without prior localization produces no
+entity sample. Ordinary passive terminal rows are now telemetry-only and cannot
+update the checkpoint, preventing that path from restoring global hazard
+credit.
+
+Two independent Room 2 episodes learned the same causal chain for anonymous
+type 7 at cell `(5,2)`: moving into a distance-one column relation produced a
+local transformation by 32 frames and a life loss by 224, while the matched
+neutral relation remained safe. Each 32-, 64-, and 224-frame contextual rule
+has two samples. Frozen validation from both the v16 development fold and a
+previously unused historical v11 episode localized the same cell and matched
+all six intervention/control outcomes, including hazard probabilities `1.0`
+and `0.0` at 224 frames. Both matched 33/34 known anonymous outcomes overall.
+The behavior digest remained
+`3b227c5543b8b6cd32c966c55d3ae283e131e15187d12b6f715b4e97fb696977`.
+
+A later already-aligned native state supplied a negative control: all six
+one-action alternatives and neutral waiting lost a life, so the collector
+created zero localizations and zero attributions. The sidecar remains at
+selection weight zero because this is still same-room transfer and uses the
+assisted pixel player/life detectors.
+
+The complete test suite now passes: 259 tests, with 4 expected native-platform
 skips.

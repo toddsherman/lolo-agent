@@ -79,8 +79,16 @@ class RunLoggingTests(unittest.TestCase):
                 observed_hazard=True,
                 outcome_matched_prediction=True,
                 differential_terminal_visual_change=True,
+                causal_attribution=True,
+                evidence_eligible=False,
             )
             logger.log("anonymous_entity_passive_horizon_verified")
+            logger.log("anonymous_entity_causal_horizon_verified")
+            logger.log(
+                "anonymous_entity_causal_contrast_completed",
+                hazard_contrast=True,
+                newly_localized_candidates=1,
+            )
             logger.close()
 
             summary = build_run_summary(logger.run_dir)
@@ -104,7 +112,26 @@ class RunLoggingTests(unittest.TestCase):
             summary["anonymous_entity_behavior_terminal_observations"], 1
         )
         self.assertEqual(
+            summary[
+                "anonymous_entity_behavior_terminal_evidence_withheld"
+            ],
+            1,
+        )
+        self.assertEqual(
             summary["anonymous_entity_passive_horizon_branches"], 1
+        )
+        self.assertEqual(
+            summary["anonymous_entity_causal_horizon_branches"], 1
+        )
+        self.assertEqual(summary["anonymous_entity_causal_contrasts"], 1)
+        self.assertEqual(
+            summary["anonymous_entity_causal_hazard_contrasts"], 1
+        )
+        self.assertEqual(
+            summary["anonymous_entity_causal_candidates_localized"], 1
+        )
+        self.assertEqual(
+            summary["anonymous_entity_causal_hazard_attributions"], 1
         )
 
     def test_persistent_option_archive_round_trip_preserves_live_state(
@@ -395,7 +422,24 @@ class RunLoggingTests(unittest.TestCase):
                 "anonymous_entity_behavior_terminal_observations", summary
             )
             self.assertIn(
+                "anonymous_entity_behavior_terminal_evidence_withheld",
+                summary,
+            )
+            self.assertIn(
                 "anonymous_entity_passive_horizon_branches", summary
+            )
+            self.assertIn(
+                "anonymous_entity_causal_horizon_branches", summary
+            )
+            self.assertIn("anonymous_entity_causal_contrasts", summary)
+            self.assertIn(
+                "anonymous_entity_causal_hazard_contrasts", summary
+            )
+            self.assertIn(
+                "anonymous_entity_causal_candidates_localized", summary
+            )
+            self.assertIn(
+                "anonymous_entity_causal_attributions", summary
             )
             self.assertIn(
                 "anonymous_entity_behavior_types_observed", summary

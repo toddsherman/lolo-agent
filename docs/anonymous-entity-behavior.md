@@ -53,7 +53,8 @@ lolo-neural-run \
   --anonymous-entity-behavior-checkpoint \
     experiments/lolo1-entity/anonymous-behavior.json \
   --anonymous-entity-behavior-mode learn \
-  --anonymous-entity-passive-horizons 16,32,64,224
+  --anonymous-entity-passive-horizons 16,32,64,224 \
+  --anonymous-entity-causal-horizons 16,32,64,224
 ```
 
 For withheld rooms or *Lolo 2*, load the same checkpoint frozen:
@@ -69,7 +70,8 @@ lolo-neural-run \
   --anonymous-entity-behavior-checkpoint \
     experiments/lolo1-entity/anonymous-behavior.json \
   --anonymous-entity-behavior-mode frozen \
-  --anonymous-entity-passive-horizons 16,32,64,224
+  --anonymous-entity-passive-horizons 16,32,64,224 \
+  --anonymous-entity-causal-horizons 16,32,64,224
 ```
 
 Frozen runs record a before/after digest audit. Predicting an unfamiliar
@@ -81,6 +83,20 @@ for each duration and advance only `NOOP`. They do not change action selection
 or the live trajectory. This makes delayed transformations and terminal visual
 changes observable without forcing a short action interval to stand in for an
 entity's full dynamics.
+
+Causal horizons are more expensive and stricter. For each verified
+non-neutral controller endpoint they construct an equal-duration `NOOP`
+endpoint from the same root, then wait identically from both endpoints. A rare
+patch becomes eligible only when:
+
+1. its pre-wait appearance matches between intervention and control;
+2. its relation to the detected controllable patch differs;
+3. its local position-relative pixel outcome differs; and
+4. neither branch is terminal at that localization horizon.
+
+If a later horizon loses a life in only one branch, terminal credit is limited
+to candidates localized earlier in that same matched contrast. A terminal
+contrast with no prior local differential produces no entity behavior sample.
 
 ## Current research boundary
 
@@ -97,13 +113,67 @@ rule-free architecture. Passive rare-patch tracking does not need the locator
 except to mask the controlled sprite. A learned action-correlated tracker must
 replace that assisted component before the final strict evaluation.
 
-A life-signature change during a passive horizon is currently associated with
-every rare candidate tracked across that interval. This is useful observational
-evidence but does not prove which candidate caused the loss. The next causal
-gate must compare interventions that change the controllable patch's relation
-before waiting, and must show that type-conditioned hazard predictions beat
-appearance-agnostic and context-agnostic baselines. Until then, hazard evidence
-cannot affect planning.
+A life-signature change during an ordinary passive horizon is still logged for
+every rare candidate tracked across that interval, but those rows are marked
+`evidence_eligible=false` and cannot update the checkpoint. Only the causal
+collector can accept terminal entity evidence. It uses the assisted track's
+pixel-derived player and life detectors, so cross-room validation,
+appearance-agnostic and context-agnostic baselines, and a learned
+controllable-entity tracker are still required before hazard evidence can
+affect planning.
+
+## Native causal-attribution milestone
+
+The causal collector was trained from two independently recorded Room 2
+episodes, checked on one development-validation episode, and then evaluated
+frozen on a previously unused historical episode. All began before a
+controller move changed the relation to anonymous type 7
+(`cce8d09a9ec5ef55`). Each run tested six non-neutral actions at four matched
+wait horizons, for 24 causal contrasts. Only `RIGHT` produced the relevant
+chain.
+
+| Stage | Training episode 1 | Training episode 2 | Frozen validation |
+| --- | --- | --- | --- |
+| Source | v19 decision 65 | v15 decision 58 | v11 decision 40 |
+| First localized cell | `(5,2)` at 32 frames | `(5,2)` at 32 frames | `(5,2)` at 32 frames |
+| Anonymous identity | type 7 | type 7 | type 7 |
+| Activated relation | distance 1, same column | same | same |
+| 32/64-frame outcome | transformed, safe | transformed, safe | all four predictions matched |
+| 224-frame intervention | life loss | life loss | predicted hazard `1.0`, life loss |
+| 224-frame neutral control | safe | safe | predicted hazard `0.0`, safe |
+
+After the two training episodes, the activated type-7 rules contain two exact
+samples at each of 32, 64, and 224 frames. In both frozen validation runs, v11
+and the earlier v16 development fold, all six causal intervention/control
+outcome predictions matched. Each also matched 33 of 34 known predictions and
+all 33 known hazard classifications across every anonymous patch. The behavior
+checkpoint had 600 observations and 236 rules; its digest remained
+`3b227c5543b8b6cd32c966c55d3ae283e131e15187d12b6f715b4e97fb696977`
+before and after frozen evaluation. The base neural checkpoint audit also
+passed, and selection weight remained zero.
+
+The paired native negative is equally important. From a later aligned state,
+all one-action endpoints retained the same detected controllable position and
+both intervention and neutral branches lost a life. The collector recorded 24
+contrasts but zero localized candidates and zero causal attributions.
+
+Reproducible artifacts:
+
+```text
+experiments/lolo1-entity-v8/anonymous-behavior.json
+experiments/lolo1-entity-v8/evaluations/entity-v8-room2-safe-causal-learn-v19-d65
+experiments/lolo1-entity-v8/evaluations/entity-v8-room2-causal-learn-v15-d58
+experiments/lolo1-entity-v8/evaluations/entity-v8-room2-causal-validation-frozen-v11-d40
+experiments/lolo1-entity-v8/evaluations/entity-v8-room2-causal-heldout-frozen-v16-d34
+experiments/lolo1-entity-v8/evaluations/entity-v8-room2-aligned-causal-frozen-v19-d79
+```
+
+This is episode/state transfer within Room 2, not a preregistered split or
+withheld-room generalization. The v11 fold was not used to design or train the
+behavior representation, but it comes from the historical development corpus.
+The result establishes a causal local credit mechanism and a reusable
+anonymous rule; the next gate is recurrence in other rooms and prospective
+folds.
 
 ## Native relational-dynamics milestone
 
@@ -193,5 +263,8 @@ same records as a flat visualization-ready artifact.
 `anonymous_entity_passive_scan_completed` describes each passive scan.
 `anonymous_entity_passive_horizon_verified` records each additional neutral
 duration branch from the root save state.
+`anonymous_entity_causal_horizon_verified` and
+`anonymous_entity_causal_contrast_completed` record matched intervention and
+neutral waits plus localization and hazard-attribution counts.
 Learning runs end with `anonymous_entity_behavior_checkpoint_updated`; frozen
 runs end with `anonymous_entity_behavior_parameter_audit`.

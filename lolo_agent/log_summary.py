@@ -170,6 +170,7 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                         "evidence_id",
                         "learning_enabled",
                         "evidence_accepted",
+                        "evidence_eligible",
                         "anonymous_type_id",
                         "anonymous_type_created",
                         "appearance_fingerprint",
@@ -198,6 +199,12 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                         "relative_effect_cells",
                         "player_displacement",
                         "differential_terminal_visual_change",
+                        "causal_attribution",
+                        "causal_role",
+                        "causal_intervention_action",
+                        "causal_intervention_frames",
+                        "causal_other_branch_hazard",
+                        "causal_localization_horizon",
                         "model_type_count",
                         "model_rule_count",
                         "model_observations",
@@ -861,6 +868,7 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "evidence_id",
         "learning_enabled",
         "evidence_accepted",
+        "evidence_eligible",
         "anonymous_type_id",
         "anonymous_type_created",
         "appearance_fingerprint",
@@ -889,6 +897,12 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "relative_effect_cells",
         "player_displacement",
         "differential_terminal_visual_change",
+        "causal_attribution",
+        "causal_role",
+        "causal_intervention_action",
+        "causal_intervention_frames",
+        "causal_other_branch_hazard",
+        "causal_localization_horizon",
         "model_type_count",
         "model_rule_count",
         "model_observations",
@@ -1342,6 +1356,10 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             bool(row.get("evidence_accepted"))
             for row in anonymous_behavior_rows
         ),
+        "anonymous_entity_behavior_terminal_evidence_withheld": sum(
+            row.get("evidence_eligible") is False
+            for row in anonymous_behavior_rows
+        ),
         "anonymous_entity_behavior_known_predictions": sum(
             bool(row.get("behavior_known_before"))
             for row in anonymous_behavior_rows
@@ -1391,6 +1409,33 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         ),
         "anonymous_entity_passive_horizon_branches": event_counts.get(
             "anonymous_entity_passive_horizon_verified", 0
+        ),
+        "anonymous_entity_causal_horizon_branches": event_counts.get(
+            "anonymous_entity_causal_horizon_verified", 0
+        ),
+        "anonymous_entity_causal_contrasts": event_counts.get(
+            "anonymous_entity_causal_contrast_completed", 0
+        ),
+        "anonymous_entity_causal_hazard_contrasts": sum(
+            event["event"]
+            == "anonymous_entity_causal_contrast_completed"
+            and bool(event.get("hazard_contrast"))
+            for event in events
+        ),
+        "anonymous_entity_causal_candidates_localized": sum(
+            int(event.get("newly_localized_candidates") or 0)
+            for event in events
+            if event["event"]
+            == "anonymous_entity_causal_contrast_completed"
+        ),
+        "anonymous_entity_causal_attributions": sum(
+            bool(row.get("causal_attribution"))
+            for row in anonymous_behavior_rows
+        ),
+        "anonymous_entity_causal_hazard_attributions": sum(
+            bool(row.get("causal_attribution"))
+            and bool(row.get("observed_hazard"))
+            for row in anonymous_behavior_rows
         ),
         "human_prior_option_archives_added": event_counts.get(
             "human_prior_option_archive_added", 0

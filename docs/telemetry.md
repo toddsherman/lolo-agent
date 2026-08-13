@@ -614,6 +614,12 @@ tracked through each matched passive interval and how many controlled-sprite
 cells were excluded. Each additional configured duration-only save-state
 branch emits `anonymous_entity_passive_horizon_verified`, including the root
 state, frame duration, resulting frame, and linked environment-step sequence.
+`anonymous_entity_causal_horizon_verified` records a matched pair consisting
+of one verified intervention endpoint and its equal-duration neutral control,
+both advanced by the same wait horizon. The associated
+`anonymous_entity_causal_contrast_completed` event reports relation-changing
+candidates, newly localized candidates, terminal and life-loss contrasts, and
+the number that received local attribution.
 `anonymous_entity_behavior_checkpoint_updated` binds a clean learning run to
 before/after parameter digests. Frozen evaluation instead emits
 `anonymous_entity_behavior_parameter_audit` and fails if the digest changes.
@@ -622,8 +628,15 @@ before/after parameter digests. Frozen evaluation instead emits
 `entity_behaviors.csv` and adds counts for accepted evidence, known predictions,
 prediction matches, known hazard predictions, hazard-classification matches,
 observed hazards, terminal observations, passive-horizon branches, anonymous
-types, and distinct outcome signatures to `summary.json`. See
+types, and distinct outcome signatures to `summary.json`. Causal summaries add
+matched horizons, contrasts, hazard contrasts, localized candidates, behavior
+attributions, and hazard attributions. Causally attributed rows in
+`entity_behaviors.csv` include the intervention action and duration, branch
+role, other-branch hazard state, and first localization horizon. See
 `anonymous-entity-behavior.md` for the learning and freeze protocol.
+Terminal rows from the ordinary passive scanner carry
+`evidence_eligible=false`; the summary counts them as
+`anonymous_entity_behavior_terminal_evidence_withheld`.
 
 ## Episodic resume
 

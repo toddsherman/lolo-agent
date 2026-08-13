@@ -96,6 +96,52 @@ class PassiveRareEntityEnv:
         return Frame(16, 16, 1, bytes(pixels))
 
 
+class CausalRareEntityEnv:
+    def __init__(self, local_motion: bool = True) -> None:
+        self.local_motion = local_motion
+        self.player = (1, 3)
+        self.entity_moved = False
+        self.dead = False
+
+    def reset(self) -> Frame:
+        self.player = (1, 3)
+        self.entity_moved = False
+        self.dead = False
+        return self._frame()
+
+    def step(self, action: Action, frames: int = 1) -> Frame:
+        if action == Action.RIGHT:
+            self.player = (2, 3)
+        elif action == Action.NOOP and self.player == (2, 3):
+            if self.local_motion and frames >= 2:
+                self.entity_moved = True
+            if frames >= 3:
+                self.dead = True
+        return self._frame()
+
+    def save_state(self) -> tuple[tuple[int, int], bool, bool]:
+        return self.player, self.entity_moved, self.dead
+
+    def load_state(
+        self, state: tuple[tuple[int, int], bool, bool]
+    ) -> Frame:
+        self.player, self.entity_moved, self.dead = state
+        return self._frame()
+
+    def _frame(self) -> Frame:
+        pixels = bytearray([16] * (16 * 16))
+        entity = (2, 2) if self.entity_moved else (2, 1)
+        for y in range(entity[1] * 4, entity[1] * 4 + 4):
+            for x in range(entity[0] * 4, entity[0] * 4 + 4):
+                pixels[y * 16 + x] = 224
+        player_x = self.player[0] * 4 + 1
+        player_y = self.player[1] * 4 + 1
+        pixels[player_y * 16 + player_x] = 255
+        if self.dead:
+            pixels[0] = 80
+        return Frame(16, 16, 1, bytes(pixels))
+
+
 class AnimationPauseEnv:
     def __init__(self) -> None:
         self.tick = 0
@@ -410,6 +456,33 @@ class HazardPositionGoalPrior(PositionGoalPrior):
             target_player_reference=target_player_reference,
         )
         hazard = source.pixels != target.pixels
+        return replace(
+            analysis,
+            target_life_signature="changed" if hazard else "life",
+            life_counter_changed=hazard,
+            life_loss_confirmed=hazard,
+        )
+
+
+class CausalEntityGoalPrior(PositionGoalPrior):
+    @staticmethod
+    def _position(frame: Frame) -> tuple[int, int]:
+        index = frame.pixels.index(255)
+        return index % frame.width, index // frame.width
+
+    def analyze(
+        self,
+        source: Frame,
+        target: Frame,
+        *,
+        target_player_reference=None,
+    ) -> HeartGoalAnalysis:
+        analysis = super().analyze(
+            source,
+            target,
+            target_player_reference=target_player_reference,
+        )
+        hazard = target.pixels[0] == 80
         return replace(
             analysis,
             target_life_signature="changed" if hazard else "life",
@@ -3787,7 +3860,133 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertTrue(
             delayed["differential_terminal_visual_change"]
         )
-        self.assertEqual(delayed["hazard_probability_after"], 1.0)
+        self.assertFalse(delayed["evidence_eligible"])
+        self.assertFalse(delayed["evidence_accepted"])
+        self.assertEqual(delayed["hazard_probability_after"], 0.0)
+
+    def test_causal_wait_contrast_localizes_delayed_hazard(self) -> None:
+        logger = RecordingLogger()
+        model = AnonymousEntityBehaviorModel(
+            minimum_prediction_samples=1
+        )
+        agent = VerifiedNeuralAgent(
+            CausalRareEntityEnv(),
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.NOOP),
+                planning_depth=1,
+                verify_actions=2,
+                action_frames=1,
+                human_prior_option_effect_stability_steps=1,
+                human_prior_option_effect_phase_offsets=1,
+                human_prior_option_effect_local_controls=True,
+                human_prior_option_entity_frontier=True,
+                anonymous_entity_behavior_learning=True,
+                anonymous_entity_causal_horizons=(2, 3),
+                causal_spatial_columns=4,
+                causal_spatial_rows=4,
+            ),
+            event_logger=logger,
+            entity_behavior_model=model,
+        )
+        agent.reset()
+        agent.goal_prior = CausalEntityGoalPrior()
+        agent.decide()
+        agent.clear_archive()
+
+        contrasts = [
+            event
+            for event in logger.events
+            if event["event"]
+            == "anonymous_entity_causal_contrast_completed"
+        ]
+        terminal = [
+            event
+            for event in logger.events
+            if event["event"] == "anonymous_entity_behavior_observed"
+            and event.get("causal_attribution")
+            and event["action_frames"] == 3
+        ]
+
+        self.assertEqual(len(contrasts), 2)
+        self.assertGreaterEqual(
+            contrasts[0]["newly_localized_candidates"], 1
+        )
+        self.assertTrue(contrasts[1]["hazard_contrast"])
+        self.assertEqual(
+            {event["anchor_cell"] for event in terminal}, {(2, 1)}
+        )
+        self.assertEqual(
+            {
+                event["causal_role"]: event["observed_hazard"]
+                for event in terminal
+            },
+            {"intervention": True, "neutral_control": False},
+        )
+        self.assertTrue(
+            all(
+                event["causal_localization_horizon"] == 2
+                for event in terminal
+            )
+        )
+
+    def test_causal_wait_withholds_unlocalized_global_hazard(self) -> None:
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            CausalRareEntityEnv(local_motion=False),
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.NOOP),
+                planning_depth=1,
+                verify_actions=2,
+                action_frames=1,
+                human_prior_option_effect_stability_steps=1,
+                human_prior_option_effect_phase_offsets=1,
+                human_prior_option_effect_local_controls=True,
+                human_prior_option_entity_frontier=True,
+                anonymous_entity_behavior_learning=True,
+                anonymous_entity_causal_horizons=(2, 3),
+                causal_spatial_columns=4,
+                causal_spatial_rows=4,
+            ),
+            event_logger=logger,
+            entity_behavior_model=AnonymousEntityBehaviorModel(
+                minimum_prediction_samples=1
+            ),
+        )
+        agent.reset()
+        agent.goal_prior = CausalEntityGoalPrior()
+        agent.decide()
+        agent.clear_archive()
+
+        contrasts = [
+            event
+            for event in logger.events
+            if event["event"]
+            == "anonymous_entity_causal_contrast_completed"
+        ]
+        attributed = [
+            event
+            for event in logger.events
+            if event["event"] == "anonymous_entity_behavior_observed"
+            and event.get("causal_attribution")
+        ]
+
+        self.assertTrue(contrasts[-1]["hazard_contrast"])
+        self.assertEqual(
+            sum(
+                event["newly_localized_candidates"]
+                for event in contrasts
+            ),
+            0,
+        )
+        self.assertEqual(attributed, [])
 
     def test_option_search_can_add_long_direction_edges(self) -> None:
         model = EnsembleVisualDynamicsModel(

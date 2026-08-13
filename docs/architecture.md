@@ -93,11 +93,21 @@ contradictory observations reduce confidence, and a frozen mode supports
 parameter-immutable evaluation. The sidecar currently has selection weight
 zero while native held-out calibration is collected.
 
+The causal behavior collector pairs every verified non-neutral endpoint with
+an equal-duration neutral endpoint, then advances both with the same `NOOP`
+horizons. A rare patch is localized only when the pre-wait appearances match,
+the controllable-patch relation differs, its local position-relative outcome
+differs, and both branches are nonterminal. A later life-loss contrast can be
+assigned only to a patch localized at an earlier horizon. This turns global
+terminal association into an intervention-linked local chain while preserving
+the raw anonymous appearance identity. Ordinary passive terminal rows remain
+in telemetry but are ineligible for checkpoint updates.
+
 The remaining successor milestones are:
 
 1. changed-region rendering that reliably beats persistence on native branches;
-2. multi-fold run- and room-held-out validation without semantic inputs;
-3. promote calibrated anonymous type-conditioned predictions from observation
+2. multi-fold room-held-out validation without semantic inputs;
+3. promote calibrated causal anonymous type-conditioned predictions from observation
    to planning, then replace the assisted action-ray locator with a learned
    controlled-entity tracker;
 4. a native-generalizing reachability/reversibility representation, followed

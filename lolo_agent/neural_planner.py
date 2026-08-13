@@ -128,6 +128,7 @@ class NeuralPlanningConfig:
     human_prior_option_entity_frontier: bool = False
     anonymous_entity_behavior_learning: bool = False
     anonymous_entity_passive_horizons: Tuple[int, ...] = ()
+    anonymous_entity_causal_horizons: Tuple[int, ...] = ()
     human_prior_intrinsic_clip: float = 10.0
     spatial_selection_weight: float = 0.0
     returnability_probe_depth: int = 0
@@ -665,6 +666,20 @@ class VerifiedNeuralAgent:
         ):
             raise ValueError(
                 "anonymous entity passive horizons require a behavior model"
+            )
+        if any(
+            horizon <= 0
+            for horizon in self.config.anonymous_entity_causal_horizons
+        ):
+            raise ValueError(
+                "anonymous entity causal horizons must be positive"
+            )
+        if (
+            self.config.anonymous_entity_causal_horizons
+            and self.entity_behavior_model is None
+        ):
+            raise ValueError(
+                "anonymous entity causal horizons require a behavior model"
             )
         if self.config.human_prior_intrinsic_clip <= 0.0:
             raise ValueError("human-prior intrinsic clip must be positive")
@@ -2204,6 +2219,7 @@ class VerifiedNeuralAgent:
                 ] += 1
 
         player_cells: set[Tuple[int, int]] = set()
+        context_player_cells: set[Tuple[int, int]] = set()
         passive_analysis: Optional[HeartGoalAnalysis] = None
         if self.goal_prior is not None:
             passive_analysis = self.goal_prior.analyze(
@@ -2231,6 +2247,33 @@ class VerifiedNeuralAgent:
                             max(
                                 0,
                                 slot[1]
+                                * memory.rows
+                                // source_frame.height,
+                            ),
+                        ),
+                    )
+                )
+            context_slot = (
+                passive_analysis.source_player_slot
+                or passive_analysis.target_player_slot
+            )
+            if context_slot is not None:
+                context_player_cells.add(
+                    (
+                        min(
+                            memory.columns - 1,
+                            max(
+                                0,
+                                context_slot[0]
+                                * memory.columns
+                                // source_frame.width,
+                            ),
+                        ),
+                        min(
+                            memory.rows - 1,
+                            max(
+                                0,
+                                context_slot[1]
                                 * memory.rows
                                 // source_frame.height,
                             ),
@@ -2295,7 +2338,7 @@ class VerifiedNeuralAgent:
                 ]
             context_signature = model.relational_context_signature(
                 anchor,
-                player_cells,
+                context_player_cells,
                 fallback_context_signature,
             )
             outcome_signature = model.effect_signature(
@@ -2328,7 +2371,11 @@ class VerifiedNeuralAgent:
                 evidence_payload.encode("ascii")
             ).hexdigest()[:24]
             observation = None
-            if self.config.anonymous_entity_behavior_learning:
+            evidence_eligible = not passive_terminal_visual_change
+            if (
+                self.config.anonymous_entity_behavior_learning
+                and evidence_eligible
+            ):
                 observation = model.observe(
                     source_feature,
                     Action.NOOP,
@@ -2359,6 +2406,7 @@ class VerifiedNeuralAgent:
                     self.config.anonymous_entity_behavior_learning
                 ),
                 evidence_accepted=accepted,
+                evidence_eligible=evidence_eligible,
                 anonymous_type_id=type_id,
                 anonymous_type_created=created_type,
                 appearance_fingerprint=(
@@ -2431,6 +2479,440 @@ class VerifiedNeuralAgent:
             **self._frame_fields(neutral_frame),
         )
         return observed
+
+    def _record_anonymous_causal_sample(
+        self,
+        source_feature: Tuple[int, ...],
+        outcome_signature: str,
+        context_signature: str,
+        duration: int,
+        hazardous: bool,
+        terminal_visual_change: bool,
+        evidence_id: str,
+        anchor: Tuple[int, int],
+        relative_effect_cells: Sequence[Tuple[int, int]],
+        target_frame: Frame,
+        causal_role: str,
+        intervention_action: Action,
+        intervention_duration: int,
+        other_branch_hazard: bool,
+        localization_horizon: int,
+    ) -> None:
+        """Persist one branch of a locally attributed wait contrast."""
+
+        model = self.entity_behavior_model
+        if model is None:
+            return
+        prediction_before = model.predict(
+            source_feature,
+            Action.NOOP,
+            duration,
+            context_signature=context_signature,
+            autonomous=True,
+        )
+        observed_probability = model.outcome_probability(
+            source_feature,
+            Action.NOOP,
+            duration,
+            outcome_signature,
+            context_signature=context_signature,
+            autonomous=True,
+        )
+        if self.config.anonymous_entity_behavior_learning:
+            observation = model.observe(
+                source_feature,
+                Action.NOOP,
+                duration,
+                outcome_signature,
+                context_signature=context_signature,
+                hazardous=hazardous,
+                autonomous=True,
+                evidence_id=evidence_id,
+            )
+            prediction_after = observation.prediction_after
+            type_id = observation.type_id
+            created_type = observation.created_type
+            accepted = observation.accepted
+            surprise = observation.surprise
+        else:
+            prediction_after = prediction_before
+            type_id = prediction_before.type_id
+            created_type = False
+            accepted = False
+            surprise = -math.log(max(1e-9, observed_probability))
+        self._emit(
+            "anonymous_entity_behavior_observed",
+            decision=self.decision_index + 1,
+            agent_visible=True,
+            evidence_id=evidence_id,
+            learning_enabled=(
+                self.config.anonymous_entity_behavior_learning
+            ),
+            evidence_accepted=accepted,
+            anonymous_type_id=type_id,
+            anonymous_type_created=created_type,
+            appearance_fingerprint=model.appearance_fingerprint(
+                source_feature
+            ),
+            appearance_distance=prediction_before.appearance_distance,
+            action=Action.NOOP,
+            action_frames=duration,
+            autonomous=True,
+            context_signature=context_signature,
+            context_matched_before=prediction_before.context_matched,
+            predicted_outcome_before=(
+                prediction_before.outcome_signature
+            ),
+            predicted_outcome_probability_before=(
+                prediction_before.outcome_probability
+            ),
+            observed_outcome_probability_before=observed_probability,
+            behavior_samples_before=prediction_before.samples,
+            behavior_known_before=prediction_before.known,
+            behavior_confidence_before=prediction_before.confidence,
+            behavior_entropy_before=prediction_before.entropy,
+            hazard_probability_before=(
+                prediction_before.hazardous_probability
+            ),
+            observed_outcome=outcome_signature,
+            observed_hazard=hazardous,
+            surprise=surprise,
+            outcome_matched_prediction=bool(
+                prediction_before.outcome_signature == outcome_signature
+            ),
+            behavior_samples_after=prediction_after.samples,
+            behavior_confidence_after=prediction_after.confidence,
+            hazard_probability_after=(
+                prediction_after.hazardous_probability
+            ),
+            anchor_cell=anchor,
+            relative_effect_cells=tuple(sorted(relative_effect_cells)),
+            player_displacement=None,
+            differential_terminal_visual_change=terminal_visual_change,
+            causal_attribution=True,
+            causal_role=causal_role,
+            causal_intervention_action=intervention_action,
+            causal_intervention_frames=intervention_duration,
+            causal_other_branch_hazard=other_branch_hazard,
+            causal_localization_horizon=localization_horizon,
+            model_type_count=model.type_count,
+            model_rule_count=model.rule_count,
+            model_observations=model.observation_count,
+            **self._frame_fields(target_frame),
+        )
+
+    def _observe_anonymous_causal_wait_contrast(
+        self,
+        factual_start: Frame,
+        factual_wait: Frame,
+        control_start: Frame,
+        control_wait: Frame,
+        duration: int,
+        intervention_action: Action,
+        intervention_duration: int,
+        localized_candidates: Dict[Tuple[Tuple[int, int], str], int],
+    ) -> Dict[Tuple[Tuple[int, int], str], int]:
+        """Localize passive dynamics with an action/NOOP wait contrast.
+
+        A candidate becomes localizable only when its position-relative pixel
+        outcome differs, the controllable-patch relation differs, and neither
+        branch is terminal.  A later life-loss contrast can then be credited
+        only to candidates localized at an earlier horizon.  This prevents a
+        room-wide reset from assigning terminal credit to every rare patch.
+        Only the controllable patch's own coarse cells are excluded; adjacent
+        cells remain eligible when their pre-wait factual and control
+        appearances match, so close interactions are not erased.
+        """
+
+        memory = self.unlabeled_entity_memory
+        model = self.entity_behavior_model
+        if (
+            memory is None
+            or model is None
+            or self.goal_prior is None
+            or duration <= 0
+        ):
+            return dict(localized_candidates)
+
+        factual_analysis = self.goal_prior.analyze(
+            factual_start, factual_wait
+        )
+        control_analysis = self.goal_prior.analyze(
+            control_start, control_wait
+        )
+        factual_hazard = bool(factual_analysis.life_counter_changed)
+        control_hazard = bool(control_analysis.life_counter_changed)
+        factual_terminal = bool(
+            factual_hazard or factual_analysis.dark_transition_started
+        )
+        control_terminal = bool(
+            control_hazard or control_analysis.dark_transition_started
+        )
+        hazard_contrast = factual_hazard != control_hazard
+
+        def feature_grid(
+            frame: Frame,
+        ) -> Dict[Tuple[int, int], Tuple[int, ...]]:
+            return {
+                (column, row): memory.feature_at(frame, column, row)
+                for row in range(memory.rows)
+                for column in range(memory.columns)
+            }
+
+        def player_cells(
+            analysis: HeartGoalAnalysis,
+            frame: Frame,
+            include_target: bool,
+        ) -> set[Tuple[int, int]]:
+            cells: set[Tuple[int, int]] = set()
+            slots = [analysis.source_player_slot]
+            if include_target:
+                slots.append(analysis.target_player_slot)
+            if slots[0] is None:
+                slots[0] = analysis.target_player_slot
+            for slot in slots:
+                if slot is None:
+                    continue
+                cells.add(
+                    (
+                        min(
+                            memory.columns - 1,
+                            max(0, slot[0] * memory.columns // frame.width),
+                        ),
+                        min(
+                            memory.rows - 1,
+                            max(0, slot[1] * memory.rows // frame.height),
+                        ),
+                    )
+                )
+            return cells
+
+        factual_source = feature_grid(factual_start)
+        factual_target = feature_grid(factual_wait)
+        control_source = feature_grid(control_start)
+        control_target = feature_grid(control_wait)
+        factual_players = player_cells(
+            factual_analysis, factual_start, False
+        )
+        control_players = player_cells(
+            control_analysis, control_start, False
+        )
+        all_players = (
+            player_cells(factual_analysis, factual_start, True)
+            | player_cells(control_analysis, control_start, True)
+        )
+        excluded_cells = {
+            cell
+            for cell in factual_source
+            if all_players
+            and min(
+                abs(cell[0] - player[0]) + abs(cell[1] - player[1])
+                for player in all_players
+            )
+            == 0
+        }
+        factual_counts = CounterType(
+            model.appearance_fingerprint(feature)
+            for feature in factual_source.values()
+        )
+        control_counts = CounterType(
+            model.appearance_fingerprint(feature)
+            for feature in control_source.values()
+        )
+        factual_fallback = model.context_signature(
+            feature
+            for cell, feature in factual_source.items()
+            if cell not in excluded_cells
+        )
+        control_fallback = model.context_signature(
+            feature
+            for cell, feature in control_source.items()
+            if cell not in excluded_cells
+        )
+
+        def matching_offsets(
+            anchor: Tuple[int, int],
+            source_feature: Tuple[int, ...],
+            targets: Dict[Tuple[int, int], Tuple[int, ...]],
+        ) -> Tuple[Tuple[int, int], ...]:
+            offsets = [
+                (cell[0] - anchor[0], cell[1] - anchor[1])
+                for cell, target_feature in targets.items()
+                if memory.feature_distance(source_feature, target_feature)
+                <= memory.match_threshold
+            ]
+            if not offsets:
+                return ()
+            nearest = min(abs(dx) + abs(dy) for dx, dy in offsets)
+            return tuple(
+                sorted(
+                    (dx, dy)
+                    for dx, dy in offsets
+                    if abs(dx) + abs(dy) == nearest
+                )
+            )
+
+        localized = dict(localized_candidates)
+        newly_localized = 0
+        attributed = 0
+        relation_changed_candidates = 0
+        for anchor, factual_feature in sorted(factual_source.items()):
+            if anchor in excluded_cells:
+                continue
+            control_feature = control_source[anchor]
+            if memory.feature_distance(
+                factual_feature, control_feature
+            ) > memory.match_threshold:
+                continue
+            fingerprint = model.appearance_fingerprint(factual_feature)
+            if (
+                factual_counts[fingerprint] > 4
+                or control_counts[
+                    model.appearance_fingerprint(control_feature)
+                ]
+                > 4
+            ):
+                continue
+            factual_offsets = matching_offsets(
+                anchor, factual_feature, factual_target
+            )
+            control_offsets = matching_offsets(
+                anchor, control_feature, control_target
+            )
+            factual_context = model.relational_context_signature(
+                anchor, factual_players, factual_fallback
+            )
+            control_context = model.relational_context_signature(
+                anchor, control_players, control_fallback
+            )
+            relation_changed = factual_context != control_context
+            if relation_changed:
+                relation_changed_candidates += 1
+            factual_local_outcome = model.effect_signature(
+                factual_feature,
+                factual_target[anchor],
+                factual_feature,
+                relative_effect_cells=factual_offsets,
+            )
+            control_local_outcome = model.effect_signature(
+                control_feature,
+                control_target[anchor],
+                control_feature,
+                relative_effect_cells=control_offsets,
+            )
+            local_outcome_contrast = (
+                factual_local_outcome != control_local_outcome
+            )
+            key = (anchor, fingerprint)
+            localizable_now = bool(
+                relation_changed
+                and local_outcome_contrast
+                and not factual_terminal
+                and not control_terminal
+            )
+            if localizable_now and key not in localized:
+                localized[key] = duration
+                newly_localized += 1
+            hazard_attribution = bool(
+                hazard_contrast and key in localized_candidates
+            )
+            if not (localizable_now or hazard_attribution):
+                continue
+            attributed += 1
+            for (
+                role,
+                source_feature,
+                target_feature,
+                offsets,
+                context,
+                branch_hazard,
+                branch_terminal,
+                other_hazard,
+                target_frame,
+            ) in (
+                (
+                    "intervention",
+                    factual_feature,
+                    factual_target[anchor],
+                    factual_offsets,
+                    factual_context,
+                    factual_hazard,
+                    factual_terminal,
+                    control_hazard,
+                    factual_wait,
+                ),
+                (
+                    "neutral_control",
+                    control_feature,
+                    control_target[anchor],
+                    control_offsets,
+                    control_context,
+                    control_hazard,
+                    control_terminal,
+                    factual_hazard,
+                    control_wait,
+                ),
+            ):
+                outcome_signature = model.effect_signature(
+                    source_feature,
+                    target_feature,
+                    source_feature,
+                    relative_effect_cells=offsets,
+                    terminal_visual_change=branch_terminal,
+                )
+                evidence_payload = (
+                    f"causal-wait|{factual_start.digest}|"
+                    f"{factual_wait.digest}|{control_start.digest}|"
+                    f"{control_wait.digest}|{intervention_action.value}|"
+                    f"{intervention_duration}|{duration}|{anchor}|{role}"
+                )
+                evidence_id = hashlib.sha256(
+                    evidence_payload.encode("ascii")
+                ).hexdigest()[:24]
+                self._record_anonymous_causal_sample(
+                    source_feature,
+                    outcome_signature,
+                    context,
+                    duration,
+                    branch_hazard,
+                    branch_terminal,
+                    evidence_id,
+                    anchor,
+                    offsets,
+                    target_frame,
+                    role,
+                    intervention_action,
+                    intervention_duration,
+                    other_hazard,
+                    localized[key],
+                )
+        self._emit(
+            "anonymous_entity_causal_contrast_completed",
+            decision=self.decision_index + 1,
+            agent_visible=True,
+            intervention_action=intervention_action,
+            intervention_frames=intervention_duration,
+            wait_frames=duration,
+            factual_hazard=factual_hazard,
+            control_hazard=control_hazard,
+            factual_terminal_visual_change=factual_terminal,
+            control_terminal_visual_change=control_terminal,
+            hazard_contrast=hazard_contrast,
+            excluded_player_cells=len(excluded_cells),
+            relation_changed_candidates=relation_changed_candidates,
+            newly_localized_candidates=newly_localized,
+            localized_candidates=len(localized),
+            attributed_candidates=attributed,
+            learning_enabled=(
+                self.config.anonymous_entity_behavior_learning
+            ),
+            model_type_count=model.type_count,
+            model_rule_count=model.rule_count,
+            model_observations=model.observation_count,
+            factual_frame=factual_wait.digest,
+            control_frame=control_wait.digest,
+        )
+        return localized
 
     def _probe_human_prior_option_action_control(
         self,
@@ -8901,6 +9383,93 @@ class VerifiedNeuralAgent:
                         neutral_target,
                         duration,
                     )
+
+            if self.config.anonymous_entity_causal_horizons:
+                control_waits: Dict[
+                    Tuple[int, int],
+                    Tuple[Frame, Frame, Optional[int]],
+                ] = {}
+                intervention_durations = {
+                    item[0].durations[0]
+                    for item in raw_verified
+                    if item[0].path[0] != Action.NOOP
+                }
+                for intervention_duration in sorted(
+                    intervention_durations
+                ):
+                    for wait_duration in sorted(
+                        set(
+                            self.config.anonymous_entity_causal_horizons
+                        )
+                    ):
+                        self.env.load_state(root)
+                        control_start = self.env.step(
+                            Action.NOOP, intervention_duration
+                        )
+                        control_wait = self.env.step(
+                            Action.NOOP, wait_duration
+                        )
+                        control_waits[
+                            (intervention_duration, wait_duration)
+                        ] = (
+                            control_start,
+                            control_wait,
+                            getattr(self.env, "last_step_seq", None),
+                        )
+
+                for item in raw_verified:
+                    plan, state, factual_start = item[:3]
+                    intervention_action = plan.path[0]
+                    if intervention_action == Action.NOOP:
+                        continue
+                    intervention_duration = plan.durations[0]
+                    localized_candidates: Dict[
+                        Tuple[Tuple[int, int], str], int
+                    ] = {}
+                    for wait_duration in sorted(
+                        set(
+                            self.config.anonymous_entity_causal_horizons
+                        )
+                    ):
+                        self.env.load_state(state)
+                        factual_wait = self.env.step(
+                            Action.NOOP, wait_duration
+                        )
+                        factual_env_step_seq = getattr(
+                            self.env, "last_step_seq", None
+                        )
+                        (
+                            control_start,
+                            control_wait,
+                            control_env_step_seq,
+                        ) = control_waits[
+                            (intervention_duration, wait_duration)
+                        ]
+                        self._emit(
+                            "anonymous_entity_causal_horizon_verified",
+                            decision=self.decision_index + 1,
+                            agent_visible=True,
+                            intervention_action=intervention_action,
+                            intervention_frames=intervention_duration,
+                            wait_frames=wait_duration,
+                            source_state_id=self._state_id(state),
+                            factual_env_step_seq=factual_env_step_seq,
+                            control_env_step_seq=control_env_step_seq,
+                            factual_frame=factual_wait.digest,
+                            control_frame=control_wait.digest,
+                        )
+                        localized_candidates = (
+                            self._observe_anonymous_causal_wait_contrast(
+                                factual_start,
+                                factual_wait,
+                                control_start,
+                                control_wait,
+                                wait_duration,
+                                intervention_action,
+                                intervention_duration,
+                                localized_candidates,
+                            )
+                        )
 
             probe_outcomes = {
                 (item[0].path[0], item[0].durations[0]): item[2]

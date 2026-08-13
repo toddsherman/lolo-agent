@@ -774,6 +774,13 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--anonymous-entity-causal-horizons",
+        help=(
+            "comma-separated NOOP frame horizons comparing each verified "
+            "controller endpoint with an equal-duration neutral control"
+        ),
+    )
+    parser.add_argument(
         "--human-prior-option-effect-local-minimum-cell-pixels",
         type=int,
         default=12,
@@ -1082,6 +1089,33 @@ def main() -> None:
         parser.error(
             "--anonymous-entity-passive-horizons requires frozen or learn mode"
         )
+    try:
+        entity_causal_horizons = (
+            tuple(
+                sorted(
+                    {
+                        int(value)
+                        for value in (
+                            args.anonymous_entity_causal_horizons.split(",")
+                        )
+                    }
+                )
+            )
+            if args.anonymous_entity_causal_horizons
+            else ()
+        )
+    except ValueError:
+        parser.error(
+            "--anonymous-entity-causal-horizons must contain integers"
+        )
+    if any(horizon <= 0 for horizon in entity_causal_horizons):
+        parser.error(
+            "--anonymous-entity-causal-horizons must contain positive integers"
+        )
+    if entity_causal_horizons and args.anonymous_entity_behavior_mode == "off":
+        parser.error(
+            "--anonymous-entity-causal-horizons requires frozen or learn mode"
+        )
     if args.anonymous_entity_behavior_mode != "off" and not (
         args.human_prior_hearts and args.human_prior_option_entity_frontier
     ):
@@ -1340,6 +1374,7 @@ def main() -> None:
             args.anonymous_entity_behavior_mode == "learn"
         ),
         anonymous_entity_passive_horizons=entity_passive_horizons,
+        anonymous_entity_causal_horizons=entity_causal_horizons,
         human_prior_option_effect_local_minimum_cell_pixels=(
             args.human_prior_option_effect_local_minimum_cell_pixels
         ),

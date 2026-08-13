@@ -157,7 +157,8 @@ lolo-neural-run \
   --human-prior-option-entity-frontier \
   --anonymous-entity-behavior-checkpoint experiments/lolo1-entity/anonymous-behavior.json \
   --anonymous-entity-behavior-mode learn \
-  --anonymous-entity-passive-horizons 16,32,64,224
+  --anonymous-entity-passive-horizons 16,32,64,224 \
+  --anonymous-entity-causal-horizons 16,32,64,224
 ```
 
 The checkpoint contains no sprite names or supplied mechanics. Use
@@ -165,8 +166,11 @@ The checkpoint contains no sprite names or supplied mechanics. Use
 sequel evaluation. Optional passive horizons restore the decision-root save
 state and advance an equal-action `NOOP` branch, exposing delayed visual
 dynamics without changing the committed controller action. The sidecar is
-currently observational and must pass native held-out prediction gates before
-it can affect planning. See
+currently observational. Causal horizons additionally compare each verified
+controller endpoint with an equal-duration neutral endpoint, then assign a
+later differential life loss only to rare patches that first showed a local
+differential outcome at an earlier nonterminal horizon. The sidecar must pass
+cross-room prediction gates before it can affect planning. See
 `docs/anonymous-entity-behavior.md`.
 
 Train an observational relation head only after assigning complete strict runs
