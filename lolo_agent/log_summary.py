@@ -1639,6 +1639,58 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             and bool(event.get("human_prior_option_entity_frontier"))
             for event in events
         ),
+        "human_prior_option_entity_curiosity_branches": sum(
+            event["event"] == "human_prior_option_branch_verified"
+            and bool(
+                event.get(
+                    "human_prior_option_entity_interaction_signature"
+                )
+            )
+            for event in events
+        ),
+        "human_prior_option_entity_curiosity_beam_retained": sum(
+            int(
+                event.get(
+                    "anonymous_entity_curiosity_parents_retained", 0
+                )
+            )
+            for event in events
+            if event["event"]
+            == "human_prior_option_search_depth_completed"
+        ),
+        "human_prior_option_entity_curiosity_probes": event_counts.get(
+            "human_prior_option_entity_curiosity_probe", 0
+        ),
+        "human_prior_option_entity_curiosity_known_probes": sum(
+            event["event"]
+            == "human_prior_option_entity_curiosity_probe"
+            and bool(event.get("behavior_known_before"))
+            for event in events
+        ),
+        "human_prior_option_entity_curiosity_transferable_probes": sum(
+            event["event"]
+            == "human_prior_option_entity_curiosity_probe"
+            and event.get("anonymous_type_id") is not None
+            for event in events
+        ),
+        "human_prior_option_entity_curiosity_cell_matches": sum(
+            event["event"]
+            == "human_prior_option_entity_curiosity_probe"
+            and bool(event.get("interaction_cell_matched"))
+            for event in events
+        ),
+        "human_prior_option_entity_curiosity_evidence_withheld": sum(
+            event["event"]
+            == "human_prior_option_entity_curiosity_probe"
+            and event.get("evidence_eligible") is False
+            for event in events
+        ),
+        "human_prior_option_entity_curiosity_evidence_accepted": sum(
+            event["event"]
+            == "human_prior_option_entity_curiosity_probe"
+            and bool(event.get("evidence_accepted"))
+            for event in events
+        ),
         "anonymous_entity_behavior_observations": len(
             anonymous_behavior_rows
         ),

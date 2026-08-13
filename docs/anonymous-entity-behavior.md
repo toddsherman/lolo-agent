@@ -89,6 +89,37 @@ or the live trajectory. This makes delayed transformations and terminal visual
 changes observable without forcing a short action interval to stand in for an
 entity's full dynamics.
 
+## Opt-in interaction curiosity
+
+The exact save-state search can use the learned behavior posterior as an
+exploration signal without assigning names or supplied rules to appearances:
+
+```bash
+lolo-neural-run \
+  ... \
+  --human-prior-option-entity-curiosity-weight 2.0 \
+  --human-prior-option-entity-curiosity-reserve 4
+```
+
+For each candidate action, the agent takes the adjacent pooled pixel patch in
+the movement direction, or in its current pixel-derived facing direction for
+`A` and `B`. Its score is the product of two empirical quantities: spatial
+rarity in the current frame and posterior novelty for that anonymous
+appearance/action/duration/context tuple. An appearance already matched to a
+persistent anonymous type receives full transferability; a wholly unfamiliar
+singleton remains eligible at one-quarter strength so unique background
+textures do not routinely displace recurring entities. The weight is additive.
+The reserve keeps a bounded number of distinct under-tested tuples in both the
+exact-search beam and the expensive matched-control probe set.
+
+A reserved probe replaces the candidate's last action with an equal-duration
+`NOOP`. This records a reusable outcome even when the factual action caused no
+visible change, which is necessary to learn that a recurring appearance is
+blocking or inert under a particular intervention. A real local appearance
+change still has to pass the existing persistence, phase, player-mask, and
+action-control gates before it can become a world-state frontier. Both knobs
+default to zero, preserving the policy-neutral observational configuration.
+
 Causal horizons are more expensive and stricter. For each verified
 non-neutral controller endpoint they construct an equal-duration `NOOP`
 endpoint from the same root, then wait identically from both endpoints. A rare
@@ -122,11 +153,13 @@ keeps the original alternatives.
 
 ## Current research boundary
 
-The sidecar remains observational by default and always has additive selection
-weight zero. The optional provenance-qualified hazard veto can now remove a
-verified endpoint after passing the native shadow gate documented in
-`anonymous-entity-policy-gate-2026-08-13.md`. It cannot rank safe alternatives,
-and unsupported or context-fallback predictions cannot veto.
+The sidecar remains observational by default. With both curiosity knobs at
+zero, it has additive selection weight zero. The opt-in curiosity policy can
+rank safe alternatives by uncertainty, while the optional
+provenance-qualified hazard veto can remove a verified endpoint after passing
+the native shadow gate documented in
+`anonymous-entity-policy-gate-2026-08-13.md`. Unsupported or context-fallback
+hazard predictions still cannot veto.
 
 The current action-controlled collector uses the assisted track's pixel-derived
 controlled-sprite locator to define an interaction ray. Object types and their

@@ -155,6 +155,8 @@ lolo-neural-run \
   --human-prior-option-effect-phase-offsets 3 \
   --human-prior-option-effect-local-controls \
   --human-prior-option-entity-frontier \
+  --human-prior-option-entity-curiosity-weight 2.0 \
+  --human-prior-option-entity-curiosity-reserve 4 \
   --anonymous-entity-behavior-checkpoint experiments/lolo1-entity/anonymous-behavior.json \
   --anonymous-entity-behavior-mode learn \
   --anonymous-entity-passive-horizons 16,32,64,224 \
@@ -174,6 +176,12 @@ predictions. After validation, `--anonymous-entity-hazard-veto` can filter only
 context-matched, provenance-qualified causal hazards; it fails open if every
 verified endpoint is marked. See `docs/anonymous-entity-behavior.md` and the
 dated policy-gate report.
+
+The optional entity-curiosity weight and reserve make under-tested anonymous
+appearance/action pairs first-class exploration candidates. Their matched
+controls also learn reusable no-effect outcomes, while persistent visual
+changes retain the existing phase, player-mask, and causal promotion gates.
+Both settings default to zero.
 
 Train an observational relation head only after assigning complete strict runs
 to disjoint training and validation partitions:

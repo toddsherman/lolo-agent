@@ -845,6 +845,24 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--human-prior-option-entity-curiosity-weight",
+        type=float,
+        default=0.0,
+        help=(
+            "additive exact-option score for spatially rare anonymous "
+            "appearance/action pairs with uncertain learned behavior"
+        ),
+    )
+    parser.add_argument(
+        "--human-prior-option-entity-curiosity-reserve",
+        type=int,
+        default=0,
+        help=(
+            "exact-option beam and control-probe slots reserved for distinct "
+            "under-tested anonymous appearance/action pairs"
+        ),
+    )
+    parser.add_argument(
         "--anonymous-entity-behavior-checkpoint",
         type=Path,
         help=(
@@ -1177,6 +1195,36 @@ def main() -> None:
         parser.error(
             "--human-prior-option-entity-frontier requires local controls, "
             "positive effect stability, and phase offsets"
+        )
+    if args.human_prior_option_entity_curiosity_weight < 0.0:
+        parser.error(
+            "--human-prior-option-entity-curiosity-weight must be "
+            "non-negative"
+        )
+    if args.human_prior_option_entity_curiosity_reserve < 0:
+        parser.error(
+            "--human-prior-option-entity-curiosity-reserve must be "
+            "non-negative"
+        )
+    if (
+        args.human_prior_option_entity_curiosity_reserve
+        > args.human_prior_option_search_beam_width
+    ):
+        parser.error(
+            "--human-prior-option-entity-curiosity-reserve cannot exceed "
+            "--human-prior-option-search-beam-width"
+        )
+    if (
+        args.human_prior_option_entity_curiosity_weight > 0.0
+        or args.human_prior_option_entity_curiosity_reserve > 0
+    ) and (
+        not args.human_prior_option_entity_frontier
+        or args.anonymous_entity_behavior_mode == "off"
+    ):
+        parser.error(
+            "anonymous entity curiosity requires "
+            "--human-prior-option-entity-frontier and frozen or learn "
+            "anonymous behavior mode"
         )
     if args.anonymous_entity_appearance_threshold < 0.0:
         parser.error(
@@ -1556,6 +1604,16 @@ def main() -> None:
             if args.human_prior_hearts
             else False
         ),
+        human_prior_option_entity_curiosity_weight=(
+            args.human_prior_option_entity_curiosity_weight
+            if args.human_prior_hearts
+            else 0.0
+        ),
+        human_prior_option_entity_curiosity_reserve=(
+            args.human_prior_option_entity_curiosity_reserve
+            if args.human_prior_hearts
+            else 0
+        ),
         anonymous_entity_behavior_learning=(
             args.anonymous_entity_behavior_mode == "learn"
         ),
@@ -1629,7 +1687,23 @@ def main() -> None:
             "causal_hazard_observations": (
                 entity_behavior_model.causal_hazard_observation_count
             ),
-            "selection_weight": 0.0,
+            "selection_weight": (
+                args.human_prior_option_entity_curiosity_weight
+            ),
+            "curiosity_weight": (
+                args.human_prior_option_entity_curiosity_weight
+            ),
+            "curiosity_reserve": (
+                args.human_prior_option_entity_curiosity_reserve
+            ),
+            "selection_mode": (
+                "entity_curiosity"
+                if (
+                    args.human_prior_option_entity_curiosity_weight > 0.0
+                    or args.human_prior_option_entity_curiosity_reserve > 0
+                )
+                else "observational"
+            ),
             "hazard_veto": args.anonymous_entity_hazard_veto,
         }
         if entity_behavior_checkpoint_existed:
@@ -1906,7 +1980,15 @@ def main() -> None:
                     "anonymous_entity_behavior_parameter_audit",
                     status="pass",
                     mode="frozen",
-                    selection_weight=0.0,
+                    selection_weight=(
+                        args.human_prior_option_entity_curiosity_weight
+                    ),
+                    curiosity_weight=(
+                        args.human_prior_option_entity_curiosity_weight
+                    ),
+                    curiosity_reserve=(
+                        args.human_prior_option_entity_curiosity_reserve
+                    ),
                     hazard_veto=args.anonymous_entity_hazard_veto,
                     shadow_horizons=entity_shadow_horizons,
                     shadow_hazard_threshold=(
@@ -1926,7 +2008,15 @@ def main() -> None:
                 logger.log(
                     "anonymous_entity_behavior_checkpoint_updated",
                     mode="learn",
-                    selection_weight=0.0,
+                    selection_weight=(
+                        args.human_prior_option_entity_curiosity_weight
+                    ),
+                    curiosity_weight=(
+                        args.human_prior_option_entity_curiosity_weight
+                    ),
+                    curiosity_reserve=(
+                        args.human_prior_option_entity_curiosity_reserve
+                    ),
                     hazard_veto=args.anonymous_entity_hazard_veto,
                     parameter_sha256_before=entity_behavior_before,
                     parameter_sha256_after=entity_behavior_after,

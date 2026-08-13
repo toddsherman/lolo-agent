@@ -500,6 +500,36 @@ class RunLoggingTests(unittest.TestCase):
                 "human_prior_option_entity_frontier_archives", summary
             )
             self.assertIn(
+                "human_prior_option_entity_curiosity_branches", summary
+            )
+            self.assertIn(
+                "human_prior_option_entity_curiosity_beam_retained",
+                summary,
+            )
+            self.assertIn(
+                "human_prior_option_entity_curiosity_probes", summary
+            )
+            self.assertIn(
+                "human_prior_option_entity_curiosity_known_probes",
+                summary,
+            )
+            self.assertIn(
+                "human_prior_option_entity_curiosity_transferable_probes",
+                summary,
+            )
+            self.assertIn(
+                "human_prior_option_entity_curiosity_cell_matches",
+                summary,
+            )
+            self.assertIn(
+                "human_prior_option_entity_curiosity_evidence_withheld",
+                summary,
+            )
+            self.assertIn(
+                "human_prior_option_entity_curiosity_evidence_accepted",
+                summary,
+            )
+            self.assertIn(
                 "anonymous_entity_behavior_observations", summary
             )
             self.assertIn(

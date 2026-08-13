@@ -308,6 +308,22 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   `human_prior_option_world_effect_action_control.entity_player_masked_pixels`
   records the final mask size, and each horizon observation records its own
   `entity_player_masked_pixels` count;
+- with nonzero `--human-prior-option-entity-curiosity-weight` or
+  `--human-prior-option-entity-curiosity-reserve`, every exact branch records
+  the anonymous target appearance fingerprint, learned type when matched,
+  relative context, prior sample count, posterior novelty, within-frame spatial
+  rarity, and combined curiosity. The reserve retains distinct under-tested
+  appearance/action tuples in the search beam and matched-control probe set.
+  `human_prior_option_entity_curiosity_probe` links the reserved tuple to its
+  leave-one-action-out result and behavior evidence, including static/no-effect
+  outcomes. Prefix replay carries the same prior-position reference used by
+  exact search. `interaction_cell` and `audited_interaction_cell` expose both
+  sides of that attribution, while `interaction_cell_matched=false` makes the
+  row ineligible for learning or entity-frontier promotion. Summary telemetry
+  reports curiosity branches, retained beam slots, probes, known predictions,
+  and accepted learning evidence. Both settings are part of
+  `search_budget_sha256`, so enabling curiosity reopens a source that was
+  exhausted under the policy-neutral budget;
 - assisted best-first recovery prefers a confirmed
   `immediate_reachability_gain` effect over an ordinary physical frontier, but
   does not give the same precedence to a `delayed_causal_effect` hypothesis.

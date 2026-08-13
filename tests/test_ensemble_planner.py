@@ -24,6 +24,7 @@ from lolo_agent.neural_planner import (
     VerifiedNeuralAgent,
     _ArchivedBranch,
     _BehaviorProbeSelection,
+    _HumanPriorOptionNode,
     _LifeHazardCheckpoint,
     _OptionCounterfactual,
     _TemporalOptionTrace,
@@ -435,6 +436,29 @@ class PositionGoalPrior:
     def distance_to_hearts(self, frame: Frame, slots) -> float:
         player = self._position(frame)
         return float(min(abs(player[0] - slot[0]) for slot in slots))
+
+
+class ReferenceSensitivePositionGoalPrior(PositionGoalPrior):
+    """Require the prior tracked position to resolve a moved sprite."""
+
+    def analyze(
+        self,
+        source: Frame,
+        target: Frame,
+        *,
+        target_player_reference=None,
+    ) -> HeartGoalAnalysis:
+        analysis = super().analyze(
+            source,
+            target,
+            target_player_reference=target_player_reference,
+        )
+        if (
+            target_player_reference is None
+            and analysis.target_player_slot != (0, 0)
+        ):
+            return replace(analysis, target_player_slot=(0, 0))
+        return analysis
 
 
 class HazardPositionGoalPrior(PositionGoalPrior):
@@ -3880,6 +3904,220 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertTrue(
             all(not event["learning_enabled"] for event in transfer_events)
         )
+
+    def test_entity_curiosity_learns_static_interaction_and_reuses_it(
+        self,
+    ) -> None:
+        behavior_model = AnonymousEntityBehaviorModel(
+            minimum_prediction_samples=1
+        )
+
+        def run(learning: bool) -> RecordingLogger:
+            logger = RecordingLogger()
+            agent = VerifiedNeuralAgent(
+                UnlabeledEntityTransformEnv(),
+                EnsembleVisualDynamicsModel(
+                    latent_size=32, action_size=8, ensemble_size=2
+                ),
+                "cpu",
+                NeuralPlanningConfig(
+                    actions=(Action.RIGHT,),
+                    planning_depth=1,
+                    action_frames=1,
+                    human_prior_heart_reward=1.0,
+                    human_prior_best_first_archive=True,
+                    human_prior_option_search_depth=2,
+                    human_prior_option_search_beam_width=1,
+                    human_prior_option_search_action_frames=1,
+                    human_prior_option_effect_stability_steps=2,
+                    human_prior_option_effect_probe_limit=1,
+                    human_prior_option_effect_phase_offsets=1,
+                    human_prior_option_effect_local_controls=True,
+                    human_prior_option_entity_frontier=True,
+                    human_prior_option_entity_curiosity_reserve=1,
+                    anonymous_entity_behavior_learning=learning,
+                    causal_spatial_columns=8,
+                    causal_spatial_rows=8,
+                ),
+                event_logger=logger,
+                entity_behavior_model=behavior_model,
+            )
+            agent.reset()
+            agent.goal_prior = PositionGoalPrior()
+            source_signature = agent._current_human_prior_graph_signature()
+            agent.human_prior_graph_state_visits[source_signature] = 1
+            agent.human_prior_player_position_visits[(0, 0)] = 1
+
+            self.assertEqual(agent._search_human_prior_options(), 0)
+            return logger
+
+        learned = run(True)
+        learned_digest = behavior_model.digest
+        frozen = run(False)
+
+        learned_probe = next(
+            event
+            for event in learned.events
+            if event["event"]
+            == "human_prior_option_entity_curiosity_probe"
+        )
+        frozen_probe = next(
+            event
+            for event in frozen.events
+            if event["event"]
+            == "human_prior_option_entity_curiosity_probe"
+        )
+        self.assertEqual(learned_probe["action"], Action.RIGHT)
+        self.assertEqual(learned_probe["interaction_cell"], (1, 0))
+        self.assertFalse(learned_probe["entity_effect_confirmed"])
+        self.assertTrue(learned_probe["evidence_accepted"])
+        self.assertTrue(learned_probe["evidence_eligible"])
+        self.assertTrue(learned_probe["interaction_cell_matched"])
+        self.assertFalse(learned_probe["behavior_known_before"])
+        self.assertTrue(frozen_probe["behavior_known_before"])
+        self.assertFalse(frozen_probe["evidence_accepted"])
+        self.assertEqual(behavior_model.digest, learned_digest)
+        self.assertTrue(
+            any(
+                event["event"]
+                == "human_prior_option_search_depth_completed"
+                and event[
+                    "anonymous_entity_curiosity_parents_retained"
+                ]
+                == 1
+                for event in learned.events
+            )
+        )
+
+    def test_entity_curiosity_reserve_cannot_exceed_option_beam(self) -> None:
+        with self.assertRaisesRegex(ValueError, "cannot exceed"):
+            VerifiedNeuralAgent(
+                UnlabeledEntityTransformEnv(),
+                EnsembleVisualDynamicsModel(
+                    latent_size=32, action_size=8, ensemble_size=2
+                ),
+                "cpu",
+                NeuralPlanningConfig(
+                    actions=(Action.RIGHT,),
+                    planning_depth=1,
+                    human_prior_option_search_beam_width=1,
+                    human_prior_option_effect_stability_steps=1,
+                    human_prior_option_effect_phase_offsets=1,
+                    human_prior_option_effect_local_controls=True,
+                    human_prior_option_entity_frontier=True,
+                    human_prior_option_entity_curiosity_reserve=2,
+                ),
+                entity_behavior_model=AnonymousEntityBehaviorModel(),
+            )
+
+    def test_entity_curiosity_prefers_transferable_appearance_type(
+        self,
+    ) -> None:
+        behavior_model = AnonymousEntityBehaviorModel()
+        agent = VerifiedNeuralAgent(
+            UnlabeledEntityTransformEnv(),
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.DOWN),
+                planning_depth=1,
+                human_prior_option_search_beam_width=2,
+                human_prior_option_effect_stability_steps=1,
+                human_prior_option_effect_phase_offsets=1,
+                human_prior_option_effect_local_controls=True,
+                human_prior_option_entity_frontier=True,
+                human_prior_option_entity_curiosity_reserve=1,
+                causal_spatial_columns=8,
+                causal_spatial_rows=8,
+            ),
+            entity_behavior_model=behavior_model,
+        )
+        frame = agent.reset()
+        feature_index = agent._human_prior_option_entity_feature_index(frame)
+        entity_feature = feature_index[0][(1, 0)]
+        behavior_model.observe(
+            entity_feature,
+            Action.LEFT,
+            1,
+            "prior-outcome",
+        )
+
+        transferable = agent._human_prior_option_entity_curiosity(
+            frame,
+            (0, 0),
+            None,
+            Action.RIGHT,
+            1,
+            feature_index,
+        )
+        unfamiliar = agent._human_prior_option_entity_curiosity(
+            frame,
+            (0, 0),
+            None,
+            Action.DOWN,
+            1,
+            feature_index,
+        )
+
+        self.assertIsNotNone(transferable["anonymous_type_id"])
+        self.assertIsNone(unfamiliar["anonymous_type_id"])
+        self.assertEqual(transferable["appearance_transferability"], 1.0)
+        self.assertEqual(unfamiliar["appearance_transferability"], 0.25)
+        self.assertGreater(
+            transferable["curiosity"], unfamiliar["curiosity"]
+        )
+
+    def test_entity_interaction_replay_carries_player_reference(self) -> None:
+        env = ActionEffectEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                human_prior_option_effect_stability_steps=1,
+                human_prior_option_effect_phase_offsets=1,
+                human_prior_option_effect_local_controls=True,
+                human_prior_option_entity_frontier=True,
+                causal_spatial_columns=8,
+                causal_spatial_rows=8,
+            ),
+        )
+        source = agent.reset()
+        agent.goal_prior = ReferenceSensitivePositionGoalPrior()
+        source_analysis = agent.goal_prior.analyze(source, source)
+        root = env.save_state()
+        node = _HumanPriorOptionNode(
+            state=root,
+            frame=source,
+            path=(Action.RIGHT, Action.RIGHT),
+            durations=(1, 1),
+            analysis=source_analysis,
+            source_signature="source",
+            target_signature="target",
+            score=0.0,
+            depth=2,
+            target_state_visits=0,
+            target_position_visits=0,
+        )
+
+        before, direction, interaction_ray = (
+            agent._human_prior_option_interaction_ray(
+                root,
+                source,
+                node,
+                1,
+            )
+        )
+
+        self.assertEqual(before.pixels.index(255), 1)
+        self.assertEqual(direction, Action.RIGHT)
+        self.assertEqual(interaction_ray[0], (2, 0))
 
     def test_passive_scan_learns_anonymous_autonomous_motion(self) -> None:
         behavior_model = AnonymousEntityBehaviorModel(
