@@ -233,10 +233,18 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   route: direct reward verification remains responsible for that outcome,
   while graph guidance may target an unfinished control frontier. Exhausted bounded-search
   states and stationary animation-only signature changes are ineligible. The
-  policy reconstructs only emulator-verified source/target signatures and
-  action-coverage counts from temporary telemetry; it does not store an object
-  label, object rule, or supplied action sequence. Every exact branch, archived
-  endpoint, restore, and commit carries
+  policy reconstructs emulator-verified source/target signatures, local
+  action-coverage counts, and the controller action/duration labels that
+  produced each edge. `route_control_actions`,
+  `route_control_durations`, `route_control_count`, and
+  `replayable_route_prefix_count` expose a shortest fully labelled route.
+  Exact search reserves one beam slot for that observed route and executes it
+  against the current save state; it is a proposal, not an assumed state
+  transition. `human_prior_episodic_route_replay_prefix` marks each replayed
+  branch and `human_prior_episodic_route_replay_waypoint_reached` records the
+  pixel-verified result. No object label, object rule, demonstration, or
+  supplied action sequence is stored. Every exact branch, archived endpoint,
+  restore, and commit carries
   `human_prior_episodic_graph_plan_kind`,
   `human_prior_episodic_graph_progress`,
   `human_prior_episodic_graph_bridge_reached`, and

@@ -292,6 +292,18 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
             (80, 64),
         )
 
+    def test_temporal_player_tracking_recovers_from_overlapping_clipped_window(
+        self,
+    ) -> None:
+        moved = room_frame(player=(72, 40))
+        prior = PixelHeartGoalPrior()
+
+        self.assertEqual(prior.detect_player(moved), (80, 48))
+        self.assertEqual(
+            prior.detect_player(moved, reference=(48, 48)),
+            (80, 48),
+        )
+
     def test_branch_tracking_uses_parent_reference_beyond_root_radius(self) -> None:
         source = room_frame(((160, 64),), player=(48, 64))
         target = room_frame(((160, 64),), player=(96, 64))

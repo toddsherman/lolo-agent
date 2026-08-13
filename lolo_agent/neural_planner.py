@@ -268,6 +268,8 @@ class _HumanPriorOptionNode:
     episodic_graph_progress: float = 0.0
     episodic_graph_bridge_reached: bool = False
     episodic_graph_remaining_cost: Optional[int] = None
+    episodic_graph_route_replay_prefix: bool = False
+    episodic_graph_route_replay_waypoint_reached: bool = False
     action_dependent_endpoint: bool = False
     action_dependent_visual_difference: float = 0.0
     local_action_dependent: bool = False
@@ -297,6 +299,7 @@ class _HumanPriorEpisodicGraphPlan:
     remaining_costs: Dict[str, int]
     milestone_component: frozenset[str]
     frontier_actions: Tuple[Action, ...] = ()
+    route_controls: Tuple[Tuple[Action, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -981,6 +984,9 @@ class VerifiedNeuralAgent:
         self.human_prior_episodic_graph_reverse_edges: Dict[
             str, Dict[str, int]
         ] = {}
+        self.human_prior_episodic_graph_controls: Dict[
+            Tuple[str, str], Tuple[Tuple[Action, int], ...]
+        ] = {}
         self.human_prior_episodic_milestone_sources: set[str] = set()
         self.human_prior_episodic_milestone_transitions: Dict[
             str, set[tuple]
@@ -1658,7 +1664,8 @@ class VerifiedNeuralAgent:
         return (
             f"hearts={hearts}|player={player[0]},{player[1]}|"
             f"chest={chest_key}|treasure={treasure_key}|"
-            f"life={life_key}|world={world_context}"
+            f"life={life_key}|world={world_context}|"
+            "player-tracking=overlap-v2"
         )
 
     def _human_prior_world_effect_signature(
@@ -2251,6 +2258,7 @@ class VerifiedNeuralAgent:
         action_cost: int,
         *,
         milestone: bool = False,
+        controls: Sequence[Tuple[Action, int]] = (),
     ) -> None:
         """Remember an emulator-verified pixel transition for this room."""
 
@@ -2274,9 +2282,16 @@ class VerifiedNeuralAgent:
         ):
             return
         cost = max(1, int(action_cost))
+        normalized_controls = tuple(
+            (action, int(duration))
+            for action, duration in controls
+            if int(duration) > 0
+        )
+        controls_valid = len(normalized_controls) == cost
         targets = self.human_prior_episodic_graph_edges.setdefault(
             source_signature, {}
         )
+        prior_cost = targets.get(target_signature)
         targets[target_signature] = min(
             cost, targets.get(target_signature, cost)
         )
@@ -2286,6 +2301,30 @@ class VerifiedNeuralAgent:
         sources[source_signature] = min(
             cost, sources.get(source_signature, cost)
         )
+        edge = (source_signature, target_signature)
+        if prior_cost is None or cost < prior_cost:
+            if controls_valid:
+                self.human_prior_episodic_graph_controls[edge] = (
+                    normalized_controls
+                )
+            else:
+                self.human_prior_episodic_graph_controls.pop(edge, None)
+        elif cost == prior_cost and controls_valid:
+            prior_controls = self.human_prior_episodic_graph_controls.get(
+                edge
+            )
+            control_key = tuple(
+                (action.value, duration)
+                for action, duration in normalized_controls
+            )
+            prior_key = tuple(
+                (action.value, duration)
+                for action, duration in (prior_controls or ())
+            )
+            if prior_controls is None or control_key < prior_key:
+                self.human_prior_episodic_graph_controls[edge] = (
+                    normalized_controls
+                )
 
     @staticmethod
     def _human_prior_episodic_graph_distances(
@@ -2313,6 +2352,84 @@ class VerifiedNeuralAgent:
                 distances[target] = candidate
                 heapq.heappush(queue, (candidate, target))
         return distances
+
+    def _human_prior_episodic_graph_control_route(
+        self,
+        source_signature: str,
+        target_signature: str,
+        allowed: set[str],
+    ) -> Tuple[Tuple[Action, int], ...]:
+        """Return the shortest fully labelled verified controller route.
+
+        The semantic graph deliberately merges animation-equivalent frames.
+        A remembered controller route is therefore only a replay proposal;
+        exact save-state search still executes and verifies every edge.
+        Unlabelled graph edges remain useful for distance guidance but cannot
+        be replayed here.
+        """
+
+        if (
+            not source_signature
+            or not target_signature
+            or source_signature not in allowed
+            or target_signature not in allowed
+        ):
+            return ()
+        if source_signature == target_signature:
+            return ()
+        route_ranks: Dict[
+            str, Tuple[int, Tuple[Tuple[str, int], ...]]
+        ] = {source_signature: (0, ())}
+        routes: Dict[str, Tuple[Tuple[Action, int], ...]] = {
+            source_signature: ()
+        }
+        queue: List[
+            Tuple[int, Tuple[Tuple[str, int], ...], str]
+        ] = [(0, (), source_signature)]
+        while queue:
+            cost, route_key, current = heapq.heappop(queue)
+            if route_ranks.get(current) != (cost, route_key):
+                continue
+            if current == target_signature:
+                return routes[current]
+            for target in sorted(
+                self.human_prior_episodic_graph_edges.get(current, {})
+            ):
+                if target not in allowed:
+                    continue
+                edge_controls = (
+                    self.human_prior_episodic_graph_controls.get(
+                        (current, target)
+                    )
+                )
+                if not edge_controls:
+                    continue
+                edge_cost = max(
+                    1,
+                    int(
+                        self.human_prior_episodic_graph_edges[current][
+                            target
+                        ]
+                    ),
+                )
+                if len(edge_controls) != edge_cost:
+                    continue
+                candidate_cost = cost + edge_cost
+                candidate_key = route_key + tuple(
+                    (action.value, duration)
+                    for action, duration in edge_controls
+                )
+                candidate_rank = (candidate_cost, candidate_key)
+                if candidate_rank >= route_ranks.get(
+                    target, (math.inf, ())
+                ):
+                    continue
+                route_ranks[target] = candidate_rank
+                routes[target] = routes[current] + edge_controls
+                heapq.heappush(
+                    queue, (candidate_cost, candidate_key, target)
+                )
+        return ()
 
     def _human_prior_episodic_control_frontier_plan(
         self,
@@ -2416,6 +2533,11 @@ class VerifiedNeuralAgent:
             remaining_costs=remaining_costs,
             milestone_component=frozenset(),
             frontier_actions=frontier_actions,
+            route_controls=(
+                self._human_prior_episodic_graph_control_route(
+                    source_signature, waypoint_signature, allowed
+                )
+            ),
         )
 
     def _human_prior_episodic_graph_plan(
@@ -2482,6 +2604,13 @@ class VerifiedNeuralAgent:
                 ],
                 remaining_costs=milestone_distances,
                 milestone_component=frozenset(milestone_distances),
+                route_controls=(
+                    self._human_prior_episodic_graph_control_route(
+                        source_signature,
+                        min(milestone_sources),
+                        allowed,
+                    )
+                ),
             )
 
         forward_distances = self._human_prior_episodic_graph_distances(
@@ -2550,6 +2679,11 @@ class VerifiedNeuralAgent:
             source_remaining_cost=source_remaining_cost,
             remaining_costs=remaining_costs,
             milestone_component=frozenset(milestone_distances),
+            route_controls=(
+                self._human_prior_episodic_graph_control_route(
+                    source_signature, waypoint_signature, allowed
+                )
+            ),
         )
 
     @staticmethod
@@ -5329,6 +5463,20 @@ class VerifiedNeuralAgent:
             target_state_visits=node.target_state_visits,
             target_position_visits=node.target_position_visits,
             pose_action=node.pose_action,
+            episodic_graph_plan_kind=node.episodic_graph_plan_kind,
+            episodic_graph_progress=node.episodic_graph_progress,
+            episodic_graph_bridge_reached=(
+                node.episodic_graph_bridge_reached
+            ),
+            episodic_graph_remaining_cost=(
+                node.episodic_graph_remaining_cost
+            ),
+            episodic_graph_route_replay_prefix=(
+                node.episodic_graph_route_replay_prefix
+            ),
+            episodic_graph_route_replay_waypoint_reached=(
+                node.episodic_graph_route_replay_waypoint_reached
+            ),
             missing_player_streak=(
                 0
                 if settled_analysis.target_player_slot is not None
@@ -5618,6 +5766,24 @@ class VerifiedNeuralAgent:
         episodic_graph_plan = self._human_prior_episodic_graph_plan(
             source_signature
         )
+        episodic_route_controls = (
+            ()
+            if episodic_graph_plan is None
+            else episodic_graph_plan.route_controls
+        )
+        available_action_edges = set(action_edges)
+        replayable_route_prefix: List[Tuple[Action, int]] = []
+        for control in episodic_route_controls:
+            if (
+                control not in available_action_edges
+                or len(replayable_route_prefix)
+                >= self.config.human_prior_option_search_depth
+            ):
+                break
+            replayable_route_prefix.append(control)
+        episodic_route_replay_controls = tuple(
+            replayable_route_prefix
+        )
         if episodic_graph_plan is not None:
             self._emit(
                 "human_prior_episodic_graph_plan_selected",
@@ -5645,10 +5811,36 @@ class VerifiedNeuralAgent:
                     action.value
                     for action in episodic_graph_plan.frontier_actions
                 ),
+                route_control_actions=tuple(
+                    action.value
+                    for action, _ in episodic_route_controls
+                ),
+                route_control_durations=tuple(
+                    duration
+                    for _, duration in episodic_route_controls
+                ),
+                route_control_count=len(episodic_route_controls),
+                replayable_route_prefix_count=len(
+                    episodic_route_replay_controls
+                ),
+                route_fully_replayable=bool(
+                    episodic_route_controls
+                    and len(episodic_route_replay_controls)
+                    == len(episodic_route_controls)
+                ),
+                route_reaches_waypoint_within_search=bool(
+                    episodic_route_controls
+                    and len(episodic_route_replay_controls)
+                    == len(episodic_route_controls)
+                ),
                 policy_effect=(
-                    "verified_control_frontier_waypoint"
-                    if episodic_graph_plan.kind == "control_frontier"
-                    else "verified_transition_waypoint"
+                    "verified_controller_route_replay"
+                    if episodic_route_replay_controls
+                    else (
+                        "verified_control_frontier_waypoint"
+                        if episodic_graph_plan.kind == "control_frontier"
+                        else "verified_transition_waypoint"
+                    )
                 ),
                 **self._frame_fields(source_frame),
             )
@@ -5765,6 +5957,17 @@ class VerifiedNeuralAgent:
             search_budget_sha256=search_budget_sha256,
             long_direction_frames=(
                 long_direction_duration or None
+            ),
+            episodic_route_replay_actions=tuple(
+                action.value
+                for action, _ in episodic_route_replay_controls
+            ),
+            episodic_route_replay_durations=tuple(
+                edge_duration
+                for _, edge_duration in episodic_route_replay_controls
+            ),
+            episodic_route_replay_prefix_count=len(
+                episodic_route_replay_controls
             ),
             **self._frame_fields(source_frame),
         )
@@ -6063,6 +6266,21 @@ class VerifiedNeuralAgent:
                             episodic_graph_progress = 0.0
                             episodic_graph_bridge_reached = False
                             episodic_graph_remaining_cost = None
+                        path_controls = tuple(zip(path, durations))
+                        episodic_graph_route_replay_prefix = bool(
+                            episodic_route_replay_controls
+                            and depth
+                            <= len(episodic_route_replay_controls)
+                            and path_controls
+                            == episodic_route_replay_controls[:depth]
+                        )
+                        episodic_graph_route_replay_waypoint_reached = bool(
+                            episodic_graph_route_replay_prefix
+                            and episodic_graph_plan is not None
+                            and depth == len(episodic_route_controls)
+                            and target_signature
+                            == episodic_graph_plan.waypoint_signature
+                        )
                         score = (
                             causal_goal_reward
                             + 20.0 * episodic_graph_progress
@@ -6205,6 +6423,12 @@ class VerifiedNeuralAgent:
                             episodic_graph_remaining_cost=(
                                 episodic_graph_remaining_cost
                             ),
+                            episodic_graph_route_replay_prefix=(
+                                episodic_graph_route_replay_prefix
+                            ),
+                            episodic_graph_route_replay_waypoint_reached=(
+                                episodic_graph_route_replay_waypoint_reached
+                            ),
                             action_dependent_endpoint=(
                                 action_dependent_endpoint
                             ),
@@ -6232,6 +6456,7 @@ class VerifiedNeuralAgent:
                                     analysis.milestone_reward
                                     > neutral_analysis.milestone_reward
                                 ),
+                                controls=tuple(zip(path, durations)),
                             )
                         if local_action_dependent:
                             self._record_human_prior_episodic_graph_transition(
@@ -6239,6 +6464,7 @@ class VerifiedNeuralAgent:
                                 target_signature,
                                 1,
                                 milestone=local_positive_milestone,
+                                controls=((action, edge_duration),),
                             )
                         self._record_human_prior_graph_edge_verification(
                             parent.target_signature,
@@ -6324,6 +6550,12 @@ class VerifiedNeuralAgent:
                             ),
                             human_prior_episodic_graph_remaining_cost=(
                                 episodic_graph_remaining_cost
+                            ),
+                            human_prior_episodic_route_replay_prefix=(
+                                episodic_graph_route_replay_prefix
+                            ),
+                            human_prior_episodic_route_replay_waypoint_reached=(
+                                episodic_graph_route_replay_waypoint_reached
                             ),
                             human_prior_option_action_dependent_endpoint=(
                                 action_dependent_endpoint
@@ -6456,12 +6688,19 @@ class VerifiedNeuralAgent:
                 for node in depth_candidates:
                     key = option_state_key(node)
                     previous = deduplicated.get(key)
-                    if previous is None or node.score > previous.score:
+                    if previous is None or (
+                        node.episodic_graph_route_replay_prefix,
+                        node.score,
+                    ) > (
+                        previous.episodic_graph_route_replay_prefix,
+                        previous.score,
+                    ):
                         deduplicated[key] = node
                 novel_candidates = [
                     node
                     for key, node in deduplicated.items()
                     if key not in seen_option_states
+                    or node.episodic_graph_route_replay_prefix
                 ]
                 ranked_candidates = sorted(
                     novel_candidates,
@@ -6486,6 +6725,8 @@ class VerifiedNeuralAgent:
                                 )
                             )
                         ),
+                        node.episodic_graph_route_replay_prefix,
+                        node.episodic_graph_route_replay_waypoint_reached,
                         node.action_dependent_endpoint,
                         node.episodic_graph_bridge_reached,
                         node.episodic_graph_progress > 0.0,
@@ -6587,18 +6828,43 @@ class VerifiedNeuralAgent:
                     ),
                     reverse=True,
                 )
+                route_replay_candidates = sorted(
+                    (
+                        node
+                        for node in expansion_candidates
+                        if node.episodic_graph_route_replay_prefix
+                    ),
+                    key=lambda node: (
+                        node.episodic_graph_route_replay_waypoint_reached,
+                        node.episodic_graph_progress,
+                        node.score,
+                    ),
+                    reverse=True,
+                )
+                route_replay_parents = route_replay_candidates[:1]
+                retained_parent_ids = {
+                    id(node) for node in route_replay_parents
+                }
                 entity_curiosity_slots = min(
                     self.config.human_prior_option_entity_curiosity_reserve,
-                    beam_width,
+                    max(0, beam_width - len(retained_parent_ids)),
                     len(entity_curiosity_candidates),
                 )
-                entity_curiosity_parents = entity_curiosity_candidates[
-                    :entity_curiosity_slots
-                ]
+                entity_curiosity_parents = []
+                if entity_curiosity_slots > 0:
+                    for node in entity_curiosity_candidates:
+                        if id(node) in retained_parent_ids:
+                            continue
+                        entity_curiosity_parents.append(node)
+                        retained_parent_ids.add(id(node))
+                        if (
+                            len(entity_curiosity_parents)
+                            >= entity_curiosity_slots
+                        ):
+                            break
                 entity_parent_ids = {
                     id(node) for node in entity_curiosity_parents
                 }
-                retained_parent_ids = set(entity_parent_ids)
                 position_representatives: Dict[
                     Tuple[int, int], _HumanPriorOptionNode
                 ] = {}
@@ -6659,17 +6925,19 @@ class VerifiedNeuralAgent:
                     len(position_reserve_candidates),
                 )
                 position_reserve_parents = []
-                for node in position_reserve_candidates:
-                    if id(node) in retained_parent_ids:
-                        continue
-                    position_reserve_parents.append(node)
-                    retained_parent_ids.add(id(node))
-                    if (
-                        len(position_reserve_parents)
-                        >= position_reserve_slots
-                    ):
-                        break
-                parents = list(entity_curiosity_parents)
+                if position_reserve_slots > 0:
+                    for node in position_reserve_candidates:
+                        if id(node) in retained_parent_ids:
+                            continue
+                        position_reserve_parents.append(node)
+                        retained_parent_ids.add(id(node))
+                        if (
+                            len(position_reserve_parents)
+                            >= position_reserve_slots
+                        ):
+                            break
+                parents = list(route_replay_parents)
+                parents.extend(entity_curiosity_parents)
                 parents.extend(position_reserve_parents)
                 parents.extend(
                     node
@@ -6728,6 +6996,16 @@ class VerifiedNeuralAgent:
                         node.entity_interaction_signature
                         for node in parents
                         if id(node) in entity_parent_ids
+                    ),
+                    episodic_route_replay_candidates=len(
+                        route_replay_candidates
+                    ),
+                    episodic_route_replay_parents_retained=len(
+                        route_replay_parents
+                    ),
+                    episodic_route_replay_waypoint_reached=any(
+                        node.episodic_graph_route_replay_waypoint_reached
+                        for node in route_replay_parents
                     ),
                     human_prior_option_position_reserve=(
                         self.config.human_prior_option_search_position_reserve
@@ -8566,6 +8844,7 @@ class VerifiedNeuralAgent:
         self.human_prior_exhausted_option_frontiers = {}
         self.human_prior_episodic_graph_edges = {}
         self.human_prior_episodic_graph_reverse_edges = {}
+        self.human_prior_episodic_graph_controls = {}
         self.human_prior_episodic_milestone_sources = set()
         self.human_prior_episodic_milestone_transitions = {}
         self.human_prior_graph_recovery_pending = False
@@ -9086,6 +9365,7 @@ class VerifiedNeuralAgent:
         self.human_prior_exhausted_option_frontiers = {}
         self.human_prior_episodic_graph_edges = {}
         self.human_prior_episodic_graph_reverse_edges = {}
+        self.human_prior_episodic_graph_controls = {}
         self.human_prior_episodic_milestone_sources = set()
         self.human_prior_episodic_milestone_transitions = {}
         self.human_prior_graph_recovery_pending = False
@@ -9227,6 +9507,9 @@ class VerifiedNeuralAgent:
         exhausted_option_frontiers: Dict[str, int] = {}
         episodic_graph_edges: Dict[str, Dict[str, int]] = {}
         episodic_graph_reverse_edges: Dict[str, Dict[str, int]] = {}
+        episodic_graph_controls: Dict[
+            Tuple[str, str], Tuple[Tuple[Action, int], ...]
+        ] = {}
         episodic_milestone_sources: set[str] = set()
         episodic_milestone_transitions: Dict[str, set[tuple]] = {}
         option_search_sources: Dict[
@@ -9303,6 +9586,7 @@ class VerifiedNeuralAgent:
             target_signature: str,
             action_cost: int,
             milestone: bool,
+            controls: Sequence[Tuple[Action, int]] = (),
         ) -> None:
             if milestone and source_signature:
                 episodic_milestone_sources.add(source_signature)
@@ -9322,9 +9606,16 @@ class VerifiedNeuralAgent:
             ):
                 return
             cost = max(1, int(action_cost))
+            normalized_controls = tuple(
+                (action, int(duration))
+                for action, duration in controls
+                if int(duration) > 0
+            )
+            controls_valid = len(normalized_controls) == cost
             targets = episodic_graph_edges.setdefault(
                 source_signature, {}
             )
+            prior_cost = targets.get(target_signature)
             targets[target_signature] = min(
                 cost, targets.get(target_signature, cost)
             )
@@ -9334,6 +9625,24 @@ class VerifiedNeuralAgent:
             sources[source_signature] = min(
                 cost, sources.get(source_signature, cost)
             )
+            edge = (source_signature, target_signature)
+            if prior_cost is None or cost < prior_cost:
+                if controls_valid:
+                    episodic_graph_controls[edge] = normalized_controls
+                else:
+                    episodic_graph_controls.pop(edge, None)
+            elif cost == prior_cost and controls_valid:
+                prior_controls = episodic_graph_controls.get(edge)
+                control_key = tuple(
+                    (action.value, duration)
+                    for action, duration in normalized_controls
+                )
+                prior_key = tuple(
+                    (action.value, duration)
+                    for action, duration in (prior_controls or ())
+                )
+                if prior_controls is None or control_key < prior_key:
+                    episodic_graph_controls[edge] = normalized_controls
 
         for memory_event in events:
             memory_event_type = str(memory_event.get("event") or "")
@@ -9402,6 +9711,7 @@ class VerifiedNeuralAgent:
                 exhausted_option_frontiers.clear()
                 episodic_graph_edges.clear()
                 episodic_graph_reverse_edges.clear()
+                episodic_graph_controls.clear()
                 episodic_milestone_sources.clear()
                 episodic_milestone_transitions.clear()
                 option_search_sources.clear()
@@ -9427,6 +9737,7 @@ class VerifiedNeuralAgent:
             graph_source_signature = ""
             graph_target_signature = ""
             graph_action_cost = 1
+            graph_controls: Tuple[Tuple[Action, int], ...] = ()
             if event_type == "human_prior_option_branch_verified":
                 graph_source_signature = str(
                     event.get("source_graph_signature") or ""
@@ -9434,9 +9745,22 @@ class VerifiedNeuralAgent:
                 graph_target_signature = str(
                     event.get("target_graph_signature") or ""
                 )
-                graph_action_cost = max(
-                    1, len(tuple(event.get("path") or ()))
-                )
+                path_values = tuple(event.get("path") or ())
+                duration_values = tuple(event.get("durations") or ())
+                graph_action_cost = max(1, len(path_values))
+                if path_values and len(path_values) == len(duration_values):
+                    try:
+                        graph_controls = tuple(
+                            (
+                                Action(str(action_value)),
+                                int(duration_value),
+                            )
+                            for action_value, duration_value in zip(
+                                path_values, duration_values
+                            )
+                        )
+                    except (TypeError, ValueError):
+                        graph_controls = ()
             elif event_type in {"branch_verified", "decision_committed"}:
                 graph_source_signature = str(
                     event.get("human_prior_graph_source_signature") or ""
@@ -9448,9 +9772,40 @@ class VerifiedNeuralAgent:
                     event.get("restored_archive")
                     or event.get("human_prior_verified_option")
                 ):
-                    graph_action_cost = max(
-                        1, len(tuple(event.get("path") or ()))
+                    path_values = tuple(event.get("path") or ())
+                    duration_values = tuple(
+                        event.get("durations") or ()
                     )
+                    graph_action_cost = max(1, len(path_values))
+                    if (
+                        path_values
+                        and len(path_values) == len(duration_values)
+                    ):
+                        try:
+                            graph_controls = tuple(
+                                (
+                                    Action(str(action_value)),
+                                    int(duration_value),
+                                )
+                                for action_value, duration_value in zip(
+                                    path_values, duration_values
+                                )
+                            )
+                        except (TypeError, ValueError):
+                            graph_controls = ()
+                else:
+                    action_value = event.get("action")
+                    duration_value = event.get("action_frames")
+                    if action_value is not None and duration_value is not None:
+                        try:
+                            graph_controls = (
+                                (
+                                    Action(str(action_value)),
+                                    int(duration_value),
+                                ),
+                            )
+                        except (TypeError, ValueError):
+                            graph_controls = ()
             try:
                 positive_milestone = bool(
                     float(event.get("human_prior_milestone_reward", 0.0))
@@ -9498,6 +9853,7 @@ class VerifiedNeuralAgent:
                     graph_target_signature,
                     graph_action_cost,
                     positive_milestone,
+                    graph_controls,
                 )
             elif graph_source_signature and not option_action_dependent:
                 autonomous_option_transitions_ignored += 1
@@ -9615,16 +9971,17 @@ class VerifiedNeuralAgent:
                                 else event_frame != local_neutral_frame
                             )
                         if parent_signature:
+                            self_action, self_duration = option_path[-1]
                             if local_action_dependent:
                                 record_episodic_transition(
                                     parent_signature,
                                     graph_target_signature,
                                     1,
                                     prefix_positive_milestone,
+                                    ((self_action, self_duration),),
                                 )
                             else:
                                 autonomous_option_transitions_ignored += 1
-                            self_action, self_duration = option_path[-1]
                             graph_edge_verifications[
                                 (
                                     parent_signature,
@@ -10103,6 +10460,9 @@ class VerifiedNeuralAgent:
         self.human_prior_episodic_graph_reverse_edges = (
             episodic_graph_reverse_edges
         )
+        self.human_prior_episodic_graph_controls = (
+            episodic_graph_controls
+        )
         self.human_prior_episodic_milestone_sources = (
             episodic_milestone_sources
         )
@@ -10201,6 +10561,9 @@ class VerifiedNeuralAgent:
             episodic_graph_edges=sum(
                 len(targets)
                 for targets in self.human_prior_episodic_graph_edges.values()
+            ),
+            episodic_graph_controlled_edges=len(
+                self.human_prior_episodic_graph_controls
             ),
             episodic_milestone_sources=len(
                 self.human_prior_episodic_milestone_sources
@@ -14443,6 +14806,7 @@ class VerifiedNeuralAgent:
                         goal_analysis is not None
                         and goal_analysis.milestone_reward > 0.0
                     ),
+                    controls=((plan.path[0], duration),),
                 )
                 if goal_source_signature:
                     verified_goal_edges.append(
@@ -19079,6 +19443,9 @@ class VerifiedNeuralAgent:
             branch.goal_target_signature,
             len(branch.plan.path),
             milestone=(archive_goal_milestone),
+            controls=tuple(
+                zip(branch.plan.path, branch.plan.durations)
+            ),
         )
         restored_goal_graph_state_visits_before = (
             0

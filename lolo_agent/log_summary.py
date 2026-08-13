@@ -1571,6 +1571,36 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             ),
             default=0,
         ),
+        "episodic_human_prior_seeded_controlled_graph_edges": max(
+            (
+                int(event.get("episodic_graph_controlled_edges", 0))
+                for event in events
+                if event["event"]
+                == "episodic_human_prior_memory_seeded"
+            ),
+            default=0,
+        ),
+        "human_prior_episodic_route_replay_plans": sum(
+            event["event"] == "human_prior_episodic_graph_plan_selected"
+            and int(event.get("replayable_route_prefix_count", 0)) > 0
+            for event in events
+        ),
+        "human_prior_episodic_route_replay_branches": sum(
+            event["event"] == "human_prior_option_branch_verified"
+            and bool(
+                event.get("human_prior_episodic_route_replay_prefix")
+            )
+            for event in events
+        ),
+        "human_prior_episodic_route_replay_waypoints_reached": sum(
+            event["event"] == "human_prior_option_branch_verified"
+            and bool(
+                event.get(
+                    "human_prior_episodic_route_replay_waypoint_reached"
+                )
+            )
+            for event in events
+        ),
         "episodic_human_prior_seeded_milestone_sources": max(
             (
                 int(event.get("episodic_milestone_sources", 0))

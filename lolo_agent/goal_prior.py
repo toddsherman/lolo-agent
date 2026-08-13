@@ -330,10 +330,10 @@ class PixelHeartGoalPrior:
                 / 16.0
                 <= maximum_reference_distance
             ]
-            result = (
-                None
-                if not nearby
-                else max(
+            if not nearby:
+                result = None
+            else:
+                nearby_slot, nearby_rank = max(
                     nearby,
                     key=lambda item: (
                         item[1],
@@ -342,8 +342,26 @@ class PixelHeartGoalPrior:
                             + abs(item[0][1] - reference[1])
                         ),
                     ),
-                )[0]
-            )
+                )
+                global_slot, global_rank = max(
+                    candidates.items(), key=lambda item: item[1]
+                )
+                # A strong 16-pixel sprite can produce several overlapping
+                # scan windows that snap to different neighbouring tiles.
+                # Restricting the result to the reference radius before
+                # choosing the best window lets a clipped window trail the
+                # real sprite indefinitely.  If the nearby and global scan
+                # windows overlap, they are observations of the same visual
+                # object, so use the complete global detection.  A genuinely
+                # distant blue object still has no overlapping nearby window
+                # and remains rejected.
+                same_visual_cluster = bool(
+                    abs(global_rank[-2] - nearby_rank[-2]) <= 8
+                    and abs(global_rank[-1] - nearby_rank[-1]) <= 8
+                )
+                result = (
+                    global_slot if same_visual_cluster else nearby_slot
+                )
         self._player_cache[cache_key] = result
         if len(self._player_cache) > 2048:
             self._player_cache.popitem(last=False)

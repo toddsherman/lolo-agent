@@ -3237,10 +3237,10 @@ class EnsemblePlannerTests(unittest.TestCase):
         bridge = signature((3, 0))
         milestone = signature((4, 0))
         agent._record_human_prior_episodic_graph_transition(
-            source, route, 1
+            source, route, 1, controls=((Action.RIGHT, 1),)
         )
         agent._record_human_prior_episodic_graph_transition(
-            route, frontier, 1
+            route, frontier, 1, controls=((Action.RIGHT, 1),)
         )
         agent._record_human_prior_episodic_graph_transition(
             bridge, milestone, 1
@@ -3406,10 +3406,10 @@ class EnsemblePlannerTests(unittest.TestCase):
         route = signature((1, 0))
         frontier = signature((2, 0))
         agent._record_human_prior_episodic_graph_transition(
-            source, route, 1
+            source, route, 1, controls=((Action.RIGHT, 1),)
         )
         agent._record_human_prior_episodic_graph_transition(
-            route, frontier, 1
+            route, frontier, 1, controls=((Action.RIGHT, 1),)
         )
         agent._record_human_prior_graph_edge_verification(
             frontier, Action.RIGHT, 1
@@ -3424,6 +3424,10 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(plan.waypoint_signature, frontier)
         self.assertEqual(plan.frontier_actions, (Action.DOWN,))
         self.assertEqual(plan.source_remaining_cost, 2)
+        self.assertEqual(
+            plan.route_controls,
+            ((Action.RIGHT, 1), (Action.RIGHT, 1)),
+        )
         progress, reached, remaining = (
             agent._human_prior_episodic_graph_progress(plan, route)
         )
@@ -3554,7 +3558,10 @@ class EnsemblePlannerTests(unittest.TestCase):
         ]
         for source, target in zip(signatures, signatures[1:]):
             agent._record_human_prior_episodic_graph_transition(
-                source, target, 1
+                source,
+                target,
+                1,
+                controls=((Action.RIGHT, 1),),
             )
         for position, signature in enumerate(signatures):
             agent.human_prior_graph_state_visits[signature] = 1
@@ -3580,6 +3587,23 @@ class EnsemblePlannerTests(unittest.TestCase):
         )
         self.assertEqual(selected["plan_kind"], "control_frontier")
         self.assertEqual(selected["frontier_actions"], ("right",))
+        self.assertEqual(selected["route_control_count"], 2)
+        self.assertTrue(selected["route_fully_replayable"])
+        replayed = [
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_branch_verified"
+            and event.get("human_prior_episodic_route_replay_prefix")
+        ]
+        self.assertEqual(
+            [event["path"] for event in replayed],
+            [(Action.RIGHT,), (Action.RIGHT, Action.RIGHT)],
+        )
+        self.assertTrue(
+            replayed[-1][
+                "human_prior_episodic_route_replay_waypoint_reached"
+            ]
+        )
         completed = next(
             event
             for event in logger.events
@@ -7769,6 +7793,18 @@ class EnsemblePlannerTests(unittest.TestCase):
             agent.human_prior_episodic_graph_edges[second][frontier], 1
         )
         self.assertEqual(
+            agent.human_prior_episodic_graph_controls[(source, first)],
+            ((Action.DOWN, 16),),
+        )
+        self.assertEqual(
+            agent.human_prior_episodic_graph_controls[(first, second)],
+            ((Action.DOWN, 16),),
+        )
+        self.assertEqual(
+            agent.human_prior_episodic_graph_controls[(second, frontier)],
+            ((Action.DOWN, 16),),
+        )
+        self.assertEqual(
             agent.human_prior_graph_edge_verifications[
                 (source, Action.DOWN, 16)
             ],
@@ -7792,6 +7828,10 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(plan.kind, "control_frontier")
         self.assertEqual(plan.waypoint_signature, frontier)
         self.assertEqual(plan.source_remaining_cost, 3)
+        self.assertEqual(
+            plan.route_controls,
+            ((Action.DOWN, 16),) * 3,
+        )
         self.assertEqual(
             agent._human_prior_episodic_graph_progress(plan, first),
             (1.0 / 3.0, False, 2),

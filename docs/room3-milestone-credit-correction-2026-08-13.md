@@ -231,3 +231,32 @@ frontiers after a different heart set or learned world context, while a state
 whose graph signature and coordinate were both visited remains rejected. The
 next matched replay should use the same deeper budget and confirm that the
 verified `(192,160)` route is archived and restored.
+
+## Control-frontier stability and tracker correction
+
+The semantic archive replay then preserved and restored a never-committed
+`(32,48)` graph state. Three continuations expanded the two-heart room without
+life loss, but the control-frontier policy alternated between equally ranked
+waypoints `(64,48)` and `(112,48)` as the committed source changed. A
+source-independent graph-signature tie-break fixed that oscillation.
+
+The matched three-decision validation
+`entity-v69-room3-stable-control-frontier-frozen-d3` retained `(112,48)` as
+the waypoint on every decision, yet alternated between `(144,32)` and
+`(48,48)`. Inspection of the stored frames showed the deeper cause: temporal
+player tracking had selected clipped 16-pixel scan windows near its prior
+reference even when a stronger overlapping window located the same sprite at
+the correct tile. This produced a false graph route
+`(48,48) -> (64,48) -> (80,48) -> (96,48) -> (112,48)` while the actual sprite
+was traversing the upper corridor at `y=32`. From the genuine `(48,48)` state,
+RIGHT was blocked and the route could not execute.
+
+Temporal tracking now promotes the strongest overlapping scan window while
+continuing to reject genuinely distant blue candidates. Assisted graph keys
+carry `player-tracking=overlap-v2`, isolating corrected evidence from the
+corrupted temporary graph without changing either frozen learned model.
+Verified episodic edges also retain their observed action and duration.
+Exact search can replay one shortest labelled route in a reserved beam slot,
+but every step and waypoint remains emulator-verified and failed replay does
+not fabricate progress. Telemetry records the route proposal, every retained
+prefix, and whether the waypoint was actually reached.
