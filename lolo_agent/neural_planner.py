@@ -107,6 +107,7 @@ class NeuralPlanningConfig:
     human_prior_phase_position_novelty: bool = False
     human_prior_graph_stagnation_visits: int = 0
     human_prior_goal_exhaustion_rollback: bool = False
+    human_prior_goal_exhaustion_minimum_steps: int = 16
     human_prior_goal_exhaustion_frontier_budget: int = 0
     human_prior_option_search_depth: int = 0
     human_prior_option_search_beam_width: int = 8
@@ -306,6 +307,7 @@ class _LifeHazardCheckpoint:
     goal_chest_obtained: bool = False
     exploration_steps: int = 0
     goal_target_heart_slots: Tuple[Tuple[int, int], ...] = ()
+    goal_target_heart_slots_known: bool = False
 
 
 @dataclass
@@ -538,6 +540,11 @@ class VerifiedNeuralAgent:
         if self.config.human_prior_goal_exhaustion_frontier_budget < 0:
             raise ValueError(
                 "human-prior goal exhaustion frontier budget must be "
+                "non-negative"
+            )
+        if self.config.human_prior_goal_exhaustion_minimum_steps < 0:
+            raise ValueError(
+                "human-prior goal exhaustion minimum steps must be "
                 "non-negative"
             )
         if self.config.human_prior_goal_exhaustion_rollback and (
@@ -889,6 +896,9 @@ class VerifiedNeuralAgent:
             action_streak=checkpoint.action_streak,
             goal_heart_slots=checkpoint.goal_heart_slots,
             goal_target_heart_slots=checkpoint.goal_target_heart_slots,
+            goal_target_heart_slots_known=(
+                checkpoint.goal_target_heart_slots_known
+            ),
             goal_player_slot=checkpoint.goal_player_slot,
             goal_chest_obtained=checkpoint.goal_chest_obtained,
             human_prior_world_context_signature=(
@@ -965,6 +975,10 @@ class VerifiedNeuralAgent:
             goal_target_heart_slots=tuple(
                 (int(slot[0]), int(slot[1]))
                 for slot in metadata.get("goal_target_heart_slots") or ()
+            ),
+            goal_target_heart_slots_known=bool(
+                metadata.get("goal_target_heart_slots_known", False)
+                or metadata.get("goal_target_heart_slots")
             ),
         )
         if checkpoint.kind != "goal_milestone":
@@ -5240,6 +5254,10 @@ class VerifiedNeuralAgent:
                         last_duration=self.last_duration,
                         action_streak=self.action_streak,
                         goal_heart_slots=archived.analysis.source_present,
+                        goal_target_heart_slots=(
+                            archived.analysis.target_present
+                        ),
+                        goal_target_heart_slots_known=True,
                         goal_player_slot=archived.analysis.source_player_slot,
                         goal_chest_obtained=bool(
                             getattr(self.goal_prior, "chest_obtained", False)
@@ -9358,16 +9376,28 @@ class VerifiedNeuralAgent:
         )
         milestone_frontier_budget_exhausted = False
         milestone_checkpoint = self.pending_goal_milestone_checkpoint
+        milestone_minimum_steps = (
+            self.config.human_prior_goal_exhaustion_minimum_steps
+        )
         milestone_frontier_budget = (
             self.config.human_prior_goal_exhaustion_frontier_budget
         )
-        if milestone_checkpoint is not None and milestone_frontier_budget > 0:
+        milestone_minimum_steps_satisfied = True
+        if (
+            milestone_checkpoint is not None
+            and self.config.human_prior_goal_exhaustion_rollback
+        ):
             milestone_checkpoint.exploration_steps += 1
             self._persist_goal_milestone_checkpoint(milestone_checkpoint)
+            milestone_minimum_steps_satisfied = bool(
+                milestone_checkpoint.exploration_steps
+                >= milestone_minimum_steps
+            )
             milestone_frontier_budget_exhausted = bool(
-                human_prior_graph_stagnant
+                milestone_frontier_budget > 0
+                and human_prior_graph_stagnant
                 and milestone_checkpoint.exploration_steps
-                >= milestone_frontier_budget
+                >= max(milestone_frontier_budget, milestone_minimum_steps)
             )
         if human_prior_graph_repeated and navigation_recovery_grace_active:
             assert self.last_navigation_change_decision is not None
@@ -9556,14 +9586,35 @@ class VerifiedNeuralAgent:
             and option_search_exhausted
             and self.pending_goal_milestone_checkpoint is not None
         ):
-            goal_exhaustion_recovery = (
-                self._restore_goal_milestone_after_exhaustion(
-                    current_goal_graph_signature,
-                    current_goal_graph_visits,
+            if not milestone_minimum_steps_satisfied:
+                checkpoint = self.pending_goal_milestone_checkpoint
+                self._emit(
+                    "goal_milestone_exhaustion_deferred",
+                    decision=self.decision_index + 1,
+                    reason="minimum_post_milestone_exploration",
+                    milestone_choice=checkpoint.choice,
+                    milestone_decision=checkpoint.decision,
+                    exploration_steps=checkpoint.exploration_steps,
+                    minimum_exploration_steps=milestone_minimum_steps,
+                    remaining_exploration_steps=max(
+                        0,
+                        milestone_minimum_steps
+                        - checkpoint.exploration_steps,
+                    ),
+                    exhausted_graph_signature=current_goal_graph_signature,
+                    exhausted_graph_visits=current_goal_graph_visits,
+                    agent_visible=True,
+                    **self._frame_fields(self.frame),
                 )
-            )
-            if goal_exhaustion_recovery is not None:
-                return goal_exhaustion_recovery
+            else:
+                goal_exhaustion_recovery = (
+                    self._restore_goal_milestone_after_exhaustion(
+                        current_goal_graph_signature,
+                        current_goal_graph_visits,
+                    )
+                )
+                if goal_exhaustion_recovery is not None:
+                    return goal_exhaustion_recovery
         anticipated_transition_observation_due = (
             self.anticipated_transition_observations_remaining > 0
         )
@@ -11728,6 +11779,9 @@ class VerifiedNeuralAgent:
                                 if committed_goal_analysis is None
                                 else committed_goal_analysis.target_present
                             ),
+                            goal_target_heart_slots_known=(
+                                committed_goal_analysis is not None
+                            ),
                             goal_player_slot=source_goal_player_slot,
                             goal_chest_obtained=(
                                 source_goal_chest_obtained
@@ -11772,6 +11826,10 @@ class VerifiedNeuralAgent:
                             last_duration=source_last_duration,
                             action_streak=source_action_streak,
                             goal_heart_slots=source_goal_heart_slots,
+                            goal_target_heart_slots=(
+                                committed_goal_analysis.target_present
+                            ),
+                            goal_target_heart_slots_known=True,
                             goal_player_slot=source_goal_player_slot,
                             goal_chest_obtained=(
                                 source_goal_chest_obtained
@@ -12923,26 +12981,21 @@ class VerifiedNeuralAgent:
         exhausted_graph_signature: str,
         exhausted_graph_visits: int,
     ) -> Optional[Decision]:
-        """Learn from a bounded post-milestone search and restore its source.
+        """Record a bounded post-milestone search and restore its source.
 
-        This assisted, opt-in recovery does not assert why the goal state is
-        blocked. It requires both semantic graph stagnation and an exhausted
-        verified option search, then gives the exact milestone choice the same
-        small negative sample used for an unrecoverable temporal option.
+        This assisted, opt-in recovery does not assert that the milestone is a
+        hazard. It records only a visible milestone transition as a temporary
+        preparation-ordering hint. Negative temporal-option samples remain
+        reserved for observed loss or causal recoverability evidence.
         """
 
         checkpoint = self.pending_goal_milestone_checkpoint
         if checkpoint is None:
             return None
         self.pending_goal_milestone_checkpoint = None
-        penalty = -self.config.temporal_option_return_penalty
-        learned_value = self._record_temporal_option_sample(
-            checkpoint.choice, penalty
-        )
-        learned_samples = self.temporal_option_samples[checkpoint.choice]
         exhausted_transition = None
         if (
-            checkpoint.goal_target_heart_slots
+            checkpoint.goal_target_heart_slots_known
             and checkpoint.goal_target_heart_slots
             != checkpoint.goal_heart_slots
         ):
@@ -12975,8 +13028,17 @@ class VerifiedNeuralAgent:
             ),
             milestone_choice=checkpoint.choice,
             milestone_decision=checkpoint.decision,
-            learned_hazard_value=learned_value,
-            learned_hazard_samples=learned_samples,
+            exploration_steps=checkpoint.exploration_steps,
+            minimum_exploration_steps=(
+                self.config.human_prior_goal_exhaustion_minimum_steps
+            ),
+            learned_hazard_value=None,
+            learned_hazard_samples=0,
+            hazard_evidence=False,
+            policy_effect="milestone_priority_only",
+            preparation_transition_learned=(
+                exhausted_transition is not None
+            ),
             exhausted_milestone_transition=exhausted_transition,
             recovery_state_id=checkpoint.state_id,
             agent_visible=True,
@@ -14134,6 +14196,7 @@ class VerifiedNeuralAgent:
                     action_streak=self.action_streak,
                     goal_heart_slots=source_goal_heart_slots,
                     goal_target_heart_slots=branch.goal_heart_slots,
+                    goal_target_heart_slots_known=True,
                     goal_player_slot=self.goal_prior.current_player_slot,
                     goal_chest_obtained=bool(
                         getattr(self.goal_prior, "chest_obtained", False)

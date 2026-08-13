@@ -350,11 +350,21 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   `goal_milestone_exhaustion_learned` and
   `goal_milestone_exhaustion_state_restored` record the opt-in assisted
   preparation loop. Rollback requires a repeated semantic state, no
-  recoverable archive frontier, and an exact option search that adds no
-  endpoint. The event preserves the exact milestone choice, small learned
-  negative value, graph/position coverage, exhausted option sources,
-  pre-milestone state ID, descendant invalidations, and restored pixel goal
-  state. It does not infer or label the reason the milestone state is blocked;
+  recoverable archive frontier, an exact option search that adds no endpoint,
+  and (by default) at least 16 committed post-milestone decisions. Before that
+  threshold, `goal_milestone_exhaustion_deferred` records the bounded search
+  result and the remaining evidence budget without changing policy. The
+  threshold is configurable with
+  `--human-prior-goal-exhaustion-minimum-steps`. The exhaustion event preserves
+  the exact milestone choice, graph/position coverage, exhausted option
+  sources, pre-milestone state ID, descendant invalidations, and restored pixel
+  goal state. It records the observed heart-set transition as a soft
+  preparation-ordering hint; it does not create a negative temporal-option
+  hazard sample. Those samples remain reserved for observed loss or causal
+  recoverability evidence. The compatibility event name remains
+  `goal_milestone_exhaustion_learned`, while
+  `hazard_evidence=false`, `policy_effect=milestone_priority_only`, and
+  `preparation_transition_learned` make the semantics explicit;
 - `goal_milestone_checkpoint_snapshot_stored` persists that opaque
   pre-milestone capability without exposing its bytes or metadata to policy.
   `episodic_goal_milestone_checkpoint_state_imported` records restoration in a
@@ -362,9 +372,11 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   from a parent retained in live memory. With a positive
   `--human-prior-goal-exhaustion-frontier-budget`,
   `goal_milestone_frontier_budget_exhausted` bounds post-milestone exploration
-  even when an expanding semantic archive would otherwise postpone rollback.
-  The learned failure is also scoped to the visible heart-set transition, so a
-  later path cannot immediately repeat the same exhausted collection order;
+  even when an expanding semantic archive would otherwise postpone rollback,
+  but it cannot bypass the minimum exploration requirement. The preparation
+  hint is scoped to the visible heart-set transition—including the valid empty
+  set after the last heart—so later planning deprioritizes the same collection
+  order without hard-vetoing the controller action;
 - `human_prior_option_milestone_settled` links the immediate action endpoint
   to the stable frame and state used for milestone analysis and archival.
   `human_prior_option_milestone_candidates_collapsed` reports the reduction in

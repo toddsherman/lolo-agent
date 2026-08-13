@@ -1829,6 +1829,19 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "goal_milestone_exhaustions_learned": event_counts.get(
             "goal_milestone_exhaustion_learned", 0
         ),
+        "goal_milestone_exhaustion_deferrals": event_counts.get(
+            "goal_milestone_exhaustion_deferred", 0
+        ),
+        "goal_milestone_preparation_transitions": sum(
+            event["event"] == "goal_milestone_exhaustion_learned"
+            and bool(event.get("preparation_transition_learned"))
+            for event in events
+        ),
+        "goal_milestone_exhaustion_hazard_samples": sum(
+            event["event"] == "goal_milestone_exhaustion_learned"
+            and bool(event.get("hazard_evidence", True))
+            for event in events
+        ),
         "goal_milestone_frontier_budget_exhaustions": event_counts.get(
             "goal_milestone_frontier_budget_exhausted", 0
         ),

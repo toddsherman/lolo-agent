@@ -577,9 +577,18 @@ def main() -> None:
         "--human-prior-goal-exhaustion-rollback",
         action="store_true",
         help=(
-            "on the assisted track, learn a small negative value for an exact "
-            "goal milestone and restore its pre-action state after both the "
+            "on the assisted track, record a soft preparation-ordering hint "
+            "and restore a goal milestone's pre-action state after both the "
             "semantic graph and verified option frontier are exhausted"
+        ),
+    )
+    parser.add_argument(
+        "--human-prior-goal-exhaustion-minimum-steps",
+        type=int,
+        default=16,
+        help=(
+            "minimum committed post-milestone decisions required before "
+            "bounded frontier exhaustion may trigger rollback"
         ),
     )
     parser.add_argument(
@@ -588,8 +597,9 @@ def main() -> None:
         default=0,
         help=(
             "maximum post-milestone decisions spent on ordinary and causal "
-            "frontiers before restoring the pre-milestone checkpoint; zero "
-            "keeps purely exhaustive rollback"
+            "frontiers before restoring the pre-milestone checkpoint, after "
+            "the minimum exploration requirement; zero keeps purely "
+            "exhaustive rollback"
         ),
     )
     parser.add_argument(
@@ -969,6 +979,11 @@ def main() -> None:
     if args.human_prior_goal_exhaustion_frontier_budget < 0:
         parser.error(
             "--human-prior-goal-exhaustion-frontier-budget must be "
+            "non-negative"
+        )
+    if args.human_prior_goal_exhaustion_minimum_steps < 0:
+        parser.error(
+            "--human-prior-goal-exhaustion-minimum-steps must be "
             "non-negative"
         )
     if args.human_prior_goal_exhaustion_rollback and (
@@ -1372,6 +1387,11 @@ def main() -> None:
             args.human_prior_goal_exhaustion_rollback
             if args.human_prior_hearts
             else False
+        ),
+        human_prior_goal_exhaustion_minimum_steps=(
+            args.human_prior_goal_exhaustion_minimum_steps
+            if args.human_prior_hearts
+            else 0
         ),
         human_prior_goal_exhaustion_frontier_budget=(
             args.human_prior_goal_exhaustion_frontier_budget
