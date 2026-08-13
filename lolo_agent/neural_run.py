@@ -1003,6 +1003,14 @@ def main() -> None:
             "every replayed frame is still verified"
         ),
     )
+    parser.add_argument(
+        "--skip-resume-option-archives",
+        action="store_true",
+        help=(
+            "diagnostic matched resume: restore the committed state and "
+            "episodic graph but omit uncommitted option-archive save states"
+        ),
+    )
     parser.add_argument("--no-frame-images", action="store_true")
     parser.add_argument(
         "--stop-on-stable-scene-change",
@@ -1024,6 +1032,8 @@ def main() -> None:
     args = parser.parse_args()
     if (args.resume_run is None) != (args.resume_decision is None):
         parser.error("--resume-run and --resume-decision must be supplied together")
+    if args.skip_resume_option_archives and args.resume_run is None:
+        parser.error("--skip-resume-option-archives requires --resume-run")
     if args.resume_run is not None and args.bootstrap != "none":
         parser.error("--resume-run cannot be combined with --bootstrap")
     if args.stop_on_stable_scene_change < 0:
@@ -1726,6 +1736,9 @@ def main() -> None:
             "source_events_sha256": sha256_file(source_events),
             "source_reward_track": resume_reward_track,
             "compatible_host_migration": args.allow_compatible_resume_host,
+            "option_archive_import": (
+                "skipped" if args.skip_resume_option_archives else "imported"
+            ),
         }
     entity_curiosity_selection_enabled = bool(
         args.human_prior_option_entity_curiosity_weight > 0.0
@@ -1915,25 +1928,38 @@ def main() -> None:
                     args.resume_run, args.resume_decision
                 )
                 imported_archives = []
-                for archive in persisted_archives:
-                    handle = env.import_option_archive_state(
-                        archive.state,
-                        archive.frame,
-                        source_run_id=archive.source_run_id,
-                        source_state_id=archive.source_state_id,
+                if args.skip_resume_option_archives:
+                    logger.log(
+                        "episodic_option_archive_import_skipped",
+                        decision=0,
+                        source_run_id=restored.run_id,
+                        source_decision=restored.decision,
+                        active_archives_skipped=len(persisted_archives),
+                        policy_effect=(
+                            "matched_committed_state_without_uncommitted_frontiers"
+                        ),
+                        agent_visible=False,
                     )
-                    imported_archives.append(
-                        (
-                            handle,
+                else:
+                    for archive in persisted_archives:
+                        handle = env.import_option_archive_state(
+                            archive.state,
                             archive.frame,
-                            archive.metadata,
-                            archive.source_run_id,
-                            archive.source_state_id,
+                            source_run_id=archive.source_run_id,
+                            source_state_id=archive.source_state_id,
                         )
+                        imported_archives.append(
+                            (
+                                handle,
+                                archive.frame,
+                                archive.metadata,
+                                archive.source_run_id,
+                                archive.source_state_id,
+                            )
+                        )
+                    agent.seed_human_prior_option_archives(
+                        imported_archives
                     )
-                agent.seed_human_prior_option_archives(
-                    imported_archives
-                )
                 persisted_milestone = load_active_goal_milestone_checkpoint(
                     args.resume_run, args.resume_decision
                 )

@@ -6,7 +6,17 @@ import math
 from collections import Counter
 from dataclasses import dataclass, field, replace
 from itertools import product
-from typing import Any, Counter as CounterType, Dict, List, Optional, Sequence, Tuple, Union
+from typing import (
+    Any,
+    Counter as CounterType,
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+)
 
 import torch
 from torch import Tensor
@@ -244,11 +254,14 @@ class _HumanPriorOptionNode:
     immediate_frame_digest: str = ""
     entity_interaction_signature: str = ""
     entity_interaction_action: Optional[Action] = None
+    entity_interaction_action_index: Optional[int] = None
     entity_interaction_direction: Optional[Action] = None
     entity_interaction_cell: Optional[Tuple[int, int]] = None
     entity_interaction_appearance_fingerprint: str = ""
     entity_interaction_type_id: Optional[int] = None
     entity_interaction_context_signature: str = ""
+    entity_interaction_phase_signature: str = ""
+    entity_interaction_neighborhood_signature: str = ""
     entity_behavior_samples: int = 0
     entity_behavior_known: bool = False
     entity_behavior_novelty: float = 0.0
@@ -264,6 +277,16 @@ class _HumanPriorOptionNode:
     entity_inert_penalty_eligible: bool = False
     entity_inert_penalty_suppressed: bool = False
     entity_measured_effect_probability: float = 0.0
+    entity_displacement_probability: float = 0.0
+    entity_appearance_transition_probability: float = 0.0
+    entity_global_phase_change_probability: float = 0.0
+    entity_manipulation_probability: float = 0.0
+    entity_predictive_family_id: Optional[int] = None
+    entity_predictive_family_size: int = 1
+    entity_predictive_family_pooled: bool = False
+    entity_effect_target_distance: Optional[int] = None
+    entity_effect_persisted_in_search: bool = False
+    entity_effect_persistence_steps: int = 0
     episodic_graph_plan_kind: str = ""
     episodic_graph_progress: float = 0.0
     episodic_graph_bridge_reached: bool = False
@@ -960,6 +983,12 @@ class VerifiedNeuralAgent:
         self.unlabeled_entity_memory: Optional[
             UnlabeledEntityMemory
         ] = None
+        self.anonymous_phase_stable_observations: CounterType[
+            Tuple[int, int]
+        ] = Counter()
+        self.anonymous_phase_changed_observations: CounterType[
+            Tuple[int, int]
+        ] = Counter()
         self.human_prior_graph_edge_visits: CounterType[
             Tuple[str, Action, int]
         ] = Counter()
@@ -1200,6 +1229,8 @@ class VerifiedNeuralAgent:
         )
 
     def _reset_unlabeled_entity_memory(self, frame: Frame) -> None:
+        self.anonymous_phase_stable_observations = Counter()
+        self.anonymous_phase_changed_observations = Counter()
         if not self.config.human_prior_option_entity_frontier:
             self.unlabeled_entity_memory = None
             return
@@ -1783,6 +1814,160 @@ class VerifiedNeuralAgent:
                 ] += 1
         return features, fingerprints
 
+    def _anonymous_entity_context_factors(
+        self,
+        frame: Frame,
+        anchor: Tuple[int, int],
+        controlled_cells: Iterable[Tuple[int, int]],
+        features: Optional[
+            Dict[Tuple[int, int], Tuple[int, ...]]
+        ] = None,
+    ) -> Dict[str, Any]:
+        """Build phase-conditioned relational context from pixels only."""
+
+        memory = self.unlabeled_entity_memory
+        model = self.entity_behavior_model
+        if memory is None or model is None:
+            return {}
+        controlled = {
+            (int(column), int(row)) for column, row in controlled_cells
+        }
+        if features is None:
+            features = {
+                (column, row): memory.feature_at(frame, column, row)
+                for row in range(memory.rows)
+                for column in range(memory.columns)
+            }
+        relation = model.relational_context_signature(
+            anchor, controlled
+        )
+        neighborhood = model.neighborhood_signature(anchor, features)
+        # Local manipulation and the controlled sprite do not define the
+        # room-wide phase. Distant simultaneous changes—including HUD-like
+        # visual counters and newly active entities—remain observable.
+        stable_phase_cells = {
+            cell
+            for cell in features
+            if self.anonymous_phase_stable_observations[cell] >= 2
+            and self.anonymous_phase_stable_observations[cell]
+            > 2 * self.anonymous_phase_changed_observations[cell]
+        }
+        if stable_phase_cells:
+            phase_cells = stable_phase_cells - controlled
+            phase = model.phase_signature(
+                feature
+                for cell, feature in features.items()
+                if cell in phase_cells
+            )
+        else:
+            phase = "unresolved"
+        return {
+            "context_signature": model.factored_context_signature(
+                relation, neighborhood, phase
+            ),
+            "relation_signature": relation,
+            "neighborhood_signature": neighborhood,
+            "phase_signature": phase,
+            "phase_stable_cells": len(stable_phase_cells),
+        }
+
+    def _update_anonymous_phase_stability(
+        self, source_frame: Frame, target_frame: Frame
+    ) -> Tuple[int, int]:
+        """Learn which coarse cells survive a neutral time interval."""
+
+        memory = self.unlabeled_entity_memory
+        if memory is None:
+            return 0, 0
+        for row in range(memory.rows):
+            for column in range(memory.columns):
+                cell = (column, row)
+                if memory.feature_distance(
+                    memory.feature_at(source_frame, column, row),
+                    memory.feature_at(target_frame, column, row),
+                ) <= memory.match_threshold:
+                    self.anonymous_phase_stable_observations[cell] += 1
+                else:
+                    self.anonymous_phase_changed_observations[cell] += 1
+        stable = sum(
+            self.anonymous_phase_stable_observations[cell] >= 2
+            and self.anonymous_phase_stable_observations[cell]
+            > 2 * self.anonymous_phase_changed_observations[cell]
+            for cell in self.anonymous_phase_stable_observations
+        )
+        changed = sum(
+            count > 0
+            for count in self.anonymous_phase_changed_observations.values()
+        )
+        return stable, changed
+
+    def _anonymous_entity_frame_features(
+        self,
+        frame: Frame,
+        ignored_pixels: Optional[set[Tuple[int, int]]] = None,
+    ) -> Dict[Tuple[int, int], Tuple[int, ...]]:
+        memory = self.unlabeled_entity_memory
+        if memory is None:
+            return {}
+        return {
+            (column, row): memory.feature_at(
+                frame, column, row, ignored_pixels
+            )
+            for row in range(memory.rows)
+            for column in range(memory.columns)
+        }
+
+    def _anonymous_entity_controlled_displacement(
+        self,
+        source_feature: Sequence[int],
+        anchor: Tuple[int, int],
+        factual_features: Dict[Tuple[int, int], Tuple[int, ...]],
+        control_features: Dict[Tuple[int, int], Tuple[int, ...]],
+        source_features: Dict[Tuple[int, int], Tuple[int, ...]],
+    ) -> Optional[Tuple[int, int]]:
+        """Measure action-caused translation of a rare visual appearance."""
+
+        memory = self.unlabeled_entity_memory
+        model = self.entity_behavior_model
+        if memory is None or model is None:
+            return None
+        source_fingerprint = model.appearance_fingerprint(source_feature)
+        source_count = sum(
+            model.appearance_fingerprint(feature) == source_fingerprint
+            for feature in source_features.values()
+        )
+        if source_count > 4:
+            return None
+
+        def matched_offset(
+            features: Dict[Tuple[int, int], Tuple[int, ...]]
+        ) -> Optional[Tuple[int, int]]:
+            candidates = []
+            for cell, feature in features.items():
+                offset = (cell[0] - anchor[0], cell[1] - anchor[1])
+                if abs(offset[0]) + abs(offset[1]) > 4:
+                    continue
+                distance = memory.feature_distance(source_feature, feature)
+                if distance <= memory.match_threshold:
+                    candidates.append(
+                        (
+                            distance,
+                            abs(offset[0]) + abs(offset[1]),
+                            offset,
+                        )
+                    )
+            return None if not candidates else min(candidates)[2]
+
+        factual_offset = matched_offset(factual_features)
+        control_offset = matched_offset(control_features)
+        if factual_offset is None or control_offset is None:
+            return None
+        displacement = (
+            factual_offset[0] - control_offset[0],
+            factual_offset[1] - control_offset[1],
+        )
+        return displacement if displacement != (0, 0) else None
+
     def _human_prior_option_entity_curiosity(
         self,
         frame: Frame,
@@ -1857,10 +2042,13 @@ class VerifiedNeuralAgent:
                 max(0, player_slot[1] * memory.rows // frame.height),
             ),
         )
-        context_signature = model.relational_context_signature(
+        context = self._anonymous_entity_context_factors(
+            frame,
             target_cell,
             (player_cell,),
+            features,
         )
+        context_signature = context.get("context_signature", "")
         prediction = model.predict(
             feature,
             action,
@@ -1879,7 +2067,10 @@ class VerifiedNeuralAgent:
         )
         curiosity = (
             spatial_rarity
-            * behavior_novelty
+            * (
+                behavior_novelty
+                + prediction.manipulation_probability
+            )
             * appearance_transferability
         )
         inert_confidence = (
@@ -1904,6 +2095,11 @@ class VerifiedNeuralAgent:
             "appearance_count": appearance_count,
             "anonymous_type_id": prediction.type_id,
             "context_signature": context_signature,
+            "relation_signature": context.get("relation_signature"),
+            "neighborhood_signature": context.get(
+                "neighborhood_signature"
+            ),
+            "phase_signature": context.get("phase_signature"),
             "behavior_samples": prediction.samples,
             "behavior_known": prediction.known,
             "behavior_confidence": prediction.confidence,
@@ -1933,6 +2129,23 @@ class VerifiedNeuralAgent:
             ),
             "terminal_visual_change_probability": (
                 prediction.terminal_visual_change_probability
+            ),
+            "entity_displacement_probability": (
+                prediction.entity_displacement_probability
+            ),
+            "appearance_transition_probability": (
+                prediction.appearance_transition_probability
+            ),
+            "global_phase_change_probability": (
+                prediction.global_phase_change_probability
+            ),
+            "manipulation_probability": (
+                prediction.manipulation_probability
+            ),
+            "predictive_family_id": prediction.predictive_family_id,
+            "predictive_family_size": prediction.predictive_family_size,
+            "predictive_family_pooled": (
+                prediction.predictive_family_pooled
             ),
         }
 
@@ -3345,6 +3558,7 @@ class VerifiedNeuralAgent:
         ignored_player_pixels: set[Tuple[int, int]],
         evidence_scope: str,
         evidence_eligible: bool = True,
+        causal_effect_confirmed: bool = True,
     ) -> Optional[Dict[str, Any]]:
         """Predict or learn one anonymous type's controlled outcome.
 
@@ -3366,6 +3580,16 @@ class VerifiedNeuralAgent:
         )
         control_feature = memory.feature_at(
             control_frame, *anchor, ignored_player_pixels
+        )
+        source_features = {
+            (patch.column, patch.row): patch.feature
+            for patch in before_observation.patches
+        }
+        factual_features = self._anonymous_entity_frame_features(
+            factual_frame, ignored_player_pixels
+        )
+        control_features = self._anonymous_entity_frame_features(
+            control_frame, ignored_player_pixels
         )
         relative_cells = tuple(
             sorted(
@@ -3399,19 +3623,14 @@ class VerifiedNeuralAgent:
             factual_analysis.life_counter_changed
             and not control_analysis.life_counter_changed
         )
-        outcome_descriptor = model.effect_descriptor(
-            source_feature,
-            factual_feature,
-            control_feature,
-            relative_effect_cells=relative_cells,
-            player_displacement=player_displacement,
-            terminal_visual_change=differential_terminal_change,
-        )
-        outcome_signature = outcome_descriptor.signature
-        fallback_context_signature = model.context_signature(
-            patch.feature
-            for patch in before_observation.patches
-            if (patch.column, patch.row) != anchor
+        entity_displacement = (
+            self._anonymous_entity_controlled_displacement(
+                source_feature,
+                anchor,
+                factual_features,
+                control_features,
+                source_features,
+            )
         )
         source_player = (
             factual_analysis.source_player_slot
@@ -3441,11 +3660,91 @@ class VerifiedNeuralAgent:
                     ),
                 )
             )
-        context_signature = model.relational_context_signature(
+        context = self._anonymous_entity_context_factors(
+            before_frame,
             anchor,
             controlled_cells,
-            fallback_context_signature,
+            source_features,
         )
+        context_signature = context.get("context_signature", "")
+        phase_controlled_cells = set(controlled_cells)
+        for slot in {
+            factual_analysis.target_player_slot,
+            control_analysis.target_player_slot,
+        }:
+            if slot is None:
+                continue
+            phase_controlled_cells.add(
+                (
+                    min(
+                        memory.columns - 1,
+                        max(
+                            0,
+                            slot[0] * memory.columns // before_frame.width,
+                        ),
+                    ),
+                    min(
+                        memory.rows - 1,
+                        max(
+                            0,
+                            slot[1] * memory.rows // before_frame.height,
+                        ),
+                    ),
+                )
+            )
+        factual_context = self._anonymous_entity_context_factors(
+            factual_frame,
+            anchor,
+            phase_controlled_cells,
+            factual_features,
+        )
+        control_context = self._anonymous_entity_context_factors(
+            control_frame,
+            anchor,
+            phase_controlled_cells,
+            control_features,
+        )
+        global_phase_changed_cells = tuple(
+            sorted(
+                cell
+                for cell in source_features
+                if self.anonymous_phase_stable_observations[cell] >= 2
+                and self.anonymous_phase_stable_observations[cell]
+                > 2 * self.anonymous_phase_changed_observations[cell]
+                and cell not in phase_controlled_cells
+                and abs(cell[0] - anchor[0])
+                + abs(cell[1] - anchor[1])
+                > 1
+                and memory.feature_distance(
+                    factual_features[cell], control_features[cell]
+                ) > memory.match_threshold
+            )
+        )
+        global_phase_change = bool(global_phase_changed_cells)
+        outcome_descriptor = model.effect_descriptor(
+            source_feature,
+            factual_feature,
+            control_feature,
+            relative_effect_cells=relative_cells,
+            player_displacement=player_displacement,
+            terminal_visual_change=differential_terminal_change,
+            entity_displacement=entity_displacement,
+            global_phase_change=global_phase_change,
+        )
+        apparent_effect_requires_control = bool(
+            relative_cells
+            or outcome_descriptor.manipulation_effect
+            or outcome_descriptor.terminal_visual_change
+            or hazardous
+        )
+        evidence_eligible = bool(
+            evidence_eligible
+            and (
+                causal_effect_confirmed
+                or not apparent_effect_requires_control
+            )
+        )
+        outcome_signature = outcome_descriptor.signature
         prediction_before = model.predict(
             source_feature,
             action,
@@ -3511,6 +3810,17 @@ class VerifiedNeuralAgent:
             "action_frames": duration,
             "autonomous": False,
             "context_signature": context_signature,
+            "relation_signature": context.get("relation_signature"),
+            "neighborhood_signature": context.get(
+                "neighborhood_signature"
+            ),
+            "phase_signature": context.get("phase_signature"),
+            "factual_phase_signature": factual_context.get(
+                "phase_signature"
+            ),
+            "control_phase_signature": control_context.get(
+                "phase_signature"
+            ),
             "context_matched_before": (
                 prediction_before.context_matched
             ),
@@ -3532,6 +3842,18 @@ class VerifiedNeuralAgent:
             "measured_effect_probability_before": (
                 prediction_before.measured_effect_probability
             ),
+            "entity_displacement_probability_before": (
+                prediction_before.entity_displacement_probability
+            ),
+            "appearance_transition_probability_before": (
+                prediction_before.appearance_transition_probability
+            ),
+            "global_phase_change_probability_before": (
+                prediction_before.global_phase_change_probability
+            ),
+            "manipulation_probability_before": (
+                prediction_before.manipulation_probability
+            ),
             "observed_outcome_probability_before": observed_probability,
             "behavior_samples_before": prediction_before.samples,
             "behavior_known_before": prediction_before.known,
@@ -3551,6 +3873,17 @@ class VerifiedNeuralAgent:
             "observed_local_visual_change": (
                 outcome_descriptor.local_visual_change
             ),
+            "observed_entity_displacement": entity_displacement,
+            "observed_appearance_transition": (
+                outcome_descriptor.controlled_appearance_transition
+            ),
+            "observed_global_phase_change": global_phase_change,
+            "observed_global_phase_changed_cells": (
+                global_phase_changed_cells
+            ),
+            "observed_manipulation_effect": (
+                outcome_descriptor.manipulation_effect
+            ),
             "observed_hazard": hazardous,
             "surprise": surprise,
             "outcome_matched_prediction": bool(
@@ -3565,6 +3898,18 @@ class VerifiedNeuralAgent:
             "measured_effect_probability_after": (
                 prediction_after.measured_effect_probability
             ),
+            "entity_displacement_probability_after": (
+                prediction_after.entity_displacement_probability
+            ),
+            "appearance_transition_probability_after": (
+                prediction_after.appearance_transition_probability
+            ),
+            "global_phase_change_probability_after": (
+                prediction_after.global_phase_change_probability
+            ),
+            "manipulation_probability_after": (
+                prediction_after.manipulation_probability
+            ),
             "hazard_probability_after": (
                 prediction_after.hazardous_probability
             ),
@@ -3577,6 +3922,15 @@ class VerifiedNeuralAgent:
             "model_type_count": model.type_count,
             "model_rule_count": model.rule_count,
             "model_observations": model.observation_count,
+            "predictive_family_id_before": (
+                prediction_before.predictive_family_id
+            ),
+            "predictive_family_size_before": (
+                prediction_before.predictive_family_size
+            ),
+            "predictive_family_pooled_before": (
+                prediction_before.predictive_family_pooled
+            ),
         }
         self._emit(
             "anonymous_entity_behavior_observed",
@@ -3695,10 +4049,11 @@ class VerifiedNeuralAgent:
             )
             <= 1
         }
-        fallback_context_signature = model.context_signature(
-            feature
-            for cell, feature in source_features.items()
-            if cell not in excluded_cells
+        (
+            phase_stable_cells,
+            phase_cells_with_change_evidence,
+        ) = self._update_anonymous_phase_stability(
+            source_frame, neutral_frame
         )
         passive_hazard = bool(
             passive_analysis is not None
@@ -3740,11 +4095,13 @@ class VerifiedNeuralAgent:
                     for column, row in matching_offsets
                     if abs(column) + abs(row) == nearest_distance
                 ]
-            context_signature = model.relational_context_signature(
+            context = self._anonymous_entity_context_factors(
+                source_frame,
                 anchor,
                 context_player_cells,
-                fallback_context_signature,
+                source_features,
             )
+            context_signature = context.get("context_signature", "")
             outcome_descriptor = model.effect_descriptor(
                 source_feature,
                 target_features[anchor],
@@ -3825,6 +4182,11 @@ class VerifiedNeuralAgent:
                 action_frames=duration,
                 autonomous=True,
                 context_signature=context_signature,
+                relation_signature=context.get("relation_signature"),
+                neighborhood_signature=context.get(
+                    "neighborhood_signature"
+                ),
+                phase_signature=context.get("phase_signature"),
                 context_matched_before=(
                     prediction_before.context_matched
                 ),
@@ -3849,6 +4211,18 @@ class VerifiedNeuralAgent:
                 inert_confidence_before=prediction_before.inert_confidence,
                 measured_effect_probability_before=(
                     prediction_before.measured_effect_probability
+                ),
+                entity_displacement_probability_before=(
+                    prediction_before.entity_displacement_probability
+                ),
+                appearance_transition_probability_before=(
+                    prediction_before.appearance_transition_probability
+                ),
+                global_phase_change_probability_before=(
+                    prediction_before.global_phase_change_probability
+                ),
+                manipulation_probability_before=(
+                    prediction_before.manipulation_probability
                 ),
                 observed_outcome_probability_before=(
                     observed_probability
@@ -3884,6 +4258,18 @@ class VerifiedNeuralAgent:
                 measured_effect_probability_after=(
                     prediction_after.measured_effect_probability
                 ),
+                entity_displacement_probability_after=(
+                    prediction_after.entity_displacement_probability
+                ),
+                appearance_transition_probability_after=(
+                    prediction_after.appearance_transition_probability
+                ),
+                global_phase_change_probability_after=(
+                    prediction_after.global_phase_change_probability
+                ),
+                manipulation_probability_after=(
+                    prediction_after.manipulation_probability
+                ),
                 hazard_probability_after=(
                     prediction_after.hazardous_probability
                 ),
@@ -3892,6 +4278,15 @@ class VerifiedNeuralAgent:
                 player_displacement=None,
                 differential_terminal_visual_change=(
                     passive_terminal_visual_change
+                ),
+                predictive_family_id_before=(
+                    prediction_before.predictive_family_id
+                ),
+                predictive_family_size_before=(
+                    prediction_before.predictive_family_size
+                ),
+                predictive_family_pooled_before=(
+                    prediction_before.predictive_family_pooled
                 ),
                 model_type_count=model.type_count,
                 model_rule_count=model.rule_count,
@@ -3906,6 +4301,10 @@ class VerifiedNeuralAgent:
             candidate_cells=observed,
             excluded_player_cells=len(excluded_cells),
             unique_source_appearances=len(fingerprint_counts),
+            phase_stable_cells=phase_stable_cells,
+            phase_cells_with_change_evidence=(
+                phase_cells_with_change_evidence
+            ),
             learning_enabled=(
                 self.config.anonymous_entity_behavior_learning
             ),
@@ -4017,11 +4416,6 @@ class VerifiedNeuralAgent:
                     ),
                 )
             )
-        fallback_context_signature = model.context_signature(
-            feature
-            for cell, feature in features.items()
-            if cell not in controlled_cells
-        )
         candidate_cells = tuple(
             (cell, feature)
             for cell, feature in sorted(features.items())
@@ -4045,11 +4439,13 @@ class VerifiedNeuralAgent:
         )
         for anchor, feature in candidate_cells:
             appearance_fingerprint = model.appearance_fingerprint(feature)
-            context_signature = model.relational_context_signature(
+            context = self._anonymous_entity_context_factors(
+                endpoint_frame,
                 anchor,
                 controlled_cells,
-                fallback_context_signature,
+                features,
             )
+            context_signature = context.get("context_signature", "")
             for horizon in horizons:
                 prediction = model.predict(
                     feature,
@@ -4557,16 +4953,6 @@ class VerifiedNeuralAgent:
             model.appearance_fingerprint(feature)
             for feature in control_source.values()
         )
-        factual_fallback = model.context_signature(
-            feature
-            for cell, feature in factual_source.items()
-            if cell not in excluded_cells
-        )
-        control_fallback = model.context_signature(
-            feature
-            for cell, feature in control_source.items()
-            if cell not in excluded_cells
-        )
 
         def matching_offsets(
             anchor: Tuple[int, int],
@@ -4617,13 +5003,32 @@ class VerifiedNeuralAgent:
             control_offsets = matching_offsets(
                 anchor, control_feature, control_target
             )
-            factual_context = model.relational_context_signature(
-                anchor, factual_players, factual_fallback
+            factual_context_factors = (
+                self._anonymous_entity_context_factors(
+                    factual_start,
+                    anchor,
+                    factual_players,
+                    factual_source,
+                )
             )
-            control_context = model.relational_context_signature(
-                anchor, control_players, control_fallback
+            control_context_factors = (
+                self._anonymous_entity_context_factors(
+                    control_start,
+                    anchor,
+                    control_players,
+                    control_source,
+                )
             )
-            relation_changed = factual_context != control_context
+            factual_context = factual_context_factors.get(
+                "context_signature", ""
+            )
+            control_context = control_context_factors.get(
+                "context_signature", ""
+            )
+            relation_changed = bool(
+                factual_context_factors.get("relation_signature")
+                != control_context_factors.get("relation_signature")
+            )
             if relation_changed:
                 relation_changed_candidates += 1
             factual_local_outcome = model.effect_signature(
@@ -4787,6 +5192,7 @@ class VerifiedNeuralAgent:
         final_factual = node.frame
         final_control = source_frame
         final_entity_player_pixels: set[Tuple[int, int]] = set()
+        previous_control_frame: Optional[Frame] = None
         before_intervention, interaction_direction, interaction_ray = (
             self._human_prior_option_interaction_ray(
                 root, source_frame, node, action_index
@@ -4815,6 +5221,11 @@ class VerifiedNeuralAgent:
                 control = self.env.step(action, duration)
             for _ in range(future_step):
                 control = self.env.step(Action.NOOP, future_duration)
+            if previous_control_frame is not None:
+                self._update_anonymous_phase_stability(
+                    previous_control_frame, control
+                )
+            previous_control_frame = control
 
             factual_analysis = self.goal_prior.analyze(
                 source_frame, factual
@@ -5109,7 +5520,10 @@ class VerifiedNeuralAgent:
                         f"option:{node.path}:{node.durations}:"
                         f"action-index-{action_index}"
                     ),
-                    evidence_eligible=interaction_cell_matched,
+                    evidence_eligible=bool(
+                        interaction_cell_matched
+                    ),
+                    causal_effect_confirmed=confirmed,
                 )
             )
         result = {
@@ -5594,6 +6008,226 @@ class VerifiedNeuralAgent:
         )
         return eligible
 
+    def _probe_adjacent_anonymous_affordances(
+        self,
+        root: object,
+        source_frame: Frame,
+        source_analysis: HeartGoalAnalysis,
+        source_signature: str,
+        duration: int,
+        endpoints: List[_HumanPriorOptionNode],
+        saved_states: List[object],
+    ) -> int:
+        """Run cheap matched experiments before multi-step navigation search.
+
+        Candidate targets are selected only from pixel rarity and learned
+        uncertainty. Directional contact and facing-button actions are tested
+        against an equal-duration neutral branch, followed by the configured
+        neutral stability horizon. The emulator is restored after every
+        experiment.
+        """
+
+        if (
+            not self.config.human_prior_option_entity_frontier
+            or self.unlabeled_entity_memory is None
+            or self.entity_behavior_model is None
+            or source_analysis.target_player_slot is None
+            or self.config.human_prior_option_effect_probe_limit <= 0
+        ):
+            return 0
+        feature_index = self._human_prior_option_entity_feature_index(
+            source_frame
+        )
+        candidates = []
+        for action in (
+            Action.A,
+            Action.B,
+            Action.UP,
+            Action.DOWN,
+            Action.LEFT,
+            Action.RIGHT,
+        ):
+            if action not in self.config.actions:
+                continue
+            curiosity = self._human_prior_option_entity_curiosity(
+                source_frame,
+                source_analysis.target_player_slot,
+                self.current_pose_action,
+                action,
+                duration,
+                feature_index,
+            )
+            if not curiosity:
+                continue
+            rare = float(curiosity.get("spatial_rarity", 0.0)) >= 0.5
+            unresolved = bool(
+                not curiosity.get("behavior_known", False)
+                or float(curiosity.get("manipulation_probability", 0.0))
+                > 0.0
+                or float(curiosity.get("inert_confidence", 0.0)) < 0.5
+            )
+            if rare and unresolved:
+                candidates.append((action, curiosity))
+        candidates.sort(
+            key=lambda item: (
+                float(item[1].get("manipulation_probability", 0.0)),
+                item[0] in (Action.A, Action.B),
+                float(item[1].get("behavior_novelty", 0.0)),
+                float(item[1].get("spatial_rarity", 0.0)),
+                item[0].value,
+            ),
+            reverse=True,
+        )
+        candidates = candidates[
+            : self.config.human_prior_option_effect_probe_limit
+        ]
+        if not candidates:
+            return 0
+        self._emit(
+            "human_prior_adjacent_entity_probe_started",
+            decision=self.decision_index + 1,
+            source_graph_signature=source_signature,
+            candidate_actions=tuple(action for action, _ in candidates),
+            candidate_cells=tuple(
+                curiosity.get("target_cell")
+                for _action, curiosity in candidates
+            ),
+            probe_limit=self.config.human_prior_option_effect_probe_limit,
+            action_frames=duration,
+            agent_visible=True,
+            **self._frame_fields(source_frame),
+        )
+        confirmed = 0
+        promoted = 0
+        for candidate_rank, (action, curiosity) in enumerate(candidates, 1):
+            self.env.load_state(root)
+            immediate_frame = self.env.step(action, duration)
+            immediate_analysis = self.goal_prior.analyze(
+                source_frame,
+                immediate_frame,
+                target_player_reference=(
+                    source_analysis.target_player_slot
+                ),
+            )
+            _, target_signature = self._human_prior_graph_signatures(
+                immediate_analysis
+            )
+            node = _HumanPriorOptionNode(
+                state=root,
+                frame=immediate_frame,
+                path=(action,),
+                durations=(duration,),
+                analysis=immediate_analysis,
+                source_signature=source_signature,
+                target_signature=target_signature,
+                score=float(curiosity.get("curiosity", 0.0)),
+                depth=1,
+                target_state_visits=(
+                    0
+                    if not target_signature
+                    else self.human_prior_graph_state_visits[
+                        target_signature
+                    ]
+                ),
+                target_position_visits=(
+                    0
+                    if immediate_analysis.target_player_slot is None
+                    else self._human_prior_position_visits(
+                        target_signature,
+                        immediate_analysis.target_player_slot,
+                    )
+                ),
+                pose_action=self._resulting_pose_action(
+                    self.current_pose_action, action
+                ),
+                entity_interaction_signature=str(
+                    curiosity.get("signature") or ""
+                ),
+                entity_interaction_action=action,
+                entity_interaction_action_index=0,
+                entity_interaction_direction=curiosity.get("direction"),
+                entity_interaction_cell=curiosity.get("target_cell"),
+                entity_interaction_appearance_fingerprint=str(
+                    curiosity.get("appearance_fingerprint") or ""
+                ),
+                entity_interaction_type_id=curiosity.get(
+                    "anonymous_type_id"
+                ),
+                entity_interaction_context_signature=str(
+                    curiosity.get("context_signature") or ""
+                ),
+                entity_interaction_phase_signature=str(
+                    curiosity.get("phase_signature") or ""
+                ),
+                entity_interaction_neighborhood_signature=str(
+                    curiosity.get("neighborhood_signature") or ""
+                ),
+            )
+            result = self._probe_human_prior_option_action_control(
+                root,
+                source_frame,
+                node,
+                duration,
+                candidate_rank,
+                0,
+                allow_endpoint_matched_local=True,
+                expected_interaction_cell=curiosity.get("target_cell"),
+            )
+            effect_confirmed = bool(result.get("entity_effect_confirmed"))
+            confirmed += int(effect_confirmed)
+            promoted_before = promoted
+            if effect_confirmed:
+                promoted += int(
+                    self._promote_human_prior_option_entity_frontier(
+                        root,
+                        source_frame,
+                        node,
+                        duration,
+                        candidate_rank,
+                        source_signature,
+                        (result,),
+                        endpoints,
+                        saved_states,
+                    )
+                )
+            self._emit(
+                "human_prior_adjacent_entity_probe_completed",
+                decision=self.decision_index + 1,
+                candidate_rank=candidate_rank,
+                action=action,
+                action_frames=duration,
+                interaction_cell=curiosity.get("target_cell"),
+                context_signature=curiosity.get("context_signature"),
+                phase_signature=curiosity.get("phase_signature"),
+                neighborhood_signature=curiosity.get(
+                    "neighborhood_signature"
+                ),
+                control_confirmed=bool(result.get("confirmed")),
+                entity_effect_confirmed=effect_confirmed,
+                entity_frontier_promoted=bool(
+                    promoted > promoted_before
+                ),
+                anonymous_entity_behavior=result.get(
+                    "anonymous_entity_behavior"
+                ),
+                agent_visible=True,
+                **self._frame_fields(immediate_frame),
+            )
+        self.env.load_state(root)
+        self._emit(
+            "human_prior_adjacent_entity_probe_summary",
+            decision=self.decision_index + 1,
+            candidates=len(candidates),
+            confirmed_entity_effects=confirmed,
+            promoted_entity_frontiers=promoted,
+            learning_enabled=(
+                self.config.anonymous_entity_behavior_learning
+            ),
+            agent_visible=True,
+            **self._frame_fields(source_frame),
+        )
+        return len(candidates)
+
     def _search_human_prior_options(self) -> int:
         """Verify short action sequences from the current emulator state.
 
@@ -5697,6 +6331,7 @@ class VerifiedNeuralAgent:
                 (action.value, int(edge_duration))
                 for action, edge_duration in action_edges
             ),
+            "factored-entity-phase-and-adjacent-probes-v1",
         )
         search_budget_sha256 = hashlib.sha256(
             repr(search_budget).encode("utf-8")
@@ -5912,6 +6547,18 @@ class VerifiedNeuralAgent:
         endpoints: List[_HumanPriorOptionNode] = []
         effect_nodes: List[_HumanPriorOptionNode] = []
         interaction_nodes: List[_HumanPriorOptionNode] = []
+        adjacent_entity_probes = (
+            self._probe_adjacent_anonymous_affordances(
+                root,
+                source_frame,
+                source_analysis,
+                source_signature,
+                duration,
+                endpoints,
+                saved_states,
+            )
+        )
+        self.env.load_state(root)
         entity_feature_indexes: Dict[
             str,
             Tuple[
@@ -6300,6 +6947,52 @@ class VerifiedNeuralAgent:
                             - 0.05 * depth
                             - 2.0 * option_visits
                         )
+                        direct_interaction_cell = entity_curiosity.get(
+                            "target_cell"
+                        )
+                        direct_effect_cells = self._causal_spatial_cells(
+                            option_world_effect_signature
+                        )
+                        direct_effect_target_distance = (
+                            None
+                            if not direct_effect_cells
+                            or direct_interaction_cell is None
+                            else min(
+                                abs(cell[0] - direct_interaction_cell[0])
+                                + abs(cell[1] - direct_interaction_cell[1])
+                                for cell in direct_effect_cells
+                            )
+                        )
+                        parent_effect_target_aligned = bool(
+                            parent.entity_effect_target_distance == 0
+                            or (
+                                parent.entity_interaction_action
+                                in (Action.A, Action.B)
+                                and parent.entity_effect_target_distance
+                                is not None
+                                and parent.entity_effect_target_distance <= 1
+                            )
+                        )
+                        entity_effect_persisted_in_search = bool(
+                            action == Action.NOOP
+                            and parent.entity_interaction_signature
+                            and parent.entity_interaction_action_index
+                            is not None
+                            and parent.world_effect_signature
+                            and option_world_effect_signature
+                            == parent.world_effect_signature
+                            and parent_effect_target_aligned
+                            and analysis.target_player_slot is not None
+                            and analysis.target_player_slot
+                            == parent.analysis.target_player_slot
+                            and not analysis.life_counter_changed
+                            and not analysis.dark_transition_started
+                        )
+                        interaction_source = (
+                            parent
+                            if entity_effect_persisted_in_search
+                            else None
+                        )
                         node = _HumanPriorOptionNode(
                             state=state,
                             frame=target,
@@ -6330,84 +7023,238 @@ class VerifiedNeuralAgent:
                                 option_changed_pixels
                             ),
                             entity_interaction_signature=str(
-                                entity_curiosity.get("signature") or ""
+                                interaction_source.entity_interaction_signature
+                                if interaction_source is not None
+                                else entity_curiosity.get("signature") or ""
                             ),
                             entity_interaction_action=(
-                                entity_curiosity.get("action")
+                                interaction_source.entity_interaction_action
+                                if interaction_source is not None
+                                else entity_curiosity.get("action")
+                            ),
+                            entity_interaction_action_index=(
+                                interaction_source.entity_interaction_action_index
+                                if interaction_source is not None
+                                else (
+                                    depth - 1
+                                    if entity_curiosity.get("signature")
+                                    else None
+                                )
                             ),
                             entity_interaction_direction=(
-                                entity_curiosity.get("direction")
+                                interaction_source.entity_interaction_direction
+                                if interaction_source is not None
+                                else entity_curiosity.get("direction")
                             ),
                             entity_interaction_cell=(
-                                entity_curiosity.get("target_cell")
+                                interaction_source.entity_interaction_cell
+                                if interaction_source is not None
+                                else entity_curiosity.get("target_cell")
                             ),
                             entity_interaction_appearance_fingerprint=str(
-                                entity_curiosity.get(
-                                    "appearance_fingerprint"
+                                (
+                                    interaction_source.entity_interaction_appearance_fingerprint
+                                    if interaction_source is not None
+                                    else entity_curiosity.get(
+                                        "appearance_fingerprint"
+                                    )
                                 )
                                 or ""
                             ),
                             entity_interaction_type_id=(
-                                entity_curiosity.get("anonymous_type_id")
+                                interaction_source.entity_interaction_type_id
+                                if interaction_source is not None
+                                else entity_curiosity.get("anonymous_type_id")
                             ),
                             entity_interaction_context_signature=str(
-                                entity_curiosity.get("context_signature")
+                                (
+                                    interaction_source.entity_interaction_context_signature
+                                    if interaction_source is not None
+                                    else entity_curiosity.get(
+                                        "context_signature"
+                                    )
+                                )
+                                or ""
+                            ),
+                            entity_interaction_phase_signature=str(
+                                (
+                                    interaction_source.entity_interaction_phase_signature
+                                    if interaction_source is not None
+                                    else entity_curiosity.get(
+                                        "phase_signature"
+                                    )
+                                )
+                                or ""
+                            ),
+                            entity_interaction_neighborhood_signature=str(
+                                (
+                                    interaction_source.entity_interaction_neighborhood_signature
+                                    if interaction_source is not None
+                                    else entity_curiosity.get(
+                                        "neighborhood_signature"
+                                    )
+                                )
                                 or ""
                             ),
                             entity_behavior_samples=int(
-                                entity_curiosity.get("behavior_samples", 0)
+                                interaction_source.entity_behavior_samples
+                                if interaction_source is not None
+                                else entity_curiosity.get(
+                                    "behavior_samples", 0
+                                )
                             ),
                             entity_behavior_known=bool(
-                                entity_curiosity.get("behavior_known", False)
+                                interaction_source.entity_behavior_known
+                                if interaction_source is not None
+                                else entity_curiosity.get(
+                                    "behavior_known", False
+                                )
                             ),
                             entity_behavior_novelty=float(
-                                entity_curiosity.get("behavior_novelty", 0.0)
+                                interaction_source.entity_behavior_novelty
+                                if interaction_source is not None
+                                else entity_curiosity.get(
+                                    "behavior_novelty", 0.0
+                                )
                             ),
                             entity_spatial_rarity=float(
-                                entity_curiosity.get("spatial_rarity", 0.0)
+                                interaction_source.entity_spatial_rarity
+                                if interaction_source is not None
+                                else entity_curiosity.get(
+                                    "spatial_rarity", 0.0
+                                )
                             ),
                             entity_appearance_transferability=float(
-                                entity_curiosity.get(
+                                interaction_source.entity_appearance_transferability
+                                if interaction_source is not None
+                                else entity_curiosity.get(
                                     "appearance_transferability", 0.0
                                 )
                             ),
                             entity_curiosity=float(
-                                entity_curiosity.get("curiosity", 0.0)
+                                interaction_source.entity_curiosity
+                                if interaction_source is not None
+                                else entity_curiosity.get("curiosity", 0.0)
                             ),
                             entity_semantic_samples=int(
-                                entity_curiosity.get("semantic_samples", 0)
+                                interaction_source.entity_semantic_samples
+                                if interaction_source is not None
+                                else entity_curiosity.get(
+                                    "semantic_samples", 0
+                                )
                             ),
                             entity_semantic_coverage=float(
-                                entity_curiosity.get(
+                                interaction_source.entity_semantic_coverage
+                                if interaction_source is not None
+                                else entity_curiosity.get(
                                     "semantic_coverage", 0.0
                                 )
                             ),
                             entity_inert_probability=float(
-                                entity_curiosity.get(
+                                interaction_source.entity_inert_probability
+                                if interaction_source is not None
+                                else entity_curiosity.get(
                                     "inert_probability", 0.0
                                 )
                             ),
                             entity_inert_confidence=float(
-                                entity_curiosity.get(
+                                interaction_source.entity_inert_confidence
+                                if interaction_source is not None
+                                else entity_curiosity.get(
                                     "inert_confidence", 0.0
                                 )
                             ),
                             entity_inert_penalty=float(
-                                inert_penalty
+                                interaction_source.entity_inert_penalty
+                                if interaction_source is not None
+                                else inert_penalty
                             ),
                             entity_predicted_inert_penalty=(
-                                predicted_inert_penalty
+                                interaction_source.entity_predicted_inert_penalty
+                                if interaction_source is not None
+                                else predicted_inert_penalty
                             ),
                             entity_inert_penalty_eligible=(
-                                inert_penalty_eligible
+                                interaction_source.entity_inert_penalty_eligible
+                                if interaction_source is not None
+                                else inert_penalty_eligible
                             ),
                             entity_inert_penalty_suppressed=(
-                                inert_penalty_suppressed
+                                interaction_source.entity_inert_penalty_suppressed
+                                if interaction_source is not None
+                                else inert_penalty_suppressed
                             ),
                             entity_measured_effect_probability=float(
-                                entity_curiosity.get(
+                                interaction_source.entity_measured_effect_probability
+                                if interaction_source is not None
+                                else entity_curiosity.get(
                                     "measured_effect_probability", 0.0
                                 )
+                            ),
+                            entity_displacement_probability=float(
+                                interaction_source.entity_displacement_probability
+                                if interaction_source is not None
+                                else entity_curiosity.get(
+                                    "entity_displacement_probability", 0.0
+                                )
+                            ),
+                            entity_appearance_transition_probability=float(
+                                interaction_source.entity_appearance_transition_probability
+                                if interaction_source is not None
+                                else entity_curiosity.get(
+                                    "appearance_transition_probability", 0.0
+                                )
+                            ),
+                            entity_global_phase_change_probability=float(
+                                interaction_source.entity_global_phase_change_probability
+                                if interaction_source is not None
+                                else entity_curiosity.get(
+                                    "global_phase_change_probability", 0.0
+                                )
+                            ),
+                            entity_manipulation_probability=float(
+                                interaction_source.entity_manipulation_probability
+                                if interaction_source is not None
+                                else entity_curiosity.get(
+                                    "manipulation_probability", 0.0
+                                )
+                            ),
+                            entity_predictive_family_id=(
+                                interaction_source.entity_predictive_family_id
+                                if interaction_source is not None
+                                else entity_curiosity.get(
+                                    "predictive_family_id"
+                                )
+                            ),
+                            entity_predictive_family_size=int(
+                                interaction_source.entity_predictive_family_size
+                                if interaction_source is not None
+                                else entity_curiosity.get(
+                                    "predictive_family_size", 1
+                                )
+                            ),
+                            entity_predictive_family_pooled=bool(
+                                interaction_source.entity_predictive_family_pooled
+                                if interaction_source is not None
+                                else entity_curiosity.get(
+                                    "predictive_family_pooled", False
+                                )
+                            ),
+                            entity_effect_target_distance=(
+                                interaction_source.entity_effect_target_distance
+                                if interaction_source is not None
+                                else direct_effect_target_distance
+                            ),
+                            entity_effect_persisted_in_search=(
+                                entity_effect_persisted_in_search
+                            ),
+                            entity_effect_persistence_steps=(
+                                (
+                                    parent.entity_effect_persistence_steps
+                                    + 1
+                                )
+                                if entity_effect_persisted_in_search
+                                else 0
                             ),
                             episodic_graph_plan_kind=(
                                 ""
@@ -6447,6 +7294,46 @@ class VerifiedNeuralAgent:
                         )
                         depth_candidates.append(node)
                         branches_verified += 1
+                        if entity_effect_persisted_in_search:
+                            self._emit(
+                                "human_prior_option_entity_persistence_observed",
+                                decision=self.decision_index + 1,
+                                depth=depth,
+                                path=node.path,
+                                durations=node.durations,
+                                interaction_action_index=(
+                                    node.entity_interaction_action_index
+                                ),
+                                interaction_action=(
+                                    node.entity_interaction_action
+                                ),
+                                interaction_direction=(
+                                    node.entity_interaction_direction
+                                ),
+                                interaction_cell=node.entity_interaction_cell,
+                                interaction_signature=(
+                                    node.entity_interaction_signature
+                                ),
+                                world_effect_signature=(
+                                    node.world_effect_signature
+                                ),
+                                world_effect_cells=tuple(
+                                    sorted(
+                                        self._causal_spatial_cells(
+                                            node.world_effect_signature
+                                        )
+                                    )
+                                ),
+                                effect_target_distance=(
+                                    node.entity_effect_target_distance
+                                ),
+                                persistence_steps=(
+                                    node.entity_effect_persistence_steps
+                                ),
+                                neutral_followup_action=Action.NOOP,
+                                agent_visible=True,
+                                **self._frame_fields(target),
+                            )
                         if action_dependent_endpoint:
                             self._record_human_prior_episodic_graph_transition(
                                 source_signature,
@@ -6605,11 +7492,23 @@ class VerifiedNeuralAgent:
                             human_prior_option_entity_interaction_action=(
                                 node.entity_interaction_action
                             ),
+                            human_prior_option_entity_interaction_action_index=(
+                                node.entity_interaction_action_index
+                            ),
                             human_prior_option_entity_interaction_direction=(
                                 node.entity_interaction_direction
                             ),
                             human_prior_option_entity_interaction_cell=(
                                 node.entity_interaction_cell
+                            ),
+                            human_prior_option_entity_persistence_observed=(
+                                node.entity_effect_persisted_in_search
+                            ),
+                            human_prior_option_entity_effect_target_distance=(
+                                node.entity_effect_target_distance
+                            ),
+                            human_prior_option_entity_persistence_steps=(
+                                node.entity_effect_persistence_steps
                             ),
                             anonymous_entity_appearance_fingerprint=(
                                 node.entity_interaction_appearance_fingerprint
@@ -6620,6 +7519,14 @@ class VerifiedNeuralAgent:
                             ),
                             anonymous_entity_context_signature=(
                                 node.entity_interaction_context_signature
+                                or None
+                            ),
+                            anonymous_entity_phase_signature=(
+                                node.entity_interaction_phase_signature
+                                or None
+                            ),
+                            anonymous_entity_neighborhood_signature=(
+                                node.entity_interaction_neighborhood_signature
                                 or None
                             ),
                             anonymous_entity_behavior_samples=(
@@ -6669,6 +7576,27 @@ class VerifiedNeuralAgent:
                             ),
                             anonymous_entity_measured_effect_probability=(
                                 node.entity_measured_effect_probability
+                            ),
+                            anonymous_entity_displacement_probability=(
+                                node.entity_displacement_probability
+                            ),
+                            anonymous_entity_appearance_transition_probability=(
+                                node.entity_appearance_transition_probability
+                            ),
+                            anonymous_entity_global_phase_change_probability=(
+                                node.entity_global_phase_change_probability
+                            ),
+                            anonymous_entity_manipulation_probability=(
+                                node.entity_manipulation_probability
+                            ),
+                            anonymous_entity_predictive_family_id=(
+                                node.entity_predictive_family_id
+                            ),
+                            anonymous_entity_predictive_family_size=(
+                                node.entity_predictive_family_size
+                            ),
+                            anonymous_entity_predictive_family_pooled=(
+                                node.entity_predictive_family_pooled
                             ),
                             endpoint_eligible=endpoint_eligible,
                             score=score,
@@ -6800,6 +7728,16 @@ class VerifiedNeuralAgent:
                         continue
                     previous = entity_curiosity_representatives.get(signature)
                     if previous is None or (
+                        node.entity_effect_persisted_in_search,
+                        node.entity_effect_persistence_steps,
+                        node.entity_manipulation_probability,
+                        node.entity_effect_target_distance is not None,
+                        node.entity_interaction_action in (Action.A, Action.B),
+                        -(
+                            node.entity_effect_target_distance
+                            if node.entity_effect_target_distance is not None
+                            else math.inf
+                        ),
                         not node.entity_behavior_known,
                         node.entity_interaction_type_id is not None,
                         node.entity_behavior_novelty,
@@ -6807,6 +7745,17 @@ class VerifiedNeuralAgent:
                         node.entity_curiosity,
                         node.score,
                     ) > (
+                        previous.entity_effect_persisted_in_search,
+                        previous.entity_effect_persistence_steps,
+                        previous.entity_manipulation_probability,
+                        previous.entity_effect_target_distance is not None,
+                        previous.entity_interaction_action
+                        in (Action.A, Action.B),
+                        -(
+                            previous.entity_effect_target_distance
+                            if previous.entity_effect_target_distance is not None
+                            else math.inf
+                        ),
                         not previous.entity_behavior_known,
                         previous.entity_interaction_type_id is not None,
                         previous.entity_behavior_novelty,
@@ -6817,15 +7766,7 @@ class VerifiedNeuralAgent:
                         entity_curiosity_representatives[signature] = node
                 entity_curiosity_candidates = sorted(
                     entity_curiosity_representatives.values(),
-                    key=lambda node: (
-                        not node.entity_behavior_known,
-                        node.entity_interaction_type_id is not None,
-                        node.entity_behavior_novelty,
-                        node.entity_spatial_rarity,
-                        node.entity_curiosity,
-                        node.score,
-                        -node.depth,
-                    ),
+                    key=self._human_prior_entity_probe_rank_key,
                     reverse=True,
                 )
                 route_replay_candidates = sorted(
@@ -7134,6 +8075,16 @@ class VerifiedNeuralAgent:
                         interaction_key
                     )
                     if previous is None or (
+                        node.entity_effect_persisted_in_search,
+                        node.entity_effect_persistence_steps,
+                        node.entity_manipulation_probability,
+                        node.entity_effect_target_distance is not None,
+                        node.entity_interaction_action in (Action.A, Action.B),
+                        -(
+                            node.entity_effect_target_distance
+                            if node.entity_effect_target_distance is not None
+                            else math.inf
+                        ),
                         not node.entity_behavior_known,
                         node.entity_interaction_type_id is not None,
                         node.entity_behavior_novelty,
@@ -7142,6 +8093,17 @@ class VerifiedNeuralAgent:
                         node.score,
                         -node.depth,
                     ) > (
+                        previous.entity_effect_persisted_in_search,
+                        previous.entity_effect_persistence_steps,
+                        previous.entity_manipulation_probability,
+                        previous.entity_effect_target_distance is not None,
+                        previous.entity_interaction_action
+                        in (Action.A, Action.B),
+                        -(
+                            previous.entity_effect_target_distance
+                            if previous.entity_effect_target_distance is not None
+                            else math.inf
+                        ),
                         not previous.entity_behavior_known,
                         previous.entity_interaction_type_id is not None,
                         previous.entity_behavior_novelty,
@@ -7190,7 +8152,11 @@ class VerifiedNeuralAgent:
                         id(node) in entity_curiosity_probe_ids
                         and node.path
                     ):
-                        curiosity_action_index = len(node.path) - 1
+                        curiosity_action_index = (
+                            node.entity_interaction_action_index
+                            if node.entity_interaction_action_index is not None
+                            else len(node.path) - 1
+                        )
                         curiosity_action_control = (
                             self._probe_human_prior_option_action_control(
                                 root,
@@ -7227,6 +8193,15 @@ class VerifiedNeuralAgent:
                             interaction_signature=(
                                 node.entity_interaction_signature
                             ),
+                            in_search_persistence_observed=(
+                                node.entity_effect_persisted_in_search
+                            ),
+                            in_search_persistence_steps=(
+                                node.entity_effect_persistence_steps
+                            ),
+                            effect_target_distance=(
+                                node.entity_effect_target_distance
+                            ),
                             distinct_interaction_groups_available=(
                                 distinct_entity_interaction_groups
                             ),
@@ -7242,6 +8217,12 @@ class VerifiedNeuralAgent:
                             ),
                             context_signature=(
                                 node.entity_interaction_context_signature
+                            ),
+                            phase_signature=(
+                                node.entity_interaction_phase_signature
+                            ),
+                            neighborhood_signature=(
+                                node.entity_interaction_neighborhood_signature
                             ),
                             behavior_samples_before=(
                                 node.entity_behavior_samples
@@ -7279,6 +8260,27 @@ class VerifiedNeuralAgent:
                             ),
                             measured_effect_probability_before=(
                                 node.entity_measured_effect_probability
+                            ),
+                            entity_displacement_probability_before=(
+                                node.entity_displacement_probability
+                            ),
+                            appearance_transition_probability_before=(
+                                node.entity_appearance_transition_probability
+                            ),
+                            global_phase_change_probability_before=(
+                                node.entity_global_phase_change_probability
+                            ),
+                            manipulation_probability_before=(
+                                node.entity_manipulation_probability
+                            ),
+                            predictive_family_id=(
+                                node.entity_predictive_family_id
+                            ),
+                            predictive_family_size=(
+                                node.entity_predictive_family_size
+                            ),
+                            predictive_family_pooled=(
+                                node.entity_predictive_family_pooled
                             ),
                             control_confirmed=bool(
                                 curiosity_action_control.get("confirmed")
@@ -8486,6 +9488,18 @@ class VerifiedNeuralAgent:
                 distinct_effect_contexts_archived=sum(
                     bool(node.confirmed_world_effect_signature)
                     for node in archived_endpoints
+                ),
+                persistent_entity_interactions_observed=sum(
+                    node.entity_effect_persisted_in_search
+                    for node in interaction_nodes
+                ),
+                persistent_entity_interaction_signatures=len(
+                    {
+                        node.entity_interaction_signature
+                        for node in interaction_nodes
+                        if node.entity_effect_persisted_in_search
+                        and node.entity_interaction_signature
+                    }
                 ),
                 selected_depth=selected.depth,
                 selected_path=selected.path,
@@ -12477,6 +13491,18 @@ class VerifiedNeuralAgent:
         node: _HumanPriorOptionNode,
     ) -> tuple:
         return (
+            getattr(node, "entity_effect_persisted_in_search", False),
+            getattr(node, "entity_effect_persistence_steps", 0),
+            getattr(node, "entity_manipulation_probability", 0.0),
+            getattr(node, "entity_effect_target_distance", None) is not None,
+            getattr(node, "entity_interaction_action", None)
+            in (Action.A, Action.B),
+            -(
+                getattr(node, "entity_effect_target_distance", None)
+                if getattr(node, "entity_effect_target_distance", None)
+                is not None
+                else math.inf
+            ),
             not node.entity_behavior_known,
             node.entity_interaction_type_id is not None,
             node.entity_behavior_novelty,

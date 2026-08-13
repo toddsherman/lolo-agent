@@ -157,6 +157,95 @@ class AnonymousEntityBehaviorModelTests(unittest.TestCase):
             "stationary",
         )
 
+    def test_factored_context_conditions_behavior_on_global_visual_phase(
+        self,
+    ) -> None:
+        model = AnonymousEntityBehaviorModel(minimum_prediction_samples=2)
+        appearance = (8, 3, 5, 2)
+        relation = model.relational_context_signature((4, 4), ((4, 5),))
+        neighborhood = "local-layout"
+        quiet_phase = model.phase_signature(((1, 1), (2, 2), (2, 2)))
+        active_phase = model.phase_signature(((1, 1), (9, 9), (9, 9)))
+        quiet = model.factored_context_signature(
+            relation, neighborhood, quiet_phase
+        )
+        active = model.factored_context_signature(
+            relation, neighborhood, active_phase
+        )
+        for index in range(2):
+            model.observe(
+                appearance,
+                Action.NOOP,
+                16,
+                "stationary",
+                context_signature=quiet,
+                autonomous=True,
+                evidence_id=f"quiet-{index}",
+            )
+            model.observe(
+                appearance,
+                Action.NOOP,
+                16,
+                "moves",
+                context_signature=active,
+                autonomous=True,
+                evidence_id=f"active-{index}",
+            )
+
+        quiet_prediction = model.predict(
+            appearance,
+            Action.NOOP,
+            16,
+            context_signature=quiet,
+            autonomous=True,
+        )
+        active_prediction = model.predict(
+            appearance,
+            Action.NOOP,
+            16,
+            context_signature=active,
+            autonomous=True,
+        )
+
+        self.assertTrue(quiet_prediction.context_matched)
+        self.assertTrue(active_prediction.context_matched)
+        self.assertEqual(quiet_prediction.outcome_signature, "stationary")
+        self.assertEqual(active_prediction.outcome_signature, "moves")
+
+    def test_factored_context_generalizes_across_local_layouts(self) -> None:
+        model = AnonymousEntityBehaviorModel(minimum_prediction_samples=2)
+        appearance = (4, 4, 7, 7)
+        relation = model.relational_context_signature((3, 3), ((3, 4),))
+        phase = model.phase_signature(((1, 1), (2, 2)))
+        first = model.factored_context_signature(relation, "layout-a", phase)
+        second = model.factored_context_signature(relation, "layout-b", phase)
+        unseen = model.factored_context_signature(relation, "layout-c", phase)
+        model.observe(
+            appearance,
+            Action.DOWN,
+            16,
+            "moves-one-cell",
+            context_signature=first,
+        )
+        model.observe(
+            appearance,
+            Action.DOWN,
+            16,
+            "moves-one-cell",
+            context_signature=second,
+        )
+
+        prediction = model.predict(
+            appearance,
+            Action.DOWN,
+            16,
+            context_signature=unseen,
+        )
+
+        self.assertTrue(prediction.known)
+        self.assertTrue(prediction.context_matched)
+        self.assertEqual(prediction.outcome_signature, "moves-one-cell")
+
     def test_contradictory_evidence_reduces_confidence(self) -> None:
         model = AnonymousEntityBehaviorModel(minimum_prediction_samples=1)
         appearance = (3, 1, 4, 1)
@@ -249,6 +338,125 @@ class AnonymousEntityBehaviorModelTests(unittest.TestCase):
         self.assertTrue(changed.local_visual_change)
         self.assertTrue(changed.measured_effect)
         self.assertFalse(changed.intervention_inert)
+
+    def test_descriptor_represents_push_transform_and_global_phase_change(
+        self,
+    ) -> None:
+        model = AnonymousEntityBehaviorModel(minimum_prediction_samples=1)
+        appearance = (1, 1, 1, 1)
+        pushed = model.effect_descriptor(
+            appearance,
+            appearance,
+            appearance,
+            entity_displacement=(0, 1),
+        )
+        transformed = model.effect_descriptor(
+            appearance,
+            (15, 15, 15, 15),
+            appearance,
+        )
+        phase_changed = model.effect_descriptor(
+            appearance,
+            appearance,
+            appearance,
+            global_phase_change=True,
+        )
+        for action, descriptor in (
+            (Action.DOWN, pushed),
+            (Action.A, transformed),
+            (Action.B, phase_changed),
+        ):
+            model.observe(
+                appearance,
+                action,
+                4,
+                descriptor.signature,
+                outcome_descriptor=descriptor,
+            )
+
+        push_prediction = model.predict(appearance, Action.DOWN, 4)
+        transform_prediction = model.predict(appearance, Action.A, 4)
+        phase_prediction = model.predict(appearance, Action.B, 4)
+
+        self.assertTrue(pushed.controlled_entity_displacement)
+        self.assertTrue(transformed.controlled_appearance_transition)
+        self.assertTrue(phase_changed.global_phase_change)
+        self.assertEqual(push_prediction.entity_displacement_probability, 1.0)
+        self.assertEqual(
+            transform_prediction.appearance_transition_probability, 1.0
+        )
+        self.assertEqual(
+            phase_prediction.global_phase_change_probability, 1.0
+        )
+        self.assertEqual(push_prediction.manipulation_probability, 1.0)
+        self.assertEqual(transform_prediction.manipulation_probability, 1.0)
+        self.assertEqual(phase_prediction.manipulation_probability, 1.0)
+
+    def test_predictive_family_pools_behavior_across_animation_variants(
+        self,
+    ) -> None:
+        model = AnonymousEntityBehaviorModel(
+            appearance_match_threshold=0.01,
+            minimum_prediction_samples=2,
+        )
+        first_appearance = (1, 1, 1, 1)
+        second_appearance = (15, 15, 15, 15)
+        descriptor = model.effect_descriptor(
+            first_appearance,
+            first_appearance,
+            first_appearance,
+            entity_displacement=(1, 0),
+        )
+        model.observe(
+            first_appearance,
+            Action.RIGHT,
+            16,
+            descriptor.signature,
+            outcome_descriptor=descriptor,
+        )
+        model.observe(
+            second_appearance,
+            Action.RIGHT,
+            16,
+            descriptor.signature,
+            outcome_descriptor=descriptor,
+        )
+
+        prediction = model.predict(
+            first_appearance, Action.RIGHT, 16
+        )
+
+        self.assertEqual(model.type_count, 2)
+        self.assertTrue(prediction.known)
+        self.assertTrue(prediction.predictive_family_pooled)
+        self.assertEqual(prediction.predictive_family_size, 2)
+        self.assertEqual(prediction.samples, 2)
+        self.assertEqual(prediction.entity_displacement_probability, 1.0)
+
+    def test_descriptor_preserves_limited_visual_resource_transition(
+        self,
+    ) -> None:
+        appearance = (3, 1, 4, 1)
+        first_use = AnonymousEntityBehaviorModel.effect_descriptor(
+            appearance,
+            (15, 9, 15, 9),
+            appearance,
+            # A distant changed cell can be a visual counter without the
+            # model being told its meaning.
+            relative_effect_cells=((12, -3),),
+            global_phase_change=True,
+        )
+        local_only = AnonymousEntityBehaviorModel.effect_descriptor(
+            appearance,
+            (15, 9, 15, 9),
+            appearance,
+            relative_effect_cells=((0, 0),),
+        )
+
+        self.assertTrue(first_use.controlled_appearance_transition)
+        self.assertTrue(first_use.global_phase_change)
+        self.assertTrue(first_use.manipulation_effect)
+        self.assertNotEqual(first_use.signature, local_only.signature)
 
     def test_passive_stationarity_is_not_an_intervention_effect(self) -> None:
         model = AnonymousEntityBehaviorModel(minimum_prediction_samples=1)

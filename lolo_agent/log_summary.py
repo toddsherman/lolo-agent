@@ -270,6 +270,11 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                     "action_frames",
                     "autonomous",
                     "context_signature",
+                    "relation_signature",
+                    "neighborhood_signature",
+                    "phase_signature",
+                    "factual_phase_signature",
+                    "control_phase_signature",
                     "context_matched_before",
                     "predicted_outcome_before",
                     "predicted_outcome_probability_before",
@@ -279,6 +284,13 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                     "inert_probability_before",
                     "inert_confidence_before",
                     "measured_effect_probability_before",
+                    "entity_displacement_probability_before",
+                    "appearance_transition_probability_before",
+                    "global_phase_change_probability_before",
+                    "manipulation_probability_before",
+                    "predictive_family_id_before",
+                    "predictive_family_size_before",
+                    "predictive_family_pooled_before",
                     "observed_outcome_probability_before",
                     "behavior_samples_before",
                     "behavior_known_before",
@@ -293,6 +305,11 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                     "observed_intervention_inert",
                     "observed_controlled_movement",
                     "observed_local_visual_change",
+                    "observed_entity_displacement",
+                    "observed_appearance_transition",
+                    "observed_global_phase_change",
+                    "observed_global_phase_changed_cells",
+                    "observed_manipulation_effect",
                     "observed_hazard",
                     "surprise",
                     "outcome_matched_prediction",
@@ -303,6 +320,10 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                     "inert_probability_after",
                     "inert_confidence_after",
                     "measured_effect_probability_after",
+                    "entity_displacement_probability_after",
+                    "appearance_transition_probability_after",
+                    "global_phase_change_probability_after",
+                    "manipulation_probability_after",
                     "hazard_probability_after",
                     "causal_hazard_probability_after",
                     "causal_hazard_samples_after",
@@ -1116,6 +1137,11 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "action_frames",
         "autonomous",
         "context_signature",
+        "relation_signature",
+        "neighborhood_signature",
+        "phase_signature",
+        "factual_phase_signature",
+        "control_phase_signature",
         "context_matched_before",
         "predicted_outcome_before",
         "predicted_outcome_probability_before",
@@ -1125,6 +1151,13 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "inert_probability_before",
         "inert_confidence_before",
         "measured_effect_probability_before",
+        "entity_displacement_probability_before",
+        "appearance_transition_probability_before",
+        "global_phase_change_probability_before",
+        "manipulation_probability_before",
+        "predictive_family_id_before",
+        "predictive_family_size_before",
+        "predictive_family_pooled_before",
         "observed_outcome_probability_before",
         "behavior_samples_before",
         "behavior_known_before",
@@ -1139,6 +1172,11 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "observed_intervention_inert",
         "observed_controlled_movement",
         "observed_local_visual_change",
+        "observed_entity_displacement",
+        "observed_appearance_transition",
+        "observed_global_phase_change",
+        "observed_global_phase_changed_cells",
+        "observed_manipulation_effect",
         "observed_hazard",
         "surprise",
         "outcome_matched_prediction",
@@ -1149,6 +1187,10 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "inert_probability_after",
         "inert_confidence_after",
         "measured_effect_probability_after",
+        "entity_displacement_probability_after",
+        "appearance_transition_probability_after",
+        "global_phase_change_probability_after",
+        "manipulation_probability_after",
         "hazard_probability_after",
         "causal_hazard_probability_after",
         "causal_hazard_samples_after",
@@ -1633,6 +1675,15 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         ),
         "episodic_option_archive_seed_events": event_counts.get(
             "episodic_option_archives_seeded", 0
+        ),
+        "episodic_option_archive_import_skip_events": event_counts.get(
+            "episodic_option_archive_import_skipped", 0
+        ),
+        "episodic_option_archives_import_skipped": sum(
+            int(event.get("active_archives_skipped", 0) or 0)
+            for event in events
+            if event["event"]
+            == "episodic_option_archive_import_skipped"
         ),
         "episodic_option_archives_seeded": sum(
             int(event.get("seeded_archives", 0))
@@ -2233,6 +2284,60 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "human_prior_option_entity_curiosity_probes": event_counts.get(
             "human_prior_option_entity_curiosity_probe", 0
         ),
+        "human_prior_adjacent_entity_probes": event_counts.get(
+            "human_prior_adjacent_entity_probe_completed", 0
+        ),
+        "human_prior_adjacent_entity_effects_confirmed": sum(
+            event["event"]
+            == "human_prior_adjacent_entity_probe_completed"
+            and bool(event.get("entity_effect_confirmed"))
+            for event in events
+        ),
+        "human_prior_adjacent_entity_frontiers_promoted": sum(
+            event["event"]
+            == "human_prior_adjacent_entity_probe_completed"
+            and bool(event.get("entity_frontier_promoted"))
+            for event in events
+        ),
+        "human_prior_adjacent_entity_learning_accepted": sum(
+            event["event"]
+            == "human_prior_adjacent_entity_probe_completed"
+            and bool(
+                (event.get("anonymous_entity_behavior") or {}).get(
+                    "evidence_accepted"
+                )
+            )
+            for event in events
+        ),
+        "human_prior_option_entity_persistence_observations": (
+            event_counts.get(
+                "human_prior_option_entity_persistence_observed", 0
+            )
+        ),
+        "human_prior_option_entity_persistence_unique_signatures": len(
+            {
+                str(event["interaction_signature"])
+                for event in events
+                if event["event"]
+                == "human_prior_option_entity_persistence_observed"
+                and event.get("interaction_signature")
+            }
+        ),
+        "human_prior_option_entity_persistence_max_steps": max(
+            (
+                int(event.get("persistence_steps", 0) or 0)
+                for event in events
+                if event["event"]
+                == "human_prior_option_entity_persistence_observed"
+            ),
+            default=0,
+        ),
+        "human_prior_option_entity_persistent_probes": sum(
+            event["event"]
+            == "human_prior_option_entity_curiosity_probe"
+            and bool(event.get("in_search_persistence_observed"))
+            for event in events
+        ),
         "human_prior_option_entity_curiosity_distinct_probe_cells": len(
             {
                 tuple(event["interaction_cell"])
@@ -2340,6 +2445,37 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         ),
         "anonymous_entity_behavior_inert_observations": sum(
             bool(row.get("observed_intervention_inert"))
+            for row in anonymous_behavior_rows
+        ),
+        "anonymous_entity_behavior_displacement_observations": sum(
+            bool(row.get("observed_entity_displacement"))
+            for row in anonymous_behavior_rows
+        ),
+        "anonymous_entity_behavior_appearance_transitions": sum(
+            bool(row.get("observed_appearance_transition"))
+            for row in anonymous_behavior_rows
+        ),
+        "anonymous_entity_behavior_global_phase_changes": sum(
+            bool(row.get("observed_global_phase_change"))
+            for row in anonymous_behavior_rows
+        ),
+        "anonymous_entity_behavior_manipulation_observations": sum(
+            bool(row.get("observed_manipulation_effect"))
+            for row in anonymous_behavior_rows
+        ),
+        "anonymous_entity_behavior_phase_contexts_observed": len(
+            {
+                str(row["phase_signature"])
+                for row in anonymous_behavior_rows
+                if row.get("phase_signature")
+            }
+        ),
+        "anonymous_entity_behavior_predictive_family_predictions": sum(
+            int(row.get("predictive_family_size_before") or 1) > 1
+            for row in anonymous_behavior_rows
+        ),
+        "anonymous_entity_behavior_predictive_family_pooled_predictions": sum(
+            bool(row.get("predictive_family_pooled_before"))
             for row in anonymous_behavior_rows
         ),
         "anonymous_entity_behavior_known_semantic_predictions": sum(

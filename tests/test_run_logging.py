@@ -516,6 +516,30 @@ class RunLoggingTests(unittest.TestCase):
                 "human_prior_option_entity_curiosity_probes", summary
             )
             self.assertIn(
+                "human_prior_option_entity_persistence_observations",
+                summary,
+            )
+            self.assertIn("human_prior_adjacent_entity_probes", summary)
+            self.assertIn(
+                "human_prior_adjacent_entity_effects_confirmed", summary
+            )
+            self.assertIn(
+                "human_prior_adjacent_entity_frontiers_promoted", summary
+            )
+            self.assertIn(
+                "human_prior_adjacent_entity_learning_accepted", summary
+            )
+            self.assertIn(
+                "human_prior_option_entity_persistence_unique_signatures",
+                summary,
+            )
+            self.assertIn(
+                "human_prior_option_entity_persistence_max_steps", summary
+            )
+            self.assertIn(
+                "human_prior_option_entity_persistent_probes", summary
+            )
+            self.assertIn(
                 "human_prior_option_entity_curiosity_distinct_probe_cells",
                 summary,
             )
@@ -684,6 +708,33 @@ class RunLoggingTests(unittest.TestCase):
                 "anonymous_entity_behavior_inert_observations", summary
             )
             self.assertIn(
+                "anonymous_entity_behavior_displacement_observations",
+                summary,
+            )
+            self.assertIn(
+                "anonymous_entity_behavior_appearance_transitions",
+                summary,
+            )
+            self.assertIn(
+                "anonymous_entity_behavior_global_phase_changes", summary
+            )
+            self.assertIn(
+                "anonymous_entity_behavior_manipulation_observations",
+                summary,
+            )
+            self.assertIn(
+                "anonymous_entity_behavior_phase_contexts_observed",
+                summary,
+            )
+            self.assertIn(
+                "anonymous_entity_behavior_predictive_family_predictions",
+                summary,
+            )
+            self.assertIn(
+                "anonymous_entity_behavior_predictive_family_pooled_predictions",
+                summary,
+            )
+            self.assertIn(
                 "anonymous_entity_behavior_known_semantic_predictions",
                 summary,
             )
@@ -746,6 +797,12 @@ class RunLoggingTests(unittest.TestCase):
             )
             self.assertIn(
                 "episodic_option_archive_seed_events", summary
+            )
+            self.assertIn(
+                "episodic_option_archive_import_skip_events", summary
+            )
+            self.assertIn(
+                "episodic_option_archives_import_skipped", summary
             )
             self.assertIn("episodic_option_archives_seeded", summary)
             self.assertIn("episodic_option_archives_skipped", summary)

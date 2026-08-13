@@ -219,6 +219,14 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   tested. Resume reconstruction applies the same rule to new telemetry and
   infers it from matching neutral frame digests where older logs contain the
   required counterfactual rollouts;
+- `--skip-resume-option-archives` is a diagnostic matched-resume control. It
+  restores the exact committed emulator state and learned episodic graph but
+  deliberately omits uncommitted save-state frontier snapshots, allowing a
+  changed search policy to be measured at the same pixels without first
+  consuming older archive alternatives. The manifest records
+  `episodic_resume.option_archive_import=skipped`, and
+  `episodic_option_archive_import_skipped` records the exact number omitted.
+  The default remains full archive import for ordinary continuation;
 - `human_prior_episodic_graph_plan_selected`, emitted by the opt-in
   `--human-prior-episodic-graph-guidance` policy. It records the current
   pixel-state signature, reachable waypoint, plan kind, pixel gap, and verified
@@ -414,6 +422,27 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   and accepted learning evidence. Both settings are part of
   `search_budget_sha256`, so enabling curiosity reopens a source that was
   exhausted under the policy-neutral budget;
+- when a candidate's anonymous effect cells remain unchanged after an exact
+  neutral follow-up, and those cells align with the action's anonymous target,
+  `human_prior_option_entity_persistence_observed` links the surviving
+  appearance state to the original interaction action and action index. This
+  means the exact target cell for movement actions and permits a one-cell
+  Manhattan offset for `A`/`B`, because an observed sprite can straddle the
+  coarse causal-cell boundary above its interaction anchor. The event records
+  that measured `effect_target_distance`. The bounded alignment requirement
+  prevents an unrelated persistent animation elsewhere in the room from being
+  inherited by the action. This is evidence from the already-running search,
+  not an object label or assumed rule. Such candidates receive the matched
+  control probe
+  before interactions supported only by prediction uncertainty. The probe
+  records `in_search_persistence_observed` and
+  `in_search_persistence_steps`; search completion records the number of
+  persistent interaction rows and distinct signatures. The originating action
+  index is preserved even when the candidate path ends in one or more `NOOP`
+  checks, so leave-one-action-out verification ablates the intervention rather
+  than its neutral follow-up. The policy version is part of
+  `search_budget_sha256`, reopening sources exhausted before this evidence was
+  available;
 - with nonzero `--human-prior-option-entity-inert-penalty-weight`, exact
   branches additionally record semantic sample coverage, learned inert and
   measured-effect probabilities, evidence confidence, and the exact score
@@ -894,6 +923,43 @@ predicted and observed outcome hashes, evidence count, probability, entropy,
 confidence, surprise, hazard probability, relative effect cells, and the
 deduplicated evidence ID. It never contains a supplied sprite or mechanic name.
 
+Schema 7 factors the context into three pixel-derived dimensions:
+`relation_signature` describes the controlled patch relative to the anonymous
+anchor, `neighborhood_signature` describes the local 3x3 appearance layout,
+and `phase_signature` coarsely summarizes the remaining screen after excluding
+the controlled and interaction neighborhoods. Exact predictions remain
+phase-conditioned, while partial relation/phase and relation/neighborhood rows
+allow measured behavior to transfer to a new layout without erasing evidence
+that the same appearance behaves differently after a room-wide visual change.
+Phase input is restricted to cells that repeatedly match across neutral waits
+once at least two such observations exist. Ordinary animation is therefore
+excluded, while a formerly stable visual counter or room entity changing state
+can establish a new phase. Passive-scan telemetry records
+`phase_stable_cells` and `phase_cells_with_change_evidence`.
+
+Controlled outcome descriptors additionally record
+`entity_displacement`, `controlled_appearance_transition`, and
+`global_phase_change`. These are label-free facts intended for manipulation
+planning: the first captures push-like translation independently of player
+motion, the second captures transform-like appearance changes relative to the
+matched neutral control, and the third captures simultaneous distant visual
+change. Types with distinct appearance prototypes but identical measured
+semantic profiles form a `predictive_family`; sparse predictions may pool
+support within that family, allowing animation variants to share behavior
+without merging merely because they look similar.
+
+Before a multi-step option search expands its beam,
+`human_prior_adjacent_entity_probe_started` identifies rare unresolved patches
+beside the pixel-detected player. A bounded set of directional-contact and
+facing-button actions is replayed from the same save state, advanced through a
+short neutral stability horizon, and compared with an equal-time `NOOP`
+control. Each result is emitted as
+`human_prior_adjacent_entity_probe_completed`; confirmed persistent appearance
+states can immediately become entity frontiers. The summary event and run
+summary report attempts, causal confirmations, learned evidence, and promoted
+frontiers. This moves mechanics discovery ahead of expensive navigation search
+without assigning a name to the interacted patch.
+
 `anonymous_entity_passive_scan_completed` records how many rare patches were
 tracked through each matched passive interval and how many controlled-sprite
 cells were excluded. Each additional configured duration-only save-state
@@ -936,6 +1002,9 @@ role, other-branch hazard state, and first localization horizon. See
 Terminal rows from the ordinary passive scanner carry
 `evidence_eligible=false`; the summary counts them as
 `anonymous_entity_behavior_terminal_evidence_withheld`.
+Manipulation summaries additionally count displacement observations,
+appearance transitions, global phase changes, distinct phase contexts, and
+predictive-family pooling.
 
 ## Episodic resume
 

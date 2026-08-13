@@ -12,7 +12,9 @@ Each type stores empirical distributions conditioned on:
 - the NES hardware action and duration;
 - passive versus action-controlled observation;
 - a translation-invariant pixel relation to the action-correlated controllable
-  patch, with an anonymous scene signature as a localization fallback;
+  patch;
+- a local pixel-neighborhood signature and a global phase signature built only
+  from cells that remain stable across repeated neutral waits;
 - the observed position-relative pixel outcome;
 - a pixel-derived life-loss observation.
 
@@ -41,7 +43,9 @@ This is the mechanism needed for activation rules: the trigger need not be
 named. Coarsely binned distance, row/column/diagonal alignment, and relative
 direction can support different predictions while sharing the same appearance
 type. These relations transfer under translation instead of memorizing an
-absolute room location.
+absolute room location. Factored phase/relation and neighborhood/relation
+fallbacks transfer evidence between new layouts while exact phase-conditioned
+rules can retain a behavior change after a global visual transition.
 
 ## Persistence and evaluation
 
@@ -120,15 +124,30 @@ change still has to pass the existing persistence, phase, player-mask, and
 action-control gates before it can become a world-state frontier. Both knobs
 default to zero, preserving the policy-neutral observational configuration.
 
+Before beam expansion, a bounded adjacent-affordance pass can test rare,
+unresolved facing-button and directional-contact interactions from the same
+save state. Apparent displacement, transformation, global phase change, or
+terminal evidence is eligible for learning only after its matched control
+confirms causality. Clean factual/control no-effect matches remain learnable.
+This prevents ordinary animation from teaching a false manipulation rule.
+
 ## Learned outcome semantics
 
-Schema 6 checkpoints retain an auditable descriptor beside each opaque outcome
+Schema 7 checkpoints retain an auditable descriptor beside each opaque outcome
 hash. The descriptor contains only relations measured from pixels: anonymous
 patch appearance in the factual and equal-duration control endpoints, relative
-changed cells, controlled-patch displacement, and terminal visual change. From
-those facts the model can distinguish a measured local change or displacement
-from a factual/control match. It still receives no object names, mechanics, or
-good/bad labels.
+changed cells, controlled-patch displacement, anonymous-entity displacement,
+global phase change, and terminal visual change. From those facts the model can
+distinguish a measured local change, push-like translation, transform-like
+appearance transition, or distant resource/phase change from a factual/control
+match. It still receives no object names, mechanics, or good/bad labels.
+
+Appearance prototypes with different animation pixels but the same complete
+measured semantic profile form a predictive family. A sparse rule may borrow
+support from that family only when those profiles agree; visual similarity
+alone cannot merge contradictory behavior. Schema 3 through 6 checkpoints
+remain loadable, and default-valued schema-7 fields preserve the content hashes
+of legacy outcome descriptors.
 
 The same descriptor payload preserves passive recurrence offsets. Prediction
 interprets `(0, 0)` as passive stationarity and a nonzero offset or appearance

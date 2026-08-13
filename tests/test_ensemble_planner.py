@@ -951,6 +951,13 @@ class UnlabeledEntityTransformEnv:
         return Frame(32, 32, 1, bytes(pixels))
 
 
+class AdjacentButtonTransformEnv(UnlabeledEntityTransformEnv):
+    def reset(self) -> Frame:
+        self.armed = True
+        self.transformed = False
+        return self._frame()
+
+
 class MovingEntitySettlesEnv:
     def __init__(self) -> None:
         self.armed = False
@@ -5632,13 +5639,28 @@ class EnsemblePlannerTests(unittest.TestCase):
             if event["event"]
             == "human_prior_option_entity_curiosity_probe"
         )
+        learned_adjacent_probe = next(
+            event
+            for event in learned.events
+            if event["event"]
+            == "human_prior_adjacent_entity_probe_completed"
+        )
+        adjacent_behavior = learned_adjacent_probe[
+            "anonymous_entity_behavior"
+        ]
+        self.assertEqual(learned_adjacent_probe["action"], Action.RIGHT)
+        self.assertEqual(
+            learned_adjacent_probe["interaction_cell"], (1, 0)
+        )
+        self.assertTrue(adjacent_behavior["evidence_accepted"])
+        self.assertTrue(adjacent_behavior["evidence_eligible"])
         self.assertEqual(learned_probe["action"], Action.RIGHT)
         self.assertEqual(learned_probe["interaction_cell"], (1, 0))
         self.assertFalse(learned_probe["entity_effect_confirmed"])
-        self.assertTrue(learned_probe["evidence_accepted"])
+        self.assertFalse(learned_probe["evidence_accepted"])
         self.assertTrue(learned_probe["evidence_eligible"])
         self.assertTrue(learned_probe["interaction_cell_matched"])
-        self.assertFalse(learned_probe["behavior_known_before"])
+        self.assertTrue(learned_probe["behavior_known_before"])
         self.assertTrue(frozen_probe["behavior_known_before"])
         self.assertGreaterEqual(frozen_probe["semantic_samples_before"], 1)
         self.assertEqual(frozen_probe["semantic_coverage_before"], 1.0)
@@ -5669,6 +5691,189 @@ class EnsemblePlannerTests(unittest.TestCase):
             learned_observation["observed_outcome_descriptor"]
         )
 
+    def test_adjacent_probe_learns_button_transformation_before_beam_search(
+        self,
+    ) -> None:
+        logger = RecordingLogger()
+        model = AnonymousEntityBehaviorModel(
+            minimum_prediction_samples=1
+        )
+        agent = VerifiedNeuralAgent(
+            AdjacentButtonTransformEnv(),
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.A, Action.NOOP),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=2,
+                human_prior_option_search_action_frames=1,
+                human_prior_option_effect_stability_steps=1,
+                human_prior_option_effect_probe_limit=1,
+                human_prior_option_effect_phase_offsets=1,
+                human_prior_option_effect_local_controls=True,
+                human_prior_option_entity_frontier=True,
+                human_prior_option_entity_curiosity_reserve=1,
+                anonymous_entity_behavior_learning=True,
+                causal_spatial_columns=8,
+                causal_spatial_rows=8,
+            ),
+            event_logger=logger,
+            entity_behavior_model=model,
+        )
+        agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        agent.current_pose_action = Action.RIGHT
+        source_signature = agent._current_human_prior_graph_signature()
+        agent.human_prior_graph_state_visits[source_signature] = 1
+        agent.human_prior_player_position_visits[(0, 0)] = 1
+
+        agent._search_human_prior_options()
+
+        completed = next(
+            event
+            for event in logger.events
+            if event["event"]
+            == "human_prior_adjacent_entity_probe_completed"
+        )
+        behavior = completed["anonymous_entity_behavior"]
+        self.assertEqual(completed["action"], Action.A)
+        self.assertEqual(completed["interaction_cell"], (1, 0))
+        self.assertTrue(completed["control_confirmed"])
+        self.assertTrue(completed["entity_effect_confirmed"])
+        self.assertTrue(behavior["evidence_accepted"])
+        self.assertTrue(behavior["observed_appearance_transition"])
+        self.assertTrue(behavior["observed_manipulation_effect"])
+        self.assertTrue(
+            any(
+                event["event"]
+                == "human_prior_adjacent_entity_probe_summary"
+                and event["confirmed_entity_effects"] == 1
+                for event in logger.events
+            )
+        )
+
+    def test_unconfirmed_appearance_transition_is_withheld(self) -> None:
+        logger = RecordingLogger()
+        model = AnonymousEntityBehaviorModel(
+            minimum_prediction_samples=1
+        )
+        env = AdjacentButtonTransformEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.A, Action.NOOP),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=2,
+                human_prior_option_search_action_frames=1,
+                human_prior_option_effect_stability_steps=1,
+                human_prior_option_effect_probe_limit=1,
+                human_prior_option_effect_phase_offsets=1,
+                human_prior_option_effect_local_controls=True,
+                human_prior_option_entity_frontier=True,
+                human_prior_option_entity_curiosity_reserve=1,
+                anonymous_entity_behavior_learning=True,
+                causal_spatial_columns=8,
+                causal_spatial_rows=8,
+            ),
+            event_logger=logger,
+            entity_behavior_model=model,
+        )
+        agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        before = env.load_state((True, False))
+        factual = env.load_state((True, True))
+        control = env.load_state((True, False))
+        before_observation = agent.unlabeled_entity_memory.observe(before)
+        behavior = agent._anonymous_entity_behavior_observation(
+            before,
+            factual,
+            control,
+            before_observation,
+            agent.goal_prior.analyze(before, factual),
+            agent.goal_prior.analyze(before, control),
+            Action.A,
+            1,
+            ((1, 0),),
+            (),
+            set(),
+            evidence_scope="unconfirmed-transform-regression",
+            evidence_eligible=True,
+            causal_effect_confirmed=False,
+        )
+        self.assertIsNotNone(behavior)
+        self.assertTrue(behavior["observed_appearance_transition"])
+        self.assertFalse(behavior["evidence_eligible"])
+        self.assertFalse(behavior["evidence_accepted"])
+        self.assertEqual(model.observation_count, 0)
+
+    def test_phase_context_uses_neutral_stable_cells_not_animation(self) -> None:
+        def frame(animation: int, visual_variable: int) -> Frame:
+            pixels = bytearray([16] * 64)
+            pixels[5] = animation
+            pixels[63] = visual_variable
+            return Frame(8, 8, 1, bytes(pixels))
+
+        source = frame(32, 64)
+        animated = frame(224, 64)
+        changed_first = frame(48, 192)
+        changed_second = frame(208, 192)
+        agent = VerifiedNeuralAgent(
+            ActionEffectEnv(),
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                human_prior_heart_reward=1.0,
+                human_prior_option_entity_frontier=True,
+                human_prior_option_search_depth=2,
+                human_prior_option_effect_stability_steps=1,
+                human_prior_option_effect_probe_limit=1,
+                human_prior_option_effect_phase_offsets=1,
+                human_prior_option_effect_local_controls=True,
+                causal_spatial_columns=8,
+                causal_spatial_rows=8,
+            ),
+            entity_behavior_model=AnonymousEntityBehaviorModel(),
+        )
+        agent.reset(initial_frame=source)
+        agent._update_anonymous_phase_stability(source, animated)
+        agent._update_anonymous_phase_stability(source, animated)
+
+        source_context = agent._anonymous_entity_context_factors(
+            source, (1, 1), ((0, 0),)
+        )
+        changed_first_context = agent._anonymous_entity_context_factors(
+            changed_first, (1, 1), ((0, 0),)
+        )
+        changed_second_context = agent._anonymous_entity_context_factors(
+            changed_second, (1, 1), ((0, 0),)
+        )
+
+        self.assertGreater(source_context["phase_stable_cells"], 0)
+        self.assertNotEqual(
+            source_context["phase_signature"],
+            changed_first_context["phase_signature"],
+        )
+        self.assertEqual(
+            changed_first_context["phase_signature"],
+            changed_second_context["phase_signature"],
+        )
+
     def test_entity_curiosity_probe_ranking_diversifies_spatial_loci(
         self,
     ) -> None:
@@ -5676,6 +5881,8 @@ class EnsemblePlannerTests(unittest.TestCase):
             cell: tuple[int, int], novelty: float, score: float
         ) -> SimpleNamespace:
             return SimpleNamespace(
+                entity_effect_persisted_in_search=False,
+                entity_effect_persistence_steps=0,
                 entity_behavior_known=False,
                 entity_interaction_type_id=1,
                 entity_behavior_novelty=novelty,
@@ -5710,6 +5917,158 @@ class EnsemblePlannerTests(unittest.TestCase):
             [(1, 1), (2, 1), (3, 1)],
         )
         self.assertIs(ranked[3], same_cell_second)
+
+    def test_entity_probe_ranking_prefers_observed_neutral_persistence(
+        self,
+    ) -> None:
+        persistent = SimpleNamespace(
+            entity_effect_persisted_in_search=True,
+            entity_effect_persistence_steps=1,
+            entity_behavior_known=True,
+            entity_interaction_type_id=1,
+            entity_behavior_novelty=0.1,
+            entity_spatial_rarity=0.1,
+            entity_curiosity=0.01,
+            score=1.0,
+            depth=3,
+            entity_interaction_cell=(1, 1),
+            entity_interaction_appearance_fingerprint="persistent",
+            entity_interaction_context_signature="context",
+        )
+        merely_novel = SimpleNamespace(
+            entity_effect_persisted_in_search=False,
+            entity_effect_persistence_steps=0,
+            entity_behavior_known=False,
+            entity_interaction_type_id=2,
+            entity_behavior_novelty=1.0,
+            entity_spatial_rarity=1.0,
+            entity_curiosity=1.0,
+            score=10.0,
+            depth=2,
+            entity_interaction_cell=(2, 1),
+            entity_interaction_appearance_fingerprint="novel",
+            entity_interaction_context_signature="context",
+        )
+
+        ranked, groups = (
+            VerifiedNeuralAgent._human_prior_diverse_entity_probe_candidates(
+                (merely_novel, persistent)
+            )
+        )
+
+        self.assertEqual(groups, 2)
+        self.assertIs(ranked[0], persistent)
+
+    def test_entity_neutral_persistence_probes_originating_action(self) -> None:
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            UnlabeledEntityTransformEnv(),
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.A, Action.NOOP),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=3,
+                human_prior_option_search_beam_width=4,
+                human_prior_option_search_action_frames=1,
+                human_prior_option_effect_stability_steps=2,
+                human_prior_option_effect_probe_limit=1,
+                human_prior_option_effect_phase_offsets=1,
+                human_prior_option_effect_local_controls=True,
+                human_prior_option_entity_frontier=True,
+                human_prior_option_entity_curiosity_reserve=1,
+                causal_spatial_columns=8,
+                causal_spatial_rows=8,
+            ),
+            event_logger=logger,
+            entity_behavior_model=AnonymousEntityBehaviorModel(),
+        )
+        agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        source_signature = agent._current_human_prior_graph_signature()
+        agent.human_prior_graph_state_visits[source_signature] = 1
+        agent.human_prior_player_position_visits[(0, 0)] = 1
+
+        added = agent._search_human_prior_options()
+
+        persistence = [
+            event
+            for event in logger.events
+            if event["event"]
+            == "human_prior_option_entity_persistence_observed"
+            and event["path"] == (Action.RIGHT, Action.A, Action.NOOP)
+        ]
+        self.assertEqual(len(persistence), 1)
+        self.assertEqual(persistence[0]["interaction_action_index"], 1)
+        probes = [
+            event
+            for event in logger.events
+            if event["event"]
+            == "human_prior_option_entity_curiosity_probe"
+        ]
+        self.assertEqual(len(probes), 1)
+        self.assertTrue(probes[0]["in_search_persistence_observed"])
+        self.assertEqual(probes[0]["action_index"], 1)
+        self.assertEqual(probes[0]["action"], Action.A)
+        self.assertGreaterEqual(added, 1)
+        self.assertTrue(
+            any(
+                branch.human_prior_option_entity_state_signature
+                for branch in agent.archive
+            )
+        )
+
+    def test_entity_neutral_persistence_rejects_unrelated_effect_cell(
+        self,
+    ) -> None:
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            WorldEffectEnv(persistent=True),
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.NOOP),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=4,
+                human_prior_option_search_action_frames=1,
+                human_prior_option_effect_stability_steps=2,
+                human_prior_option_effect_probe_limit=1,
+                human_prior_option_effect_phase_offsets=1,
+                human_prior_option_effect_local_controls=True,
+                human_prior_option_entity_frontier=True,
+                human_prior_option_entity_curiosity_reserve=1,
+                causal_spatial_columns=8,
+                causal_spatial_rows=8,
+            ),
+            event_logger=logger,
+            entity_behavior_model=AnonymousEntityBehaviorModel(),
+        )
+        agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        source_signature = agent._current_human_prior_graph_signature()
+        agent.human_prior_graph_state_visits[source_signature] = 1
+        agent.human_prior_player_position_visits[(0, 0)] = 1
+
+        agent._search_human_prior_options()
+
+        self.assertFalse(
+            any(
+                event["event"]
+                == "human_prior_option_entity_persistence_observed"
+                for event in logger.events
+            )
+        )
 
     def test_entity_curiosity_reserve_cannot_exceed_option_beam(self) -> None:
         with self.assertRaisesRegex(ValueError, "cannot exceed"):

@@ -48,6 +48,8 @@ class BehaviorOutcomeDescriptor:
     relative_effect_cells: Tuple[RelativeCell, ...] = ()
     player_displacement: Optional[RelativeCell] = None
     terminal_visual_change: bool = False
+    entity_displacement: Optional[RelativeCell] = None
+    global_phase_change: bool = False
 
     _APPEARANCE_RELATIONS = frozenset(("same", "near", "different"))
 
@@ -61,7 +63,7 @@ class BehaviorOutcomeDescriptor:
                 raise ValueError("invalid behavior appearance relation")
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        payload = {
             "factual_source_relation": self.factual_source_relation,
             "control_source_relation": self.control_source_relation,
             "factual_control_relation": self.factual_control_relation,
@@ -79,12 +81,23 @@ class BehaviorOutcomeDescriptor:
             ),
             "terminal_visual_change": bool(self.terminal_visual_change),
         }
+        # Omit new default-valued fields so descriptors created by schema 6
+        # retain their content-addressed signatures during migration.
+        if self.entity_displacement is not None:
+            payload["entity_displacement"] = [
+                int(self.entity_displacement[0]),
+                int(self.entity_displacement[1]),
+            ]
+        if self.global_phase_change:
+            payload["global_phase_change"] = True
+        return payload
 
     @classmethod
     def from_dict(
         cls, payload: Dict[str, Any]
     ) -> "BehaviorOutcomeDescriptor":
         displacement = payload.get("player_displacement")
+        entity_displacement = payload.get("entity_displacement")
         return cls(
             factual_source_relation=str(
                 payload["factual_source_relation"]
@@ -109,6 +122,17 @@ class BehaviorOutcomeDescriptor:
             terminal_visual_change=bool(
                 payload.get("terminal_visual_change", False)
             ),
+            entity_displacement=(
+                None
+                if entity_displacement is None
+                else (
+                    int(entity_displacement[0]),
+                    int(entity_displacement[1]),
+                )
+            ),
+            global_phase_change=bool(
+                payload.get("global_phase_change", False)
+            ),
         )
 
     @property
@@ -126,7 +150,9 @@ class BehaviorOutcomeDescriptor:
             self.factual_control_relation == "same"
             and not self.relative_effect_cells
             and self.player_displacement in (None, (0, 0))
+            and self.entity_displacement in (None, (0, 0))
             and not self.terminal_visual_change
+            and not self.global_phase_change
         )
 
     @property
@@ -141,6 +167,47 @@ class BehaviorOutcomeDescriptor:
         return bool(
             self.factual_control_relation != "same"
             or self.relative_effect_cells
+        )
+
+    @property
+    def controlled_appearance_transition(self) -> bool:
+        """Whether the factual patch changed beyond its matched control."""
+
+        return bool(
+            self.factual_control_relation != "same"
+            and self.control_source_relation in ("same", "near")
+            and self.factual_source_relation == "different"
+        )
+
+    @property
+    def controlled_entity_displacement(self) -> bool:
+        return bool(
+            self.entity_displacement is not None
+            and self.entity_displacement != (0, 0)
+        )
+
+    @property
+    def manipulation_effect(self) -> bool:
+        """A label-free state change useful to manipulation planning."""
+
+        return bool(
+            self.controlled_appearance_transition
+            or self.controlled_entity_displacement
+            or self.global_phase_change
+        )
+
+    @property
+    def predictive_class(self) -> Tuple[Any, ...]:
+        """Coarse semantics used to merge animation variants safely."""
+
+        return (
+            self.intervention_inert,
+            self.controlled_movement,
+            self.local_visual_change,
+            self.controlled_appearance_transition,
+            self.entity_displacement,
+            self.global_phase_change,
+            self.terminal_visual_change,
         )
 
     @property
@@ -165,6 +232,8 @@ class BehaviorOutcomeDescriptor:
         return bool(
             self.local_visual_change_for(autonomous)
             or (not autonomous and self.controlled_movement)
+            or (not autonomous and self.controlled_entity_displacement)
+            or self.global_phase_change
             or self.terminal_visual_change
         )
 
@@ -172,7 +241,9 @@ class BehaviorOutcomeDescriptor:
     def measured_effect(self) -> bool:
         return bool(
             self.controlled_movement
+            or self.controlled_entity_displacement
             or self.local_visual_change
+            or self.global_phase_change
             or self.terminal_visual_change
         )
 
@@ -204,6 +275,13 @@ class BehaviorPrediction:
     controlled_movement_probability: float
     local_visual_change_probability: float
     terminal_visual_change_probability: float
+    entity_displacement_probability: float = 0.0
+    appearance_transition_probability: float = 0.0
+    global_phase_change_probability: float = 0.0
+    manipulation_probability: float = 0.0
+    predictive_family_id: Optional[int] = None
+    predictive_family_size: int = 1
+    predictive_family_pooled: bool = False
 
     @property
     def novelty(self) -> float:
@@ -247,7 +325,7 @@ class AnonymousEntityBehaviorModel:
     and contradictory evidence reduces confidence instead of being discarded.
     """
 
-    SCHEMA_VERSION = 6
+    SCHEMA_VERSION = 7
     _UNCONDITIONAL_CONTEXT = "*"
 
     def __init__(
@@ -416,6 +494,112 @@ class AnonymousEntityBehaviorModel:
         )
 
     @classmethod
+    def phase_signature(
+        cls, features: Iterable[Sequence[int]]
+    ) -> str:
+        """Return a coarse translation-invariant global visual mode.
+
+        Features are deliberately requantized before counting. This makes the
+        signature insensitive to small sprite-animation changes while still
+        allowing disappearance, transformation, and HUD-like global changes
+        to define a new empirical phase. No region or object has a supplied
+        meaning.
+        """
+
+        counts: CounterType[str] = Counter()
+        for feature in features:
+            coarse = tuple(int(value) // 4 for value in feature)
+            counts[cls.appearance_fingerprint(coarse)] += 1
+        payload = ";".join(
+            f"{fingerprint}:{count}"
+            for fingerprint, count in sorted(counts.items())
+        )
+        return hashlib.sha256(payload.encode("ascii")).hexdigest()[:16]
+
+    @classmethod
+    def neighborhood_signature(
+        cls,
+        anchor: RelativeCell,
+        cell_features: Dict[RelativeCell, Sequence[int]],
+    ) -> str:
+        """Describe local occupancy without assigning object identities.
+
+        Each neighboring cell contributes its relative offset, coarsened
+        appearance, and within-frame frequency. This exposes destination
+        context for effects such as pushing while remaining pixel-derived.
+        """
+
+        fingerprints = {
+            cell: cls.appearance_fingerprint(
+                tuple(int(value) // 2 for value in feature)
+            )
+            for cell, feature in cell_features.items()
+        }
+        counts = Counter(fingerprints.values())
+        tokens = []
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dx == 0 and dy == 0:
+                    continue
+                cell = (anchor[0] + dx, anchor[1] + dy)
+                fingerprint = fingerprints.get(cell)
+                if fingerprint is None:
+                    tokens.append(f"{dx},{dy}=edge")
+                    continue
+                frequency = counts[fingerprint]
+                frequency_bin = (
+                    "one"
+                    if frequency == 1
+                    else "few"
+                    if frequency <= 4
+                    else "many"
+                )
+                tokens.append(
+                    f"{dx},{dy}={fingerprint}:{frequency_bin}"
+                )
+        return hashlib.sha256(
+            ";".join(tokens).encode("ascii")
+        ).hexdigest()[:16]
+
+    @classmethod
+    def factored_context_signature(
+        cls,
+        relation_signature: str,
+        neighborhood_signature: str,
+        phase_signature: str,
+    ) -> str:
+        """Compose context dimensions with deterministic fallback support."""
+
+        relation = relation_signature or "controlled-relative:unknown"
+        neighborhood = neighborhood_signature or "unknown"
+        phase = phase_signature or "unknown"
+        return (
+            f"factored:v1|phase={phase}|neighborhood={neighborhood}|"
+            f"relation={relation}"
+        )
+
+    @staticmethod
+    def _context_hierarchy(context_signature: str) -> Tuple[str, ...]:
+        """Order exact factored context before reusable partial contexts."""
+
+        if not context_signature.startswith("factored:v1|"):
+            return (context_signature,) if context_signature else ()
+        values: Dict[str, str] = {}
+        for component in context_signature.split("|")[1:]:
+            key, separator, value = component.partition("=")
+            if separator:
+                values[key] = value
+        relation = values.get("relation", "controlled-relative:unknown")
+        phase = values.get("phase", "unknown")
+        neighborhood = values.get("neighborhood", "unknown")
+        return (
+            context_signature,
+            f"factored:v1|phase={phase}|relation={relation}",
+            f"factored:v1|neighborhood={neighborhood}|relation={relation}",
+            relation,
+        )
+
+    @classmethod
     def effect_descriptor(
         cls,
         source_feature: Sequence[int],
@@ -424,6 +608,8 @@ class AnonymousEntityBehaviorModel:
         relative_effect_cells: Sequence[RelativeCell] = (),
         player_displacement: Optional[RelativeCell] = None,
         terminal_visual_change: bool = False,
+        entity_displacement: Optional[RelativeCell] = None,
+        global_phase_change: bool = False,
     ) -> BehaviorOutcomeDescriptor:
         """Describe a position-invariant outcome from pixel-derived facts."""
 
@@ -465,6 +651,15 @@ class AnonymousEntityBehaviorModel:
                 )
             ),
             terminal_visual_change=bool(terminal_visual_change),
+            entity_displacement=(
+                None
+                if entity_displacement is None
+                else (
+                    int(entity_displacement[0]),
+                    int(entity_displacement[1]),
+                )
+            ),
+            global_phase_change=bool(global_phase_change),
         )
 
     @classmethod
@@ -476,6 +671,8 @@ class AnonymousEntityBehaviorModel:
         relative_effect_cells: Sequence[RelativeCell] = (),
         player_displacement: Optional[RelativeCell] = None,
         terminal_visual_change: bool = False,
+        entity_displacement: Optional[RelativeCell] = None,
+        global_phase_change: bool = False,
     ) -> str:
         """Create a stable key for a pixel-derived outcome descriptor."""
 
@@ -486,6 +683,8 @@ class AnonymousEntityBehaviorModel:
             relative_effect_cells=relative_effect_cells,
             player_displacement=player_displacement,
             terminal_visual_change=terminal_visual_change,
+            entity_displacement=entity_displacement,
+            global_phase_change=global_phase_change,
         ).signature
 
     def _nearest_type(
@@ -545,14 +744,14 @@ class AnonymousEntityBehaviorModel:
         autonomous: bool,
         context_signature: str,
     ) -> Tuple[Optional[_RuleStats], bool]:
-        if context_signature:
+        for condition in self._context_hierarchy(context_signature):
             contextual = self._rules.get(
                 self._rule_key(
                     type_id,
                     action,
                     duration,
                     autonomous,
-                    context_signature,
+                    condition,
                 )
             )
             if (
@@ -573,6 +772,119 @@ class AnonymousEntityBehaviorModel:
             False,
         )
 
+    def _predictive_profile(
+        self, type_id: int
+    ) -> Optional[Tuple[Tuple[Any, ...], ...]]:
+        """Return behavior semantics independent of animation appearance."""
+
+        rows = []
+        for key, rule in sorted(self._rules.items()):
+            row_type, action, duration, autonomous, context = key
+            if (
+                row_type != type_id
+                or context != self._UNCONDITIONAL_CONTEXT
+                or rule.samples <= 0
+            ):
+                continue
+            semantic_counts: CounterType[Tuple[Any, ...]] = Counter()
+            for signature, count in rule.outcomes.items():
+                descriptor = self._outcome_descriptors.get(signature)
+                if descriptor is not None:
+                    semantic_counts[descriptor.predictive_class] += count
+            if not semantic_counts:
+                continue
+            dominant = max(
+                semantic_counts.items(),
+                key=lambda item: (item[1], repr(item[0])),
+            )[0]
+            rows.append((action, duration, autonomous, *dominant))
+        return tuple(rows) if rows else None
+
+    def predictive_family(
+        self, type_id: Optional[int]
+    ) -> Tuple[Optional[int], Tuple[int, ...]]:
+        """Group types only after their measured semantics agree exactly."""
+
+        if type_id is None or not 0 <= type_id < self.type_count:
+            return None, ()
+        profile = self._predictive_profile(type_id)
+        if profile is None:
+            return type_id, (type_id,)
+        members = tuple(
+            candidate
+            for candidate in range(self.type_count)
+            if self._predictive_profile(candidate) == profile
+        )
+        return min(members), members
+
+    @staticmethod
+    def _merge_rules(rules: Sequence[_RuleStats]) -> _RuleStats:
+        merged = _RuleStats(Counter())
+        for rule in rules:
+            merged.outcomes.update(rule.outcomes)
+            merged.hazardous += rule.hazardous
+            merged.samples += rule.samples
+            merged.contexts.update(rule.contexts)
+            merged.causal_hazardous += rule.causal_hazardous
+            merged.causal_hazard_samples += rule.causal_hazard_samples
+        return merged
+
+    def _select_rule_with_family(
+        self,
+        type_id: int,
+        action: Action,
+        duration: int,
+        autonomous: bool,
+        context_signature: str,
+    ) -> Tuple[Optional[_RuleStats], bool, int, int, bool]:
+        own_rule, own_contextual = self._select_rule(
+            type_id,
+            action,
+            duration,
+            autonomous,
+            context_signature,
+        )
+        family_id, members = self.predictive_family(type_id)
+        assert family_id is not None
+        if len(members) <= 1 or (
+            own_rule is not None
+            and own_rule.samples >= self.minimum_prediction_samples
+        ):
+            return own_rule, own_contextual, family_id, len(members), False
+        conditions = (
+            *self._context_hierarchy(context_signature),
+            self._UNCONDITIONAL_CONTEXT,
+        )
+        for condition in conditions:
+            rules = [
+                rule
+                for member in members
+                if (
+                    rule := self._rules.get(
+                        self._rule_key(
+                            member,
+                            action,
+                            duration,
+                            autonomous,
+                            condition,
+                        )
+                    )
+                )
+                is not None
+            ]
+            if not rules:
+                continue
+            merged = self._merge_rules(rules)
+            if merged.samples >= self.minimum_prediction_samples:
+                return (
+                    merged,
+                    condition != self._UNCONDITIONAL_CONTEXT,
+                    family_id,
+                    len(members),
+                    True,
+                )
+        return own_rule, own_contextual, family_id, len(members), False
+
     def _prediction_from_rule(
         self,
         type_id: Optional[int],
@@ -581,6 +893,9 @@ class AnonymousEntityBehaviorModel:
         minimum_prediction_samples: int,
         context_matched: bool,
         autonomous: bool,
+        predictive_family_id: Optional[int] = None,
+        predictive_family_size: int = 1,
+        predictive_family_pooled: bool = False,
     ) -> BehaviorPrediction:
         if rule is None or rule.samples <= 0:
             return BehaviorPrediction(
@@ -607,6 +922,9 @@ class AnonymousEntityBehaviorModel:
                 controlled_movement_probability=0.0,
                 local_visual_change_probability=0.0,
                 terminal_visual_change_probability=0.0,
+                predictive_family_id=predictive_family_id,
+                predictive_family_size=predictive_family_size,
+                predictive_family_pooled=predictive_family_pooled,
             )
         outcome, count = max(
             rule.outcomes.items(), key=lambda item: (item[1], item[0])
@@ -692,6 +1010,29 @@ class AnonymousEntityBehaviorModel:
             terminal_visual_change_probability=semantic_probability(
                 lambda descriptor: descriptor.terminal_visual_change
             ),
+            entity_displacement_probability=semantic_probability(
+                lambda descriptor: (
+                    not autonomous
+                    and descriptor.controlled_entity_displacement
+                )
+            ),
+            appearance_transition_probability=semantic_probability(
+                lambda descriptor: (
+                    not autonomous
+                    and descriptor.controlled_appearance_transition
+                )
+            ),
+            global_phase_change_probability=semantic_probability(
+                lambda descriptor: descriptor.global_phase_change
+            ),
+            manipulation_probability=semantic_probability(
+                lambda descriptor: (
+                    not autonomous and descriptor.manipulation_effect
+                )
+            ),
+            predictive_family_id=predictive_family_id,
+            predictive_family_size=predictive_family_size,
+            predictive_family_pooled=predictive_family_pooled,
         )
 
     def predict(
@@ -712,7 +1053,13 @@ class AnonymousEntityBehaviorModel:
                 False,
                 autonomous,
             )
-        rule, contextual = self._select_rule(
+        (
+            rule,
+            contextual,
+            family_id,
+            family_size,
+            family_pooled,
+        ) = self._select_rule_with_family(
             type_id,
             action,
             duration,
@@ -726,6 +1073,9 @@ class AnonymousEntityBehaviorModel:
             self.minimum_prediction_samples,
             contextual,
             autonomous,
+            predictive_family_id=family_id,
+            predictive_family_size=family_size,
+            predictive_family_pooled=family_pooled,
         )
 
     def outcome_probability(
@@ -740,12 +1090,14 @@ class AnonymousEntityBehaviorModel:
         type_id, _distance = self.classify(feature)
         if type_id is None:
             return 0.0
-        rule, _contextual = self._select_rule(
-            type_id,
-            action,
-            duration,
-            autonomous,
-            context_signature,
+        rule, _contextual, _family_id, _family_size, _pooled = (
+            self._select_rule_with_family(
+                type_id,
+                action,
+                duration,
+                autonomous,
+                context_signature,
+            )
         )
         if rule is None or rule.samples <= 0:
             return 0.0
@@ -828,8 +1180,8 @@ class AnonymousEntityBehaviorModel:
         self._type_counts[type_id] = next_count
 
         contexts = [self._UNCONDITIONAL_CONTEXT]
-        if context_signature:
-            contexts.append(context_signature)
+        contexts.extend(self._context_hierarchy(context_signature))
+        contexts = list(dict.fromkeys(contexts))
         for condition in contexts:
             key = self._rule_key(
                 type_id, action, duration, autonomous, condition
@@ -984,7 +1336,7 @@ class AnonymousEntityBehaviorModel:
     @classmethod
     def from_dict(cls, payload: Dict[str, Any]) -> "AnonymousEntityBehaviorModel":
         schema_version = int(payload.get("schema_version", 0))
-        if schema_version not in (3, 4, 5, cls.SCHEMA_VERSION):
+        if schema_version not in (3, 4, 5, 6, cls.SCHEMA_VERSION):
             raise ValueError("unsupported anonymous behavior schema")
         model = cls(
             appearance_match_threshold=float(
