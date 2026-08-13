@@ -1214,16 +1214,109 @@ class VerifiedNeuralAgent:
     def _human_prior_effective_navigation_reward(
         self, analysis: HeartGoalAnalysis, target_signature: str = ""
     ) -> float:
+        navigation = self._human_prior_ordering_navigation_fields(analysis)
+        adjusted_reward = float(
+            navigation["human_prior_navigation_ordering_reward"]
+        )
         if (
-            analysis.navigation_reward == 0.0
+            adjusted_reward == 0.0
             or analysis.target_player_slot is None
         ):
-            return analysis.navigation_reward
+            return adjusted_reward
         if self._human_prior_position_visits(
             target_signature, analysis.target_player_slot
         ) > 0:
             return 0.0
-        return analysis.navigation_reward
+        return adjusted_reward
+
+    @staticmethod
+    def _human_prior_slot_distance(
+        player: Optional[Tuple[int, int]],
+        targets: Sequence[Tuple[int, int]],
+    ) -> Optional[float]:
+        if player is None or not targets:
+            return None
+        return min(
+            (abs(player[0] - x) + abs(player[1] - y)) / 16.0
+            for x, y in targets
+        )
+
+    def _human_prior_ordering_navigation_fields(
+        self, analysis: HeartGoalAnalysis
+    ) -> Dict[str, Any]:
+        """Retarget shaping after an empirically exhausted goal ordering.
+
+        The persistent memory identifies only a pixel slot whose removal led
+        to bounded post-milestone exhaustion.  It does not label an object or
+        prescribe controller actions.  While the same set of goals remains
+        visible, navigation is therefore measured against the other visible
+        slots.  After one of those alternatives disappears, the recorded
+        source set no longer matches and ordinary shaping resumes.
+        """
+
+        failed_targets = self._human_prior_failed_ordering_targets(
+            analysis.source_present,
+            analysis.chest_obtained,
+        )
+        active_targets = tuple(
+            sorted(
+                set(analysis.target_present) - set(failed_targets)
+            )
+        )
+        retargeted = bool(
+            analysis.reliable
+            and failed_targets
+            and active_targets
+            and not analysis.collected
+            and tuple(sorted(analysis.source_present))
+            == tuple(sorted(analysis.target_present))
+            and analysis.source_player_slot is not None
+            and analysis.target_player_slot is not None
+        )
+        source_distance = None
+        target_distance = None
+        reward = analysis.navigation_reward
+        if retargeted:
+            source_distance = self._human_prior_slot_distance(
+                analysis.source_player_slot, active_targets
+            )
+            target_distance = self._human_prior_slot_distance(
+                analysis.target_player_slot, active_targets
+            )
+            if source_distance is None or target_distance is None:
+                retargeted = False
+            else:
+                reward = self.config.human_prior_navigation_reward * (
+                    source_distance - target_distance
+                )
+        return {
+            "human_prior_navigation_retargeted": retargeted,
+            "human_prior_navigation_failed_targets": failed_targets,
+            "human_prior_navigation_active_targets": (
+                active_targets if retargeted else analysis.target_present
+            ),
+            "human_prior_navigation_ordering_source_distance": (
+                source_distance
+            ),
+            "human_prior_navigation_ordering_target_distance": (
+                target_distance
+            ),
+            "human_prior_navigation_ordering_reward": reward,
+        }
+
+    def _human_prior_ordering_adjusted_total_reward(
+        self, analysis: HeartGoalAnalysis
+    ) -> float:
+        ordering_reward = float(
+            self._human_prior_ordering_navigation_fields(analysis)[
+                "human_prior_navigation_ordering_reward"
+            ]
+        )
+        return (
+            analysis.total_reward
+            - analysis.navigation_reward
+            + ordering_reward
+        )
 
     def _human_prior_navigation_recovery_grace_active(self) -> bool:
         grace = self.config.human_prior_navigation_recovery_grace
@@ -1291,6 +1384,7 @@ class VerifiedNeuralAgent:
                 if self.goal_prior is None
                 else self.goal_prior.best_remaining_hearts
             ),
+            **self._human_prior_ordering_navigation_fields(analysis),
             **analysis.telemetry(),
         }
 
@@ -4952,8 +5046,13 @@ class VerifiedNeuralAgent:
                             else 1.0
                             / math.sqrt(target_position_visits + 1)
                         )
+                        ordering_adjusted_goal_reward = (
+                            self._human_prior_ordering_adjusted_total_reward(
+                                analysis
+                            )
+                        )
                         score = (
-                            analysis.total_reward
+                            ordering_adjusted_goal_reward
                             + 4.0 * position_novelty
                             + 2.0 * state_novelty
                             + 0.25
@@ -5090,7 +5189,7 @@ class VerifiedNeuralAgent:
                                     and (
                                         target_state_visits == 0
                                         or target_position_visits == 0
-                                        or analysis.total_reward > 0.0
+                                        or ordering_adjusted_goal_reward > 0.0
                                     )
                                 )
                             )
@@ -5217,6 +5316,9 @@ class VerifiedNeuralAgent:
                             endpoint_eligible=endpoint_eligible,
                             score=score,
                             agent_visible=True,
+                            **self._human_prior_ordering_navigation_fields(
+                                analysis
+                            ),
                             **analysis.telemetry(),
                             **self._frame_fields(target),
                         )
@@ -6195,7 +6297,9 @@ class VerifiedNeuralAgent:
                     **self._frame_fields(source_frame),
                 )
                 return 0
-            selection_key = self._human_prior_option_selection_key
+            selection_key = (
+                self._human_prior_ordering_option_selection_key
+            )
             selected = max(
                 selection_endpoints,
                 key=selection_key,
@@ -6349,7 +6453,9 @@ class VerifiedNeuralAgent:
                     pose_action=archived.pose_action,
                     goal_heart_slots=archived.analysis.target_present,
                     goal_progress_reward=(
-                        archived.analysis.total_reward
+                        self._human_prior_ordering_adjusted_total_reward(
+                            archived.analysis
+                        )
                     ),
                     goal_remaining_hearts=(
                         archived.analysis.remaining_hearts
@@ -6471,7 +6577,18 @@ class VerifiedNeuralAgent:
                     score=archived.score,
                     archive_size=len(self.archive),
                     agent_visible=True,
-                    **archived.analysis.telemetry(),
+                    **{
+                        **archived.analysis.telemetry(),
+                        **self._human_prior_ordering_navigation_fields(
+                            archived.analysis
+                        ),
+                        "human_prior_raw_goal_reward": (
+                            archived.analysis.total_reward
+                        ),
+                        "human_prior_goal_reward": (
+                            branch.goal_progress_reward
+                        ),
+                    },
                     **self._frame_fields(archived.frame),
                 )
             self._emit(
@@ -9444,6 +9561,20 @@ class VerifiedNeuralAgent:
             -node.depth,
         )
 
+    def _human_prior_ordering_option_selection_key(
+        self, node: _HumanPriorOptionNode
+    ) -> tuple:
+        """Use learned ordering evidence without changing milestone rank."""
+
+        base = self._human_prior_option_selection_key(node)
+        return (
+            base[0],
+            self._human_prior_ordering_adjusted_total_reward(
+                node.analysis
+            ),
+            *base[2:],
+        )
+
     def _settle_human_prior_milestone_endpoint(
         self,
         root: object,
@@ -9496,7 +9627,9 @@ class VerifiedNeuralAgent:
             node.source_signature, node.path, node.durations
         )
         score = (
-            settled_analysis.total_reward
+            self._human_prior_ordering_adjusted_total_reward(
+                settled_analysis
+            )
             + 4.0 / math.sqrt(target_position_visits + 1)
             + 2.0 / math.sqrt(target_state_visits + 1)
             + 0.25 * self.novelty.score(self._signature(settled_frame))
@@ -13119,7 +13252,10 @@ class VerifiedNeuralAgent:
             self._observe_dark_transition(target)
             if (
                 committed_goal_analysis is not None
-                and committed_goal_analysis.navigation_reward != 0.0
+                and self._human_prior_ordering_navigation_fields(
+                    committed_goal_analysis
+                )["human_prior_navigation_ordering_reward"]
+                != 0.0
                 and committed_goal_target_position_visits_before == 0
             ):
                 self.last_navigation_change_decision = self.decision_index

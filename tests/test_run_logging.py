@@ -545,6 +545,20 @@ class RunLoggingTests(unittest.TestCase):
                 summary,
             )
             self.assertIn(
+                "human_prior_navigation_retargeted_evaluations", summary
+            )
+            self.assertIn(
+                "human_prior_navigation_retargeted_option_branches",
+                summary,
+            )
+            self.assertIn(
+                "human_prior_navigation_retargeted_commits", summary
+            )
+            self.assertIn(
+                "human_prior_navigation_ordering_committed_reward_total",
+                summary,
+            )
+            self.assertIn(
                 "anonymous_entity_behavior_observations", summary
             )
             self.assertIn(

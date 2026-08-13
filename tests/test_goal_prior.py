@@ -847,6 +847,84 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
             (),
         )
 
+    def test_exhausted_goal_ordering_retargets_navigation_to_alternate(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        agent = VerifiedNeuralAgent(
+            HeartNavigationEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                human_prior_heart_reward=25.0,
+                human_prior_navigation_reward=1.0,
+            ),
+        )
+        agent.reset()
+        hearts = ((48, 128), (144, 128))
+        source = room_frame(hearts, player=(80, 128))
+        target = room_frame(hearts, player=(96, 128))
+        assert agent.goal_prior is not None
+        agent.goal_prior.known_slots = set(hearts)
+        agent.goal_prior.current_present = set(hearts)
+        agent.goal_prior.current_player_slot = (80, 128)
+        analysis = agent.goal_prior.analyze(source, target)
+        agent.human_prior_exhausted_milestone_transitions.add(
+            (hearts, ((144, 128),), False)
+        )
+
+        fields = agent._human_prior_ordering_navigation_fields(analysis)
+        score, _ = agent._human_prior_score(0.0, analysis)
+
+        self.assertEqual(analysis.navigation_reward, -1.0)
+        self.assertTrue(fields["human_prior_navigation_retargeted"])
+        self.assertEqual(
+            fields["human_prior_navigation_failed_targets"],
+            ((48, 128),),
+        )
+        self.assertEqual(
+            fields["human_prior_navigation_active_targets"],
+            ((144, 128),),
+        )
+        self.assertEqual(
+            fields["human_prior_navigation_ordering_reward"], 1.0
+        )
+        self.assertEqual(score, 1.0)
+
+    def test_ordering_retarget_stops_after_alternate_is_collected(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        agent = VerifiedNeuralAgent(
+            HeartNavigationEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(human_prior_navigation_reward=1.0),
+        )
+        agent.reset()
+        hearts = ((48, 128), (144, 128))
+        source = room_frame(hearts, player=(128, 128))
+        target = room_frame(((48, 128),), player=(144, 128))
+        assert agent.goal_prior is not None
+        agent.goal_prior.known_slots = set(hearts)
+        agent.goal_prior.current_present = set(hearts)
+        agent.goal_prior.current_player_slot = (128, 128)
+        analysis = agent.goal_prior.analyze(source, target)
+        agent.human_prior_exhausted_milestone_transitions.add(
+            (hearts, ((144, 128),), False)
+        )
+
+        fields = agent._human_prior_ordering_navigation_fields(analysis)
+
+        self.assertEqual(analysis.collected, ((144, 128),))
+        self.assertFalse(fields["human_prior_navigation_retargeted"])
+        self.assertEqual(
+            fields["human_prior_navigation_ordering_reward"],
+            analysis.navigation_reward,
+        )
+
     def test_archive_recovery_softly_prefers_a_closer_goal_checkpoint(self) -> None:
         model = EnsembleVisualDynamicsModel(
             latent_size=32, action_size=8, ensemble_size=2

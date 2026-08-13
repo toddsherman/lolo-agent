@@ -485,6 +485,18 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   `human_prior_navigation_reward_suppressed`, plus target graph-state visits,
   phase-position visits, and unexpanded controller actions. A repeated
   position therefore cannot earn the same geometric distance reward forever.
+  When bounded post-milestone exploration has learned that one collection
+  ordering is exhausted, `human_prior_navigation_retargeted` records a
+  temporary, room-local retarget to the other still-visible pixel slots.
+  `human_prior_navigation_failed_targets`,
+  `human_prior_navigation_active_targets`, the ordering-specific source and
+  target distances, and `human_prior_navigation_ordering_reward` expose the
+  complete inference for replay and visualization. This memory neither names
+  an object nor supplies an action sequence; after an alternate slot is
+  collected, its changed visible-goal set stops matching the failed ordering
+  and ordinary navigation resumes automatically. `decisions.csv` contains the
+  same fields, while `summary.json` counts retargeted evaluations, exact-search
+  branches, commits, and the total committed ordering reward.
   Every verified source/action edge is also reconstructed from the resume
   chain, whether or not that branch was committed. Thus "unexpanded" means
   that a controller action has not yet been tested from the semantic source,

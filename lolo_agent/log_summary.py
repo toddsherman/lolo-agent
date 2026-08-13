@@ -751,6 +751,34 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                     "human_prior_navigation_reward": event.get(
                         "human_prior_navigation_reward", 0.0
                     ),
+                    "human_prior_navigation_retargeted": event.get(
+                        "human_prior_navigation_retargeted", False
+                    ),
+                    "human_prior_navigation_failed_targets": json.dumps(
+                        event.get(
+                            "human_prior_navigation_failed_targets", []
+                        ),
+                        sort_keys=True,
+                    ),
+                    "human_prior_navigation_active_targets": json.dumps(
+                        event.get(
+                            "human_prior_navigation_active_targets", []
+                        ),
+                        sort_keys=True,
+                    ),
+                    "human_prior_navigation_ordering_source_distance": (
+                        event.get(
+                            "human_prior_navigation_ordering_source_distance"
+                        )
+                    ),
+                    "human_prior_navigation_ordering_target_distance": (
+                        event.get(
+                            "human_prior_navigation_ordering_target_distance"
+                        )
+                    ),
+                    "human_prior_navigation_ordering_reward": event.get(
+                        "human_prior_navigation_ordering_reward", 0.0
+                    ),
                     "human_prior_life_loss_penalty": event.get(
                         "human_prior_life_loss_penalty", 0.0
                     ),
@@ -915,6 +943,12 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "human_prior_goal_reward",
         "human_prior_milestone_reward",
         "human_prior_navigation_reward",
+        "human_prior_navigation_retargeted",
+        "human_prior_navigation_failed_targets",
+        "human_prior_navigation_active_targets",
+        "human_prior_navigation_ordering_source_distance",
+        "human_prior_navigation_ordering_target_distance",
+        "human_prior_navigation_ordering_reward",
         "human_prior_life_loss_penalty",
         "human_prior_life_loss_confirmed",
         "human_prior_best_first_applied",
@@ -1538,6 +1572,33 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         ),
         "human_prior_graph_stagnation_events": event_counts.get(
             "human_prior_graph_stagnation_detected", 0
+        ),
+        "human_prior_navigation_retargeted_evaluations": sum(
+            event["event"]
+            in ("branch_verified", "human_prior_option_branch_verified")
+            and bool(event.get("human_prior_navigation_retargeted"))
+            for event in events
+        ),
+        "human_prior_navigation_retargeted_option_branches": sum(
+            event["event"] == "human_prior_option_branch_verified"
+            and bool(event.get("human_prior_navigation_retargeted"))
+            for event in events
+        ),
+        "human_prior_navigation_retargeted_commits": sum(
+            event["event"] == "decision_committed"
+            and bool(event.get("human_prior_navigation_retargeted"))
+            for event in events
+        ),
+        "human_prior_navigation_ordering_committed_reward_total": sum(
+            float(
+                event.get(
+                    "human_prior_navigation_ordering_reward", 0.0
+                )
+                or 0.0
+            )
+            for event in events
+            if event["event"] == "decision_committed"
+            and bool(event.get("human_prior_navigation_retargeted"))
         ),
         "human_prior_option_searches": event_counts.get(
             "human_prior_option_search_started", 0
