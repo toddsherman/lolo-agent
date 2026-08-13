@@ -2644,17 +2644,25 @@ class VerifiedNeuralAgent:
             return ()
         neighbors = {
             target
-            for target in self.human_prior_episodic_graph_edges.get(
-                signature, {}
+            for target, action_cost in (
+                self.human_prior_episodic_graph_edges.get(
+                    signature, {}
+                ).items()
             )
-            if target and target != signature
+            if target
+            and target != signature
+            and int(action_cost) == 1
         }
         neighbors.update(
             source
-            for source in self.human_prior_episodic_graph_reverse_edges.get(
-                signature, {}
+            for source, action_cost in (
+                self.human_prior_episodic_graph_reverse_edges.get(
+                    signature, {}
+                ).items()
             )
-            if source and source != signature
+            if source
+            and source != signature
+            and int(action_cost) == 1
         )
         return tuple(sorted(neighbors))
 
@@ -2663,8 +2671,10 @@ class VerifiedNeuralAgent:
 
         A state is closed only after every configured non-passive controller
         action has been verified there and the learned pixel-transition graph
-        has at most one adjacent semantic state. Such a state may be safely
-        backtracked through, but it is no longer an exploration frontier.
+        has at most one one-step adjacent semantic state. Multi-action option
+        shortcuts are excluded because they do not represent additional local
+        exits. Such a state may be safely backtracked through, but it is no
+        longer an exploration frontier.
         """
 
         control_actions = tuple(

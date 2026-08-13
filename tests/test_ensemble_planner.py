@@ -3091,6 +3091,9 @@ class EnsemblePlannerTests(unittest.TestCase):
         agent._record_human_prior_episodic_graph_transition(
             "closed-leaf", "neighbor", 1
         )
+        agent._record_human_prior_episodic_graph_transition(
+            "remote-option-source", "closed-leaf", 8
+        )
         for action in agent.config.actions:
             agent._record_human_prior_graph_edge_verification(
                 "closed-leaf", action, 1

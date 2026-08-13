@@ -587,8 +587,9 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
 - `human_prior_option_closed_control_leaves_filtered` records a reusable
   topological inference made without object labels: the target has already been
   visited, every configured active control has been tested there, and the
-  verified graph connects that state to at most one other semantic state. Such
-  a state remains
+  verified one-step graph connects that state to at most one other semantic
+  state. Multi-action option shortcuts do not count as local exits. Such a
+  state remains
   available as a known backtracking location, but it is not an unexplored
   terminal frontier and is not archived merely because geometric goal shaping
   prefers it. Confirmed milestones, world/entity effects, and live episodic
