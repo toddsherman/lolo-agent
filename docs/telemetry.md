@@ -392,16 +392,25 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   order without hard-vetoing the controller action.
   `human_prior_exhausted_milestone_filter_evaluated` records each contextual
   policy evaluation, the exact source/target heart sets, candidate controller
-  edges, available preparation alternatives, filtered count, and fail-open
-  status. Filtering occurs only when another verified non-loss branch changes
-  semantic player/world state or reaches a different milestone; otherwise the
-  hint fails open. `human_prior_preparation_archives_preserved` records archive
-  branches allowed to retain the current pre-milestone heart set even when the
-  historical best remaining-heart count is lower. This exemption is active
-  only for a current source heart set with a learned exhausted ordering and
-  does not weaken life-loss or causal entity-hazard filters. Summary fields
-  aggregate filter evaluations, filtered branches, fail-opens, and preserved
-  preparation archives;
+  edges, delayed precursor endpoints, available preparation alternatives,
+  filtered count, and fail-open status. A delayed precursor retains the source
+  heart set but places the pixel-detected player on a goal slot whose later
+  disappearance produced the exhausted transition. Filtering occurs only when
+  another verified non-loss branch changes semantic player/world state or
+  reaches a different milestone; otherwise the hint fails open.
+  `archive_branch_rejected.reason=exhausted_milestone_ordering` prevents direct
+  verification from storing the same exact or precursor endpoint before commit
+  selection. `human_prior_option_ordering_endpoint_rejected` applies the same
+  rule to depth-search endpoints, and
+  `human_prior_exhausted_milestone_archives_filtered` removes compatible
+  seeded or older in-memory archives before restore.
+  `human_prior_preparation_archives_preserved` records neutral archive branches
+  allowed to retain the current pre-milestone heart set even when the
+  historical best remaining-heart count is lower; a player endpoint on the
+  failed first-goal slot is not eligible for that exemption. These policies do
+  not weaken life-loss or causal entity-hazard filters. Summary fields
+  aggregate filter evaluations, exact and precursor branches, fail-opens,
+  option rejections, filtered archives, and preserved preparation archives;
 - `human_prior_option_milestone_settled` links the immediate action endpoint
   to the stable frame and state used for milestone analysis and archival.
   `human_prior_option_milestone_candidates_collapsed` reports the reduction in

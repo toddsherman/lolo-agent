@@ -5062,6 +5062,38 @@ class VerifiedNeuralAgent:
                 tuple, _HumanPriorOptionNode
             ] = {}
             for endpoint in pre_settlement_endpoints:
+                if self._human_prior_milestone_ordering_blocked(
+                    endpoint.analysis
+                ):
+                    self._emit(
+                        "human_prior_option_ordering_endpoint_rejected",
+                        decision=self.decision_index + 1,
+                        reason="exhausted_milestone_ordering",
+                        path=endpoint.path,
+                        durations=endpoint.durations,
+                        exhausted_transition=(
+                            self._human_prior_milestone_transition_exhausted(
+                                endpoint.analysis
+                            )
+                        ),
+                        exhausted_precursor=(
+                            self._human_prior_milestone_preparation_precursor(
+                                endpoint.analysis
+                            )
+                        ),
+                        failed_ordering_targets=(
+                            self._human_prior_failed_ordering_targets(
+                                endpoint.analysis.source_present,
+                                endpoint.analysis.chest_obtained,
+                            )
+                        ),
+                        policy_effect="milestone_priority_only",
+                        hazard_evidence=False,
+                        agent_visible=True,
+                        **endpoint.analysis.telemetry(),
+                        **self._frame_fields(endpoint.frame),
+                    )
+                    continue
                 was_milestone = endpoint.analysis.milestone_reward > 0.0
                 if (
                     was_milestone
@@ -8165,6 +8197,55 @@ class VerifiedNeuralAgent:
             in self.human_prior_exhausted_milestone_transitions
         )
 
+    def _human_prior_failed_ordering_targets(
+        self,
+        source_hearts: Tuple[Tuple[int, int], ...],
+        chest_obtained: bool,
+    ) -> Tuple[Tuple[int, int], ...]:
+        """Return goal slots whose collection led to bounded exhaustion."""
+
+        normalized_source = tuple(sorted(source_hearts))
+        removed = set()
+        for transition_source, transition_target, transition_chest in (
+            self.human_prior_exhausted_milestone_transitions
+        ):
+            if (
+                tuple(sorted(transition_source)) != normalized_source
+                or bool(transition_chest) != bool(chest_obtained)
+            ):
+                continue
+            removed.update(
+                set(transition_source) - set(transition_target)
+            )
+        return tuple(sorted(removed))
+
+    def _human_prior_milestone_preparation_precursor(
+        self, analysis: HeartGoalAnalysis
+    ) -> bool:
+        """Detect entering or remaining on a failed first-goal endpoint."""
+
+        if (
+            tuple(analysis.source_present)
+            != tuple(analysis.target_present)
+            or analysis.target_player_slot is None
+        ):
+            return False
+        return bool(
+            analysis.target_player_slot
+            in self._human_prior_failed_ordering_targets(
+                analysis.source_present,
+                analysis.chest_obtained,
+            )
+        )
+
+    def _human_prior_milestone_ordering_blocked(
+        self, analysis: HeartGoalAnalysis
+    ) -> bool:
+        return bool(
+            self._human_prior_milestone_transition_exhausted(analysis)
+            or self._human_prior_milestone_preparation_precursor(analysis)
+        )
+
     def _human_prior_preparation_ordering_active(self) -> bool:
         """Return whether the current visible goal set has a failed ordering.
 
@@ -8207,6 +8288,51 @@ class VerifiedNeuralAgent:
             and branch.goal_remaining_hearts == len(current_hearts)
             and bool(branch.goal_chest_obtained)
             == current_chest_obtained
+            and branch.goal_player_slot
+            not in self._human_prior_failed_ordering_targets(
+                current_hearts, current_chest_obtained
+            )
+        )
+
+    def _human_prior_archive_exhausted_milestone_transition(
+        self, branch: _ArchivedBranch
+    ) -> bool:
+        if self.goal_prior is None:
+            return False
+        source_hearts = tuple(sorted(self.goal_prior.current_slots()))
+        target_hearts = tuple(sorted(branch.goal_heart_slots))
+        return bool(
+            source_hearts != target_hearts
+            and (
+                source_hearts,
+                target_hearts,
+                bool(branch.goal_chest_obtained),
+            )
+            in self.human_prior_exhausted_milestone_transitions
+        )
+
+    def _human_prior_archive_preparation_precursor(
+        self, branch: _ArchivedBranch
+    ) -> bool:
+        if self.goal_prior is None or branch.goal_player_slot is None:
+            return False
+        source_hearts = tuple(sorted(self.goal_prior.current_slots()))
+        if tuple(sorted(branch.goal_heart_slots)) != source_hearts:
+            return False
+        return bool(
+            branch.goal_player_slot
+            in self._human_prior_failed_ordering_targets(
+                source_hearts,
+                bool(branch.goal_chest_obtained),
+            )
+        )
+
+    def _human_prior_archive_ordering_blocked(
+        self, branch: _ArchivedBranch
+    ) -> bool:
+        return bool(
+            self._human_prior_archive_exhausted_milestone_transition(branch)
+            or self._human_prior_archive_preparation_precursor(branch)
         )
 
     def _human_prior_archive_is_non_regressive(
@@ -8229,7 +8355,13 @@ class VerifiedNeuralAgent:
         verified: List[Tuple[Any, ...]],
         analyses: Dict[int, Optional[HeartGoalAnalysis]],
         graph_signatures: Dict[int, Tuple[str, str]],
-    ) -> Tuple[List[Tuple[Any, ...]], List[Tuple[Any, ...]], int, bool]:
+    ) -> Tuple[
+        List[Tuple[Any, ...]],
+        List[Tuple[Any, ...]],
+        List[Tuple[Any, ...]],
+        int,
+        bool,
+    ]:
         """Deprioritize an exact failed ordering when preparation is possible.
 
         A transition is removed only when another verified, non-loss branch
@@ -8246,12 +8378,22 @@ class VerifiedNeuralAgent:
                 analyses[id(item[2])]
             )
         ]
-        if not exhausted:
-            return verified, [], 0, False
-        exhausted_ids = {id(item[2]) for item in exhausted}
+        precursors = [
+            item
+            for item in verified
+            if analyses[id(item[2])] is not None
+            and self._human_prior_milestone_preparation_precursor(
+                analyses[id(item[2])]
+            )
+        ]
+        if not exhausted and not precursors:
+            return verified, [], [], 0, False
+        blocked_ids = {
+            id(item[2]) for item in (*exhausted, *precursors)
+        }
         preparation_alternatives = 0
         for item in verified:
-            if id(item[2]) in exhausted_ids:
+            if id(item[2]) in blocked_ids:
                 continue
             analysis = analyses[id(item[2])]
             if analysis is None or analysis.life_loss_penalty < 0.0:
@@ -8274,10 +8416,11 @@ class VerifiedNeuralAgent:
                 preparation_alternatives += 1
         fail_open = preparation_alternatives == 0
         if fail_open:
-            return verified, exhausted, 0, True
+            return verified, exhausted, precursors, 0, True
         return (
-            [item for item in verified if id(item[2]) not in exhausted_ids],
+            [item for item in verified if id(item[2]) not in blocked_ids],
             exhausted,
+            precursors,
             preparation_alternatives,
             False,
         )
@@ -10870,6 +11013,7 @@ class VerifiedNeuralAgent:
             (
                 selection_verified,
                 exhausted_milestone_branches,
+                exhausted_milestone_precursors,
                 preparation_alternatives,
                 exhausted_milestone_fail_open,
             ) = self._filter_exhausted_milestone_transitions(
@@ -10877,23 +11021,50 @@ class VerifiedNeuralAgent:
                 branch_goal_analyses,
                 branch_goal_signatures,
             )
-            if exhausted_milestone_branches:
-                transition_rows = []
-                transition_keys = set()
-                for item in exhausted_milestone_branches:
+            ordering_blocked_branches = (
+                exhausted_milestone_branches
+                + exhausted_milestone_precursors
+            )
+            if ordering_blocked_branches:
+                relevant_sources = set()
+                for item in ordering_blocked_branches:
                     analysis = branch_goal_analyses[id(item[2])]
                     assert analysis is not None
-                    transition = self._human_prior_milestone_transition_key(
-                        analysis
+                    relevant_sources.add(
+                        (
+                            tuple(analysis.source_present),
+                            bool(analysis.chest_obtained),
+                        )
                     )
-                    if transition in transition_keys:
-                        continue
-                    transition_keys.add(transition)
-                    transition_rows.append(
+                transition_rows = [
+                    {
+                        "source_hearts": transition[0],
+                        "target_hearts": transition[1],
+                        "chest_obtained": transition[2],
+                    }
+                    for transition in sorted(
+                        self.human_prior_exhausted_milestone_transitions
+                    )
+                    if (tuple(transition[0]), bool(transition[2]))
+                    in relevant_sources
+                ]
+                precursor_rows = []
+                for item in exhausted_milestone_precursors:
+                    analysis = branch_goal_analyses[id(item[2])]
+                    assert analysis is not None
+                    precursor_rows.append(
                         {
-                            "source_hearts": transition[0],
-                            "target_hearts": transition[1],
-                            "chest_obtained": transition[2],
+                            "action": item[1].path[0],
+                            "action_frames": item[1].durations[0],
+                            "target_player_slot": (
+                                analysis.target_player_slot
+                            ),
+                            "failed_ordering_targets": (
+                                self._human_prior_failed_ordering_targets(
+                                    analysis.source_present,
+                                    analysis.chest_obtained,
+                                )
+                            ),
                         }
                     )
                 self._emit(
@@ -10917,13 +11088,30 @@ class VerifiedNeuralAgent:
                         }
                         for item in exhausted_milestone_branches
                     ],
+                    exhausted_precursor_branches=precursor_rows,
                     exhausted_branches_detected=len(
+                        ordering_blocked_branches
+                    ),
+                    exhausted_transition_branches_detected=len(
                         exhausted_milestone_branches
+                    ),
+                    exhausted_precursor_branches_detected=len(
+                        exhausted_milestone_precursors
+                    ),
+                    exhausted_transition_branches_filtered=(
+                        0
+                        if exhausted_milestone_fail_open
+                        else len(exhausted_milestone_branches)
+                    ),
+                    exhausted_precursor_branches_filtered=(
+                        0
+                        if exhausted_milestone_fail_open
+                        else len(exhausted_milestone_precursors)
                     ),
                     exhausted_branches_filtered=(
                         0
                         if exhausted_milestone_fail_open
-                        else len(exhausted_milestone_branches)
+                        else len(ordering_blocked_branches)
                     ),
                     preparation_alternatives=preparation_alternatives,
                     alternatives_remaining=len(selection_verified),
@@ -12438,6 +12626,43 @@ class VerifiedNeuralAgent:
                 alternative_goal_analysis = branch_goal_analyses[
                     id(alternative_state)
                 ]
+                if (
+                    alternative_goal_analysis is not None
+                    and self._human_prior_milestone_ordering_blocked(
+                        alternative_goal_analysis
+                    )
+                ):
+                    self._emit(
+                        "archive_branch_rejected",
+                        decision=self.decision_index,
+                        reason="exhausted_milestone_ordering",
+                        action=alternative_plan.path[0],
+                        action_frames=alternative_plan.durations[0],
+                        exhausted_transition=(
+                            self._human_prior_milestone_transition_exhausted(
+                                alternative_goal_analysis
+                            )
+                        ),
+                        exhausted_precursor=(
+                            self._human_prior_milestone_preparation_precursor(
+                                alternative_goal_analysis
+                            )
+                        ),
+                        failed_ordering_targets=(
+                            self._human_prior_failed_ordering_targets(
+                                alternative_goal_analysis.source_present,
+                                alternative_goal_analysis.chest_obtained,
+                            )
+                        ),
+                        policy_effect="milestone_priority_only",
+                        hazard_evidence=False,
+                        state_id=self._state_id(alternative_state),
+                        **self._human_prior_fields(
+                            alternative_goal_analysis
+                        ),
+                        **self._frame_fields(alternative_frame),
+                    )
+                    continue
                 (
                     alternative_goal_source_signature,
                     alternative_goal_target_signature,
@@ -13923,6 +14148,45 @@ class VerifiedNeuralAgent:
                     alternatives_before_dark_filter - len(eligible)
                 ),
                 alternatives_remaining=len(eligible),
+            )
+        exhausted_ordering_archives = [
+            branch
+            for branch in eligible
+            if self._human_prior_archive_ordering_blocked(branch)
+        ]
+        if exhausted_ordering_archives:
+            exhausted_ids = {
+                id(branch) for branch in exhausted_ordering_archives
+            }
+            eligible = [
+                branch
+                for branch in eligible
+                if id(branch) not in exhausted_ids
+            ]
+            exact_transitions = sum(
+                self._human_prior_archive_exhausted_milestone_transition(
+                    branch
+                )
+                for branch in exhausted_ordering_archives
+            )
+            precursors = sum(
+                self._human_prior_archive_preparation_precursor(branch)
+                for branch in exhausted_ordering_archives
+            )
+            removed = self._remove_archive_branches(
+                exhausted_ordering_archives,
+                "exhausted_milestone_ordering",
+            )
+            self._emit(
+                "human_prior_exhausted_milestone_archives_filtered",
+                decision=self.decision_index + 1,
+                filtered_branches=removed,
+                exhausted_transition_branches=exact_transitions,
+                exhausted_precursor_branches=precursors,
+                alternatives_remaining=len(eligible),
+                policy_effect="milestone_priority_only",
+                hazard_evidence=False,
+                **self._frame_fields(self.frame),
             )
         if (
             self.goal_prior is not None

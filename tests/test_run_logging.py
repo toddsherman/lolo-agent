@@ -585,10 +585,23 @@ class RunLoggingTests(unittest.TestCase):
                 "goal_milestone_preparation_branches_filtered", summary
             )
             self.assertIn(
+                "goal_milestone_preparation_precursors_filtered", summary
+            )
+            self.assertIn(
                 "goal_milestone_preparation_filter_fail_opens", summary
             )
             self.assertIn(
                 "goal_milestone_preparation_archives_preserved", summary
+            )
+            self.assertIn(
+                "goal_milestone_preparation_archive_filter_events", summary
+            )
+            self.assertIn(
+                "goal_milestone_preparation_archives_filtered", summary
+            )
+            self.assertIn(
+                "goal_milestone_preparation_option_endpoints_rejected",
+                summary,
             )
             self.assertIn(
                 "goal_milestone_descendant_invalidations", summary

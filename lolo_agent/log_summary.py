@@ -1849,6 +1849,12 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             if event["event"]
             == "human_prior_exhausted_milestone_filter_evaluated"
         ),
+        "goal_milestone_preparation_precursors_filtered": sum(
+            int(event.get("exhausted_precursor_branches_filtered") or 0)
+            for event in events
+            if event["event"]
+            == "human_prior_exhausted_milestone_filter_evaluated"
+        ),
         "goal_milestone_preparation_filter_fail_opens": sum(
             bool(event.get("fail_open"))
             for event in events
@@ -1860,6 +1866,22 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             for event in events
             if event["event"]
             == "human_prior_preparation_archives_preserved"
+        ),
+        "goal_milestone_preparation_archive_filter_events": (
+            event_counts.get(
+                "human_prior_exhausted_milestone_archives_filtered", 0
+            )
+        ),
+        "goal_milestone_preparation_archives_filtered": sum(
+            int(event.get("filtered_branches") or 0)
+            for event in events
+            if event["event"]
+            == "human_prior_exhausted_milestone_archives_filtered"
+        ),
+        "goal_milestone_preparation_option_endpoints_rejected": (
+            event_counts.get(
+                "human_prior_option_ordering_endpoint_rejected", 0
+            )
         ),
         "goal_milestone_exhaustion_hazard_samples": sum(
             event["event"] == "goal_milestone_exhaustion_learned"

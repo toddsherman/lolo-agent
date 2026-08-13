@@ -137,9 +137,10 @@ reaches a different milestone. The filter fails open when no such alternative
 exists, so it remains a contextual ordering preference rather than a hard
 controller veto. Pre-milestone archive branches that preserve the current
 heart set are also exempt from the historical best-heart regression filter
-while that source heart set has a learned failed ordering. This lets the agent
-traverse preparation states with two hearts while searching for a different
-first collection.
+while that source heart set has a learned failed ordering, except when their
+pixel-detected player endpoint is the goal slot removed by the failed
+transition. This lets the agent traverse neutral preparation states with two
+hearts while avoiding the observed failed first-goal endpoint.
 
 ## Next experiment
 
@@ -155,6 +156,38 @@ still present. The evaluation logged one filter evaluation, one filtered
 branch, zero fail-opens, zero life losses, zero global action-hazard samples,
 and a passing frozen-parameter audit.
 
-Continue from decision 2 of that replay and expand the two-heart graph toward
-the lower heart. Any future hard veto still requires observed loss or causal
-hazard provenance.
+The longer continuation
+`entity-v10-room3-alternate-order-from-d2-d8` showed that this first policy
+handoff was still incomplete. Collection resolves across an animation
+boundary: `DOWN 16` can place the player at `(128,64)` while both hearts remain
+visible, and a later input produces the learned heart-set transition. Direct
+selection filtered the eventual transition twice, but it did not recognize the
+intermediate player-on-goal state. Worse, the same direct verification had
+archived the exhausted milestone before commit selection, and best-first
+recovery restored that archive at decision 4. The run was stopped after this
+clean counterexample rather than spending more decisions in the known bad
+branch.
+
+Ordering policy now covers all three paths consistently: the exact heart-set
+transition, a same-heart-set endpoint whose pixel-detected player occupies the
+goal removed by that transition, and any archive or exact-option endpoint with
+either property. Blocked archive states are removed with explicit provenance;
+neutral two-heart preparation archives remain eligible. The same alternative
+availability and fail-open rule applies to direct selection, so this is still
+a contextual semantic preference rather than a global action hazard.
+
+The matched four-decision replay
+`entity-v10-room3-ordering-precursor-filter-from-d2-d4` repeated the
+continuation from the same decision-2 state. It evaluated and filtered three
+delayed precursor branches with zero fail-opens, rejected all three from the
+direct archive, and rejected 29 exhausted-ordering endpoints from exact option
+search. After one blocked `RIGHT` and one `NOOP`, ordinary coverage selected
+`UP 16` to `(128,32)` and `RIGHT 16` to `(144,32)`, preserving both hearts.
+No archive restored the failed milestone, no life was lost, no global action
+hazard sample was created, and the frozen-parameter audit passed. This closes
+both observed policy bypasses on real emulator state.
+
+Continue from decision 4 of that replay, expand the two-heart graph toward the
+lower heart, and retain the failed upper-first transition as episodic ordering
+knowledge. Any future hard veto still requires observed loss or causal hazard
+provenance.
