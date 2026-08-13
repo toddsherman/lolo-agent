@@ -2635,6 +2635,53 @@ class VerifiedNeuralAgent:
             if action != Action.NOOP and action not in visited_actions
         )
 
+    def _human_prior_control_neighbor_signatures(
+        self, signature: str
+    ) -> Tuple[str, ...]:
+        """Return verified graph states adjacent to a semantic state."""
+
+        if not signature:
+            return ()
+        neighbors = {
+            target
+            for target in self.human_prior_episodic_graph_edges.get(
+                signature, {}
+            )
+            if target and target != signature
+        }
+        neighbors.update(
+            source
+            for source in self.human_prior_episodic_graph_reverse_edges.get(
+                signature, {}
+            )
+            if source and source != signature
+        )
+        return tuple(sorted(neighbors))
+
+    def _human_prior_closed_control_leaf(self, signature: str) -> bool:
+        """Detect a fully tested graph leaf without assigning object meaning.
+
+        A state is closed only after every configured non-passive controller
+        action has been verified there and the learned pixel-transition graph
+        has at most one adjacent semantic state. Such a state may be safely
+        backtracked through, but it is no longer an exploration frontier.
+        """
+
+        control_actions = tuple(
+            action
+            for action in self.config.actions
+            if action != Action.NOOP
+        )
+        return bool(
+            signature
+            and control_actions
+            and not self._human_prior_unexpanded_control_actions(signature)
+            and len(
+                self._human_prior_control_neighbor_signatures(signature)
+            )
+            <= 1
+        )
+
     def _record_human_prior_graph_edge(
         self, signature: str, action: Action, duration: int
     ) -> None:
@@ -7474,6 +7521,76 @@ class VerifiedNeuralAgent:
                     )
                     return 0
 
+            (
+                endpoints,
+                closed_control_leaf_endpoints,
+            ) = self._filter_closed_control_leaf_option_endpoints(endpoints)
+            if closed_control_leaf_endpoints:
+                closed_leaf_rows = []
+                closed_leaf_signatures = set()
+                for endpoint in closed_control_leaf_endpoints:
+                    if endpoint.target_signature in closed_leaf_signatures:
+                        continue
+                    closed_leaf_signatures.add(endpoint.target_signature)
+                    closed_leaf_rows.append(
+                        {
+                            "target_graph_signature": (
+                                endpoint.target_signature
+                            ),
+                            "target_player_slot": (
+                                endpoint.analysis.target_player_slot
+                            ),
+                            "graph_neighbors": (
+                                self._human_prior_control_neighbor_signatures(
+                                    endpoint.target_signature
+                                )
+                            ),
+                        }
+                    )
+                self._emit(
+                    "human_prior_option_closed_control_leaves_filtered",
+                    decision=self.decision_index + 1,
+                    source_graph_signature=source_signature,
+                    endpoints_filtered=len(
+                        closed_control_leaf_endpoints
+                    ),
+                    distinct_closed_leaves=len(closed_leaf_rows),
+                    alternatives_remaining=len(endpoints),
+                    closed_leaves=closed_leaf_rows,
+                    policy_effect="terminal_frontier_quality",
+                    hazard_evidence=False,
+                    **self._frame_fields(source_frame),
+                )
+                if not endpoints:
+                    self.human_prior_option_exhausted_sources.add(
+                        exhausted_key
+                    )
+                    self._record_human_prior_exhausted_option_frontier(
+                        source_signature,
+                        self.config.human_prior_option_search_depth,
+                    )
+                    self._emit(
+                        "human_prior_option_search_completed",
+                        decision=self.decision_index + 1,
+                        source_graph_signature=source_signature,
+                        maximum_depth=(
+                            self.config.human_prior_option_search_depth
+                        ),
+                        branches_verified=branches_verified,
+                        eligible_endpoints=0,
+                        exhausted_frontier_endpoints=len(
+                            exhausted_frontier_endpoints
+                        ),
+                        closed_control_leaf_endpoints=len(
+                            closed_control_leaf_endpoints
+                        ),
+                        archive_branches_added=0,
+                        reason="only_closed_control_leaf_endpoints",
+                        search_budget_sha256=search_budget_sha256,
+                        **self._frame_fields(source_frame),
+                    )
+                    return 0
+
             if not endpoints:
                 ordering_hypothesis_disproved = (
                     self._maybe_disprove_human_prior_ordering_hypothesis(
@@ -8024,6 +8141,9 @@ class VerifiedNeuralAgent:
                 maximum_depth=self.config.human_prior_option_search_depth,
                 branches_verified=branches_verified,
                 eligible_endpoints=len(endpoints),
+                closed_control_leaf_endpoints_filtered=len(
+                    closed_control_leaf_endpoints
+                ),
                 ordinary_eligible_endpoints=len(ordinary_endpoints),
                 confirmed_effect_fallback_used=bool(
                     selected.confirmed_world_effect_signature
@@ -11772,6 +11892,44 @@ class VerifiedNeuralAgent:
                 break
         fail_open = bool(blocked and not filtered_has_egress)
         return (verified if fail_open else filtered), blocked, fail_open
+
+    def _filter_closed_control_leaf_option_endpoints(
+        self,
+        endpoints: Sequence[_HumanPriorOptionNode],
+    ) -> Tuple[
+        List[_HumanPriorOptionNode],
+        List[_HumanPriorOptionNode],
+    ]:
+        """Remove fully mapped dead ends from terminal frontier selection.
+
+        Confirmed milestones, world/entity effects, and live episodic-graph
+        progress retain authority. Everything else must expose an untested
+        local control or connect to more than one learned graph neighbor to be
+        useful as a resumable exploration frontier.
+        """
+
+        closed_leaves = [
+            node
+            for node in endpoints
+            if node.target_signature
+            and node.target_signature != node.source_signature
+            and node.target_state_visits > 0
+            and node.analysis.milestone_reward <= 0.0
+            and not node.confirmed_world_effect_signature
+            and not node.confirmed_entity_state_signature
+            and not node.episodic_graph_bridge_reached
+            and node.episodic_graph_progress <= 0.0
+            and self._human_prior_closed_control_leaf(
+                node.target_signature
+            )
+        ]
+        if not closed_leaves:
+            return list(endpoints), []
+        closed_ids = {id(node) for node in closed_leaves}
+        return (
+            [node for node in endpoints if id(node) not in closed_ids],
+            closed_leaves,
+        )
 
     @staticmethod
     def _filter_option_exhaustion_egress(
@@ -17878,6 +18036,88 @@ class VerifiedNeuralAgent:
                 exhausted_precursor_branches=precursors,
                 alternatives_remaining=len(eligible),
                 policy_effect="milestone_priority_only",
+                hazard_evidence=False,
+                **self._frame_fields(self.frame),
+            )
+        current_goal_heart_count = (
+            0
+            if self.goal_prior is None
+            else len(self.goal_prior.current_slots())
+        )
+        current_goal_chest_obtained = bool(
+            self.goal_prior is not None
+            and getattr(self.goal_prior, "chest_obtained", False)
+        )
+        closed_control_leaf_archives = [
+            branch
+            for branch in eligible
+            if branch.human_prior_verified_option
+            and branch.goal_target_signature
+            and branch.goal_target_signature
+            != branch.goal_source_signature
+            and self.human_prior_graph_state_visits[
+                branch.goal_target_signature
+            ]
+            > 0
+            and not branch.goal_world_effect_signature
+            and not branch.human_prior_option_entity_state_signature
+            and live_archive_episodic_graph_metrics(branch)[0] <= 0.0
+            and not live_archive_episodic_graph_metrics(branch)[1]
+            and not (
+                branch.goal_total_hearts > 0
+                and branch.goal_remaining_hearts
+                < current_goal_heart_count
+            )
+            and not (
+                branch.goal_chest_obtained
+                and not current_goal_chest_obtained
+            )
+            and self._human_prior_closed_control_leaf(
+                branch.goal_target_signature
+            )
+        ]
+        if closed_control_leaf_archives:
+            closed_leaf_ids = {
+                id(branch) for branch in closed_control_leaf_archives
+            }
+            eligible = [
+                branch
+                for branch in eligible
+                if id(branch) not in closed_leaf_ids
+            ]
+            removed = self._remove_archive_branches(
+                closed_control_leaf_archives,
+                "closed_control_leaf",
+            )
+            self._emit(
+                "human_prior_closed_control_leaf_archives_filtered",
+                decision=self.decision_index + 1,
+                filtered_branches=removed,
+                distinct_closed_leaves=len(
+                    {
+                        branch.goal_target_signature
+                        for branch in closed_control_leaf_archives
+                    }
+                ),
+                target_graph_signatures=tuple(
+                    sorted(
+                        {
+                            branch.goal_target_signature
+                            for branch in closed_control_leaf_archives
+                        }
+                    )
+                ),
+                target_player_slots=tuple(
+                    sorted(
+                        {
+                            branch.goal_player_slot
+                            for branch in closed_control_leaf_archives
+                            if branch.goal_player_slot is not None
+                        }
+                    )
+                ),
+                alternatives_remaining=len(eligible),
+                policy_effect="terminal_frontier_quality",
                 hazard_evidence=False,
                 **self._frame_fields(self.frame),
             )

@@ -3070,6 +3070,94 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(alternatives, 0)
         self.assertTrue(fail_open)
 
+    def test_option_search_filters_fully_mapped_control_leaves(
+        self,
+    ) -> None:
+        env = ActionEffectEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(actions=(Action.LEFT, Action.RIGHT)),
+        )
+        source = agent.reset()
+        target = env.step(Action.RIGHT, 1)
+        analysis = PositionGoalPrior().analyze(source, target)
+        agent._record_human_prior_episodic_graph_transition(
+            "neighbor", "closed-leaf", 1
+        )
+        agent._record_human_prior_episodic_graph_transition(
+            "closed-leaf", "neighbor", 1
+        )
+        for action in agent.config.actions:
+            agent._record_human_prior_graph_edge_verification(
+                "closed-leaf", action, 1
+            )
+
+        closed_leaf = SimpleNamespace(
+            source_signature="source",
+            target_signature="closed-leaf",
+            target_state_visits=1,
+            analysis=analysis,
+            confirmed_world_effect_signature="",
+            confirmed_entity_state_signature="",
+            episodic_graph_bridge_reached=False,
+            episodic_graph_progress=0.0,
+        )
+        open_frontier = SimpleNamespace(
+            source_signature="source",
+            target_signature="open-frontier",
+            target_state_visits=0,
+            analysis=analysis,
+            confirmed_world_effect_signature="",
+            confirmed_entity_state_signature="",
+            episodic_graph_bridge_reached=False,
+            episodic_graph_progress=0.0,
+        )
+
+        filtered, leaves = (
+            agent._filter_closed_control_leaf_option_endpoints(
+                (closed_leaf, open_frontier)
+            )
+        )
+
+        self.assertEqual(filtered, [open_frontier])
+        self.assertEqual(leaves, [closed_leaf])
+        self.assertTrue(
+            agent._human_prior_closed_control_leaf("closed-leaf")
+        )
+        self.assertFalse(
+            agent._human_prior_closed_control_leaf("open-frontier")
+        )
+
+        filtered, leaves = (
+            agent._filter_closed_control_leaf_option_endpoints(
+                (closed_leaf,)
+            )
+        )
+        self.assertEqual(filtered, [])
+        self.assertEqual(leaves, [closed_leaf])
+
+        milestone_leaf = SimpleNamespace(
+            **{
+                **closed_leaf.__dict__,
+                "analysis": replace(
+                    analysis,
+                    heart_reward=1.0,
+                    total_reward=analysis.total_reward + 1.0,
+                ),
+            }
+        )
+        filtered, leaves = (
+            agent._filter_closed_control_leaf_option_endpoints(
+                (milestone_leaf,)
+            )
+        )
+        self.assertEqual(filtered, [milestone_leaf])
+        self.assertEqual(leaves, [])
+
     def test_human_prior_option_search_rejects_globally_visited_states(
         self,
     ) -> None:

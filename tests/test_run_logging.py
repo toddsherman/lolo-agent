@@ -635,6 +635,24 @@ class RunLoggingTests(unittest.TestCase):
                 summary,
             )
             self.assertIn(
+                "human_prior_option_closed_control_leaf_filters", summary
+            )
+            self.assertIn(
+                "human_prior_option_closed_control_leaf_endpoints_filtered",
+                summary,
+            )
+            self.assertIn(
+                "human_prior_option_closed_control_leaves_found", summary
+            )
+            self.assertIn(
+                "human_prior_closed_control_leaf_archive_filter_events",
+                summary,
+            )
+            self.assertIn(
+                "human_prior_closed_control_leaf_archives_filtered",
+                summary,
+            )
+            self.assertIn(
                 "human_prior_option_exhaustion_egress_filters", summary
             )
             self.assertIn(

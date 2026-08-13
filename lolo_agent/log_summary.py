@@ -1828,6 +1828,7 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                 in {
                     "no_unexpanded_endpoint",
                     "only_exhausted_frontier_endpoints",
+                    "only_closed_control_leaf_endpoints",
                 }
             ),
             default=0,
@@ -1863,6 +1864,32 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             for event in events
             if event["event"]
             == "human_prior_option_exhausted_frontiers_filtered"
+        ),
+        "human_prior_option_closed_control_leaf_filters": event_counts.get(
+            "human_prior_option_closed_control_leaves_filtered", 0
+        ),
+        "human_prior_option_closed_control_leaf_endpoints_filtered": sum(
+            int(event.get("endpoints_filtered", 0))
+            for event in events
+            if event["event"]
+            == "human_prior_option_closed_control_leaves_filtered"
+        ),
+        "human_prior_option_closed_control_leaves_found": sum(
+            int(event.get("distinct_closed_leaves", 0))
+            for event in events
+            if event["event"]
+            == "human_prior_option_closed_control_leaves_filtered"
+        ),
+        "human_prior_closed_control_leaf_archive_filter_events": (
+            event_counts.get(
+                "human_prior_closed_control_leaf_archives_filtered", 0
+            )
+        ),
+        "human_prior_closed_control_leaf_archives_filtered": sum(
+            int(event.get("filtered_branches", 0))
+            for event in events
+            if event["event"]
+            == "human_prior_closed_control_leaf_archives_filtered"
         ),
         "human_prior_option_exhaustion_egress_filters": event_counts.get(
             "human_prior_option_exhaustion_egress_filter_evaluated", 0

@@ -584,6 +584,22 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   `human_prior_option_archive_added` and
   `human_prior_option_search_completed.selected_path` identify the outcomes
   that actually received policy authority;
+- `human_prior_option_closed_control_leaves_filtered` records a reusable
+  topological inference made without object labels: the target has already been
+  visited, every configured active control has been tested there, and the
+  verified graph connects that state to at most one other semantic state. Such
+  a state remains
+  available as a known backtracking location, but it is not an unexplored
+  terminal frontier and is not archived merely because geometric goal shaping
+  prefers it. Confirmed milestones, world/entity effects, and live episodic
+  graph progress are exempt. If closed leaves exhaust every terminal candidate,
+  `human_prior_option_search_completed.reason` is
+  `only_closed_control_leaf_endpoints`; the source receives bounded frontier
+  exhaustion rather than a hazard label. Compatible older archive capabilities
+  are removed before recovery by
+  `human_prior_closed_control_leaf_archives_filtered`. Both events expose the
+  exact graph signatures, player slots or graph neighbors, counts, and
+  `hazard_evidence=false` for later visualization;
 - navigation shaping is endpoint-novelty gated. `branch_verified` records
   `human_prior_effective_navigation_reward` and
   `human_prior_navigation_reward_suppressed`, plus target graph-state visits,
