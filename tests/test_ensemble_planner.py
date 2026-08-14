@@ -6355,9 +6355,20 @@ class EnsemblePlannerTests(unittest.TestCase):
 
         self.assertEqual(first.candidates, 1)
         self.assertEqual(first.confirmed_entity_effects, 1)
+        self.assertEqual(first.promoted_entity_frontiers, 1)
+        self.assertEqual(first.archived_entity_frontiers, 1)
         self.assertEqual(len(first.attempted_signatures), 1)
         self.assertEqual(second.candidates, 0)
         self.assertEqual(behavior_model.observation_count, 1)
+        self.assertEqual(len(agent.archive), 1)
+        self.assertTrue(agent.archive[0].human_prior_verified_option)
+        self.assertTrue(
+            agent.archive[0].human_prior_option_entity_state_signature
+        )
+        self.assertEqual(
+            agent.archive[0].human_prior_option_effect_frontier_reason,
+            "anonymous_entity_state_change",
+        )
         self.assertEqual(env._frame().digest, initial.digest)
         completed = [
             event
@@ -6537,6 +6548,9 @@ class EnsemblePlannerTests(unittest.TestCase):
 
         self.assertEqual(result.candidates, 1)
         self.assertEqual(result.confirmed_entity_effects, 1)
+        self.assertEqual(result.promoted_entity_frontiers, 1)
+        self.assertEqual(result.archived_entity_frontiers, 1)
+        self.assertEqual(len(agent.archive), 1)
         completed = next(
             event
             for event in logger.events

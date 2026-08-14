@@ -183,6 +183,7 @@ class _AdjacentEntityProbeResult:
     candidates: int = 0
     confirmed_entity_effects: int = 0
     promoted_entity_frontiers: int = 0
+    archived_entity_frontiers: int = 0
     attempted_signatures: Tuple[str, ...] = ()
 
 
@@ -7615,6 +7616,206 @@ class VerifiedNeuralAgent:
             attempted_signatures=tuple(attempted_signature_values),
         )
 
+    def _archive_proactive_entity_frontiers(
+        self,
+        root: object,
+        source_frame: Frame,
+        endpoints: Sequence[_HumanPriorOptionNode],
+    ) -> Tuple[int, set[int]]:
+        """Retain the exact phase-verified result of a proactive probe.
+
+        Re-running a confirmed intervention can produce a different result
+        solely because the emulator has advanced to another animation phase.
+        The proactive probe already owns the factual save state and has
+        checked it against matched controls and nearby phases, so archive that
+        capability directly instead of asking option search to rediscover it.
+        """
+
+        existing = {
+            (
+                branch.goal_target_signature,
+                branch.human_prior_option_entity_state_signature,
+            )
+            for branch in self.archive
+            if branch.human_prior_verified_option
+            and branch.human_prior_option_entity_state_signature
+        }
+        representatives: Dict[str, _HumanPriorOptionNode] = {}
+        selection_key = self._human_prior_ordering_option_selection_key
+        for endpoint in endpoints:
+            if (
+                not endpoint.confirmed_world_effect_signature
+                or not endpoint.confirmed_entity_state_signature
+                or not endpoint.confirmed_world_context
+                or not endpoint.target_signature
+            ):
+                continue
+            key = (
+                endpoint.target_signature,
+                endpoint.confirmed_entity_state_signature,
+            )
+            if key in existing:
+                continue
+            previous = representatives.get(endpoint.confirmed_world_context)
+            if previous is None or selection_key(endpoint) > selection_key(
+                previous
+            ):
+                representatives[endpoint.confirmed_world_context] = endpoint
+        available = max(0, self.config.archive_capacity - len(self.archive))
+        limit = min(
+            available,
+            max(1, self.config.human_prior_option_archive_representatives),
+        )
+        selected = sorted(
+            representatives.values(), key=selection_key, reverse=True
+        )[:limit]
+        retained_state_ids: set[int] = set()
+        for endpoint in selected:
+            endpoint.confirmed_effect_frontier_reason = (
+                "anonymous_entity_state_change"
+            )
+            frontier_signature = self._new_provisional_signature()
+            branch = _ArchivedBranch(
+                state=endpoint.state,
+                frame=endpoint.frame,
+                plan=NeuralPlan(
+                    endpoint.path,
+                    endpoint.durations,
+                    endpoint.score,
+                    0.0,
+                ),
+                score=endpoint.score,
+                scene=self._scene_signature(endpoint.frame),
+                created=self.decision_index,
+                origin_signature=self.current_frontier_signature,
+                frontier_signature=frontier_signature,
+                causal_context_signature=(
+                    self.current_causal_context_signature
+                ),
+                target_causal_context_signature=(
+                    self.current_causal_context_signature
+                ),
+                pose_action=endpoint.pose_action,
+                goal_heart_slots=endpoint.analysis.target_present,
+                goal_progress_reward=(
+                    self._human_prior_ordering_adjusted_total_reward(
+                        endpoint.analysis
+                    )
+                ),
+                goal_remaining_hearts=endpoint.analysis.remaining_hearts,
+                goal_total_hearts=len(endpoint.analysis.known_slots),
+                goal_chest_slot=(
+                    endpoint.analysis.target_chest_slot
+                    or endpoint.analysis.source_chest_slot
+                ),
+                goal_player_slot=endpoint.analysis.target_player_slot,
+                goal_chest_obtained=endpoint.analysis.chest_obtained,
+                parent_state_id=self._state_id(root),
+                parent_frame_digest=source_frame.digest,
+                parent_decision=self.decision_index,
+                search_depth=self.current_search_depth + endpoint.depth,
+                goal_source_signature=endpoint.source_signature,
+                goal_target_signature=endpoint.target_signature,
+                goal_source_world_context=(
+                    self.current_human_prior_world_context_signature
+                ),
+                goal_target_world_context=endpoint.confirmed_world_context,
+                goal_world_effect_signature=(
+                    endpoint.confirmed_world_effect_signature
+                ),
+                human_prior_verified_option=True,
+                human_prior_option_world_effect_signature=(
+                    endpoint.confirmed_world_effect_signature
+                ),
+                human_prior_option_entity_state_signature=(
+                    endpoint.confirmed_entity_state_signature
+                ),
+                human_prior_option_effect_frontier_reason=(
+                    endpoint.confirmed_effect_frontier_reason
+                ),
+                human_prior_unvisited_semantic_state=(
+                    endpoint.target_state_visits == 0
+                ),
+            )
+            self.archive.append(branch)
+            retained_state_ids.add(id(endpoint.state))
+            persist_archive_state = getattr(
+                self.env, "persist_option_archive_state", None
+            )
+            if callable(persist_archive_state):
+                persist_archive_state(
+                    endpoint.state,
+                    endpoint.frame,
+                    self.decision_index + 1,
+                )
+            self._record_human_prior_ordering_progress(
+                endpoint.analysis,
+                endpoint.source_signature,
+                endpoint.path,
+                endpoint.durations,
+                endpoint.frame,
+            )
+            self._emit(
+                "human_prior_option_archive_added",
+                decision=self.decision_index + 1,
+                source="proactive_entity_probe",
+                state_id=self._state_id(endpoint.state),
+                parent_state_id=self._state_id(root),
+                parent_frame=source_frame.digest,
+                parent_decision=self.decision_index,
+                search_depth=branch.search_depth,
+                option_depth=endpoint.depth,
+                path=endpoint.path,
+                durations=endpoint.durations,
+                source_graph_signature=endpoint.source_signature,
+                source_behavioral_signature=branch.origin_signature,
+                source_causal_context_signature=(
+                    branch.causal_context_signature
+                ),
+                target_graph_signature=endpoint.target_signature,
+                target_frontier_signature=frontier_signature,
+                target_causal_context_signature=(
+                    branch.target_causal_context_signature
+                ),
+                target_pose_action=endpoint.pose_action,
+                target_graph_state_visits=endpoint.target_state_visits,
+                target_player_position_visits=(
+                    endpoint.target_position_visits
+                ),
+                human_prior_option_world_effect_signature=(
+                    endpoint.confirmed_world_effect_signature
+                ),
+                human_prior_option_effect_frontier=True,
+                human_prior_option_entity_frontier=True,
+                human_prior_option_entity_state_signature=(
+                    endpoint.confirmed_entity_state_signature
+                ),
+                human_prior_option_effect_confirmed_action_indices=(
+                    endpoint.confirmed_action_indices
+                ),
+                human_prior_option_effect_frontier_reason=(
+                    endpoint.confirmed_effect_frontier_reason
+                ),
+                human_prior_option_settling_steps=endpoint.settling_steps,
+                human_prior_option_settling_frames=endpoint.settling_frames,
+                human_prior_option_immediate_frame=(
+                    endpoint.immediate_frame_digest or None
+                ),
+                human_prior_world_source_context=(
+                    self.current_human_prior_world_context_signature
+                ),
+                human_prior_world_target_context=(
+                    endpoint.confirmed_world_context
+                ),
+                selected_primary=True,
+                score=endpoint.score,
+                archive_size=len(self.archive),
+                agent_visible=True,
+                **endpoint.analysis.telemetry(),
+                **self._frame_fields(endpoint.frame),
+            )
+        return len(selected), retained_state_ids
+
     def _probe_current_adjacent_anonymous_affordances(
         self,
     ) -> _AdjacentEntityProbeResult:
@@ -7646,6 +7847,7 @@ class VerifiedNeuralAgent:
             )
         root = self.env.save_state()
         saved_states = [root]
+        retained_state_ids: set[int] = set()
         release_state = getattr(self.env, "release_state", None)
         active_failure = False
         self._emit(
@@ -7664,13 +7866,14 @@ class VerifiedNeuralAgent:
             **self._frame_fields(source_frame),
         )
         try:
+            endpoints: List[_HumanPriorOptionNode] = []
             result = self._probe_adjacent_anonymous_affordances(
                 root,
                 source_frame,
                 source_analysis,
                 source_signature,
                 duration,
-                [],
+                endpoints,
                 saved_states,
                 candidate_limit=(
                     self.config.human_prior_proactive_entity_probe_limit
@@ -7678,10 +7881,26 @@ class VerifiedNeuralAgent:
                 excluded_interactions=(
                     self.human_prior_proactive_entity_probe_attempts
                 ),
-                promote_frontiers=False,
+                promote_frontiers=True,
                 probe_scope="proactive",
                 include_common_unresolved=True,
             )
+            archived_entity_frontiers = 0
+            if endpoints:
+                (
+                    archived_entity_frontiers,
+                    retained_state_ids,
+                ) = self._archive_proactive_entity_frontiers(
+                    root,
+                    source_frame,
+                    endpoints,
+                )
+                result = replace(
+                    result,
+                    archived_entity_frontiers=(
+                        archived_entity_frontiers
+                    ),
+                )
             self.human_prior_proactive_entity_probe_attempts.update(
                 result.attempted_signatures
             )
@@ -7693,14 +7912,24 @@ class VerifiedNeuralAgent:
                 confirmed_entity_effects=(
                     result.confirmed_entity_effects
                 ),
+                promoted_entity_frontiers=(
+                    result.promoted_entity_frontiers
+                ),
+                archived_entity_frontiers=(
+                    result.archived_entity_frontiers
+                ),
                 attempted_signatures=result.attempted_signatures,
                 cumulative_attempts=len(
                     self.human_prior_proactive_entity_probe_attempts
                 ),
                 policy_effect=(
-                    "reopen_bounded_option_search"
-                    if result.confirmed_entity_effects > 0
-                    else "remember_tested_interaction"
+                    "retain_exact_verified_entity_frontier"
+                    if result.archived_entity_frontiers > 0
+                    else (
+                        "retain_behavior_evidence"
+                        if result.confirmed_entity_effects > 0
+                        else "remember_tested_interaction"
+                    )
                 ),
                 agent_visible=True,
                 **self._frame_fields(source_frame),
@@ -7719,6 +7948,8 @@ class VerifiedNeuralAgent:
                         if state_identity in released:
                             continue
                         released.add(state_identity)
+                        if state_identity in retained_state_ids:
+                            continue
                         release_state(state)
             except Exception as cleanup_error:
                 self._emit(
@@ -16567,8 +16798,8 @@ class VerifiedNeuralAgent:
             self._probe_current_adjacent_anonymous_affordances()
         )
         if proactive_entity_probe.confirmed_entity_effects > 0:
-            archive_branches_added = self._search_human_prior_options(
-                force_reopen_reason="proactive_entity_effect_confirmed"
+            archive_branches_added = (
+                proactive_entity_probe.archived_entity_frontiers
             )
             self._emit(
                 "human_prior_proactive_entity_probe_incorporated",
@@ -16576,9 +16807,12 @@ class VerifiedNeuralAgent:
                 confirmed_entity_effects=(
                     proactive_entity_probe.confirmed_entity_effects
                 ),
+                promoted_entity_frontiers=(
+                    proactive_entity_probe.promoted_entity_frontiers
+                ),
                 archive_branches_added=archive_branches_added,
                 policy_effect=(
-                    "restore_verified_entity_frontier"
+                    "restore_exact_verified_entity_frontier"
                     if archive_branches_added > 0
                     else "retain_behavior_evidence"
                 ),
