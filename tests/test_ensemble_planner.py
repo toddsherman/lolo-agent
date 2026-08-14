@@ -8829,6 +8829,78 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(returning_rows, [returning])
         self.assertTrue(fail_open)
 
+        progress_choice, progress_alternatives = (
+            agent._human_prior_navigation_detour_progress_choice(
+                [returning, alternative],
+                {
+                    id(returning_state): returning_analysis,
+                    id(alternative_state): alternative_analysis,
+                },
+                {
+                    id(returning_state): ("current", "origin"),
+                    id(alternative_state): ("current", "egress"),
+                },
+                {
+                    id(returning_state): 0,
+                    id(alternative_state): 1,
+                },
+            )
+        )
+        self.assertEqual(progress_choice, alternative)
+        self.assertEqual(progress_alternatives, 1)
+
+        semantic_egress_analysis = replace(
+            alternative_analysis,
+            navigation_reward=-1.0,
+            total_reward=-1.0,
+        )
+        progress_choice, progress_alternatives = (
+            agent._human_prior_navigation_detour_progress_choice(
+                [returning, alternative],
+                {
+                    id(returning_state): returning_analysis,
+                    id(alternative_state): semantic_egress_analysis,
+                },
+                {
+                    id(returning_state): ("current", "origin"),
+                    id(alternative_state): ("current", "egress"),
+                },
+                {
+                    id(returning_state): 0,
+                    id(alternative_state): 1,
+                },
+            )
+        )
+        self.assertEqual(progress_choice, alternative)
+        self.assertEqual(progress_alternatives, 1)
+
+        onward_state = object()
+        onward = (
+            0.5,
+            NeuralPlan((Action.UP,), (1,), 0.5, 0.0),
+            onward_state,
+        )
+        agent.human_prior_navigation_detour_previous_signature = "egress"
+        progress_choice, progress_alternatives = (
+            agent._human_prior_navigation_detour_progress_choice(
+                [alternative, onward],
+                {
+                    id(alternative_state): alternative_analysis,
+                    id(onward_state): semantic_egress_analysis,
+                },
+                {
+                    id(alternative_state): ("current", "egress"),
+                    id(onward_state): ("current", "onward"),
+                },
+                {
+                    id(alternative_state): 0,
+                    id(onward_state): 1,
+                },
+            )
+        )
+        self.assertEqual(progress_choice, onward)
+        self.assertEqual(progress_alternatives, 1)
+
     def test_seed_human_prior_memory_restores_navigation_detour(self) -> None:
         agent = VerifiedNeuralAgent(
             WorldEffectEnv(True),
@@ -8871,6 +8943,10 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(agent.last_navigation_change_decision, 0)
         self.assertEqual(
             agent.human_prior_navigation_detour_origin_signature,
+            "detour-origin",
+        )
+        self.assertEqual(
+            agent.human_prior_navigation_detour_previous_signature,
             "detour-origin",
         )
         self.assertTrue(agent._human_prior_navigation_detour_active())
