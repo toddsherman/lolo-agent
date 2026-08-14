@@ -6390,6 +6390,115 @@ class VerifiedNeuralAgent:
                 or endpoint_matched_all
             )
         )
+        moving_contact_retreat_required = moving_directional_contact
+        moving_contact_retreat_confirmed = False
+        moving_contact_retreat_endpoint_matched = False
+        moving_contact_retreat_effect_cells: Tuple[
+            Tuple[int, int], ...
+        ] = ()
+        moving_contact_retreat_factual_frame: Optional[str] = None
+        moving_contact_retreat_control_frame: Optional[str] = None
+        if moving_directional_contact and common_cells:
+            opposite_action = {
+                Action.UP: Action.DOWN,
+                Action.DOWN: Action.UP,
+                Action.LEFT: Action.RIGHT,
+                Action.RIGHT: Action.LEFT,
+            }[replaced_action]
+            retreat_duration = node.durations[action_index]
+            self.env.load_state(root)
+            factual_retreat = source_frame
+            for action, duration in zip(node.path, node.durations):
+                factual_retreat = self.env.step(action, duration)
+            factual_retreat = self.env.step(
+                opposite_action, retreat_duration
+            )
+            for _ in range(
+                self.config.human_prior_option_effect_stability_steps
+            ):
+                factual_retreat = self.env.step(
+                    Action.NOOP, future_duration
+                )
+
+            self.env.load_state(root)
+            control_retreat = source_frame
+            for action, duration in zip(control_path, node.durations):
+                control_retreat = self.env.step(action, duration)
+            control_retreat = self.env.step(
+                Action.NOOP, retreat_duration
+            )
+            for _ in range(
+                self.config.human_prior_option_effect_stability_steps
+            ):
+                control_retreat = self.env.step(
+                    Action.NOOP, future_duration
+                )
+            factual_retreat_analysis = self.goal_prior.analyze(
+                source_frame, factual_retreat
+            )
+            control_retreat_analysis = self.goal_prior.analyze(
+                source_frame, control_retreat
+            )
+            moving_contact_retreat_endpoint_matched = bool(
+                factual_retreat_analysis.target_player_slot is not None
+                and factual_retreat_analysis.target_player_slot
+                == control_retreat_analysis.target_player_slot
+            )
+            retreat_ignored_pixels: set[Tuple[int, int]] = set()
+            player_pixel_mask = getattr(
+                self.goal_prior, "player_pixel_mask", None
+            )
+            if (
+                callable(player_pixel_mask)
+                and moving_contact_retreat_endpoint_matched
+            ):
+                retreat_slot = (
+                    factual_retreat_analysis.target_player_slot
+                )
+                assert retreat_slot is not None
+                retreat_ignored_pixels.update(
+                    player_pixel_mask(factual_retreat, retreat_slot)
+                )
+                retreat_ignored_pixels.update(
+                    player_pixel_mask(control_retreat, retreat_slot)
+                )
+            retreat_signature, _retreat_pixels, _retreat_centroid = (
+                self._causal_spatial_effect(
+                    factual_retreat,
+                    control_retreat,
+                    ignored_pixels=(
+                        retreat_ignored_pixels
+                        if retreat_ignored_pixels
+                        else None
+                    ),
+                    minimum_cell_pixels=(
+                        self.config.human_prior_option_effect_local_minimum_cell_pixels
+                        if retreat_ignored_pixels
+                        else 1
+                    ),
+                )
+            )
+            retreat_effect_cells = self._causal_spatial_cells(
+                retreat_signature
+            )
+            moving_contact_retreat_effect_cells = tuple(
+                sorted(retreat_effect_cells)
+            )
+            moving_contact_retreat_factual_frame = (
+                factual_retreat.digest
+            )
+            moving_contact_retreat_control_frame = (
+                control_retreat.digest
+            )
+            moving_contact_retreat_confirmed = bool(
+                moving_contact_retreat_endpoint_matched
+                and common_cells.intersection(retreat_effect_cells)
+                and not factual_retreat_analysis.life_counter_changed
+                and not control_retreat_analysis.life_counter_changed
+                and not factual_retreat_analysis.dark_transition_started
+                and not control_retreat_analysis.dark_transition_started
+            )
+            self.env.load_state(root)
         controllability = {
             "endpoint_matched": False,
             "player_footprint_matched": False,
@@ -6431,6 +6540,17 @@ class VerifiedNeuralAgent:
         entity_entries = []
         entity_effect_cells: set[Tuple[int, int]] = set()
         entity_state_signature = ""
+        moving_contact_substrate_match = False
+        moving_contact_substrate_distance: Optional[float] = None
+        moving_contact_player_appearance_match = False
+        moving_contact_player_appearance_distance: Optional[
+            float
+        ] = None
+        moving_contact_source_player_cell: Optional[
+            Tuple[int, int]
+        ] = None
+        moving_contact_source_player_mask_pixels = 0
+        moving_contact_target_mask_fraction = 0.0
         memory = self.unlabeled_entity_memory
         if memory is not None and interaction_ray:
             if moving_directional_contact and common_cells:
@@ -6535,6 +6655,142 @@ class VerifiedNeuralAgent:
                 entity_state_signature = hashlib.sha256(
                     payload.encode("ascii")
                 ).hexdigest()[:16]
+            if (
+                moving_directional_contact
+                and audited_interaction_cell is not None
+            ):
+                source_player_slot = (
+                    factual_analysis.source_player_slot
+                    or control_analysis.source_player_slot
+                )
+                if source_player_slot is not None:
+                    moving_contact_source_player_cell = (
+                        min(
+                            memory.columns - 1,
+                            max(
+                                0,
+                                source_player_slot[0]
+                                * memory.columns
+                                // before_intervention.width,
+                            ),
+                        ),
+                        min(
+                            memory.rows - 1,
+                            max(
+                                0,
+                                source_player_slot[1]
+                                * memory.rows
+                                // before_intervention.height,
+                            ),
+                        ),
+                    )
+                    if (
+                        moving_contact_source_player_cell
+                        != audited_interaction_cell
+                    ):
+                        source_player_pixels: set[
+                            Tuple[int, int]
+                        ] = set()
+                        player_pixel_mask = getattr(
+                            self.goal_prior, "player_pixel_mask", None
+                        )
+                        if callable(player_pixel_mask):
+                            source_player_pixels.update(
+                                player_pixel_mask(
+                                    before_intervention,
+                                    source_player_slot,
+                                )
+                            )
+                        moving_contact_source_player_mask_pixels = len(
+                            source_player_pixels
+                        )
+                        target_column, target_row = (
+                            audited_interaction_cell
+                        )
+                        target_x_start = (
+                            target_column
+                            * before_intervention.width
+                            // memory.columns
+                        )
+                        target_x_stop = (
+                            (target_column + 1)
+                            * before_intervention.width
+                            // memory.columns
+                        )
+                        target_y_start = (
+                            target_row
+                            * before_intervention.height
+                            // memory.rows
+                        )
+                        target_y_stop = (
+                            (target_row + 1)
+                            * before_intervention.height
+                            // memory.rows
+                        )
+                        target_cell_pixels = max(
+                            1,
+                            (target_x_stop - target_x_start)
+                            * (target_y_stop - target_y_start),
+                        )
+                        target_mask_pixels = sum(
+                            target_x_start <= x < target_x_stop
+                            and target_y_start <= y < target_y_stop
+                            for x, y in source_player_pixels
+                        )
+                        moving_contact_target_mask_fraction = (
+                            target_mask_pixels / target_cell_pixels
+                        )
+                        raw_target_feature = memory.feature_at(
+                            before_intervention,
+                            *audited_interaction_cell,
+                        )
+                        raw_source_player_feature = memory.feature_at(
+                            before_intervention,
+                            *moving_contact_source_player_cell,
+                        )
+                        moving_contact_player_appearance_distance = (
+                            memory.feature_distance(
+                                raw_target_feature,
+                                raw_source_player_feature,
+                            )
+                        )
+                        moving_contact_player_appearance_match = bool(
+                            moving_contact_player_appearance_distance
+                            <= memory.match_threshold
+                        )
+                        # A conservative player halo can cover the entire
+                        # adjacent patch. In that case masking it yields an
+                        # empty feature that trivially matches empty floor.
+                        # Retain the control whenever at least ten percent of
+                        # the patch remains independently visible; native
+                        # sprite halos often cover just over half a cell.
+                        if moving_contact_target_mask_fraction <= 0.9:
+                            cleaned_target_feature = memory.feature_at(
+                                before_intervention,
+                                *audited_interaction_cell,
+                                source_player_pixels,
+                            )
+                            revealed_source_feature = memory.feature_at(
+                                final_factual,
+                                *moving_contact_source_player_cell,
+                                final_factual_player_pixels,
+                            )
+                            moving_contact_substrate_distance = (
+                                memory.feature_distance(
+                                    cleaned_target_feature,
+                                    revealed_source_feature,
+                                )
+                            )
+                            moving_contact_substrate_match = bool(
+                                moving_contact_substrate_distance
+                                <= memory.match_threshold
+                            )
+                        # If removing source-player pixels makes the alleged
+                        # adjacent appearance match the background revealed
+                        # behind the moving player, the farther ray change is
+                        # the player's leading edge rather than a displaced
+                        # entity.  A real pushed appearance remains visually
+                        # distinct from that newly exposed substrate.
         entity_effect_signature = bytearray(columns * rows)
         for column, row in entity_effect_cells:
             entity_effect_signature[row * columns + column] = 1
@@ -6543,6 +6799,12 @@ class VerifiedNeuralAgent:
             and interaction_cell_matched
             and entity_effect_cells
             and entity_state_signature
+            and not moving_contact_substrate_match
+            and not moving_contact_player_appearance_match
+            and (
+                not moving_contact_retreat_required
+                or moving_contact_retreat_confirmed
+            )
         )
         anonymous_behavior = None
         if memory is not None and interaction_ray:
@@ -6622,6 +6884,45 @@ class VerifiedNeuralAgent:
             "expected_interaction_cell": expected_interaction_cell,
             "audited_interaction_cell": audited_interaction_cell,
             "interaction_cell_matched": interaction_cell_matched,
+            "moving_contact_substrate_match": (
+                moving_contact_substrate_match
+            ),
+            "moving_contact_substrate_distance": (
+                moving_contact_substrate_distance
+            ),
+            "moving_contact_player_appearance_match": (
+                moving_contact_player_appearance_match
+            ),
+            "moving_contact_player_appearance_distance": (
+                moving_contact_player_appearance_distance
+            ),
+            "moving_contact_source_player_cell": (
+                moving_contact_source_player_cell
+            ),
+            "moving_contact_source_player_mask_pixels": (
+                moving_contact_source_player_mask_pixels
+            ),
+            "moving_contact_target_mask_fraction": (
+                moving_contact_target_mask_fraction
+            ),
+            "moving_contact_retreat_required": (
+                moving_contact_retreat_required
+            ),
+            "moving_contact_retreat_confirmed": (
+                moving_contact_retreat_confirmed
+            ),
+            "moving_contact_retreat_endpoint_matched": (
+                moving_contact_retreat_endpoint_matched
+            ),
+            "moving_contact_retreat_effect_cells": (
+                moving_contact_retreat_effect_cells
+            ),
+            "moving_contact_retreat_factual_frame": (
+                moving_contact_retreat_factual_frame
+            ),
+            "moving_contact_retreat_control_frame": (
+                moving_contact_retreat_control_frame
+            ),
             "entity_effect_cells": tuple(sorted(entity_effect_cells)),
             "entity_effect_signature": (
                 bytes(entity_effect_signature).hex()

@@ -1018,6 +1018,8 @@ class PushableEntityEnv:
         ):
             self.player_column += 1
             self.entity_column += 1
+        elif action == Action.LEFT and self.player_column > 0:
+            self.player_column -= 1
         return self._frame()
 
     def save_state(self) -> tuple[int, int]:
@@ -1036,6 +1038,45 @@ class PushableEntityEnv:
             ):
                 pixels[y * 32 + x] = 96
         pixels[self.player_column * 4] = 255
+        return Frame(32, 32, 1, bytes(pixels))
+
+
+class LeadingEdgeMovementEnv:
+    """Move a wide player sprite across otherwise uniform substrate."""
+
+    def __init__(self) -> None:
+        self.player_column = 0
+
+    def reset(self) -> Frame:
+        self.player_column = 0
+        return self._frame()
+
+    def step(self, action: Action, frames: int = 1) -> Frame:
+        del frames
+        if action == Action.RIGHT:
+            self.player_column = min(6, self.player_column + 1)
+        elif action == Action.LEFT:
+            self.player_column = max(0, self.player_column - 1)
+        return self._frame()
+
+    def save_state(self) -> int:
+        return self.player_column
+
+    def load_state(self, state: int) -> Frame:
+        self.player_column = state
+        return self._frame()
+
+    def _frame(self) -> Frame:
+        pixels = bytearray([16] * (32 * 32))
+        # The visual sprite spans two pooled cells.  Its leading edge changes
+        # the next cell when the player moves, closely matching the native
+        # false-positive that motivated the substrate control.
+        for y in range(4):
+            for x in range(
+                self.player_column * 4,
+                self.player_column * 4 + 8,
+            ):
+                pixels[y * 32 + x] = 255
         return Frame(32, 32, 1, bytes(pixels))
 
 
@@ -6565,6 +6606,74 @@ class EnsemblePlannerTests(unittest.TestCase):
             behavior["observed_entity_displacement"], (1, 0)
         )
         self.assertTrue(behavior["observed_manipulation_effect"])
+        action_control = next(
+            event
+            for event in logger.events
+            if event["event"]
+            == "human_prior_option_world_effect_action_control"
+        )
+        self.assertTrue(
+            action_control["moving_contact_retreat_confirmed"]
+        )
+        self.assertEqual(env._frame().digest, initial.digest)
+
+    def test_proactive_probe_rejects_player_leading_edge_as_push(
+        self,
+    ) -> None:
+        logger = RecordingLogger()
+        behavior_model = AnonymousEntityBehaviorModel(
+            minimum_prediction_samples=1
+        )
+        env = LeadingEdgeMovementEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.NOOP),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_option_search_action_frames=1,
+                human_prior_option_effect_stability_steps=1,
+                human_prior_option_effect_probe_limit=1,
+                human_prior_option_effect_phase_offsets=1,
+                human_prior_option_effect_local_controls=True,
+                human_prior_option_entity_frontier=True,
+                human_prior_proactive_entity_probe_limit=1,
+                anonymous_entity_behavior_learning=True,
+                causal_spatial_columns=8,
+                causal_spatial_rows=8,
+            ),
+            event_logger=logger,
+            entity_behavior_model=behavior_model,
+        )
+        initial = agent.reset()
+        agent.goal_prior = MovingAdjacentMaskGoalPrior()
+
+        result = agent._probe_current_adjacent_anonymous_affordances()
+
+        self.assertEqual(result.candidates, 1)
+        self.assertEqual(result.confirmed_entity_effects, 0)
+        self.assertEqual(result.promoted_entity_frontiers, 0)
+        self.assertEqual(result.archived_entity_frontiers, 0)
+        self.assertEqual(len(agent.archive), 0)
+        control = next(
+            event
+            for event in logger.events
+            if event["event"]
+            == "human_prior_option_world_effect_action_control"
+        )
+        self.assertTrue(control["confirmed"])
+        self.assertTrue(control["moving_contact_player_appearance_match"])
+        self.assertFalse(control["moving_contact_retreat_confirmed"])
+        self.assertFalse(control["entity_effect_confirmed"])
+        self.assertIsNotNone(
+            control["moving_contact_player_appearance_distance"]
+        )
+        self.assertEqual(behavior_model.observation_count, 0)
         self.assertEqual(env._frame().digest, initial.digest)
 
     def test_proactive_probe_includes_common_unresolved_appearance(
