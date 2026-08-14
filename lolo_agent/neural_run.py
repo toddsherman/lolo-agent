@@ -761,6 +761,16 @@ def main() -> None:
         help="pixel endpoints retained at each assisted option-search depth",
     )
     parser.add_argument(
+        "--human-prior-option-search-milestone-reserve",
+        type=int,
+        default=0,
+        help=(
+            "beam slots reserved for safe continuations after a known "
+            "pixel-detected milestone, diversified by remaining-goal set "
+            "and player position; zero preserves endpoint-only search"
+        ),
+    )
+    parser.add_argument(
         "--human-prior-episodic-graph-guidance",
         action="store_true",
         help=(
@@ -1252,6 +1262,11 @@ def main() -> None:
         parser.error(
             "--human-prior-option-search-beam-width must be positive"
         )
+    if args.human_prior_option_search_milestone_reserve < 0:
+        parser.error(
+            "--human-prior-option-search-milestone-reserve must be "
+            "non-negative"
+        )
     if args.human_prior_option_archive_representatives <= 0:
         parser.error(
             "--human-prior-option-archive-representatives must be positive"
@@ -1716,6 +1731,9 @@ def main() -> None:
         ),
         human_prior_option_search_beam_width=(
             args.human_prior_option_search_beam_width
+        ),
+        human_prior_option_search_milestone_reserve=(
+            args.human_prior_option_search_milestone_reserve
         ),
         human_prior_option_search_position_reserve=(
             args.human_prior_option_search_position_reserve

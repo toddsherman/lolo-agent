@@ -3130,6 +3130,71 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertTrue(ordering_rejections[0]["exhausted_transition"])
         self.assertFalse(ordering_rejections[0]["exhausted_precursor"])
 
+    def test_option_search_can_reserve_known_milestone_continuation(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = VisibleMovingMilestoneSettlesEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.A),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=3,
+                human_prior_option_search_beam_width=1,
+                human_prior_option_search_milestone_reserve=1,
+                human_prior_option_search_action_frames=1,
+            ),
+            event_logger=logger,
+        )
+        source = agent.reset()
+        agent.goal_prior = MovingMilestoneGoalPrior()
+        env.step(Action.RIGHT)
+        milestone = agent.goal_prior.analyze(
+            source, env.step(Action.A)
+        )
+        agent.human_prior_milestone_outcomes.add(
+            agent._human_prior_milestone_outcome_key(milestone)
+        )
+        agent.frame = env.reset()
+
+        agent._search_human_prior_options()
+
+        depths = [
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_search_depth_completed"
+        ]
+        self.assertEqual([event["depth"] for event in depths], [1, 2, 3])
+        milestone_depth = next(
+            event for event in depths if event["depth"] == 2
+        )
+        self.assertEqual(
+            milestone_depth[
+                "human_prior_option_milestone_continuation_parents_retained"
+            ],
+            1,
+        )
+        self.assertEqual(
+            milestone_depth["repeated_milestone_parents_retained"],
+            1,
+        )
+        self.assertTrue(
+            any(
+                event["event"] == "human_prior_option_branch_verified"
+                and event["depth"] == 3
+                for event in logger.events
+            )
+        )
+
     def test_reachable_failed_milestone_preserves_empirical_ordering_without_alternate_progress(
         self,
     ) -> None:

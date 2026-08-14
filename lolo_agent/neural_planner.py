@@ -126,6 +126,7 @@ class NeuralPlanningConfig:
     human_prior_goal_exhaustion_frontier_budget: int = 0
     human_prior_option_search_depth: int = 0
     human_prior_option_search_beam_width: int = 8
+    human_prior_option_search_milestone_reserve: int = 0
     human_prior_option_search_position_reserve: int = 0
     human_prior_option_search_missing_player_reserve: int = 8
     human_prior_option_search_missing_player_max_streak: int = 2
@@ -8592,6 +8593,9 @@ class VerifiedNeuralAgent:
             int(self.config.human_prior_option_search_depth),
             int(self.config.human_prior_option_search_beam_width),
             int(
+                self.config.human_prior_option_search_milestone_reserve
+            ),
+            int(
                 self.config.human_prior_option_search_position_reserve
             ),
             int(
@@ -10042,6 +10046,42 @@ class VerifiedNeuralAgent:
                 beam_width = (
                     self.config.human_prior_option_search_beam_width
                 )
+                milestone_continuation_representatives: Dict[
+                    Tuple[
+                        Tuple[Tuple[int, int], ...],
+                        Optional[Tuple[int, int]],
+                        str,
+                    ],
+                    _HumanPriorOptionNode,
+                ] = {}
+                if (
+                    self.config.human_prior_option_search_milestone_reserve
+                    > 0
+                ):
+                    for node in ranked_candidates:
+                        if (
+                            node.analysis.milestone_reward <= 0.0
+                            or not self._human_prior_milestone_outcome_known(
+                                node.analysis
+                            )
+                            or self._human_prior_milestone_transition_exhausted(
+                                node.analysis
+                            )
+                            or node.analysis.life_counter_changed
+                            or node.analysis.dark_transition_started
+                        ):
+                            continue
+                        continuation_key = (
+                            tuple(sorted(node.analysis.target_present)),
+                            node.analysis.target_player_slot,
+                            node.world_effect_state_signature,
+                        )
+                        milestone_continuation_representatives.setdefault(
+                            continuation_key, node
+                        )
+                milestone_continuation_candidates = list(
+                    milestone_continuation_representatives.values()
+                )
                 observed_candidates = [
                     node
                     for node in expansion_candidates
@@ -10129,6 +10169,23 @@ class VerifiedNeuralAgent:
                 retained_parent_ids = {
                     id(node) for node in route_replay_parents
                 }
+                milestone_continuation_slots = min(
+                    self.config.human_prior_option_search_milestone_reserve,
+                    max(0, beam_width - len(retained_parent_ids)),
+                    len(milestone_continuation_candidates),
+                )
+                milestone_continuation_parents = []
+                if milestone_continuation_slots > 0:
+                    for node in milestone_continuation_candidates:
+                        if id(node) in retained_parent_ids:
+                            continue
+                        milestone_continuation_parents.append(node)
+                        retained_parent_ids.add(id(node))
+                        if (
+                            len(milestone_continuation_parents)
+                            >= milestone_continuation_slots
+                        ):
+                            break
                 entity_curiosity_slots = min(
                     self.config.human_prior_option_entity_curiosity_reserve,
                     max(0, beam_width - len(retained_parent_ids)),
@@ -10221,6 +10278,7 @@ class VerifiedNeuralAgent:
                         ):
                             break
                 parents = list(route_replay_parents)
+                parents.extend(milestone_continuation_parents)
                 parents.extend(entity_curiosity_parents)
                 parents.extend(position_reserve_parents)
                 parents.extend(
@@ -10290,6 +10348,21 @@ class VerifiedNeuralAgent:
                     episodic_route_replay_waypoint_reached=any(
                         node.episodic_graph_route_replay_waypoint_reached
                         for node in route_replay_parents
+                    ),
+                    human_prior_option_milestone_continuation_reserve=(
+                        self.config.human_prior_option_search_milestone_reserve
+                    ),
+                    human_prior_option_milestone_continuation_candidates=(
+                        len(milestone_continuation_candidates)
+                    ),
+                    human_prior_option_milestone_continuation_parents_retained=(
+                        len(milestone_continuation_parents)
+                    ),
+                    human_prior_option_milestone_continuation_heart_sets=(
+                        tuple(
+                            tuple(sorted(node.analysis.target_present))
+                            for node in milestone_continuation_parents
+                        )
                     ),
                     human_prior_option_position_reserve=(
                         self.config.human_prior_option_search_position_reserve
