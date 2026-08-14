@@ -10723,10 +10723,13 @@ class VerifiedNeuralAgent:
                 probe_limit = (
                     self.config.human_prior_option_effect_probe_limit
                 )
-                curiosity_probe_slots = min(
-                    self.config.human_prior_option_entity_curiosity_reserve,
-                    probe_limit,
-                    len(ranked_entity_curiosity_probes),
+                curiosity_probe_slots = (
+                    self._human_prior_entity_curiosity_probe_slot_count(
+                        self.config.human_prior_option_entity_curiosity_reserve,
+                        probe_limit,
+                        len(ranked_entity_curiosity_probes),
+                        distinct_entity_interaction_groups,
+                    )
                 )
                 entity_curiosity_probes = ranked_entity_curiosity_probes[
                     :curiosity_probe_slots
@@ -16588,6 +16591,22 @@ class VerifiedNeuralAgent:
             node for node in ranked if id(node) not in diverse_ids
         )
         return tuple(diverse), len(group_representatives)
+
+    @staticmethod
+    def _human_prior_entity_curiosity_probe_slot_count(
+        reserve: int,
+        probe_limit: int,
+        candidate_count: int,
+        distinct_interaction_groups: int,
+    ) -> int:
+        """Audit each anonymous cell/action/appearance group at most once."""
+
+        return min(
+            reserve,
+            probe_limit,
+            candidate_count,
+            distinct_interaction_groups,
+        )
 
     def _human_prior_ordering_option_selection_key(
         self, node: _HumanPriorOptionNode

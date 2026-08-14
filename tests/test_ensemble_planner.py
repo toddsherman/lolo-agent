@@ -7718,6 +7718,19 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertIs(ranked[1], second_appearance)
         self.assertIs(ranked[2], repeated_appearance)
 
+    def test_entity_curiosity_probe_slots_stop_at_distinct_groups(
+        self,
+    ) -> None:
+        self.assertEqual(
+            VerifiedNeuralAgent._human_prior_entity_curiosity_probe_slot_count(
+                reserve=12,
+                probe_limit=12,
+                candidate_count=24,
+                distinct_interaction_groups=5,
+            ),
+            5,
+        )
+
     def test_entity_probe_ranking_prefers_observed_neutral_persistence(
         self,
     ) -> None:
