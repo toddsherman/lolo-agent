@@ -2789,26 +2789,27 @@ class VerifiedNeuralAgent:
 
         Exact search already masks the detected source and target player
         cells before producing ``effect_cells``.  A displaced object's new
-        cell is normally one cell beyond the contacted patch, so retaining
-        only that local neighborhood represents the resulting world
-        configuration without treating distant animation as part of it.
+        cell is one cell beyond the contacted patch in the action direction,
+        so retaining only that exact destination represents the resulting
+        world configuration without treating nearby sprite animation as part
+        of it.
         This is deliberately an observational state key, not a claim that
         any particular appearance is pushable.
         """
 
-        if (
-            action
-            not in (Action.UP, Action.DOWN, Action.LEFT, Action.RIGHT)
-            or interaction_cell is None
-        ):
+        direction = {
+            Action.UP: (0, -1),
+            Action.DOWN: (0, 1),
+            Action.LEFT: (-1, 0),
+            Action.RIGHT: (1, 0),
+        }.get(action)
+        if direction is None or interaction_cell is None:
             return set()
-        return {
-            cell
-            for cell in effect_cells
-            if abs(cell[0] - interaction_cell[0])
-            + abs(cell[1] - interaction_cell[1])
-            <= 1
-        }
+        destination = (
+            interaction_cell[0] + direction[0],
+            interaction_cell[1] + direction[1],
+        )
+        return {destination} if destination in set(effect_cells) else set()
 
     def _human_prior_cell_patch_l1(
         self,

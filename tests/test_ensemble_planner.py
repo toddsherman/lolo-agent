@@ -7750,7 +7750,7 @@ class EnsemblePlannerTests(unittest.TestCase):
 
         self.assertEqual(
             tracked,
-            {(4, 4), (5, 4), (3, 4), (4, 5)},
+            {(5, 4)},
         )
         self.assertEqual(
             VerifiedNeuralAgent._human_prior_directional_interaction_effect_cells(
