@@ -4120,6 +4120,70 @@ class VerifiedNeuralAgent:
             semantic_state_frontier,
         )
 
+    def _human_prior_archive_repeated_navigation_regression(
+        self,
+        branch: _ArchivedBranch,
+        live_goal_reward: Optional[float] = None,
+    ) -> bool:
+        """Reject rollback to a well-explored state farther from the goal.
+
+        A temporarily regressive move can be necessary in a puzzle, so a new
+        target remains eligible.  Once the same target has exceeded the
+        semantic stagnation threshold, however, restoring it again is useful
+        only when the branch carries stronger causal or milestone evidence.
+        This prevents an untried-control flag at a familiar position from
+        repeatedly rewinding genuine live navigation progress.
+        """
+
+        if (
+            self.goal_prior is None
+            or self.frame is None
+            or branch.goal_exhaustion_recovery_root
+            or branch.goal_player_slot is None
+            or not branch.goal_target_signature
+            or (
+                branch.human_prior_verified_option
+                and (
+                    branch.goal_world_effect_signature
+                    or branch.human_prior_option_entity_state_signature
+                )
+            )
+        ):
+            return False
+        current_remaining_hearts = len(self.goal_prior.current_slots())
+        if (
+            branch.goal_total_hearts > 0
+            and branch.goal_remaining_hearts < current_remaining_hearts
+        ) or (
+            branch.goal_chest_obtained
+            and not bool(getattr(self.goal_prior, "chest_obtained", False))
+        ):
+            return False
+        if live_goal_reward is None:
+            analysis = self.goal_prior.analyze(
+                self.frame,
+                branch.frame,
+                target_player_reference=branch.goal_player_slot,
+            )
+            live_goal_reward = (
+                self._human_prior_ordering_adjusted_total_reward(analysis)
+            )
+        if live_goal_reward >= 0.0:
+            return False
+        visits = max(
+            self._human_prior_position_visits(
+                branch.goal_target_signature,
+                branch.goal_player_slot,
+            ),
+            self.human_prior_player_position_visits[
+                branch.goal_player_slot
+            ],
+        )
+        explored_limit = max(
+            1, self.config.human_prior_graph_stagnation_visits
+        )
+        return visits > explored_limit
+
     def _human_prior_archive_frontiers(
         self, source_signature: str = ""
     ) -> int:
@@ -15949,11 +16013,36 @@ class VerifiedNeuralAgent:
         """Use learned ordering evidence without changing milestone rank."""
 
         base = self._human_prior_option_selection_key(node)
+        adjusted_reward = self._human_prior_ordering_adjusted_total_reward(
+            node.analysis
+        )
+        explored_limit = max(
+            1, self.config.human_prior_graph_stagnation_visits
+        )
+        target_player_slot = node.analysis.target_player_slot
+        target_position_visits = max(
+            node.target_position_visits,
+            (
+                0
+                if target_player_slot is None
+                else self.human_prior_player_position_visits[
+                    target_player_slot
+                ]
+            ),
+        )
+        repeated_navigation_regression = bool(
+            node.analysis.milestone_reward <= 0.0
+            and adjusted_reward < 0.0
+            and target_position_visits > explored_limit
+            and not node.confirmed_world_effect_signature
+            and not node.confirmed_entity_state_signature
+        )
         return (
             base[0],
+            not repeated_navigation_regression,
             base[1],
             base[2],
-            self._human_prior_ordering_adjusted_total_reward(node.analysis),
+            adjusted_reward,
             *base[4:],
         )
 
@@ -17422,6 +17511,9 @@ class VerifiedNeuralAgent:
                 for branch in self.archive
                 if self._human_prior_archive_is_non_regressive(
                     branch, current_best_hearts
+                )
+                and not self._human_prior_archive_repeated_navigation_regression(
+                    branch
                 )
             ]
             global_archive_frontiers = sum(
@@ -22790,6 +22882,53 @@ class VerifiedNeuralAgent:
                 ),
                 **self._frame_fields(self.frame),
             )
+            repeated_navigation_regressions = [
+                branch
+                for branch in eligible
+                if self._human_prior_archive_repeated_navigation_regression(
+                    branch,
+                    live_archive_goal_metrics(branch)[0],
+                )
+            ]
+            if repeated_navigation_regressions:
+                repeated_ids = {
+                    id(branch)
+                    for branch in repeated_navigation_regressions
+                }
+                eligible = [
+                    branch
+                    for branch in eligible
+                    if id(branch) not in repeated_ids
+                ]
+                removed = self._remove_archive_branches(
+                    repeated_navigation_regressions,
+                    "repeated_navigation_regression",
+                )
+                self._emit(
+                    "human_prior_navigation_regression_archives_filtered",
+                    decision=self.decision_index + 1,
+                    filtered_branches=removed,
+                    alternatives_remaining=len(eligible),
+                    explored_visit_threshold=max(
+                        1,
+                        self.config.human_prior_graph_stagnation_visits,
+                    ),
+                    target_player_slots=tuple(
+                        sorted(
+                            {
+                                branch.goal_player_slot
+                                for branch in repeated_navigation_regressions
+                                if branch.goal_player_slot is not None
+                            }
+                        )
+                    ),
+                    policy_effect="preserve_live_navigation_progress",
+                    hazard_evidence=False,
+                    agent_visible=(
+                        self.goal_prior.current_player_slot is not None
+                    ),
+                    **self._frame_fields(self.frame),
+                )
         if human_prior_graph_stagnation:
             exhausted_semantic_branches = [
                 branch

@@ -5406,6 +5406,151 @@ class EnsemblePlannerTests(unittest.TestCase):
         env.release_state(root)
         env.release_state(current_state)
 
+    def test_archive_restore_discards_well_explored_navigation_regression(
+        self,
+    ) -> None:
+        env = UniqueStateEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                behavioral_best_first_archive=True,
+                human_prior_best_first_archive=True,
+                human_prior_graph_stagnation_visits=1,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        root = env.save_state()
+        regressive_frame = env.step(Action.RIGHT, 1)
+        regressive_state = env.save_state()
+        env.load_state(root)
+        current_frame = env.step(Action.RIGHT, 3)
+        current_state = env.save_state()
+        agent.frame = current_frame
+        agent.goal_prior.current_player_slot = (3, 0)
+        target_signature = agent._human_prior_graph_signature(
+            ((7, 0),), (1, 0), None, "life"
+        )
+        for _ in range(3):
+            agent._record_human_prior_player_position(
+                target_signature, (1, 0)
+            )
+        # A transient world/animation phase can be unseen even when the same
+        # physical rollback target is already well explored.
+        agent.human_prior_phase_player_position_visits.clear()
+        agent.archive = [
+            _ArchivedBranch(
+                state=regressive_state,
+                frame=regressive_frame,
+                plan=NeuralPlan((Action.RIGHT,), (1,), 20.0, 0.0),
+                score=20.0,
+                scene=agent._scene_signature(regressive_frame),
+                created=0,
+                origin_signature="source",
+                goal_source_signature="old-source",
+                goal_target_signature=target_signature,
+                goal_heart_slots=((7, 0),),
+                goal_progress_reward=8.0,
+                goal_remaining_hearts=1,
+                goal_total_hearts=1,
+                goal_player_slot=(1, 0),
+                human_prior_episodic_graph_plan_kind="control_frontier",
+                human_prior_episodic_graph_progress=1.0,
+                human_prior_episodic_graph_bridge_reached=True,
+                human_prior_episodic_graph_remaining_cost=0,
+                causal_event_outcome=True,
+            )
+        ]
+        agent.human_prior_graph_recovery_pending = True
+
+        decision = agent._restore_if_stagnant()
+
+        self.assertIsNone(decision)
+        self.assertEqual(env.position, 3)
+        self.assertFalse(agent.archive)
+        filtered = next(
+            event
+            for event in logger.events
+            if event["event"]
+            == "human_prior_navigation_regression_archives_filtered"
+        )
+        self.assertEqual(filtered["filtered_branches"], 1)
+        self.assertEqual(
+            filtered["policy_effect"],
+            "preserve_live_navigation_progress",
+        )
+        env.release_state(root)
+        env.release_state(current_state)
+
+    def test_option_search_prefers_live_progress_over_repeated_regressive_route(
+        self,
+    ) -> None:
+        env = UniqueStateEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                human_prior_graph_stagnation_visits=1,
+            ),
+        )
+        source = agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        root = env.save_state()
+        env.step(Action.RIGHT, 3)
+        current = env._frame()
+        env.load_state(root)
+        regressive = env.step(Action.RIGHT, 1)
+        env.load_state(root)
+        env.step(Action.RIGHT, 4)
+        progressive = env._frame()
+        regressive_analysis = agent.goal_prior.analyze(
+            current, regressive
+        )
+        progressive_analysis = agent.goal_prior.analyze(
+            current, progressive
+        )
+        agent.human_prior_player_position_visits[(1, 0)] = 25
+        regressive_node = SimpleNamespace(
+            analysis=regressive_analysis,
+            target_position_visits=0,
+            target_state_visits=0,
+            score=100.0,
+            depth=2,
+            episodic_graph_bridge_reached=True,
+            episodic_graph_progress=1.0,
+            confirmed_world_effect_signature="",
+            confirmed_entity_state_signature="",
+        )
+        progressive_node = SimpleNamespace(
+            analysis=progressive_analysis,
+            target_position_visits=25,
+            target_state_visits=0,
+            score=1.0,
+            depth=2,
+            episodic_graph_bridge_reached=False,
+            episodic_graph_progress=0.0,
+            confirmed_world_effect_signature="",
+            confirmed_entity_state_signature="",
+        )
+
+        selected = max(
+            (regressive_node, progressive_node),
+            key=agent._human_prior_ordering_option_selection_key,
+        )
+
+        self.assertIs(selected, progressive_node)
+        env.release_state(root)
+        del source
+
     def test_archive_restore_invalidates_stale_episodic_graph_progress(
         self,
     ) -> None:
