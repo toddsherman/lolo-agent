@@ -10729,6 +10729,72 @@ class VerifiedNeuralAgent:
             milestone_representatives: Dict[
                 tuple, _HumanPriorOptionNode
             ] = {}
+            ordering_key = self._human_prior_ordering_hypothesis_key(
+                source_analysis.source_present,
+                source_analysis.chest_obtained,
+            )
+            active_ordering_targets = (
+                ()
+                if ordering_key is None
+                else tuple(
+                    sorted(set(ordering_key[0]) - set(ordering_key[1]))
+                )
+            )
+            reachable_blocked_milestone = any(
+                endpoint.analysis.milestone_reward > 0.0
+                and self._human_prior_milestone_ordering_blocked(
+                    endpoint.analysis
+                )
+                for endpoint in pre_settlement_endpoints
+            )
+
+            def demonstrates_alternate_ordering_progress(
+                endpoint: _HumanPriorOptionNode,
+            ) -> bool:
+                if self._human_prior_milestone_ordering_blocked(
+                    endpoint.analysis
+                ):
+                    return False
+                if (
+                    endpoint.analysis.milestone_reward > 0.0
+                    and set(endpoint.analysis.collected).intersection(
+                        active_ordering_targets
+                    )
+                ):
+                    return True
+                navigation = self._human_prior_ordering_navigation_fields(
+                    endpoint.analysis
+                )
+                return bool(
+                    navigation["human_prior_navigation_retargeted"]
+                    and navigation[
+                        "human_prior_navigation_ordering_reward"
+                    ]
+                    > 0.0
+                )
+
+            if (
+                ordering_key is not None
+                and active_ordering_targets
+                and reachable_blocked_milestone
+                and not any(
+                    demonstrates_alternate_ordering_progress(endpoint)
+                    for endpoint in pre_settlement_endpoints
+                )
+            ):
+                # A larger retry budget may reactivate a previously disproved
+                # ordering hypothesis.  If that retry can reach the forbidden
+                # milestone again but produces no endpoint that approaches or
+                # collects an alternative visible goal, unrelated animation or
+                # causal-effect endpoints must not keep the stale ordering alive
+                # forever.  Disproving it before endpoint processing lets the
+                # same verified milestone remain actionable in this search.
+                self._maybe_disprove_human_prior_ordering_hypothesis(
+                    source_analysis,
+                    source_signature,
+                    "reachable_failed_milestone_without_alternate_progress",
+                    search_budget_sha256,
+                )
             for endpoint in pre_settlement_endpoints:
                 if self._human_prior_milestone_ordering_blocked(
                     endpoint.analysis

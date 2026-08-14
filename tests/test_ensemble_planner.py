@@ -1243,6 +1243,34 @@ class MovingMilestoneGoalPrior(PositionGoalPrior):
         )
 
 
+class TwoGoalMovingMilestoneGoalPrior(MovingMilestoneGoalPrior):
+    """Expose a second, unchanged visual goal outside the local search."""
+
+    def analyze(
+        self,
+        source: Frame,
+        target: Frame,
+        *,
+        target_player_reference=None,
+    ) -> HeartGoalAnalysis:
+        analysis = super().analyze(
+            source,
+            target,
+            target_player_reference=target_player_reference,
+        )
+        alternate = ((-15, 0),)
+        return replace(
+            analysis,
+            known_slots=((-15, 0), (7, 0)),
+            source_present=tuple(
+                sorted((*analysis.source_present, *alternate))
+            ),
+            target_present=tuple(
+                sorted((*analysis.target_present, *alternate))
+            ),
+        )
+
+
 class VisibleMovingMilestoneSettlesEnv(MovingMilestoneSettlesEnv):
     """Keep the moved player visible while its milestone animation settles."""
 
@@ -3101,6 +3129,70 @@ class EnsemblePlannerTests(unittest.TestCase):
         )
         self.assertTrue(ordering_rejections[0]["exhausted_transition"])
         self.assertFalse(ordering_rejections[0]["exhausted_precursor"])
+
+    def test_reachable_failed_milestone_disproves_ordering_without_alternate_progress(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = MovingMilestoneSettlesEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.A),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=25.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=1,
+                human_prior_option_search_action_frames=1,
+                human_prior_option_effect_stability_steps=2,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.goal_prior = TwoGoalMovingMilestoneGoalPrior()
+        source_hearts = ((-15, 0), (7, 0))
+        exhausted_transition = (source_hearts, ((-15, 0),), False)
+        agent.human_prior_exhausted_milestone_transitions.add(
+            exhausted_transition
+        )
+        ordering_key = agent._human_prior_ordering_hypothesis_key(
+            source_hearts, False
+        )
+        assert ordering_key is not None
+        agent.human_prior_ordering_progress_hypotheses.add(ordering_key)
+
+        added = agent._search_human_prior_options()
+
+        self.assertEqual(added, 1)
+        self.assertIn(
+            ordering_key,
+            agent.human_prior_disproved_ordering_hypotheses,
+        )
+        self.assertEqual(agent.archive[0].goal_heart_slots, ((-15, 0),))
+        self.assertFalse(
+            any(
+                event["event"]
+                == "human_prior_option_ordering_endpoint_rejected"
+                for event in logger.events
+            )
+        )
+        disproved = next(
+            event
+            for event in logger.events
+            if event["event"]
+            == "human_prior_ordering_hypothesis_disproved"
+        )
+        self.assertEqual(
+            disproved["reason"],
+            "reachable_failed_milestone_without_alternate_progress",
+        )
 
     def test_exhausted_milestone_transition_uses_semantic_alternative(
         self,
