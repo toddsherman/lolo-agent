@@ -9389,8 +9389,16 @@ class VerifiedNeuralAgent:
                         ):
                             stationary_action_history = (
                                 parent.stationary_action_history
-                                + ((action, edge_duration),)
-                            )[-stationary_history_limit:]
+                            )
+                            if action in (
+                                Action.A,
+                                Action.B,
+                                Action.NOOP,
+                            ):
+                                stationary_action_history = (
+                                    stationary_action_history
+                                    + ((action, edge_duration),)
+                                )[-stationary_history_limit:]
                         node = _HumanPriorOptionNode(
                             state=state,
                             frame=target,
