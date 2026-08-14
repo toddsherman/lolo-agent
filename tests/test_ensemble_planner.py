@@ -958,6 +958,23 @@ class AdjacentButtonTransformEnv(UnlabeledEntityTransformEnv):
         return self._frame()
 
 
+class CommonAdjacentButtonTransformEnv(AdjacentButtonTransformEnv):
+    def _frame(self) -> Frame:
+        frame = super()._frame()
+        pixels = bytearray(frame.pixels)
+        for column, row in (
+            (3, 0),
+            (5, 0),
+            (7, 0),
+            (1, 2),
+            (3, 2),
+        ):
+            for y in range(row * 4, row * 4 + 4):
+                for x in range(column * 4, column * 4 + 4):
+                    pixels[y * 32 + x] = 32
+        return Frame(32, 32, 1, bytes(pixels))
+
+
 class MovingEntitySettlesEnv:
     def __init__(self) -> None:
         self.armed = False
@@ -5826,6 +5843,58 @@ class EnsemblePlannerTests(unittest.TestCase):
                 for event in logger.events
             )
         )
+
+    def test_proactive_probe_includes_common_unresolved_appearance(
+        self,
+    ) -> None:
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            CommonAdjacentButtonTransformEnv(),
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.A, Action.NOOP),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=2,
+                human_prior_option_search_action_frames=1,
+                human_prior_option_effect_stability_steps=1,
+                human_prior_option_effect_probe_limit=1,
+                human_prior_option_effect_phase_offsets=1,
+                human_prior_option_effect_local_controls=True,
+                human_prior_option_entity_frontier=True,
+                human_prior_proactive_entity_probe_limit=1,
+                anonymous_entity_behavior_learning=True,
+                causal_spatial_columns=8,
+                causal_spatial_rows=8,
+            ),
+            event_logger=logger,
+            entity_behavior_model=AnonymousEntityBehaviorModel(
+                minimum_prediction_samples=1
+            ),
+        )
+        agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        agent.current_pose_action = Action.RIGHT
+
+        result = agent._probe_current_adjacent_anonymous_affordances()
+
+        self.assertEqual(result.candidates, 1)
+        self.assertEqual(result.confirmed_entity_effects, 1)
+        started = next(
+            event
+            for event in logger.events
+            if event["event"]
+            == "human_prior_adjacent_entity_probe_started"
+        )
+        self.assertTrue(started["common_unresolved_enabled"])
+        self.assertGreaterEqual(started["candidate_appearance_counts"][0], 6)
+        self.assertLess(started["candidate_spatial_rarities"][0], 0.5)
 
     def test_unconfirmed_appearance_transition_is_withheld(self) -> None:
         logger = RecordingLogger()

@@ -988,6 +988,13 @@ was previously exhausted, and makes the verified transformed state available
 to normal archive recovery. No controller action from a probe is committed to
 the live trajectory.
 
+The proactive path also admits common unresolved adjacent appearances. This is
+necessary for repeated visually similar objects: rarity is useful for choosing
+what to inspect first, but cannot be a prerequisite for learning an affordance.
+The per-room interaction-signature deduplication and configured probe limit
+remain the cost controls. Option-search-wide adjacent probes retain the rare
+appearance gate.
+
 `anonymous_entity_passive_scan_completed` records how many rare patches were
 tracked through each matched passive interval and how many controlled-sprite
 cells were excluded. Each additional configured duration-only save-state

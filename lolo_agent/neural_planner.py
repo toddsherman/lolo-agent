@@ -6155,6 +6155,7 @@ class VerifiedNeuralAgent:
         excluded_interactions: AbstractSet[str] = frozenset(),
         promote_frontiers: bool = True,
         probe_scope: str = "option_search",
+        include_common_unresolved: bool = False,
     ) -> _AdjacentEntityProbeResult:
         """Run cheap matched experiments before multi-step navigation search.
 
@@ -6215,7 +6216,7 @@ class VerifiedNeuralAgent:
                 > 0.0
                 or float(curiosity.get("inert_confidence", 0.0)) < 0.5
             )
-            if rare and unresolved:
+            if unresolved and (rare or include_common_unresolved):
                 candidates.append((action, curiosity))
         candidates.sort(
             key=lambda item: (
@@ -6257,8 +6258,17 @@ class VerifiedNeuralAgent:
                 curiosity.get("target_cell")
                 for _action, curiosity in candidates
             ),
+            candidate_spatial_rarities=tuple(
+                float(curiosity.get("spatial_rarity", 0.0))
+                for _action, curiosity in candidates
+            ),
+            candidate_appearance_counts=tuple(
+                int(curiosity.get("appearance_count", 0))
+                for _action, curiosity in candidates
+            ),
             probe_limit=effective_limit,
             probe_scope=probe_scope,
+            common_unresolved_enabled=include_common_unresolved,
             action_frames=duration,
             agent_visible=True,
             **self._frame_fields(source_frame),
@@ -6466,6 +6476,7 @@ class VerifiedNeuralAgent:
                 ),
                 promote_frontiers=False,
                 probe_scope="proactive",
+                include_common_unresolved=True,
             )
             self.human_prior_proactive_entity_probe_attempts.update(
                 result.attempted_signatures
