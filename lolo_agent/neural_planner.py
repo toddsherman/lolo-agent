@@ -2795,9 +2795,12 @@ class VerifiedNeuralAgent:
         world configuration without treating nearby sprite animation as part
         of it.
         The state key is enabled only after learned matched-control outcomes
-        assign majority probability to manipulation.  Unknown appearances
+        assign material probability to manipulation.  Unknown appearances
         remain available to causal curiosity probes, while ordinary movement
-        patches do not multiply the exact-search beam.
+        patches do not multiply the exact-search beam.  Ten percent is above
+        the sparse false-positive floor observed from pose changes while
+        retaining conditional interactions that work only from some approach
+        contexts.
         """
 
         direction = {
@@ -2809,7 +2812,7 @@ class VerifiedNeuralAgent:
         if (
             direction is None
             or interaction_cell is None
-            or manipulation_probability < 0.5
+            or manipulation_probability < 0.1
         ):
             return set()
         destination = (

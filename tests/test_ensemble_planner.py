@@ -7765,9 +7765,18 @@ class EnsemblePlannerTests(unittest.TestCase):
                 Action.RIGHT,
                 (4, 4),
                 cells,
-                manipulation_probability=0.49,
+                manipulation_probability=0.09,
             ),
             set(),
+        )
+        self.assertEqual(
+            VerifiedNeuralAgent._human_prior_directional_interaction_effect_cells(
+                Action.RIGHT,
+                (4, 4),
+                cells,
+                manipulation_probability=0.1,
+            ),
+            {(5, 4)},
         )
 
     def test_entity_probe_ranking_prefers_observed_neutral_persistence(
