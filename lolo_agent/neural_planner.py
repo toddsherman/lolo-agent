@@ -16915,6 +16915,90 @@ class VerifiedNeuralAgent:
                     alternatives_remaining=len(selection_verified),
                     fail_open=anonymous_entity_hazard_fail_open,
                 )
+            # Route-memory filters run before optional frontier-exhaustion
+            # filters.  Otherwise those filters can leave only a previously
+            # exhausted route, forcing this layer to fail open and repeat the
+            # exact detour even though safe alternatives were verified.
+            (
+                selection_verified,
+                navigation_detour_returns,
+                navigation_detour_fail_open,
+            ) = self._filter_human_prior_navigation_detour_returns(
+                selection_verified,
+                branch_goal_analyses,
+                branch_goal_signatures,
+                branch_goal_world_contexts,
+            )
+            if navigation_detour_returns:
+                self._emit(
+                    "human_prior_navigation_detour_filter_evaluated",
+                    decision=self.decision_index + 1,
+                    enabled=True,
+                    policy_authority=True,
+                    policy_effect="bounded_detour_commitment",
+                    hazard_evidence=False,
+                    origin_graph_signature=(
+                        self.human_prior_navigation_detour_origin_signature
+                    ),
+                    previous_graph_signature=(
+                        self.human_prior_navigation_detour_previous_signature
+                        or None
+                    ),
+                    detour_started_decision=(
+                        self.human_prior_navigation_detour_started_decision
+                    ),
+                    grace_decisions=(
+                        self.config.human_prior_navigation_recovery_grace
+                    ),
+                    returning_branches_detected=len(
+                        navigation_detour_returns
+                    ),
+                    returning_branches_filtered=(
+                        0
+                        if navigation_detour_fail_open
+                        else len(navigation_detour_returns)
+                    ),
+                    alternatives_remaining=len(selection_verified),
+                    fail_open=navigation_detour_fail_open,
+                )
+            (
+                selection_verified,
+                exhausted_navigation_detour_branches,
+            ) = self._filter_human_prior_exhausted_navigation_detours(
+                selection_verified,
+                branch_goal_analyses,
+                branch_goal_signatures,
+                branch_goal_world_contexts,
+            )
+            if exhausted_navigation_detour_branches:
+                self._emit(
+                    "human_prior_exhausted_navigation_detours_filtered",
+                    decision=self.decision_index + 1,
+                    enabled=True,
+                    policy_authority=True,
+                    policy_effect="bounded_route_exhaustion",
+                    hazard_evidence=False,
+                    blocked_branches=tuple(
+                        {
+                            "source_graph_signature": (
+                                branch_goal_signatures[id(item[2])][0]
+                            ),
+                            "action": item[1].path[0],
+                            "action_frames": item[1].durations[0],
+                            "target_graph_signature": (
+                                branch_goal_signatures[id(item[2])][1]
+                            ),
+                        }
+                        for item in exhausted_navigation_detour_branches
+                    ),
+                    branches_filtered=len(
+                        exhausted_navigation_detour_branches
+                    ),
+                    alternatives_remaining=len(selection_verified),
+                    exhausted_detour_edges=len(
+                        self.human_prior_exhausted_navigation_detours
+                    ),
+                )
             (
                 selection_verified,
                 exhausted_milestone_branches,
@@ -17119,86 +17203,6 @@ class VerifiedNeuralAgent:
                             for item in option_exhaustion_non_egress_branches
                         ),
                     )
-            (
-                selection_verified,
-                navigation_detour_returns,
-                navigation_detour_fail_open,
-            ) = self._filter_human_prior_navigation_detour_returns(
-                selection_verified,
-                branch_goal_analyses,
-                branch_goal_signatures,
-                branch_goal_world_contexts,
-            )
-            if navigation_detour_returns:
-                self._emit(
-                    "human_prior_navigation_detour_filter_evaluated",
-                    decision=self.decision_index + 1,
-                    enabled=True,
-                    policy_authority=True,
-                    policy_effect="bounded_detour_commitment",
-                    hazard_evidence=False,
-                    origin_graph_signature=(
-                        self.human_prior_navigation_detour_origin_signature
-                    ),
-                    previous_graph_signature=(
-                        self.human_prior_navigation_detour_previous_signature
-                        or None
-                    ),
-                    detour_started_decision=(
-                        self.human_prior_navigation_detour_started_decision
-                    ),
-                    grace_decisions=(
-                        self.config.human_prior_navigation_recovery_grace
-                    ),
-                    returning_branches_detected=len(
-                        navigation_detour_returns
-                    ),
-                    returning_branches_filtered=(
-                        0
-                        if navigation_detour_fail_open
-                        else len(navigation_detour_returns)
-                    ),
-                    alternatives_remaining=len(selection_verified),
-                    fail_open=navigation_detour_fail_open,
-                )
-            (
-                selection_verified,
-                exhausted_navigation_detour_branches,
-            ) = self._filter_human_prior_exhausted_navigation_detours(
-                selection_verified,
-                branch_goal_analyses,
-                branch_goal_signatures,
-                branch_goal_world_contexts,
-            )
-            if exhausted_navigation_detour_branches:
-                self._emit(
-                    "human_prior_exhausted_navigation_detours_filtered",
-                    decision=self.decision_index + 1,
-                    enabled=True,
-                    policy_authority=True,
-                    policy_effect="bounded_route_exhaustion",
-                    hazard_evidence=False,
-                    blocked_branches=tuple(
-                        {
-                            "source_graph_signature": (
-                                branch_goal_signatures[id(item[2])][0]
-                            ),
-                            "action": item[1].path[0],
-                            "action_frames": item[1].durations[0],
-                            "target_graph_signature": (
-                                branch_goal_signatures[id(item[2])][1]
-                            ),
-                        }
-                        for item in exhausted_navigation_detour_branches
-                    ),
-                    branches_filtered=len(
-                        exhausted_navigation_detour_branches
-                    ),
-                    alternatives_remaining=len(selection_verified),
-                    exhausted_detour_edges=len(
-                        self.human_prior_exhausted_navigation_detours
-                    ),
-                )
             milestone_goal_branches = [
                 item
                 for item in selection_verified
