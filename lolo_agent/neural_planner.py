@@ -10061,9 +10061,6 @@ class VerifiedNeuralAgent:
                     for node in ranked_candidates:
                         if (
                             node.analysis.milestone_reward <= 0.0
-                            or not self._human_prior_milestone_outcome_known(
-                                node.analysis
-                            )
                             or node.analysis.life_counter_changed
                             or node.analysis.dark_transition_started
                         ):
