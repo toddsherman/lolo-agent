@@ -7731,6 +7731,36 @@ class EnsemblePlannerTests(unittest.TestCase):
             5,
         )
 
+    def test_directional_interaction_tracks_only_contact_neighborhood(
+        self,
+    ) -> None:
+        cells = (
+            (4, 4),
+            (5, 4),
+            (3, 4),
+            (4, 5),
+            (7, 7),
+        )
+
+        tracked = VerifiedNeuralAgent._human_prior_directional_interaction_effect_cells(
+            Action.RIGHT,
+            (4, 4),
+            cells,
+        )
+
+        self.assertEqual(
+            tracked,
+            {(4, 4), (5, 4), (3, 4), (4, 5)},
+        )
+        self.assertEqual(
+            VerifiedNeuralAgent._human_prior_directional_interaction_effect_cells(
+                Action.A,
+                (4, 4),
+                cells,
+            ),
+            set(),
+        )
+
     def test_entity_probe_ranking_prefers_observed_neutral_persistence(
         self,
     ) -> None:

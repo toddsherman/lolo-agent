@@ -2779,6 +2779,37 @@ class VerifiedNeuralAgent:
             > 2
         }
 
+    @staticmethod
+    def _human_prior_directional_interaction_effect_cells(
+        action: Action,
+        interaction_cell: Optional[Tuple[int, int]],
+        effect_cells: Iterable[Tuple[int, int]],
+    ) -> set[Tuple[int, int]]:
+        """Retain anonymous near-contact changes that may encode a push.
+
+        Exact search already masks the detected source and target player
+        cells before producing ``effect_cells``.  A displaced object's new
+        cell is normally one cell beyond the contacted patch, so retaining
+        only that local neighborhood represents the resulting world
+        configuration without treating distant animation as part of it.
+        This is deliberately an observational state key, not a claim that
+        any particular appearance is pushable.
+        """
+
+        if (
+            action
+            not in (Action.UP, Action.DOWN, Action.LEFT, Action.RIGHT)
+            or interaction_cell is None
+        ):
+            return set()
+        return {
+            cell
+            for cell in effect_cells
+            if abs(cell[0] - interaction_cell[0])
+            + abs(cell[1] - interaction_cell[1])
+            <= 1
+        }
+
     def _human_prior_cell_patch_l1(
         self,
         left: Frame,
@@ -9404,6 +9435,13 @@ class VerifiedNeuralAgent:
                                 for cell in direct_effect_cells
                             )
                         )
+                        directional_interaction_effect_cells = (
+                            self._human_prior_directional_interaction_effect_cells(
+                                action,
+                                direct_interaction_cell,
+                                direct_effect_cells,
+                            )
+                        )
                         parent_effect_target_aligned = bool(
                             parent.entity_effect_target_distance == 0
                             or (
@@ -9445,6 +9483,7 @@ class VerifiedNeuralAgent:
                                 (
                                     action in (Action.A, Action.B)
                                 )
+                                or directional_interaction_effect_cells
                                 or (
                                     entity_effect_persisted_in_search
                                     and effective_effect_target_distance
@@ -9453,12 +9492,24 @@ class VerifiedNeuralAgent:
                                 )
                             )
                         )
+                        tracked_current_effect_cells = (
+                            directional_interaction_effect_cells
+                            if directional_interaction_effect_cells
+                            and action
+                            in (
+                                Action.UP,
+                                Action.DOWN,
+                                Action.LEFT,
+                                Action.RIGHT,
+                            )
+                            else direct_effect_cells
+                        )
                         tracked_world_effect_cells = set(
                             parent.tracked_world_effect_cells
                         )
                         if track_current_effect:
                             tracked_world_effect_cells.update(
-                                direct_effect_cells
+                                tracked_current_effect_cells
                             )
                         tracked_world_effect_cells_tuple = tuple(
                             sorted(tracked_world_effect_cells)
@@ -10013,6 +10064,9 @@ class VerifiedNeuralAgent:
                             ),
                             human_prior_option_nonlocal_world_effect_cell_count=(
                                 len(option_nonlocal_world_effect_cells)
+                            ),
+                            human_prior_option_directional_interaction_effect_cells=(
+                                sorted(directional_interaction_effect_cells)
                             ),
                             human_prior_option_entity_interaction_signature=(
                                 node.entity_interaction_signature or None
