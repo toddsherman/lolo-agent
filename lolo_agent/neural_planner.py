@@ -264,6 +264,8 @@ class _HumanPriorOptionNode:
     entity_interaction_neighborhood_signature: str = ""
     entity_behavior_samples: int = 0
     entity_behavior_known: bool = False
+    entity_behavior_exact_context_samples: int = 0
+    entity_behavior_exact_context_known: bool = False
     entity_behavior_novelty: float = 0.0
     entity_spatial_rarity: float = 0.0
     entity_appearance_transferability: float = 0.0
@@ -1901,6 +1903,73 @@ class VerifiedNeuralAgent:
         )
         return stable, changed
 
+    def _calibrate_anonymous_phase_context(
+        self,
+        root: object,
+        source_frame: Frame,
+        duration: int,
+    ) -> None:
+        """Establish a decision-time phase mask from neutral branches."""
+
+        if self.unlabeled_entity_memory is None or duration <= 0:
+            return
+        self.env.load_state(root)
+        previous = source_frame
+        stable = 0
+        changed = 0
+        for _ in range(2):
+            current = self.env.step(Action.NOOP, duration)
+            stable, changed = self._update_anonymous_phase_stability(
+                previous, current
+            )
+            previous = current
+        self.env.load_state(root)
+        self._emit(
+            "anonymous_entity_phase_context_calibrated",
+            decision=self.decision_index + 1,
+            neutral_steps=2,
+            neutral_frames=2 * duration,
+            phase_stable_cells=stable,
+            phase_cells_with_change_evidence=changed,
+            agent_visible=True,
+            **self._frame_fields(source_frame),
+        )
+
+    @staticmethod
+    def _anonymous_global_phase_evidence(
+        changed_cells: Iterable[Tuple[int, int]],
+    ) -> Tuple[Tuple[Tuple[int, int], ...], int, bool]:
+        """Require distributed evidence before declaring a room phase shift.
+
+        One changing stable cell is commonly an animation residue, a resource
+        indicator, or the wake left by ordinary locomotion. A reusable phase
+        transition should alter at least three coarse cells in at least two
+        disconnected regions. This remains label-free while separating a
+        room-wide mode change from a local manipulation plus its animation.
+        """
+
+        cells = tuple(
+            sorted({(int(column), int(row)) for column, row in changed_cells})
+        )
+        remaining = set(cells)
+        components = 0
+        while remaining:
+            components += 1
+            frontier = [remaining.pop()]
+            while frontier:
+                column, row = frontier.pop()
+                for neighbor in (
+                    (column - 1, row),
+                    (column + 1, row),
+                    (column, row - 1),
+                    (column, row + 1),
+                ):
+                    if neighbor in remaining:
+                        remaining.remove(neighbor)
+                        frontier.append(neighbor)
+        qualifies = bool(len(cells) >= 3 and components >= 2)
+        return cells, components, qualifies
+
     def _anonymous_entity_frame_features(
         self,
         frame: Frame,
@@ -2055,8 +2124,22 @@ class VerifiedNeuralAgent:
             duration,
             context_signature=context_signature,
         )
+        exact_context_samples = model.exact_context_samples(
+            feature,
+            action,
+            duration,
+            context_signature,
+        )
+        exact_context_known = bool(
+            exact_context_samples >= model.minimum_prediction_samples
+        )
         spatial_rarity = 1.0 / math.sqrt(appearance_count)
-        behavior_novelty = prediction.novelty
+        exact_context_novelty = math.exp(
+            -exact_context_samples / model.minimum_prediction_samples
+        )
+        behavior_novelty = max(
+            prediction.novelty, exact_context_novelty
+        )
         # An appearance already assigned to a persistent anonymous type can
         # transfer evidence from earlier encounters. A genuinely unfamiliar
         # singleton remains explorable, but it should not displace every
@@ -2102,6 +2185,8 @@ class VerifiedNeuralAgent:
             "phase_signature": context.get("phase_signature"),
             "behavior_samples": prediction.samples,
             "behavior_known": prediction.known,
+            "behavior_exact_context_samples": exact_context_samples,
+            "behavior_exact_context_known": exact_context_known,
             "behavior_confidence": prediction.confidence,
             "behavior_entropy": prediction.entropy,
             "behavior_novelty": behavior_novelty,
@@ -3704,23 +3789,24 @@ class VerifiedNeuralAgent:
             phase_controlled_cells,
             control_features,
         )
-        global_phase_changed_cells = tuple(
-            sorted(
-                cell
-                for cell in source_features
-                if self.anonymous_phase_stable_observations[cell] >= 2
-                and self.anonymous_phase_stable_observations[cell]
-                > 2 * self.anonymous_phase_changed_observations[cell]
-                and cell not in phase_controlled_cells
-                and abs(cell[0] - anchor[0])
-                + abs(cell[1] - anchor[1])
-                > 1
-                and memory.feature_distance(
-                    factual_features[cell], control_features[cell]
-                ) > memory.match_threshold
-            )
+        (
+            global_phase_changed_cells,
+            global_phase_changed_components,
+            global_phase_change,
+        ) = self._anonymous_global_phase_evidence(
+            cell
+            for cell in source_features
+            if self.anonymous_phase_stable_observations[cell] >= 2
+            and self.anonymous_phase_stable_observations[cell]
+            > 2 * self.anonymous_phase_changed_observations[cell]
+            and cell not in phase_controlled_cells
+            and abs(cell[0] - anchor[0])
+            + abs(cell[1] - anchor[1])
+            > 1
+            and memory.feature_distance(
+                factual_features[cell], control_features[cell]
+            ) > memory.match_threshold
         )
-        global_phase_change = bool(global_phase_changed_cells)
         outcome_descriptor = model.effect_descriptor(
             source_feature,
             factual_feature,
@@ -3881,6 +3967,11 @@ class VerifiedNeuralAgent:
             "observed_global_phase_changed_cells": (
                 global_phase_changed_cells
             ),
+            "observed_global_phase_changed_components": (
+                global_phase_changed_components
+            ),
+            "observed_global_phase_minimum_cells": 3,
+            "observed_global_phase_minimum_components": 2,
             "observed_manipulation_effect": (
                 outcome_descriptor.manipulation_effect
             ),
@@ -6035,6 +6126,9 @@ class VerifiedNeuralAgent:
             or self.config.human_prior_option_effect_probe_limit <= 0
         ):
             return 0
+        self._calibrate_anonymous_phase_context(
+            root, source_frame, duration
+        )
         feature_index = self._human_prior_option_entity_feature_index(
             source_frame
         )
@@ -6061,7 +6155,9 @@ class VerifiedNeuralAgent:
                 continue
             rare = float(curiosity.get("spatial_rarity", 0.0)) >= 0.5
             unresolved = bool(
-                not curiosity.get("behavior_known", False)
+                not curiosity.get(
+                    "behavior_exact_context_known", False
+                )
                 or float(curiosity.get("manipulation_probability", 0.0))
                 > 0.0
                 or float(curiosity.get("inert_confidence", 0.0)) < 0.5
@@ -6331,7 +6427,7 @@ class VerifiedNeuralAgent:
                 (action.value, int(edge_duration))
                 for action, edge_duration in action_edges
             ),
-            "factored-entity-phase-and-adjacent-probes-v1",
+            "factored-entity-phase-and-adjacent-probes-v3",
         )
         search_budget_sha256 = hashlib.sha256(
             repr(search_budget).encode("utf-8")
@@ -7110,6 +7206,20 @@ class VerifiedNeuralAgent:
                                     "behavior_known", False
                                 )
                             ),
+                            entity_behavior_exact_context_samples=int(
+                                interaction_source.entity_behavior_exact_context_samples
+                                if interaction_source is not None
+                                else entity_curiosity.get(
+                                    "behavior_exact_context_samples", 0
+                                )
+                            ),
+                            entity_behavior_exact_context_known=bool(
+                                interaction_source.entity_behavior_exact_context_known
+                                if interaction_source is not None
+                                else entity_curiosity.get(
+                                    "behavior_exact_context_known", False
+                                )
+                            ),
                             entity_behavior_novelty=float(
                                 interaction_source.entity_behavior_novelty
                                 if interaction_source is not None
@@ -7535,6 +7645,12 @@ class VerifiedNeuralAgent:
                             anonymous_entity_behavior_known=(
                                 node.entity_behavior_known
                             ),
+                            anonymous_entity_behavior_exact_context_samples=(
+                                node.entity_behavior_exact_context_samples
+                            ),
+                            anonymous_entity_behavior_exact_context_known=(
+                                node.entity_behavior_exact_context_known
+                            ),
                             anonymous_entity_behavior_novelty=(
                                 node.entity_behavior_novelty
                             ),
@@ -7738,6 +7854,7 @@ class VerifiedNeuralAgent:
                             if node.entity_effect_target_distance is not None
                             else math.inf
                         ),
+                        not node.entity_behavior_exact_context_known,
                         not node.entity_behavior_known,
                         node.entity_interaction_type_id is not None,
                         node.entity_behavior_novelty,
@@ -7756,6 +7873,7 @@ class VerifiedNeuralAgent:
                             if previous.entity_effect_target_distance is not None
                             else math.inf
                         ),
+                        not previous.entity_behavior_exact_context_known,
                         not previous.entity_behavior_known,
                         previous.entity_interaction_type_id is not None,
                         previous.entity_behavior_novelty,
@@ -8085,6 +8203,7 @@ class VerifiedNeuralAgent:
                             if node.entity_effect_target_distance is not None
                             else math.inf
                         ),
+                        not node.entity_behavior_exact_context_known,
                         not node.entity_behavior_known,
                         node.entity_interaction_type_id is not None,
                         node.entity_behavior_novelty,
@@ -8104,6 +8223,7 @@ class VerifiedNeuralAgent:
                             if previous.entity_effect_target_distance is not None
                             else math.inf
                         ),
+                        not previous.entity_behavior_exact_context_known,
                         not previous.entity_behavior_known,
                         previous.entity_interaction_type_id is not None,
                         previous.entity_behavior_novelty,
@@ -8229,6 +8349,12 @@ class VerifiedNeuralAgent:
                             ),
                             behavior_known_before=(
                                 node.entity_behavior_known
+                            ),
+                            behavior_exact_context_samples_before=(
+                                node.entity_behavior_exact_context_samples
+                            ),
+                            behavior_exact_context_known_before=(
+                                node.entity_behavior_exact_context_known
                             ),
                             behavior_novelty=node.entity_behavior_novelty,
                             spatial_rarity=node.entity_spatial_rarity,
@@ -13495,13 +13621,14 @@ class VerifiedNeuralAgent:
             getattr(node, "entity_effect_persistence_steps", 0),
             getattr(node, "entity_manipulation_probability", 0.0),
             getattr(node, "entity_effect_target_distance", None) is not None,
-            getattr(node, "entity_interaction_action", None)
-            in (Action.A, Action.B),
             -(
                 getattr(node, "entity_effect_target_distance", None)
                 if getattr(node, "entity_effect_target_distance", None)
                 is not None
                 else math.inf
+            ),
+            not getattr(
+                node, "entity_behavior_exact_context_known", False
             ),
             not node.entity_behavior_known,
             node.entity_interaction_type_id is not None,
@@ -13509,6 +13636,8 @@ class VerifiedNeuralAgent:
             node.entity_spatial_rarity,
             node.entity_curiosity,
             node.score,
+            getattr(node, "entity_interaction_action", None)
+            in (Action.A, Action.B),
             -node.depth,
         )
 
@@ -13517,27 +13646,50 @@ class VerifiedNeuralAgent:
         cls,
         nodes: Sequence[_HumanPriorOptionNode],
     ) -> Tuple[Tuple[_HumanPriorOptionNode, ...], int]:
-        """Put one uncertain interaction per spatial locus first."""
+        """Cover appearances first, then action/locus interactions."""
 
         ranked = sorted(
             nodes,
             key=cls._human_prior_entity_probe_rank_key,
             reverse=True,
         )
+        appearance_representatives: Dict[
+            tuple, _HumanPriorOptionNode
+        ] = {}
         group_representatives: Dict[tuple, _HumanPriorOptionNode] = {}
         for node in ranked:
+            appearance_group = (
+                node.entity_interaction_type_id,
+                node.entity_interaction_appearance_fingerprint,
+            )
+            appearance_representatives.setdefault(
+                appearance_group, node
+            )
             interaction_group = (
-                ("cell", node.entity_interaction_cell)
+                (
+                    "cell-action",
+                    node.entity_interaction_cell,
+                    getattr(node, "entity_interaction_action", None),
+                    node.entity_interaction_type_id,
+                    node.entity_interaction_appearance_fingerprint,
+                )
                 if node.entity_interaction_cell is not None
                 else (
                     "appearance",
                     node.entity_interaction_type_id,
                     node.entity_interaction_appearance_fingerprint,
                     node.entity_interaction_context_signature,
+                    getattr(node, "entity_interaction_action", None),
                 )
             )
             group_representatives.setdefault(interaction_group, node)
-        diverse = list(group_representatives.values())
+        diverse = list(appearance_representatives.values())
+        diverse_ids = {id(node) for node in diverse}
+        diverse.extend(
+            node
+            for node in group_representatives.values()
+            if id(node) not in diverse_ids
+        )
         diverse_ids = {id(node) for node in diverse}
         diverse.extend(
             node for node in ranked if id(node) not in diverse_ids

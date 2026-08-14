@@ -5749,6 +5749,10 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertTrue(behavior["evidence_accepted"])
         self.assertTrue(behavior["observed_appearance_transition"])
         self.assertTrue(behavior["observed_manipulation_effect"])
+        self.assertNotEqual(completed["phase_signature"], "unresolved")
+        self.assertEqual(
+            behavior["phase_signature"], completed["phase_signature"]
+        )
         self.assertTrue(
             any(
                 event["event"]
@@ -5874,11 +5878,42 @@ class EnsemblePlannerTests(unittest.TestCase):
             changed_second_context["phase_signature"],
         )
 
+    def test_global_phase_evidence_rejects_local_or_single_cell_change(
+        self,
+    ) -> None:
+        single, single_components, single_qualifies = (
+            VerifiedNeuralAgent._anonymous_global_phase_evidence(((7, 6),))
+        )
+        local, local_components, local_qualifies = (
+            VerifiedNeuralAgent._anonymous_global_phase_evidence(
+                ((7, 6), (8, 6), (8, 7))
+            )
+        )
+
+        self.assertEqual(single, ((7, 6),))
+        self.assertEqual(single_components, 1)
+        self.assertFalse(single_qualifies)
+        self.assertEqual(local_components, 1)
+        self.assertFalse(local_qualifies)
+
+    def test_global_phase_evidence_requires_distributed_change(self) -> None:
+        cells, components, qualifies = (
+            VerifiedNeuralAgent._anonymous_global_phase_evidence(
+                ((2, 3), (3, 3), (11, 8), (2, 3))
+            )
+        )
+
+        self.assertEqual(cells, ((2, 3), (3, 3), (11, 8)))
+        self.assertEqual(components, 2)
+        self.assertTrue(qualifies)
+
     def test_entity_curiosity_probe_ranking_diversifies_spatial_loci(
         self,
     ) -> None:
         def candidate(
-            cell: tuple[int, int], novelty: float, score: float
+            cell: tuple[int, int], novelty: float, score: float,
+            action: Action = Action.UP,
+            appearance: str = "appearance",
         ) -> SimpleNamespace:
             return SimpleNamespace(
                 entity_effect_persisted_in_search=False,
@@ -5891,7 +5926,8 @@ class EnsemblePlannerTests(unittest.TestCase):
                 score=score,
                 depth=2,
                 entity_interaction_cell=cell,
-                entity_interaction_appearance_fingerprint="appearance",
+                entity_interaction_action=action,
+                entity_interaction_appearance_fingerprint=appearance,
                 entity_interaction_context_signature="context",
             )
 
@@ -5917,6 +5953,70 @@ class EnsemblePlannerTests(unittest.TestCase):
             [(1, 1), (2, 1), (3, 1)],
         )
         self.assertIs(ranked[3], same_cell_second)
+
+        same_cell_button = candidate(
+            (1, 1), 0.6, 0.5, action=Action.A
+        )
+        ranked, groups = (
+            VerifiedNeuralAgent._human_prior_diverse_entity_probe_candidates(
+                (same_cell_best, same_cell_button)
+            )
+        )
+        self.assertEqual(groups, 2)
+        self.assertEqual(
+            {id(node) for node in ranked},
+            {id(same_cell_best), id(same_cell_button)},
+        )
+
+        same_cell_other_appearance = candidate(
+            (1, 1),
+            0.5,
+            0.25,
+            action=Action.UP,
+            appearance="other-appearance",
+        )
+        ranked, groups = (
+            VerifiedNeuralAgent._human_prior_diverse_entity_probe_candidates(
+                (same_cell_best, same_cell_other_appearance)
+            )
+        )
+        self.assertEqual(groups, 2)
+        self.assertEqual(
+            {id(node) for node in ranked},
+            {id(same_cell_best), id(same_cell_other_appearance)},
+        )
+
+        exact_known = candidate((4, 1), 1.0, 10.0)
+        exact_known.entity_behavior_known = True
+        exact_known.entity_behavior_exact_context_known = True
+        unseen_exact = candidate((4, 1), 0.2, 1.0)
+        unseen_exact.entity_behavior_known = True
+        unseen_exact.entity_behavior_exact_context_known = False
+        ranked, groups = (
+            VerifiedNeuralAgent._human_prior_diverse_entity_probe_candidates(
+                (exact_known, unseen_exact)
+            )
+        )
+        self.assertEqual(groups, 1)
+        self.assertIs(ranked[0], unseen_exact)
+
+        first_appearance = candidate((5, 1), 1.0, 5.0)
+        repeated_appearance = candidate((6, 1), 0.9, 4.0)
+        second_appearance = candidate(
+            (7, 1), 0.2, 1.0, appearance="second-appearance"
+        )
+        ranked, _groups = (
+            VerifiedNeuralAgent._human_prior_diverse_entity_probe_candidates(
+                (
+                    first_appearance,
+                    repeated_appearance,
+                    second_appearance,
+                )
+            )
+        )
+        self.assertIs(ranked[0], first_appearance)
+        self.assertIs(ranked[1], second_appearance)
+        self.assertIs(ranked[2], repeated_appearance)
 
     def test_entity_probe_ranking_prefers_observed_neutral_persistence(
         self,

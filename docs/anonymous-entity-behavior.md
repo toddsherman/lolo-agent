@@ -116,6 +116,13 @@ textures do not routinely displace recurring entities. The weight is additive.
 The reserve keeps a bounded number of distinct under-tested tuples in both the
 exact-search beam and the expensive matched-control probe set.
 
+Novelty is measured for the exact phase/relation/neighborhood context first.
+A known cross-context fallback no longer closes an unseen local arrangement.
+Before ranking, two neutral branches establish the stable-cell phase mask, so
+the context used to select a probe is the same context in which its outcome is
+stored. Probe diversity covers one representative of each learned appearance
+before filling the remaining budget with distinct action/locus groups.
+
 A reserved probe replaces the candidate's last action with an equal-duration
 `NOOP`. This records a reusable outcome even when the factual action caused no
 visible change, which is necessary to learn that a recurring appearance is
@@ -133,7 +140,7 @@ This prevents ordinary animation from teaching a false manipulation rule.
 
 ## Learned outcome semantics
 
-Schema 7 checkpoints retain an auditable descriptor beside each opaque outcome
+Schema 8 checkpoints retain an auditable descriptor beside each opaque outcome
 hash. The descriptor contains only relations measured from pixels: anonymous
 patch appearance in the factual and equal-duration control endpoints, relative
 changed cells, controlled-patch displacement, anonymous-entity displacement,
@@ -142,12 +149,18 @@ distinguish a measured local change, push-like translation, transform-like
 appearance transition, or distant resource/phase change from a factual/control
 match. It still receives no object names, mechanics, or good/bad labels.
 
+A global phase label requires at least three changed stable coarse cells in at
+least two disconnected regions. Single-cell animation residue, ordinary
+locomotion wake, and a local transformation plus one visual counter remain
+auditable candidates but do not become phase-transition evidence.
+
 Appearance prototypes with different animation pixels but the same complete
 measured semantic profile form a predictive family. A sparse rule may borrow
 support from that family only when those profiles agree; visual similarity
-alone cannot merge contradictory behavior. Schema 3 through 6 checkpoints
-remain loadable, and default-valued schema-7 fields preserve the content hashes
-of legacy outcome descriptors.
+alone cannot merge contradictory behavior. Schema 3 through 7 checkpoints
+remain loadable. Loading schema 7 removes its unsupported single-cell global
+phase flag while preserving every other descriptor field and empirical count;
+the remapped outcome receives the corresponding content hash.
 
 The same descriptor payload preserves passive recurrence offsets. Prediction
 interprets `(0, 0)` as passive stationarity and a nonzero offset or appearance

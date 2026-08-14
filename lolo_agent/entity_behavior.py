@@ -4,7 +4,7 @@ import hashlib
 import json
 import math
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import (
     Any,
@@ -325,7 +325,7 @@ class AnonymousEntityBehaviorModel:
     and contradictory evidence reduces confidence instead of being discarded.
     """
 
-    SCHEMA_VERSION = 7
+    SCHEMA_VERSION = 8
     _UNCONDITIONAL_CONTEXT = "*"
 
     def __init__(
@@ -1078,6 +1078,30 @@ class AnonymousEntityBehaviorModel:
             predictive_family_pooled=family_pooled,
         )
 
+    def exact_context_samples(
+        self,
+        feature: Sequence[int],
+        action: Action,
+        duration: int,
+        context_signature: str,
+        autonomous: bool = False,
+    ) -> int:
+        """Return evidence for this exact context, excluding fallbacks."""
+
+        type_id, _distance = self.classify(feature)
+        if type_id is None or not context_signature:
+            return 0
+        rule = self._rules.get(
+            self._rule_key(
+                type_id,
+                action,
+                duration,
+                autonomous,
+                context_signature,
+            )
+        )
+        return 0 if rule is None else rule.samples
+
     def outcome_probability(
         self,
         feature: Sequence[int],
@@ -1336,7 +1360,7 @@ class AnonymousEntityBehaviorModel:
     @classmethod
     def from_dict(cls, payload: Dict[str, Any]) -> "AnonymousEntityBehaviorModel":
         schema_version = int(payload.get("schema_version", 0))
-        if schema_version not in (3, 4, 5, 6, cls.SCHEMA_VERSION):
+        if schema_version not in (3, 4, 5, 6, 7, cls.SCHEMA_VERSION):
             raise ValueError("unsupported anonymous behavior schema")
         model = cls(
             appearance_match_threshold=float(
@@ -1357,14 +1381,26 @@ class AnonymousEntityBehaviorModel:
                 raise ValueError("anonymous type feature dimensions differ")
             model._type_means.append(feature)
             model._type_counts.append(int(row["observations"]))
+        outcome_signature_remap: Dict[str, str] = {}
         for signature, descriptor_payload in dict(
             payload.get("outcome_descriptors") or {}
         ).items():
             descriptor = BehaviorOutcomeDescriptor.from_dict(
                 dict(descriptor_payload)
             )
+            stored_signature = str(signature)
+            # Schema 7 treated any one distant stable-cell difference as a
+            # room-wide phase change. Schema 8 requires distributed evidence,
+            # which cannot be reconstructed from the aggregate checkpoint.
+            # Preserve every other measured semantic and empirical count, but
+            # remove that unsupported flag and remap its content hash.
+            if schema_version == 7 and descriptor.global_phase_change:
+                descriptor = replace(
+                    descriptor, global_phase_change=False
+                )
+            outcome_signature_remap[stored_signature] = descriptor.signature
             model.register_outcome_descriptor(
-                str(signature), descriptor
+                descriptor.signature, descriptor
             )
         for row in payload.get("rules") or ():
             type_id = int(row["type_id"])
@@ -1378,12 +1414,14 @@ class AnonymousEntityBehaviorModel:
                 bool(row.get("autonomous", False)),
                 str(row["context"]),
             )
-            outcomes = Counter(
-                {
-                    str(outcome): int(count)
-                    for outcome, count in dict(row["outcomes"]).items()
-                }
-            )
+            outcomes: CounterType[str] = Counter()
+            for outcome, count in dict(row["outcomes"]).items():
+                stored_outcome = str(outcome)
+                outcomes[
+                    outcome_signature_remap.get(
+                        stored_outcome, stored_outcome
+                    )
+                ] += int(count)
             samples = int(row["samples"])
             if samples != sum(outcomes.values()):
                 raise ValueError("anonymous behavior outcome counts do not sum")

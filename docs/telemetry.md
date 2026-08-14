@@ -923,7 +923,7 @@ predicted and observed outcome hashes, evidence count, probability, entropy,
 confidence, surprise, hazard probability, relative effect cells, and the
 deduplicated evidence ID. It never contains a supplied sprite or mechanic name.
 
-Schema 7 factors the context into three pixel-derived dimensions:
+Schema 8 factors the context into three pixel-derived dimensions:
 `relation_signature` describes the controlled patch relative to the anonymous
 anchor, `neighborhood_signature` describes the local 3x3 appearance layout,
 and `phase_signature` coarsely summarizes the remaining screen after excluding
@@ -936,6 +936,10 @@ once at least two such observations exist. Ordinary animation is therefore
 excluded, while a formerly stable visual counter or room entity changing state
 can establish a new phase. Passive-scan telemetry records
 `phase_stable_cells` and `phase_cells_with_change_evidence`.
+`anonymous_entity_phase_context_calibrated` records the two neutral branches
+used before interaction ranking. Curiosity events distinguish fallback support
+from the exact context with `behavior_exact_context_samples_before` and
+`behavior_exact_context_known_before`.
 
 Controlled outcome descriptors additionally record
 `entity_displacement`, `controlled_appearance_transition`, and
@@ -943,10 +947,16 @@ Controlled outcome descriptors additionally record
 planning: the first captures push-like translation independently of player
 motion, the second captures transform-like appearance changes relative to the
 matched neutral control, and the third captures simultaneous distant visual
-change. Types with distinct appearance prototypes but identical measured
-semantic profiles form a `predictive_family`; sparse predictions may pool
+change. The third requires at least three changed stable cells in two
+disconnected regions; the behavior row preserves the candidate cells,
+component count, and thresholds even when that distributed-evidence gate
+rejects the label. Types with distinct appearance prototypes but identical
+measured semantic profiles form a `predictive_family`; sparse predictions may pool
 support within that family, allowing animation variants to share behavior
 without merging merely because they look similar.
+Schema-7 checkpoints migrate by clearing the older single-cell phase flag and
+remapping the affected outcome hash; all other semantic fields and empirical
+counts are preserved.
 
 Before a multi-step option search expands its beam,
 `human_prior_adjacent_entity_probe_started` identifies rare unresolved patches
@@ -1004,7 +1014,9 @@ Terminal rows from the ordinary passive scanner carry
 `anonymous_entity_behavior_terminal_evidence_withheld`.
 Manipulation summaries additionally count displacement observations,
 appearance transitions, global phase changes, distinct phase contexts, and
-predictive-family pooling.
+predictive-family pooling. They also count neutral phase calibrations, exact
+context-novel probes, all global-phase candidates, and candidates rejected as
+local rather than distributed change.
 
 ## Episodic resume
 

@@ -552,6 +552,10 @@ class RunLoggingTests(unittest.TestCase):
                 summary,
             )
             self.assertIn(
+                "human_prior_option_entity_curiosity_exact_context_novel_probes",
+                summary,
+            )
+            self.assertIn(
                 "human_prior_option_entity_curiosity_transferable_probes",
                 summary,
             )
@@ -717,6 +721,17 @@ class RunLoggingTests(unittest.TestCase):
             )
             self.assertIn(
                 "anonymous_entity_behavior_global_phase_changes", summary
+            )
+            self.assertIn(
+                "anonymous_entity_behavior_global_phase_candidates",
+                summary,
+            )
+            self.assertIn(
+                "anonymous_entity_behavior_local_phase_candidates_rejected",
+                summary,
+            )
+            self.assertIn(
+                "anonymous_entity_phase_context_calibrations", summary
             )
             self.assertIn(
                 "anonymous_entity_behavior_manipulation_observations",

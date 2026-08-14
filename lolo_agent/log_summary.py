@@ -309,6 +309,9 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
                     "observed_appearance_transition",
                     "observed_global_phase_change",
                     "observed_global_phase_changed_cells",
+                    "observed_global_phase_changed_components",
+                    "observed_global_phase_minimum_cells",
+                    "observed_global_phase_minimum_components",
                     "observed_manipulation_effect",
                     "observed_hazard",
                     "surprise",
@@ -1176,6 +1179,9 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "observed_appearance_transition",
         "observed_global_phase_change",
         "observed_global_phase_changed_cells",
+        "observed_global_phase_changed_components",
+        "observed_global_phase_minimum_cells",
+        "observed_global_phase_minimum_components",
         "observed_manipulation_effect",
         "observed_hazard",
         "surprise",
@@ -2367,6 +2373,12 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             and bool(event.get("behavior_known_before"))
             for event in events
         ),
+        "human_prior_option_entity_curiosity_exact_context_novel_probes": sum(
+            event["event"]
+            == "human_prior_option_entity_curiosity_probe"
+            and event.get("behavior_exact_context_known_before") is False
+            for event in events
+        ),
         "human_prior_option_entity_curiosity_transferable_probes": sum(
             event["event"]
             == "human_prior_option_entity_curiosity_probe"
@@ -2458,6 +2470,18 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         "anonymous_entity_behavior_global_phase_changes": sum(
             bool(row.get("observed_global_phase_change"))
             for row in anonymous_behavior_rows
+        ),
+        "anonymous_entity_behavior_global_phase_candidates": sum(
+            bool(row.get("observed_global_phase_changed_cells"))
+            for row in anonymous_behavior_rows
+        ),
+        "anonymous_entity_behavior_local_phase_candidates_rejected": sum(
+            bool(row.get("observed_global_phase_changed_cells"))
+            and not bool(row.get("observed_global_phase_change"))
+            for row in anonymous_behavior_rows
+        ),
+        "anonymous_entity_phase_context_calibrations": event_counts.get(
+            "anonymous_entity_phase_context_calibrated", 0
         ),
         "anonymous_entity_behavior_manipulation_observations": sum(
             bool(row.get("observed_manipulation_effect"))

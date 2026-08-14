@@ -245,6 +245,24 @@ class AnonymousEntityBehaviorModelTests(unittest.TestCase):
         self.assertTrue(prediction.known)
         self.assertTrue(prediction.context_matched)
         self.assertEqual(prediction.outcome_signature, "moves-one-cell")
+        self.assertEqual(
+            model.exact_context_samples(
+                appearance,
+                Action.DOWN,
+                16,
+                unseen,
+            ),
+            0,
+        )
+        self.assertEqual(
+            model.exact_context_samples(
+                appearance,
+                Action.DOWN,
+                16,
+                first,
+            ),
+            1,
+        )
 
     def test_contradictory_evidence_reduces_confidence(self) -> None:
         model = AnonymousEntityBehaviorModel(minimum_prediction_samples=1)
@@ -457,6 +475,37 @@ class AnonymousEntityBehaviorModelTests(unittest.TestCase):
         self.assertTrue(first_use.global_phase_change)
         self.assertTrue(first_use.manipulation_effect)
         self.assertNotEqual(first_use.signature, local_only.signature)
+
+    def test_schema_seven_phase_evidence_is_safely_remapped(self) -> None:
+        model = AnonymousEntityBehaviorModel(minimum_prediction_samples=1)
+        appearance = (3, 1, 4, 1)
+        legacy = model.effect_descriptor(
+            appearance,
+            appearance,
+            appearance,
+            global_phase_change=True,
+        )
+        model.observe(
+            appearance,
+            Action.A,
+            4,
+            legacy.signature,
+            outcome_descriptor=legacy,
+            evidence_id="legacy-single-cell-phase",
+        )
+        payload = model.to_dict()
+        payload["schema_version"] = 7
+
+        restored = AnonymousEntityBehaviorModel.from_dict(payload)
+        prediction = restored.predict(appearance, Action.A, 4)
+
+        self.assertEqual(restored.to_dict()["schema_version"], 8)
+        self.assertEqual(prediction.samples, 1)
+        self.assertIsNotNone(prediction.outcome_descriptor)
+        self.assertFalse(prediction.outcome_descriptor.global_phase_change)
+        self.assertEqual(prediction.global_phase_change_probability, 0.0)
+        self.assertTrue(prediction.outcome_descriptor.intervention_inert)
+        self.assertNotEqual(prediction.outcome_signature, legacy.signature)
 
     def test_passive_stationarity_is_not_an_intervention_effect(self) -> None:
         model = AnonymousEntityBehaviorModel(minimum_prediction_samples=1)
