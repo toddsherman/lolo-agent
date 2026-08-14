@@ -2315,6 +2315,36 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             )
             for event in events
         ),
+        "human_prior_proactive_entity_probe_cycles": event_counts.get(
+            "human_prior_proactive_entity_probe_completed", 0
+        ),
+        "human_prior_proactive_entity_probe_candidates": sum(
+            int(event.get("candidates", 0))
+            for event in events
+            if event["event"]
+            == "human_prior_proactive_entity_probe_completed"
+        ),
+        "human_prior_proactive_entity_effects_confirmed": sum(
+            int(event.get("confirmed_entity_effects", 0))
+            for event in events
+            if event["event"]
+            == "human_prior_proactive_entity_probe_completed"
+        ),
+        "human_prior_proactive_entity_unique_interactions": len(
+            {
+                str(signature)
+                for event in events
+                if event["event"]
+                == "human_prior_proactive_entity_probe_completed"
+                for signature in event.get("attempted_signatures", ())
+            }
+        ),
+        "human_prior_proactive_entity_archive_branches": sum(
+            int(event.get("archive_branches_added", 0))
+            for event in events
+            if event["event"]
+            == "human_prior_proactive_entity_probe_incorporated"
+        ),
         "human_prior_option_entity_persistence_observations": (
             event_counts.get(
                 "human_prior_option_entity_persistence_observed", 0

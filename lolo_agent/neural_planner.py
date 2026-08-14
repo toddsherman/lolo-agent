@@ -7,6 +7,7 @@ from collections import Counter
 from dataclasses import dataclass, field, replace
 from itertools import product
 from typing import (
+    AbstractSet,
     Any,
     Counter as CounterType,
     Dict,
@@ -146,6 +147,7 @@ class NeuralPlanningConfig:
     human_prior_option_entity_curiosity_weight: float = 0.0
     human_prior_option_entity_curiosity_reserve: int = 0
     human_prior_option_entity_inert_penalty_weight: float = 0.0
+    human_prior_proactive_entity_probe_limit: int = 0
     anonymous_entity_behavior_learning: bool = False
     anonymous_entity_passive_horizons: Tuple[int, ...] = ()
     anonymous_entity_causal_horizons: Tuple[int, ...] = ()
@@ -174,6 +176,14 @@ class _LatentNode:
     latents: Tensor
     score: float
     uncertainty: float
+
+
+@dataclass(frozen=True)
+class _AdjacentEntityProbeResult:
+    candidates: int = 0
+    confirmed_entity_effects: int = 0
+    promoted_entity_frontiers: int = 0
+    attempted_signatures: Tuple[str, ...] = ()
 
 
 @dataclass
@@ -770,6 +780,19 @@ class VerifiedNeuralAgent:
                 "human-prior option entity inert penalty weight must be "
                 "non-negative"
             )
+        if self.config.human_prior_proactive_entity_probe_limit < 0:
+            raise ValueError(
+                "human-prior proactive entity probe limit must be "
+                "non-negative"
+            )
+        if (
+            self.config.human_prior_proactive_entity_probe_limit
+            > self.config.human_prior_option_effect_probe_limit
+        ):
+            raise ValueError(
+                "human-prior proactive entity probe limit cannot exceed "
+                "the option effect probe limit"
+            )
         if (
             self.config.human_prior_option_entity_curiosity_reserve
             > self.config.human_prior_option_search_beam_width
@@ -790,6 +813,14 @@ class VerifiedNeuralAgent:
             raise ValueError(
                 "human-prior option entity policy guidance requires the "
                 "unlabeled entity frontier and a behavior model"
+            )
+        if self.config.human_prior_proactive_entity_probe_limit > 0 and (
+            not self.config.human_prior_option_entity_frontier
+            or self.entity_behavior_model is None
+        ):
+            raise ValueError(
+                "human-prior proactive entity probes require the unlabeled "
+                "entity frontier and a behavior model"
             )
         if (
             self.config.anonymous_entity_behavior_learning
@@ -991,6 +1022,7 @@ class VerifiedNeuralAgent:
         self.anonymous_phase_changed_observations: CounterType[
             Tuple[int, int]
         ] = Counter()
+        self.human_prior_proactive_entity_probe_attempts: set[str] = set()
         self.human_prior_graph_edge_visits: CounterType[
             Tuple[str, Action, int]
         ] = Counter()
@@ -1233,6 +1265,7 @@ class VerifiedNeuralAgent:
     def _reset_unlabeled_entity_memory(self, frame: Frame) -> None:
         self.anonymous_phase_stable_observations = Counter()
         self.anonymous_phase_changed_observations = Counter()
+        self.human_prior_proactive_entity_probe_attempts = set()
         if not self.config.human_prior_option_entity_frontier:
             self.unlabeled_entity_memory = None
             return
@@ -6108,7 +6141,12 @@ class VerifiedNeuralAgent:
         duration: int,
         endpoints: List[_HumanPriorOptionNode],
         saved_states: List[object],
-    ) -> int:
+        *,
+        candidate_limit: Optional[int] = None,
+        excluded_interactions: AbstractSet[str] = frozenset(),
+        promote_frontiers: bool = True,
+        probe_scope: str = "option_search",
+    ) -> _AdjacentEntityProbeResult:
         """Run cheap matched experiments before multi-step navigation search.
 
         Candidate targets are selected only from pixel rarity and learned
@@ -6125,7 +6163,7 @@ class VerifiedNeuralAgent:
             or source_analysis.target_player_slot is None
             or self.config.human_prior_option_effect_probe_limit <= 0
         ):
-            return 0
+            return _AdjacentEntityProbeResult()
         self._calibrate_anonymous_phase_context(
             root, source_frame, duration
         )
@@ -6153,6 +6191,12 @@ class VerifiedNeuralAgent:
             )
             if not curiosity:
                 continue
+            interaction_signature = str(curiosity.get("signature") or "")
+            if (
+                interaction_signature
+                and interaction_signature in excluded_interactions
+            ):
+                continue
             rare = float(curiosity.get("spatial_rarity", 0.0)) >= 0.5
             unresolved = bool(
                 not curiosity.get(
@@ -6166,19 +6210,35 @@ class VerifiedNeuralAgent:
                 candidates.append((action, curiosity))
         candidates.sort(
             key=lambda item: (
+                not bool(
+                    item[1].get("behavior_exact_context_known", False)
+                ),
                 float(item[1].get("manipulation_probability", 0.0)),
-                item[0] in (Action.A, Action.B),
                 float(item[1].get("behavior_novelty", 0.0)),
                 float(item[1].get("spatial_rarity", 0.0)),
+                item[0] in (Action.A, Action.B),
                 item[0].value,
             ),
             reverse=True,
         )
+        effective_limit = (
+            self.config.human_prior_option_effect_probe_limit
+            if candidate_limit is None
+            else min(
+                candidate_limit,
+                self.config.human_prior_option_effect_probe_limit,
+            )
+        )
         candidates = candidates[
-            : self.config.human_prior_option_effect_probe_limit
+            : effective_limit
         ]
         if not candidates:
-            return 0
+            return _AdjacentEntityProbeResult()
+        attempted_signatures = tuple(
+            str(curiosity.get("signature") or "")
+            for _action, curiosity in candidates
+            if curiosity.get("signature")
+        )
         self._emit(
             "human_prior_adjacent_entity_probe_started",
             decision=self.decision_index + 1,
@@ -6188,7 +6248,8 @@ class VerifiedNeuralAgent:
                 curiosity.get("target_cell")
                 for _action, curiosity in candidates
             ),
-            probe_limit=self.config.human_prior_option_effect_probe_limit,
+            probe_limit=effective_limit,
+            probe_scope=probe_scope,
             action_frames=duration,
             agent_visible=True,
             **self._frame_fields(source_frame),
@@ -6272,7 +6333,7 @@ class VerifiedNeuralAgent:
             effect_confirmed = bool(result.get("entity_effect_confirmed"))
             confirmed += int(effect_confirmed)
             promoted_before = promoted
-            if effect_confirmed:
+            if effect_confirmed and promote_frontiers:
                 promoted += int(
                     self._promote_human_prior_option_entity_frontier(
                         root,
@@ -6290,6 +6351,7 @@ class VerifiedNeuralAgent:
                 "human_prior_adjacent_entity_probe_completed",
                 decision=self.decision_index + 1,
                 candidate_rank=candidate_rank,
+                probe_scope=probe_scope,
                 action=action,
                 action_frames=duration,
                 interaction_cell=curiosity.get("target_cell"),
@@ -6316,15 +6378,138 @@ class VerifiedNeuralAgent:
             candidates=len(candidates),
             confirmed_entity_effects=confirmed,
             promoted_entity_frontiers=promoted,
+            probe_scope=probe_scope,
             learning_enabled=(
                 self.config.anonymous_entity_behavior_learning
             ),
             agent_visible=True,
             **self._frame_fields(source_frame),
         )
-        return len(candidates)
+        return _AdjacentEntityProbeResult(
+            candidates=len(candidates),
+            confirmed_entity_effects=confirmed,
+            promoted_entity_frontiers=promoted,
+            attempted_signatures=attempted_signatures,
+        )
 
-    def _search_human_prior_options(self) -> int:
+    def _probe_current_adjacent_anonymous_affordances(
+        self,
+    ) -> _AdjacentEntityProbeResult:
+        """Probe a bounded adjacent interaction before semantic stagnation."""
+
+        if (
+            self.frame is None
+            or self.goal_prior is None
+            or self.config.human_prior_proactive_entity_probe_limit <= 0
+            or not self.config.human_prior_option_entity_frontier
+            or self.unlabeled_entity_memory is None
+            or self.entity_behavior_model is None
+        ):
+            return _AdjacentEntityProbeResult()
+        source_frame = self.frame
+        source_analysis = self.goal_prior.analyze(
+            source_frame, source_frame
+        )
+        source_signature = self._human_prior_graph_signatures(
+            source_analysis
+        )[1]
+        if not source_signature:
+            return _AdjacentEntityProbeResult()
+        duration = self.config.human_prior_option_search_action_frames
+        if duration <= 0:
+            duration = max(
+                self.config.action_durations
+                or (self.config.action_frames,)
+            )
+        root = self.env.save_state()
+        saved_states = [root]
+        release_state = getattr(self.env, "release_state", None)
+        active_failure = False
+        self._emit(
+            "human_prior_proactive_entity_probe_triggered",
+            decision=self.decision_index + 1,
+            source_state_id=self._state_id(root),
+            source_graph_signature=source_signature,
+            probe_limit=(
+                self.config.human_prior_proactive_entity_probe_limit
+            ),
+            prior_attempts=len(
+                self.human_prior_proactive_entity_probe_attempts
+            ),
+            action_frames=duration,
+            agent_visible=True,
+            **self._frame_fields(source_frame),
+        )
+        try:
+            result = self._probe_adjacent_anonymous_affordances(
+                root,
+                source_frame,
+                source_analysis,
+                source_signature,
+                duration,
+                [],
+                saved_states,
+                candidate_limit=(
+                    self.config.human_prior_proactive_entity_probe_limit
+                ),
+                excluded_interactions=(
+                    self.human_prior_proactive_entity_probe_attempts
+                ),
+                promote_frontiers=False,
+                probe_scope="proactive",
+            )
+            self.human_prior_proactive_entity_probe_attempts.update(
+                result.attempted_signatures
+            )
+            self._emit(
+                "human_prior_proactive_entity_probe_completed",
+                decision=self.decision_index + 1,
+                source_graph_signature=source_signature,
+                candidates=result.candidates,
+                confirmed_entity_effects=(
+                    result.confirmed_entity_effects
+                ),
+                attempted_signatures=result.attempted_signatures,
+                cumulative_attempts=len(
+                    self.human_prior_proactive_entity_probe_attempts
+                ),
+                policy_effect=(
+                    "reopen_bounded_option_search"
+                    if result.confirmed_entity_effects > 0
+                    else "remember_tested_interaction"
+                ),
+                agent_visible=True,
+                **self._frame_fields(source_frame),
+            )
+            return result
+        except BaseException:
+            active_failure = True
+            raise
+        finally:
+            try:
+                self.env.load_state(root)
+                if release_state is not None:
+                    released: set[int] = set()
+                    for state in reversed(saved_states):
+                        state_identity = id(state)
+                        if state_identity in released:
+                            continue
+                        released.add(state_identity)
+                        release_state(state)
+            except Exception as cleanup_error:
+                self._emit(
+                    "human_prior_proactive_entity_probe_cleanup_failed",
+                    decision=self.decision_index + 1,
+                    error_type=type(cleanup_error).__name__,
+                    error=str(cleanup_error),
+                    active_failure=active_failure,
+                )
+                if not active_failure:
+                    raise
+
+    def _search_human_prior_options(
+        self, *, force_reopen_reason: Optional[str] = None
+    ) -> int:
         """Verify short action sequences from the current emulator state.
 
         This is an assisted-track escape hatch for a specific failure mode:
@@ -6427,7 +6612,7 @@ class VerifiedNeuralAgent:
                 (action.value, int(edge_duration))
                 for action, edge_duration in action_edges
             ),
-            "factored-entity-phase-and-adjacent-probes-v3",
+            "factored-entity-phase-and-proactive-probes-v4",
         )
         search_budget_sha256 = hashlib.sha256(
             repr(search_budget).encode("utf-8")
@@ -6576,7 +6761,10 @@ class VerifiedNeuralAgent:
                 **self._frame_fields(source_frame),
             )
         exhausted_key = (source_signature, search_budget)
-        if exhausted_key in self.human_prior_option_exhausted_sources:
+        exact_budget_exhausted = bool(
+            exhausted_key in self.human_prior_option_exhausted_sources
+        )
+        if exact_budget_exhausted and force_reopen_reason is None:
             self._emit(
                 "human_prior_option_search_skipped",
                 decision=self.decision_index + 1,
@@ -6590,6 +6778,20 @@ class VerifiedNeuralAgent:
                 **self._frame_fields(source_frame),
             )
             return 0
+        if exact_budget_exhausted:
+            self._emit(
+                "human_prior_option_search_reopened",
+                decision=self.decision_index + 1,
+                reason=force_reopen_reason,
+                source_graph_signature=source_signature,
+                prior_exhausted_budgets=1,
+                search_budget_sha256=search_budget_sha256,
+                maximum_depth=self.config.human_prior_option_search_depth,
+                beam_width=self.config.human_prior_option_search_beam_width,
+                action_duration_edges=action_edges,
+                exact_search_budget_match=True,
+                **self._frame_fields(source_frame),
+            )
         prior_exhausted_budgets = [
             budget
             for exhausted_source, budget in (
@@ -6597,7 +6799,7 @@ class VerifiedNeuralAgent:
             )
             if exhausted_source == source_signature
         ]
-        if prior_exhausted_budgets:
+        if prior_exhausted_budgets and not exact_budget_exhausted:
             self._emit(
                 "human_prior_option_search_reopened",
                 decision=self.decision_index + 1,
@@ -6643,16 +6845,14 @@ class VerifiedNeuralAgent:
         endpoints: List[_HumanPriorOptionNode] = []
         effect_nodes: List[_HumanPriorOptionNode] = []
         interaction_nodes: List[_HumanPriorOptionNode] = []
-        adjacent_entity_probes = (
-            self._probe_adjacent_anonymous_affordances(
-                root,
-                source_frame,
-                source_analysis,
-                source_signature,
-                duration,
-                endpoints,
-                saved_states,
-            )
+        self._probe_adjacent_anonymous_affordances(
+            root,
+            source_frame,
+            source_analysis,
+            source_signature,
+            duration,
+            endpoints,
+            saved_states,
         )
         self.env.load_state(root)
         entity_feature_indexes: Dict[
@@ -14914,6 +15114,34 @@ class VerifiedNeuralAgent:
         life_recovery = self._restore_after_life_loss()
         if life_recovery is not None:
             return life_recovery
+        proactive_entity_probe = (
+            self._probe_current_adjacent_anonymous_affordances()
+        )
+        if proactive_entity_probe.confirmed_entity_effects > 0:
+            archive_branches_added = self._search_human_prior_options(
+                force_reopen_reason="proactive_entity_effect_confirmed"
+            )
+            self._emit(
+                "human_prior_proactive_entity_probe_incorporated",
+                decision=self.decision_index + 1,
+                confirmed_entity_effects=(
+                    proactive_entity_probe.confirmed_entity_effects
+                ),
+                archive_branches_added=archive_branches_added,
+                policy_effect=(
+                    "restore_verified_entity_frontier"
+                    if archive_branches_added > 0
+                    else "retain_behavior_evidence"
+                ),
+                archive_size=len(self.archive),
+                agent_visible=True,
+                **self._frame_fields(self.frame),
+            )
+            if archive_branches_added > 0:
+                self.human_prior_graph_recovery_pending = True
+                proactive_recovery = self._restore_if_stagnant()
+                if proactive_recovery is not None:
+                    return proactive_recovery
         semantic_stagnation_limit = (
             self.config.human_prior_graph_stagnation_visits
         )

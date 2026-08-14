@@ -60,6 +60,7 @@ lolo-neural-run \
   --human-prior-option-effect-phase-offsets 3 \
   --human-prior-option-effect-local-controls \
   --human-prior-option-entity-frontier \
+  --human-prior-proactive-entity-probe-limit 1 \
   --anonymous-entity-behavior-checkpoint \
     experiments/lolo1-entity/anonymous-behavior.json \
   --anonymous-entity-behavior-mode learn \

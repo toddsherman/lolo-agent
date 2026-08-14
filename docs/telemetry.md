@@ -970,6 +970,16 @@ summary report attempts, causal confirmations, learned evidence, and promoted
 frontiers. This moves mechanics discovery ahead of expensive navigation search
 without assigning a name to the interacted patch.
 
+With `--human-prior-proactive-entity-probe-limit`, the same matched experiment
+can run before semantic stagnation when a rare unresolved patch is already
+adjacent. `human_prior_proactive_entity_probe_triggered` and `_completed`
+record the bounded cycle and stable interaction signatures attempted in the
+room. Those signatures are deduplicated until the room resets. A confirmed
+effect emits `_incorporated`, reopens the exact option-search budget even if it
+was previously exhausted, and makes the verified transformed state available
+to normal archive recovery. No controller action from a probe is committed to
+the live trajectory.
+
 `anonymous_entity_passive_scan_completed` records how many rare patches were
 tracked through each matched passive interval and how many controlled-sprite
 cells were excluded. Each additional configured duration-only save-state

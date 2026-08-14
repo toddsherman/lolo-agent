@@ -5762,6 +5762,71 @@ class EnsemblePlannerTests(unittest.TestCase):
             )
         )
 
+    def test_proactive_adjacent_probe_precedes_stagnation_and_deduplicates(
+        self,
+    ) -> None:
+        logger = RecordingLogger()
+        behavior_model = AnonymousEntityBehaviorModel(
+            minimum_prediction_samples=1
+        )
+        env = AdjacentButtonTransformEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.A, Action.NOOP),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=2,
+                human_prior_option_search_action_frames=1,
+                human_prior_option_effect_stability_steps=1,
+                human_prior_option_effect_probe_limit=1,
+                human_prior_option_effect_phase_offsets=1,
+                human_prior_option_effect_local_controls=True,
+                human_prior_option_entity_frontier=True,
+                human_prior_proactive_entity_probe_limit=1,
+                anonymous_entity_behavior_learning=True,
+                causal_spatial_columns=8,
+                causal_spatial_rows=8,
+            ),
+            event_logger=logger,
+            entity_behavior_model=behavior_model,
+        )
+        initial = agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        agent.current_pose_action = Action.RIGHT
+
+        first = agent._probe_current_adjacent_anonymous_affordances()
+        second = agent._probe_current_adjacent_anonymous_affordances()
+
+        self.assertEqual(first.candidates, 1)
+        self.assertEqual(first.confirmed_entity_effects, 1)
+        self.assertEqual(len(first.attempted_signatures), 1)
+        self.assertEqual(second.candidates, 0)
+        self.assertEqual(behavior_model.observation_count, 1)
+        self.assertEqual(env._frame().digest, initial.digest)
+        completed = [
+            event
+            for event in logger.events
+            if event["event"]
+            == "human_prior_proactive_entity_probe_completed"
+        ]
+        self.assertEqual(len(completed), 2)
+        self.assertEqual(completed[0]["confirmed_entity_effects"], 1)
+        self.assertEqual(completed[1]["candidates"], 0)
+        self.assertFalse(
+            any(
+                event["event"] == "human_prior_graph_stagnation_detected"
+                for event in logger.events
+            )
+        )
+
     def test_unconfirmed_appearance_transition_is_withheld(self) -> None:
         logger = RecordingLogger()
         model = AnonymousEntityBehaviorModel(

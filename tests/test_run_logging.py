@@ -530,6 +530,21 @@ class RunLoggingTests(unittest.TestCase):
                 "human_prior_adjacent_entity_learning_accepted", summary
             )
             self.assertIn(
+                "human_prior_proactive_entity_probe_cycles", summary
+            )
+            self.assertIn(
+                "human_prior_proactive_entity_probe_candidates", summary
+            )
+            self.assertIn(
+                "human_prior_proactive_entity_effects_confirmed", summary
+            )
+            self.assertIn(
+                "human_prior_proactive_entity_unique_interactions", summary
+            )
+            self.assertIn(
+                "human_prior_proactive_entity_archive_branches", summary
+            )
+            self.assertIn(
                 "human_prior_option_entity_persistence_unique_signatures",
                 summary,
             )

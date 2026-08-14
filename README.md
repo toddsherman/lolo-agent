@@ -158,6 +158,7 @@ lolo-neural-run \
   --human-prior-option-entity-curiosity-weight 2.0 \
   --human-prior-option-entity-curiosity-reserve 4 \
   --human-prior-option-entity-inert-penalty-weight 3.0 \
+  --human-prior-proactive-entity-probe-limit 1 \
   --anonymous-entity-behavior-checkpoint experiments/lolo1-entity/anonymous-behavior.json \
   --anonymous-entity-behavior-mode learn \
   --anonymous-entity-passive-horizons 16,32,64,224 \

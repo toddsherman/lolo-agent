@@ -900,6 +900,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--human-prior-proactive-entity-probe-limit",
+        type=int,
+        default=0,
+        help=(
+            "before semantic stagnation, run at most this many deduplicated "
+            "matched probes of rare adjacent anonymous interactions"
+        ),
+    )
+    parser.add_argument(
         "--anonymous-entity-behavior-checkpoint",
         type=Path,
         help=(
@@ -1271,6 +1280,19 @@ def main() -> None:
             "--human-prior-option-entity-inert-penalty-weight must be "
             "non-negative"
         )
+    if args.human_prior_proactive_entity_probe_limit < 0:
+        parser.error(
+            "--human-prior-proactive-entity-probe-limit must be "
+            "non-negative"
+        )
+    if (
+        args.human_prior_proactive_entity_probe_limit
+        > args.human_prior_option_effect_probe_limit
+    ):
+        parser.error(
+            "--human-prior-proactive-entity-probe-limit cannot exceed "
+            "--human-prior-option-effect-probe-limit"
+        )
     if (
         args.human_prior_option_entity_curiosity_reserve
         > args.human_prior_option_search_beam_width
@@ -1289,6 +1311,15 @@ def main() -> None:
     ):
         parser.error(
             "anonymous entity policy guidance requires "
+            "--human-prior-option-entity-frontier and frozen or learn "
+            "anonymous behavior mode"
+        )
+    if args.human_prior_proactive_entity_probe_limit > 0 and (
+        not args.human_prior_option_entity_frontier
+        or args.anonymous_entity_behavior_mode == "off"
+    ):
+        parser.error(
+            "proactive anonymous entity probes require "
             "--human-prior-option-entity-frontier and frozen or learn "
             "anonymous behavior mode"
         )
@@ -1692,6 +1723,11 @@ def main() -> None:
             args.human_prior_option_entity_inert_penalty_weight
             if args.human_prior_hearts
             else 0.0
+        ),
+        human_prior_proactive_entity_probe_limit=(
+            args.human_prior_proactive_entity_probe_limit
+            if args.human_prior_hearts
+            else 0
         ),
         anonymous_entity_behavior_learning=(
             args.anonymous_entity_behavior_mode == "learn"
