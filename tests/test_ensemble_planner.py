@@ -3174,6 +3174,41 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(alternatives, 0)
         self.assertTrue(fail_open)
 
+        analyses[id(alternative_state)] = alternative
+        signatures[id(alternative_state)] = (
+            "source",
+            "preparation",
+        )
+        inert_state = object()
+        inert_branch = (
+            10.0,
+            NeuralPlan((Action.LEFT,), (1,), 0.0, 0.0),
+            inert_state,
+            target,
+        )
+        analyses[id(inert_state)] = stationary
+        signatures[id(inert_state)] = ("source", "source")
+        (
+            filtered,
+            exhausted,
+            precursors,
+            alternatives,
+            fail_open,
+            restored_detours,
+        ) = agent._filter_exhausted_milestones_with_detour_fallback(
+            [milestone_branch, precursor_branch, inert_branch],
+            [alternative_branch],
+            analyses,
+            signatures,
+        )
+
+        self.assertEqual(filtered, [alternative_branch])
+        self.assertEqual(exhausted, [milestone_branch])
+        self.assertEqual(precursors, [precursor_branch])
+        self.assertEqual(alternatives, 1)
+        self.assertFalse(fail_open)
+        self.assertEqual(restored_detours, [alternative_branch])
+
     def test_option_search_filters_fully_mapped_control_leaves(
         self,
     ) -> None:

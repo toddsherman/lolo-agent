@@ -14509,7 +14509,7 @@ class VerifiedNeuralAgent:
         blocked_ids = {
             id(item[2]) for item in (*exhausted, *precursors)
         }
-        preparation_alternatives = 0
+        preparation_branches: List[Tuple[Any, ...]] = []
         for item in verified:
             if id(item[2]) in blocked_ids:
                 continue
@@ -14531,16 +14531,93 @@ class VerifiedNeuralAgent:
                     and target_signature != source_signature
                 )
             ):
-                preparation_alternatives += 1
-        fail_open = preparation_alternatives == 0
+                preparation_branches.append(item)
+        preparation_alternatives = len(preparation_branches)
+        fail_open = not preparation_branches
         if fail_open:
             return verified, exhausted, precursors, 0, True
         return (
-            [item for item in verified if id(item[2]) not in blocked_ids],
+            preparation_branches,
             exhausted,
             precursors,
             preparation_alternatives,
             False,
+        )
+
+    def _filter_exhausted_milestones_with_detour_fallback(
+        self,
+        verified: List[Tuple[Any, ...]],
+        exhausted_detours: List[Tuple[Any, ...]],
+        analyses: Dict[int, Optional[HeartGoalAnalysis]],
+        graph_signatures: Dict[int, Tuple[str, str]],
+    ) -> Tuple[
+        List[Tuple[Any, ...]],
+        List[Tuple[Any, ...]],
+        List[Tuple[Any, ...]],
+        int,
+        bool,
+        List[Tuple[Any, ...]],
+    ]:
+        """Let learned milestone ordering override stale route exhaustion.
+
+        A pre-milestone rollback can return to a chokepoint where the only
+        meaningful alternative is a route exhausted under the failed
+        post-milestone world state.  Retry milestone filtering with those
+        routes available before failing open to the exact failed milestone.
+        """
+
+        filtered, exhausted, precursors, alternatives, fail_open = (
+            self._filter_exhausted_milestone_transitions(
+                verified, analyses, graph_signatures
+            )
+        )
+        if not fail_open or not exhausted_detours:
+            return (
+                filtered,
+                exhausted,
+                precursors,
+                alternatives,
+                fail_open,
+                [],
+            )
+        combined = list(verified)
+        known_states = {id(item[2]) for item in combined}
+        combined.extend(
+            item
+            for item in exhausted_detours
+            if id(item[2]) not in known_states
+        )
+        (
+            retry_filtered,
+            retry_exhausted,
+            retry_precursors,
+            retry_alternatives,
+            retry_fail_open,
+        ) = self._filter_exhausted_milestone_transitions(
+            combined, analyses, graph_signatures
+        )
+        if retry_fail_open:
+            return (
+                filtered,
+                exhausted,
+                precursors,
+                alternatives,
+                fail_open,
+                [],
+            )
+        retry_ids = {id(item[2]) for item in retry_filtered}
+        restored_detours = [
+            item
+            for item in exhausted_detours
+            if id(item[2]) in retry_ids
+        ]
+        return (
+            retry_filtered,
+            retry_exhausted,
+            retry_precursors,
+            retry_alternatives,
+            False,
+            restored_detours,
         )
 
     @staticmethod
@@ -17584,11 +17661,44 @@ class VerifiedNeuralAgent:
                 exhausted_milestone_precursors,
                 preparation_alternatives,
                 exhausted_milestone_fail_open,
-            ) = self._filter_exhausted_milestone_transitions(
+                milestone_ordering_restored_detours,
+            ) = self._filter_exhausted_milestones_with_detour_fallback(
                 selection_verified,
+                exhausted_navigation_detour_branches,
                 branch_goal_analyses,
                 branch_goal_signatures,
             )
+            if milestone_ordering_restored_detours:
+                self._emit(
+                    (
+                        "human_prior_exhausted_navigation_detour_"
+                        "overridden_for_milestone_ordering"
+                    ),
+                    decision=self.decision_index + 1,
+                    enabled=True,
+                    policy_authority=True,
+                    policy_effect=(
+                        "prefer_alternative_to_failed_milestone"
+                    ),
+                    hazard_evidence=False,
+                    restored_branches=tuple(
+                        {
+                            "source_graph_signature": (
+                                branch_goal_signatures[id(item[2])][0]
+                            ),
+                            "action": item[1].path[0],
+                            "action_frames": item[1].durations[0],
+                            "target_graph_signature": (
+                                branch_goal_signatures[id(item[2])][1]
+                            ),
+                        }
+                        for item in milestone_ordering_restored_detours
+                    ),
+                    branches_restored=len(
+                        milestone_ordering_restored_detours
+                    ),
+                    alternatives_remaining=len(selection_verified),
+                )
             ordering_blocked_branches = (
                 exhausted_milestone_branches
                 + exhausted_milestone_precursors
