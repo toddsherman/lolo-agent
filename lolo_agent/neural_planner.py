@@ -10064,9 +10064,6 @@ class VerifiedNeuralAgent:
                             or not self._human_prior_milestone_outcome_known(
                                 node.analysis
                             )
-                            or self._human_prior_milestone_transition_exhausted(
-                                node.analysis
-                            )
                             or node.analysis.life_counter_changed
                             or node.analysis.dark_transition_started
                         ):

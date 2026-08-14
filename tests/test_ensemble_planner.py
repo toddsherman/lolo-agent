@@ -3164,6 +3164,9 @@ class EnsemblePlannerTests(unittest.TestCase):
         agent.human_prior_milestone_outcomes.add(
             agent._human_prior_milestone_outcome_key(milestone)
         )
+        agent.human_prior_exhausted_milestone_transitions.add(
+            (((7, 0),), (), False)
+        )
         agent.frame = env.reset()
 
         agent._search_human_prior_options()
