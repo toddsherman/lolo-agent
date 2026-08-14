@@ -16,7 +16,7 @@ from lolo_agent.ensemble_world_model import (
     save_ensemble_checkpoint,
 )
 from lolo_agent.environment import Action
-from lolo_agent.goal_prior import HeartGoalAnalysis
+from lolo_agent.goal_prior import HeartGoalAnalysis, PixelHeartGoalPrior
 from lolo_agent.mock_puzzle import MockPuzzleEnv
 from lolo_agent.neural_planner import (
     NeuralPlan,
@@ -7378,6 +7378,80 @@ class EnsemblePlannerTests(unittest.TestCase):
         )
         self.assertIsNotNone(behavior)
         self.assertTrue(behavior["observed_appearance_transition"])
+        self.assertFalse(behavior["evidence_eligible"])
+        self.assertFalse(behavior["evidence_accepted"])
+        self.assertEqual(model.observation_count, 0)
+
+    def test_explicit_goal_change_is_withheld_from_anonymous_behavior(
+        self,
+    ) -> None:
+        model = AnonymousEntityBehaviorModel(
+            minimum_prediction_samples=1
+        )
+        env = AdjacentButtonTransformEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                human_prior_heart_reward=1.0,
+                human_prior_option_effect_stability_steps=1,
+                human_prior_option_effect_phase_offsets=1,
+                human_prior_option_effect_local_controls=True,
+                human_prior_option_entity_frontier=True,
+                anonymous_entity_behavior_learning=True,
+                causal_spatial_columns=8,
+                causal_spatial_rows=8,
+            ),
+            entity_behavior_model=model,
+        )
+        agent.reset()
+        agent.goal_prior = PixelHeartGoalPrior()
+        analysis_prior = PositionGoalPrior()
+        before = env.load_state((True, False))
+        factual = env.load_state((True, True))
+        control = env.load_state((True, False))
+        factual_analysis = replace(
+            analysis_prior.analyze(before, factual),
+            known_slots=((4, 0),),
+            source_present=((4, 0),),
+            target_present=(),
+            collected=((4, 0),),
+        )
+        control_analysis = replace(
+            analysis_prior.analyze(before, control),
+            known_slots=((4, 0),),
+            source_present=((4, 0),),
+            target_present=((4, 0),),
+            collected=(),
+        )
+
+        behavior = agent._anonymous_entity_behavior_observation(
+            before,
+            factual,
+            control,
+            agent.unlabeled_entity_memory.observe(before),
+            factual_analysis,
+            control_analysis,
+            Action.A,
+            1,
+            ((1, 0),),
+            ((1, 0),),
+            set(),
+            evidence_scope="explicit-goal-regression",
+            evidence_eligible=True,
+            causal_effect_confirmed=True,
+        )
+
+        self.assertIsNotNone(behavior)
+        self.assertEqual(behavior["labeled_goal_cells"], ((1, 0),))
+        self.assertTrue(behavior["labeled_goal_overlap"])
+        self.assertEqual(
+            behavior["evidence_excluded_reason"],
+            "explicit_goal_cell_overlap",
+        )
         self.assertFalse(behavior["evidence_eligible"])
         self.assertFalse(behavior["evidence_accepted"])
         self.assertEqual(model.observation_count, 0)

@@ -4628,6 +4628,53 @@ class VerifiedNeuralAgent:
             row += dy
         return before, direction, tuple(cells)
 
+    def _explicit_human_prior_goal_cells(
+        self,
+        analyses: Sequence[HeartGoalAnalysis],
+        frame: Frame,
+    ) -> Tuple[Tuple[int, int], ...]:
+        """Return coarse cells already named by the assisted goal prior.
+
+        Anonymous mechanics must be learned only from anonymous visual
+        evidence.  A collected assisted-track goal visibly disappearing is
+        still valid reward and planning evidence, but teaching that change to
+        the object-behavior model would leak the explicit goal label into the
+        supposedly anonymous representation.
+        """
+
+        memory = self.unlabeled_entity_memory
+        if memory is None or not isinstance(
+            self.goal_prior, PixelHeartGoalPrior
+        ):
+            return ()
+        slots: set[Tuple[int, int]] = set()
+        for analysis in analyses:
+            slots.update(analysis.known_slots)
+            slots.update(analysis.source_present)
+            slots.update(analysis.target_present)
+            slots.update(analysis.collected)
+            if analysis.source_chest_slot is not None:
+                slots.add(analysis.source_chest_slot)
+            if analysis.target_chest_slot is not None:
+                slots.add(analysis.target_chest_slot)
+        return tuple(
+            sorted(
+                {
+                    (
+                        min(
+                            memory.columns - 1,
+                            max(0, x * memory.columns // frame.width),
+                        ),
+                        min(
+                            memory.rows - 1,
+                            max(0, y * memory.rows // frame.height),
+                        ),
+                    )
+                    for x, y in slots
+                }
+            )
+        )
+
     def _anonymous_entity_behavior_observation(
         self,
         before_frame: Frame,
@@ -4664,6 +4711,13 @@ class VerifiedNeuralAgent:
         if control_ignored_player_pixels is None:
             control_ignored_player_pixels = factual_ignored_player_pixels
         anchor = interaction_ray[0]
+        labeled_goal_cells = self._explicit_human_prior_goal_cells(
+            (factual_analysis, control_analysis), before_frame
+        )
+        labeled_goal_overlap = bool(
+            anchor in labeled_goal_cells
+            or set(effect_cells).intersection(labeled_goal_cells)
+        )
         source_feature = memory.feature_at(before_frame, *anchor)
         factual_feature = memory.feature_at(
             factual_frame, *anchor, factual_ignored_player_pixels
@@ -4830,6 +4884,7 @@ class VerifiedNeuralAgent:
         )
         evidence_eligible = bool(
             evidence_eligible
+            and not labeled_goal_overlap
             and (
                 causal_effect_confirmed
                 or not apparent_effect_requires_control
@@ -4896,8 +4951,15 @@ class VerifiedNeuralAgent:
                 self.config.anonymous_entity_behavior_learning
             ),
             "evidence_eligible": evidence_eligible,
+            "evidence_excluded_reason": (
+                "explicit_goal_cell_overlap"
+                if labeled_goal_overlap
+                else None
+            ),
             "evidence_accepted": accepted,
             "causal_effect_confirmed": causal_effect_confirmed,
+            "labeled_goal_cells": labeled_goal_cells,
+            "labeled_goal_overlap": labeled_goal_overlap,
             "ignored_player_pixels": len(
                 factual_ignored_player_pixels.union(
                     control_ignored_player_pixels
@@ -7040,11 +7102,19 @@ class VerifiedNeuralAgent:
         entity_effect_signature = bytearray(columns * rows)
         for column, row in entity_effect_cells:
             entity_effect_signature[row * columns + column] = 1
+        labeled_goal_cells = self._explicit_human_prior_goal_cells(
+            (factual_analysis, control_analysis), before_intervention
+        )
+        labeled_goal_overlap = bool(
+            (interaction_ray and interaction_ray[0] in labeled_goal_cells)
+            or entity_effect_cells.intersection(labeled_goal_cells)
+        )
         entity_effect_confirmed = bool(
             confirmed
             and interaction_cell_matched
             and entity_effect_cells
             and entity_state_signature
+            and not labeled_goal_overlap
             and not moving_contact_substrate_match
             and not moving_contact_player_appearance_match
             and (
@@ -7198,6 +7268,8 @@ class VerifiedNeuralAgent:
             ),
             "entity_state_signature": entity_state_signature or None,
             "entity_effect_confirmed": entity_effect_confirmed,
+            "labeled_goal_cells": labeled_goal_cells,
+            "labeled_goal_overlap": labeled_goal_overlap,
             "entity_player_masked_pixels": len(
                 final_factual_player_pixels.union(
                     final_control_player_pixels
