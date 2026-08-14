@@ -3912,11 +3912,14 @@ class VerifiedNeuralAgent:
             surprise = -math.log(max(1e-9, observed_probability))
         result = {
             "evidence_id": evidence_id,
+            "evidence_scope": evidence_scope,
             "learning_enabled": (
                 self.config.anonymous_entity_behavior_learning
             ),
             "evidence_eligible": evidence_eligible,
             "evidence_accepted": accepted,
+            "causal_effect_confirmed": causal_effect_confirmed,
+            "ignored_player_pixels": len(ignored_player_pixels),
             "anonymous_type_id": type_id,
             "anonymous_type_created": created_type,
             "appearance_fingerprint": model.appearance_fingerprint(
@@ -5367,21 +5370,22 @@ class VerifiedNeuralAgent:
             player_pixel_mask = getattr(
                 self.goal_prior, "player_pixel_mask", None
             )
-            if (
-                endpoint_matched
-                and callable(player_pixel_mask)
-            ):
-                entity_player_pixels.update(
-                    player_pixel_mask(
-                        factual, factual_analysis.target_player_slot
+            if callable(player_pixel_mask):
+                if factual_analysis.target_player_slot is not None:
+                    entity_player_pixels.update(
+                        player_pixel_mask(
+                            factual,
+                            factual_analysis.target_player_slot,
+                        )
                     )
-                )
-                entity_player_pixels.update(
-                    player_pixel_mask(
-                        control, control_analysis.target_player_slot
+                if control_analysis.target_player_slot is not None:
+                    entity_player_pixels.update(
+                        player_pixel_mask(
+                            control,
+                            control_analysis.target_player_slot,
+                        )
                     )
-                )
-                if allow_endpoint_matched_local:
+                if endpoint_matched and allow_endpoint_matched_local:
                     ignored_player_pixels.update(entity_player_pixels)
             final_entity_player_pixels = entity_player_pixels
             spatial_signature, changed_pixels, _centroid = (
@@ -5647,7 +5651,12 @@ class VerifiedNeuralAgent:
                     evidence_eligible=bool(
                         interaction_cell_matched
                     ),
-                    causal_effect_confirmed=confirmed,
+                    # A persistent change elsewhere in the frame does not
+                    # establish that the audited adjacent patch changed.
+                    # Entity semantics require a localized, player-masked
+                    # effect on the interaction ray. Inert evidence remains
+                    # eligible inside the observation helper.
+                    causal_effect_confirmed=entity_effect_confirmed,
                 )
             )
         result = {

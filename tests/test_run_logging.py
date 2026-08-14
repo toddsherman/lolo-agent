@@ -731,7 +731,15 @@ class RunLoggingTests(unittest.TestCase):
                 summary,
             )
             self.assertIn(
+                "anonymous_entity_behavior_displacement_evidence_accepted",
+                summary,
+            )
+            self.assertIn(
                 "anonymous_entity_behavior_appearance_transitions",
+                summary,
+            )
+            self.assertIn(
+                "anonymous_entity_behavior_appearance_transition_evidence_accepted",
                 summary,
             )
             self.assertIn(
@@ -750,6 +758,10 @@ class RunLoggingTests(unittest.TestCase):
             )
             self.assertIn(
                 "anonymous_entity_behavior_manipulation_observations",
+                summary,
+            )
+            self.assertIn(
+                "anonymous_entity_behavior_manipulation_evidence_accepted",
                 summary,
             )
             self.assertIn(

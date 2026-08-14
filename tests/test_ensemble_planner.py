@@ -7362,6 +7362,9 @@ class EnsemblePlannerTests(unittest.TestCase):
             latent_size=32, action_size=8, ensemble_size=2
         )
         logger = RecordingLogger()
+        behavior_model = AnonymousEntityBehaviorModel(
+            minimum_prediction_samples=1
+        )
         agent = VerifiedNeuralAgent(
             UnlabeledEntityTransformEnv((7, 7)),
             model,
@@ -7380,10 +7383,12 @@ class EnsemblePlannerTests(unittest.TestCase):
                 human_prior_option_effect_phase_offsets=1,
                 human_prior_option_effect_local_controls=True,
                 human_prior_option_entity_frontier=True,
+                anonymous_entity_behavior_learning=True,
                 causal_spatial_columns=8,
                 causal_spatial_rows=8,
             ),
             event_logger=logger,
+            entity_behavior_model=behavior_model,
         )
         agent.reset()
         agent.goal_prior = PositionGoalPrior()
@@ -7400,6 +7405,30 @@ class EnsemblePlannerTests(unittest.TestCase):
                 event["event"]
                 == "human_prior_option_entity_frontier_eligible"
                 for event in logger.events
+            )
+        )
+        behavior_events = [
+            event
+            for event in logger.events
+            if event["event"] == "anonymous_entity_behavior_observed"
+        ]
+        self.assertGreaterEqual(len(behavior_events), 1)
+        self.assertTrue(
+            all(
+                not event["causal_effect_confirmed"]
+                for event in behavior_events
+            )
+        )
+        apparent_remote_effects = [
+            event
+            for event in behavior_events
+            if event["observed_manipulation_effect"]
+        ]
+        self.assertTrue(
+            all(
+                not event["evidence_eligible"]
+                and not event["evidence_accepted"]
+                for event in apparent_remote_effects
             )
         )
 

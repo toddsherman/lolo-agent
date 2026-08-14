@@ -970,6 +970,14 @@ summary report attempts, causal confirmations, learned evidence, and promoted
 frontiers. This moves mechanics discovery ahead of expensive navigation search
 without assigning a name to the interacted patch.
 
+Entity behavior observations expose `causal_effect_confirmed`,
+`evidence_scope`, and `ignored_player_pixels`. A persistent change elsewhere
+in the frame cannot authorize manipulation evidence at the adjacent target:
+appearance transition or displacement evidence is learned only when a
+player-masked effect is localized to the interaction ray. Run summaries report
+both observed and accepted manipulation, displacement, and appearance-change
+counts so attribution failures remain visible.
+
 With `--human-prior-proactive-entity-probe-limit`, the same matched experiment
 can run before semantic stagnation when a rare unresolved patch is already
 adjacent. `human_prior_proactive_entity_probe_triggered` and `_completed`

@@ -2493,8 +2493,18 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             bool(row.get("observed_entity_displacement"))
             for row in anonymous_behavior_rows
         ),
+        "anonymous_entity_behavior_displacement_evidence_accepted": sum(
+            bool(row.get("observed_entity_displacement"))
+            and bool(row.get("evidence_accepted"))
+            for row in anonymous_behavior_rows
+        ),
         "anonymous_entity_behavior_appearance_transitions": sum(
             bool(row.get("observed_appearance_transition"))
+            for row in anonymous_behavior_rows
+        ),
+        "anonymous_entity_behavior_appearance_transition_evidence_accepted": sum(
+            bool(row.get("observed_appearance_transition"))
+            and bool(row.get("evidence_accepted"))
             for row in anonymous_behavior_rows
         ),
         "anonymous_entity_behavior_global_phase_changes": sum(
@@ -2515,6 +2525,11 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
         ),
         "anonymous_entity_behavior_manipulation_observations": sum(
             bool(row.get("observed_manipulation_effect"))
+            for row in anonymous_behavior_rows
+        ),
+        "anonymous_entity_behavior_manipulation_evidence_accepted": sum(
+            bool(row.get("observed_manipulation_effect"))
+            and bool(row.get("evidence_accepted"))
             for row in anonymous_behavior_rows
         ),
         "anonymous_entity_behavior_phase_contexts_observed": len(
