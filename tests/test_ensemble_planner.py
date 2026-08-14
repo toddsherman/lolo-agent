@@ -4511,6 +4511,7 @@ class EnsemblePlannerTests(unittest.TestCase):
                 human_prior_best_first_archive=True,
                 human_prior_option_search_depth=2,
                 human_prior_option_search_beam_width=1,
+                human_prior_option_search_stationary_history=0,
                 human_prior_option_search_action_frames=1,
             ),
             event_logger=logger,
@@ -7202,6 +7203,71 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(behavior_model.observation_count, 0)
         self.assertEqual(env._frame().digest, initial.digest)
 
+    def test_option_identity_does_not_track_player_leading_edge_as_world_state(
+        self,
+    ) -> None:
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            LeadingEdgeMovementEnv(),
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=3,
+                human_prior_option_search_beam_width=8,
+                human_prior_option_search_action_frames=1,
+                human_prior_option_effect_stability_steps=1,
+                human_prior_option_effect_phase_offsets=1,
+                human_prior_option_effect_local_controls=True,
+                human_prior_option_entity_frontier=True,
+                causal_spatial_columns=8,
+                causal_spatial_rows=8,
+            ),
+            event_logger=logger,
+            entity_behavior_model=AnonymousEntityBehaviorModel(
+                minimum_prediction_samples=1
+            ),
+        )
+        agent.reset()
+        agent.goal_prior = MovingAdjacentMaskGoalPrior()
+
+        agent._search_human_prior_options()
+
+        verified = [
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_branch_verified"
+        ]
+        self.assertTrue(
+            any(
+                event[
+                    "human_prior_option_world_effect_state_signature"
+                ]
+                for event in verified
+            )
+        )
+        self.assertTrue(
+            all(
+                not event[
+                    "human_prior_option_tracked_world_state_signature"
+                ]
+                for event in verified
+            )
+        )
+        depths = [
+            event
+            for event in logger.events
+            if event["event"]
+            == "human_prior_option_search_depth_completed"
+        ]
+        self.assertEqual(depths[-1]["seen_option_states"], 4)
+
     def test_proactive_probe_includes_common_unresolved_appearance(
         self,
     ) -> None:
@@ -8994,6 +9060,36 @@ class EnsemblePlannerTests(unittest.TestCase):
         ][-1]
         self.assertEqual(completed["archive_branches_added"], 2)
         self.assertEqual(completed["distinct_entity_contexts_archived"], 2)
+        transformed = [
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_branch_verified"
+            and event["path"]
+            in (
+                (Action.RIGHT, Action.A),
+                (Action.RIGHT, Action.A, Action.A),
+            )
+        ]
+        self.assertEqual(len(transformed), 2)
+        self.assertEqual(
+            len(
+                {
+                    event[
+                        "human_prior_option_tracked_world_state_signature"
+                    ]
+                    for event in transformed
+                }
+            ),
+            2,
+        )
+        self.assertTrue(
+            all(
+                event[
+                    "human_prior_option_tracked_world_effect_cells"
+                ]
+                for event in transformed
+            )
+        )
 
     def test_goal_milestone_exhaustion_rolls_back_exact_choice(self) -> None:
         model = EnsembleVisualDynamicsModel(

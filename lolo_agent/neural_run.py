@@ -822,6 +822,16 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--human-prior-option-search-stationary-history",
+        type=int,
+        default=4,
+        help=(
+            "bounded action/duration suffix retained when pixels report no "
+            "player displacement, allowing visually aliased interaction "
+            "preparations without unbounded path memorization"
+        ),
+    )
+    parser.add_argument(
         "--human-prior-option-search-action-frames",
         type=int,
         default=0,
@@ -1307,6 +1317,11 @@ def main() -> None:
             "--human-prior-option-search-missing-player-max-streak must be "
             "non-negative"
         )
+    if args.human_prior_option_search_stationary_history < 0:
+        parser.error(
+            "--human-prior-option-search-stationary-history must be "
+            "non-negative"
+        )
     if args.human_prior_option_search_action_frames < 0:
         parser.error(
             "--human-prior-option-search-action-frames must be non-negative"
@@ -1764,6 +1779,9 @@ def main() -> None:
         ),
         human_prior_option_search_missing_player_max_streak=(
             args.human_prior_option_search_missing_player_max_streak
+        ),
+        human_prior_option_search_stationary_history=(
+            args.human_prior_option_search_stationary_history
         ),
         human_prior_option_search_action_frames=(
             args.human_prior_option_search_action_frames

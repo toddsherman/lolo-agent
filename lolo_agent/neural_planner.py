@@ -130,6 +130,7 @@ class NeuralPlanningConfig:
     human_prior_option_search_position_reserve: int = 0
     human_prior_option_search_missing_player_reserve: int = 8
     human_prior_option_search_missing_player_max_streak: int = 2
+    human_prior_option_search_stationary_history: int = 4
     human_prior_option_search_action_frames: int = 0
     human_prior_option_search_long_direction_frames: int = 0
     human_prior_episodic_graph_guidance: bool = False
@@ -257,6 +258,9 @@ class _HumanPriorOptionNode:
     missing_player_streak: int = 0
     world_effect_signature: str = ""
     world_effect_state_signature: str = ""
+    tracked_world_effect_cells: Tuple[Tuple[int, int], ...] = ()
+    tracked_world_state_signature: str = ""
+    stationary_action_history: Tuple[Tuple[Action, int], ...] = ()
     world_effect_changed_pixels: int = 0
     confirmed_world_effect_signature: str = ""
     confirmed_world_context: str = ""
@@ -2226,8 +2230,19 @@ class VerifiedNeuralAgent:
     ) -> str:
         """Hash anonymous absolute appearances at action-changed cells."""
 
-        memory = self.unlabeled_entity_memory
         cells = self._causal_spatial_cells(world_effect_signature)
+        return self._human_prior_world_effect_cells_state_signature(
+            frame, cells
+        )
+
+    def _human_prior_world_effect_cells_state_signature(
+        self,
+        frame: Frame,
+        cells: Sequence[Tuple[int, int]],
+    ) -> str:
+        """Hash current appearances at a cumulative anonymous cell set."""
+
+        memory = self.unlabeled_entity_memory
         if memory is None or not cells:
             return ""
         payload = ";".join(
@@ -8604,6 +8619,9 @@ class VerifiedNeuralAgent:
             int(
                 self.config.human_prior_option_search_missing_player_max_streak
             ),
+            int(
+                self.config.human_prior_option_search_stationary_history
+            ),
             int(self.config.human_prior_option_archive_representatives),
             int(self.config.human_prior_option_effect_stability_steps),
             int(self.config.human_prior_option_effect_probe_limit),
@@ -8634,7 +8652,7 @@ class VerifiedNeuralAgent:
                 (action.value, int(edge_duration))
                 for action, edge_duration in action_edges
             ),
-            "factored-entity-phase-and-proactive-probes-v4",
+            "factored-entity-phase-and-proactive-probes-v5",
         )
         search_budget_sha256 = hashlib.sha256(
             repr(search_budget).encode("utf-8")
@@ -8899,11 +8917,17 @@ class VerifiedNeuralAgent:
 
         def option_state_key(
             node: _HumanPriorOptionNode,
-        ) -> Tuple[str, Optional[Action], str]:
+        ) -> Tuple[
+            str,
+            Optional[Action],
+            str,
+            Tuple[Tuple[Action, int], ...],
+        ]:
             return (
                 node.target_signature or node.frame.digest,
                 node.pose_action,
-                node.world_effect_state_signature,
+                node.tracked_world_state_signature,
+                node.stationary_action_history,
             )
 
         seen_option_states = {option_state_key(root_node)}
@@ -9318,6 +9342,55 @@ class VerifiedNeuralAgent:
                             if entity_effect_persisted_in_search
                             else None
                         )
+                        effective_effect_target_distance = (
+                            parent.entity_effect_target_distance
+                            if interaction_source is not None
+                            else direct_effect_target_distance
+                        )
+                        track_current_effect = bool(
+                            option_world_effect_signature
+                            and (
+                                (
+                                    action in (Action.A, Action.B)
+                                )
+                                or (
+                                    entity_effect_persisted_in_search
+                                    and effective_effect_target_distance
+                                    is not None
+                                    and effective_effect_target_distance > 0
+                                )
+                            )
+                        )
+                        tracked_world_effect_cells = set(
+                            parent.tracked_world_effect_cells
+                        )
+                        if track_current_effect:
+                            tracked_world_effect_cells.update(
+                                direct_effect_cells
+                            )
+                        tracked_world_effect_cells_tuple = tuple(
+                            sorted(tracked_world_effect_cells)
+                        )
+                        tracked_world_state_signature = (
+                            self._human_prior_world_effect_cells_state_signature(
+                                target,
+                                tracked_world_effect_cells_tuple,
+                            )
+                        )
+                        stationary_action_history = ()
+                        stationary_history_limit = (
+                            self.config.human_prior_option_search_stationary_history
+                        )
+                        if (
+                            stationary_history_limit > 0
+                            and analysis.source_player_slot is not None
+                            and analysis.target_player_slot
+                            == analysis.source_player_slot
+                        ):
+                            stationary_action_history = (
+                                parent.stationary_action_history
+                                + ((action, edge_duration),)
+                            )[-stationary_history_limit:]
                         node = _HumanPriorOptionNode(
                             state=state,
                             frame=target,
@@ -9343,6 +9416,15 @@ class VerifiedNeuralAgent:
                             ),
                             world_effect_state_signature=(
                                 option_world_effect_state_signature
+                            ),
+                            tracked_world_effect_cells=(
+                                tracked_world_effect_cells_tuple
+                            ),
+                            tracked_world_state_signature=(
+                                tracked_world_state_signature
+                            ),
+                            stationary_action_history=(
+                                stationary_action_history
                             ),
                             world_effect_changed_pixels=(
                                 option_changed_pixels
@@ -9580,9 +9662,7 @@ class VerifiedNeuralAgent:
                                 )
                             ),
                             entity_effect_target_distance=(
-                                interaction_source.entity_effect_target_distance
-                                if interaction_source is not None
-                                else direct_effect_target_distance
+                                effective_effect_target_distance
                             ),
                             entity_effect_persisted_in_search=(
                                 entity_effect_persisted_in_search
@@ -9815,6 +9895,15 @@ class VerifiedNeuralAgent:
                             ),
                             human_prior_option_world_effect_state_signature=(
                                 option_world_effect_state_signature or None
+                            ),
+                            human_prior_option_tracked_world_effect_cells=(
+                                tracked_world_effect_cells_tuple
+                            ),
+                            human_prior_option_tracked_world_state_signature=(
+                                tracked_world_state_signature or None
+                            ),
+                            human_prior_option_stationary_action_history=(
+                                stationary_action_history
                             ),
                             human_prior_option_world_effect_changed_pixels=(
                                 option_changed_pixels
