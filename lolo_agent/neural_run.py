@@ -20,7 +20,11 @@ from .native_env import NativeLibretroEnv
 from .neural_planner import NeuralPlanningConfig, VerifiedNeuralAgent
 from .neural_world_model import ACTION_ORDER, choose_torch_device
 from .pixels import Frame, signature_key
-from .replay import restore_logged_decision, validate_replay_inputs
+from .replay import (
+    restore_logged_decision,
+    restore_logged_option_archive,
+    validate_replay_inputs,
+)
 from .run_logging import LoggedEnvironment, RunLogger, read_events, sha256_file
 from .spatial_returnability import load_returnability_checkpoint
 from .spatial_shadow import SpatialShadowEvaluator
@@ -1066,6 +1070,13 @@ def main() -> None:
         help="committed decision to reconstruct from --resume-state-run",
     )
     parser.add_argument(
+        "--resume-state-archive-id",
+        help=(
+            "persisted self-discovered option state to reconstruct from "
+            "--resume-state-run instead of a committed decision"
+        ),
+    )
+    parser.add_argument(
         "--allow-compatible-resume-host",
         action="store_true",
         help=(
@@ -1110,11 +1121,21 @@ def main() -> None:
     args = parser.parse_args()
     if (args.resume_run is None) != (args.resume_decision is None):
         parser.error("--resume-run and --resume-decision must be supplied together")
-    if (args.resume_state_run is None) != (
-        args.resume_state_decision is None
+    if args.resume_state_decision is not None and (
+        args.resume_state_archive_id is not None
     ):
         parser.error(
-            "--resume-state-run and --resume-state-decision must be supplied together"
+            "--resume-state-decision and --resume-state-archive-id are "
+            "mutually exclusive"
+        )
+    state_selector_supplied = bool(
+        args.resume_state_decision is not None
+        or args.resume_state_archive_id is not None
+    )
+    if (args.resume_state_run is not None) != state_selector_supplied:
+        parser.error(
+            "--resume-state-run requires exactly one of "
+            "--resume-state-decision or --resume-state-archive-id"
         )
     if args.resume_state_run is not None and args.resume_run is None:
         parser.error("--resume-state-run requires --resume-run")
@@ -1894,6 +1915,9 @@ def main() -> None:
                     ),
                     "state_source_run_id": state_manifest.get("run_id"),
                     "state_source_decision": args.resume_state_decision,
+                    "state_source_archive_id": (
+                        args.resume_state_archive_id
+                    ),
                     "state_source_events_sha256": sha256_file(state_events),
                     "memory_state_decoupled": True,
                 }
@@ -2045,18 +2069,44 @@ def main() -> None:
                 if args.resume_state_decision is not None
                 else args.resume_decision
             )
-            restored = (
+            restored_archive = (
                 None
-                if args.resume_run is None
-                else restore_logged_decision(
-                    native_env, resume_state_run, resume_state_decision
+                if args.resume_state_archive_id is None
+                else restore_logged_option_archive(
+                    native_env,
+                    resume_state_run,
+                    args.resume_state_archive_id,
                 )
             )
+            restored = (
+                restored_archive
+                if restored_archive is not None
+                else (
+                    None
+                    if args.resume_run is None
+                    else restore_logged_decision(
+                        native_env,
+                        resume_state_run,
+                        resume_state_decision,
+                    )
+                )
+            )
+            if restored_archive is not None:
+                resume_state_decision = restored_archive.decision
             restored_semantic_state = (
-                None
-                if args.resume_state_run is None
-                else load_logged_decision_semantic_state(
-                    resume_state_run, resume_state_decision
+                (
+                    restored_archive.metadata
+                    if restored_archive is not None
+                    else None
+                )
+                if args.resume_state_run is not None
+                and args.resume_state_archive_id is not None
+                else (
+                    None
+                    if args.resume_state_run is None
+                    else load_logged_decision_semantic_state(
+                        resume_state_run, resume_state_decision
+                    )
                 )
             )
             env = LoggedEnvironment(native_env, logger)
@@ -2082,6 +2132,11 @@ def main() -> None:
                     source_run_id=restored.run_id,
                     source_decision=restored.decision,
                     source_event_seq=restored.event_seq,
+                    source_option_archive_state_id=(
+                        None
+                        if restored_archive is None
+                        else restored_archive.state_id
+                    ),
                     memory_source_run_id=source_manifest.get("run_id"),
                     memory_source_decision=args.resume_decision,
                     memory_state_decoupled=(

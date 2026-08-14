@@ -33,6 +33,16 @@ class RestoredDecision:
     run_id: str
 
 
+@dataclass(frozen=True)
+class RestoredOptionArchive:
+    frame: Frame
+    decision: int
+    event_seq: int
+    run_id: str
+    state_id: str
+    metadata: Dict[str, Any]
+
+
 def _verify_input(path: Path, recorded: Dict[str, Any], kind: str) -> None:
     expected = recorded.get("sha256") or recorded.get("file_sha256")
     if expected is None:
@@ -237,6 +247,58 @@ def restore_logged_decision(
             except Exception:
                 pass
     raise ValueError(f"decision {decision} not found in telemetry run {run_dir}")
+
+
+def restore_logged_option_archive(
+    env: NativeLibretroEnv,
+    run_dir: Path,
+    state_id: str,
+) -> RestoredOptionArchive:
+    """Restore one content-verified, self-discovered option capability."""
+
+    if not state_id:
+        raise ValueError("resume option archive state ID must not be empty")
+    run_dir = Path(run_dir).expanduser().resolve()
+    manifest = json.loads(
+        (run_dir / "manifest.json").read_text(encoding="utf-8")
+    )
+    snapshot: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = None
+    for event in read_events(run_dir):
+        if str(event.get("state_id") or "") != state_id:
+            continue
+        if event.get("event") == "option_archive_snapshot_stored":
+            snapshot = event
+        elif event.get("event") == "human_prior_option_archive_added":
+            metadata = event
+    if snapshot is None:
+        raise ValueError(
+            f"option archive {state_id!r} has no persisted state in {run_dir}"
+        )
+    if metadata is None:
+        raise ValueError(
+            f"option archive {state_id!r} has no promotion metadata in {run_dir}"
+        )
+    if str(snapshot.get("frame") or "") != str(metadata.get("frame") or ""):
+        raise RuntimeError("option archive metadata frame mismatch")
+    relative = Path(str(snapshot["state_file"]))
+    state_path = (run_dir / relative).resolve()
+    if not state_path.is_relative_to(run_dir):
+        raise RuntimeError("option archive snapshot escapes its telemetry run")
+    if sha256_file(state_path) != str(snapshot["state_sha256"]):
+        raise RuntimeError("option archive snapshot digest mismatch")
+    frame_digest = str(snapshot["frame"])
+    frame = decode_logged_png(run_dir / "frames" / f"{frame_digest}.png")
+    current = env.import_state(state_path.read_bytes(), frame)
+    _check_frame(current, snapshot)
+    return RestoredOptionArchive(
+        frame=current,
+        decision=int(snapshot.get("decision", 0)),
+        event_seq=int(snapshot["seq"]),
+        run_id=str(manifest.get("run_id", run_dir.name)),
+        state_id=state_id,
+        metadata=dict(metadata),
+    )
 
 
 def capture_replay(

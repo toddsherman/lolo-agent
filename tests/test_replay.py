@@ -9,6 +9,7 @@ from lolo_agent.replay import (
     _save_logged_state,
     committed_timeline,
     restore_logged_decision,
+    restore_logged_option_archive,
     write_player,
 )
 from lolo_agent.run_logging import RunLogger
@@ -103,6 +104,45 @@ class ReplayTests(unittest.TestCase):
             self.assertEqual(restored.frame, frame)
             self.assertEqual(restored.event_seq, stored["seq"])
             self.assertEqual(env.imported, (snapshot, frame))
+
+    def test_option_archive_snapshot_restores_by_logged_state_id(self) -> None:
+        class SnapshotEnvironment:
+            def __init__(self) -> None:
+                self.imported = None
+
+            def import_state(self, state: bytes, frame: Frame) -> Frame:
+                self.imported = (state, frame)
+                return frame
+
+        with tempfile.TemporaryDirectory() as directory:
+            logger = RunLogger(Path(directory), run_id="option-run")
+            frame = Frame(2, 2, 3, bytes(range(12)))
+            state = b"opaque-option-state"
+            stored = logger.store_option_archive_snapshot(
+                4, "state-00000009", state, frame
+            )
+            logger.log(
+                "human_prior_option_archive_added",
+                decision=4,
+                state_id="state-00000009",
+                human_prior_world_target_context="world-two",
+                **logger.frame_fields(frame),
+            )
+            logger.close()
+
+            env = SnapshotEnvironment()
+            restored = restore_logged_option_archive(
+                env, logger.run_dir, "state-00000009"
+            )
+
+            self.assertEqual(restored.frame, frame)
+            self.assertEqual(restored.event_seq, stored["seq"])
+            self.assertEqual(restored.state_id, "state-00000009")
+            self.assertEqual(
+                restored.metadata["human_prior_world_target_context"],
+                "world-two",
+            )
+            self.assertEqual(env.imported, (state, frame))
 
     def test_committed_timeline_excludes_rejected_branches(self) -> None:
         chosen = [{"frame": "chosen", "kind": "action_frame", "event_seq": 10}]
