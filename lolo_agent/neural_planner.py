@@ -234,6 +234,8 @@ class _ArchivedBranch:
     goal_chest_obtained: bool = False
     goal_milestone_checkpoint: Optional["_LifeHazardCheckpoint"] = None
     human_prior_unvisited_semantic_state: bool = False
+    goal_exhaustion_recovery_root: bool = False
+    goal_exhaustion_recovery_restores: int = 0
 
 
 @dataclass
@@ -1113,6 +1115,181 @@ class VerifiedNeuralAgent:
             checkpoint_kind=checkpoint.kind,
             exploration_steps=checkpoint.exploration_steps,
         )
+
+    def _goal_exhaustion_recovery_restore_budget(self) -> int:
+        """Bound repeated returns to an empirically important root state."""
+
+        return max(
+            2,
+            self.config.human_prior_navigation_recovery_grace + 2,
+        )
+
+    def _record_goal_exhaustion_recovery_root(
+        self,
+        branch: _ArchivedBranch,
+        *,
+        source: str,
+    ) -> None:
+        """Persist a reusable save-state root without exposing its bytes."""
+
+        persist_archive_state = getattr(
+            self.env, "persist_option_archive_state", None
+        )
+        if callable(persist_archive_state):
+            persist_archive_state(
+                branch.state,
+                branch.frame,
+                self.decision_index,
+            )
+        self._emit(
+            "human_prior_option_archive_added",
+            decision=self.decision_index,
+            source=source,
+            state_id=self._state_id(branch.state),
+            parent_state_id=branch.parent_state_id,
+            parent_frame=branch.parent_frame_digest,
+            parent_decision=branch.parent_decision,
+            search_depth=branch.search_depth,
+            option_depth=len(branch.plan.path),
+            path=branch.plan.path,
+            durations=branch.plan.durations,
+            source_graph_signature=branch.goal_source_signature,
+            source_behavioral_signature=branch.origin_signature,
+            source_causal_context_signature=(
+                branch.causal_context_signature
+            ),
+            target_graph_signature=branch.goal_target_signature or None,
+            target_frontier_signature=branch.frontier_signature,
+            target_causal_context_signature=(
+                branch.target_causal_context_signature
+            ),
+            target_pose_action=branch.pose_action,
+            target_graph_state_visits=(
+                self.human_prior_graph_state_visits[
+                    branch.goal_target_signature
+                ]
+                if branch.goal_target_signature
+                else 0
+            ),
+            target_player_position_visits=(
+                0
+                if branch.goal_player_slot is None
+                else self._human_prior_position_visits(
+                    branch.goal_target_signature,
+                    branch.goal_player_slot,
+                )
+            ),
+            human_prior_known_heart_slots=(
+                ()
+                if self.goal_prior is None
+                else tuple(sorted(self.goal_prior.known_slots))
+            ),
+            human_prior_target_hearts=branch.goal_heart_slots,
+            human_prior_remaining_hearts=branch.goal_remaining_hearts,
+            human_prior_goal_reward=branch.goal_progress_reward,
+            human_prior_milestone_reward=0.0,
+            human_prior_target_player_slot=branch.goal_player_slot,
+            human_prior_target_chest_slot=branch.goal_chest_slot,
+            human_prior_chest_obtained=branch.goal_chest_obtained,
+            human_prior_world_source_context=(
+                branch.goal_source_world_context
+            ),
+            human_prior_world_target_context=(
+                branch.goal_target_world_context
+            ),
+            human_prior_option_world_effect_signature=None,
+            human_prior_option_effect_frontier=False,
+            human_prior_option_entity_frontier=False,
+            human_prior_option_entity_state_signature=None,
+            human_prior_option_effect_frontier_reason=(
+                "goal_exhaustion_recovery_root"
+            ),
+            human_prior_episodic_graph_plan_kind=None,
+            human_prior_episodic_graph_progress=0.0,
+            human_prior_episodic_graph_bridge_reached=False,
+            human_prior_episodic_graph_remaining_cost=None,
+            human_prior_option_action_dependent_endpoint=False,
+            human_prior_option_action_dependent_visual_difference=0.0,
+            human_prior_option_local_action_dependent=False,
+            human_prior_option_local_action_dependent_visual_difference=0.0,
+            goal_exhaustion_recovery_root=True,
+            goal_exhaustion_recovery_restores=(
+                branch.goal_exhaustion_recovery_restores
+            ),
+            goal_exhaustion_recovery_restore_budget=(
+                self._goal_exhaustion_recovery_restore_budget()
+            ),
+            selected_primary=False,
+            score=branch.score,
+            archive_size=len(self.archive),
+            agent_visible=True,
+            **self._frame_fields(branch.frame),
+        )
+
+    def _archive_goal_exhaustion_recovery_root(
+        self,
+        state: object,
+        checkpoint: _LifeHazardCheckpoint,
+        analysis: Optional[HeartGoalAnalysis],
+    ) -> None:
+        """Retain the exact recovered capability while testing descendants."""
+
+        source_signature, target_signature = (
+            self._human_prior_graph_signatures(analysis)
+        )
+        duration = max(1, int(checkpoint.choice[2]))
+        branch = _ArchivedBranch(
+            state=state,
+            frame=checkpoint.frame,
+            plan=NeuralPlan(
+                (checkpoint.choice[1],),
+                (duration,),
+                0.0,
+                0.0,
+            ),
+            score=0.0,
+            scene=checkpoint.scene,
+            created=self.decision_index,
+            origin_signature=checkpoint.frontier_signature,
+            frontier_signature=checkpoint.frontier_signature,
+            causal_context_signature=checkpoint.causal_context_signature,
+            target_causal_context_signature=(
+                checkpoint.causal_context_signature
+            ),
+            pose_action=checkpoint.pose_action,
+            goal_heart_slots=checkpoint.goal_heart_slots,
+            goal_remaining_hearts=len(checkpoint.goal_heart_slots),
+            goal_total_hearts=(
+                0 if analysis is None else len(analysis.known_slots)
+            ),
+            goal_chest_slot=(
+                None if analysis is None else analysis.target_chest_slot
+            ),
+            goal_player_slot=checkpoint.goal_player_slot,
+            parent_state_id=checkpoint.state_id,
+            parent_frame_digest=checkpoint.frame.digest,
+            parent_decision=checkpoint.decision,
+            goal_source_signature=source_signature,
+            goal_target_signature=target_signature,
+            goal_source_world_context=(
+                checkpoint.human_prior_world_context_signature
+            ),
+            goal_target_world_context=(
+                checkpoint.human_prior_world_context_signature
+            ),
+            human_prior_verified_option=True,
+            human_prior_option_effect_frontier_reason=(
+                "goal_exhaustion_recovery_root"
+            ),
+            goal_chest_obtained=checkpoint.goal_chest_obtained,
+            goal_exhaustion_recovery_root=True,
+        )
+        self.archive.append(branch)
+        self._record_goal_exhaustion_recovery_root(
+            branch,
+            source="goal_milestone_exhaustion",
+        )
+        self._prune_archive()
 
     def _reset_goal_milestone_exhaustion_evidence(
         self,
@@ -2672,12 +2849,24 @@ class VerifiedNeuralAgent:
 
     @staticmethod
     def _human_prior_episodic_graph_phase(signature: str) -> str:
-        """Return the room configuration while omitting player position."""
+        """Return the visual goal phase used for verified route planning.
+
+        Exact graph nodes retain life and learned world context so archive
+        restoration can distinguish transformations.  Those fields are too
+        volatile for deciding whether two *verified edges* may participate in
+        the same route, however: enemy animation can change the world hash
+        between one committed movement and the next.  Route membership shares
+        only the stable pixel-derived goal phase.  Edges, controls, endpoints,
+        and save states remain exact and are still re-executed in the emulator.
+        """
 
         return "|".join(
             field
             for field in signature.split("|")
-            if field and not field.startswith("player=")
+            if field
+            and not field.startswith("player=")
+            and not field.startswith("life=")
+            and not field.startswith("world=")
         )
 
     @staticmethod
@@ -3073,7 +3262,9 @@ class VerifiedNeuralAgent:
             if self._human_prior_option_frontier_exhausted(signature):
                 continue
             unexpanded_actions = (
-                self._human_prior_unexpanded_control_actions(signature)
+                self._human_prior_navigation_unexpanded_control_actions(
+                    signature
+                )
             )
             if not unexpanded_actions:
                 continue
@@ -3368,6 +3559,42 @@ class VerifiedNeuralAgent:
             if action != Action.NOOP and action not in visited_actions
         )
 
+    def _human_prior_navigation_unexpanded_control_actions(
+        self, signature: str
+    ) -> Tuple[Action, ...]:
+        """Share route-frontier control coverage across transient contexts.
+
+        This is deliberately narrower than exact graph-edge coverage.  It is
+        used only to choose which remembered player position deserves route
+        replay next, preventing enemy animation or life-pixel variants from
+        presenting the same corridor position as a fresh six-button frontier.
+        Exact option verification, world-effect discovery, and archive keys
+        continue to use the complete graph signature.
+        """
+
+        if not signature:
+            return ()
+        navigation_signature = (
+            self._human_prior_navigation_graph_signature(signature)
+        )
+        visited_actions = {
+            action
+            for (source, action, _duration), visits in (
+                (
+                    self.human_prior_graph_edge_visits
+                    + self.human_prior_graph_edge_verifications
+                ).items()
+            )
+            if visits > 0
+            and self._human_prior_navigation_graph_signature(source)
+            == navigation_signature
+        }
+        return tuple(
+            action
+            for action in self.config.actions
+            if action != Action.NOOP and action not in visited_actions
+        )
+
     def _human_prior_control_neighbor_signatures(
         self, signature: str
     ) -> Tuple[str, ...]:
@@ -3530,6 +3757,12 @@ class VerifiedNeuralAgent:
         does not move.
         """
 
+        if branch.goal_exhaustion_recovery_root:
+            # This state is a protected rollback capability, not evidence of
+            # a newly discovered world frontier.  Advertising it as a world
+            # frontier makes best-first recovery interrupt descendants that
+            # are still exploring beyond the rollback point.
+            return False, False, False, False
         if (
             branch.plan.path[0] == Action.NOOP
             or not branch.goal_source_signature
@@ -12955,6 +13188,16 @@ class VerifiedNeuralAgent:
                         int(metadata.get("target_graph_state_visits", 1))
                         == 0
                     ),
+                    goal_exhaustion_recovery_root=bool(
+                        metadata.get(
+                            "goal_exhaustion_recovery_root", False
+                        )
+                    ),
+                    goal_exhaustion_recovery_restores=int(
+                        metadata.get(
+                            "goal_exhaustion_recovery_restores", 0
+                        )
+                    ),
                 )
             except (KeyError, TypeError, ValueError) as error:
                 if release_state is not None:
@@ -13059,6 +13302,12 @@ class VerifiedNeuralAgent:
                 ),
                 human_prior_world_source_context=source_world_context,
                 human_prior_world_target_context=target_world_context,
+                goal_exhaustion_recovery_root=(
+                    branch.goal_exhaustion_recovery_root
+                ),
+                goal_exhaustion_recovery_restores=(
+                    branch.goal_exhaustion_recovery_restores
+                ),
                 selected_primary=bool(metadata.get("selected_primary", False)),
                 score=branch.score,
                 archive_size=len(self.archive),
@@ -19202,6 +19451,26 @@ class VerifiedNeuralAgent:
                     positive_goal_milestone
                     and self.config.human_prior_life_loss_penalty > 0.0
                 ):
+                    recovery_roots = [
+                        branch
+                        for branch in self.archive
+                        if branch.goal_exhaustion_recovery_root
+                    ]
+                    if recovery_roots:
+                        removed_recovery_roots = (
+                            self._remove_archive_branches(
+                                recovery_roots,
+                                "superseded_by_new_goal_milestone",
+                            )
+                        )
+                        self._emit(
+                            "goal_exhaustion_recovery_roots_released",
+                            decision=self.decision_index,
+                            released_roots=removed_recovery_roots,
+                            reason="new_goal_milestone",
+                            agent_visible=True,
+                            **self._frame_fields(target),
+                        )
                     if self.pending_goal_milestone_checkpoint is not None:
                         self._release_life_hazard_checkpoint(
                             self.pending_goal_milestone_checkpoint,
@@ -20594,6 +20863,11 @@ class VerifiedNeuralAgent:
         recovery_cause = self.pending_recovery_cause or "life_loss"
         state_id = checkpoint.state_id
         self.env.load_state(checkpoint.state)
+        recovery_root_state = (
+            self.env.save_state()
+            if recovery_cause == "goal_exhaustion"
+            else None
+        )
         self.pending_life_recovery = None
         self.pending_recovery_cause = None
         release_state = getattr(self.env, "release_state", None)
@@ -20776,6 +21050,12 @@ class VerifiedNeuralAgent:
             if self.goal_prior is None
             else self.goal_prior.analyze(checkpoint.frame, checkpoint.frame)
         )
+        if recovery_root_state is not None:
+            self._archive_goal_exhaustion_recovery_root(
+                recovery_root_state,
+                checkpoint,
+                goal_analysis,
+            )
         self._emit(
             (
                 "control_collapse_state_restored"
@@ -21116,7 +21396,9 @@ class VerifiedNeuralAgent:
                     target_player_reference=candidate.goal_player_slot,
                 )
                 cached = (
-                    self._human_prior_ordering_adjusted_total_reward(
+                    0.0
+                    if candidate.goal_exhaustion_recovery_root
+                    else self._human_prior_ordering_adjusted_total_reward(
                         analysis
                     ),
                     analysis,
@@ -21186,7 +21468,12 @@ class VerifiedNeuralAgent:
                 # is useful instead of dropping it at the generic scene gate.
                 return bool(
                     self._signature(branch.frame) != current_signature
-                    or any(self._human_prior_archive_frontier_flags(branch))
+                    or (
+                        not branch.goal_exhaustion_recovery_root
+                        and any(
+                            self._human_prior_archive_frontier_flags(branch)
+                        )
+                    )
                 )
 
             if self.config.behavioral_best_first_archive:
@@ -21250,7 +21537,8 @@ class VerifiedNeuralAgent:
         exhausted_ordering_archives = [
             branch
             for branch in eligible
-            if self._human_prior_archive_ordering_blocked(branch)
+            if not branch.goal_exhaustion_recovery_root
+            and self._human_prior_archive_ordering_blocked(branch)
         ]
         if exhausted_ordering_archives:
             exhausted_ids = {
@@ -21298,7 +21586,8 @@ class VerifiedNeuralAgent:
         closed_control_leaf_archives = [
             branch
             for branch in eligible
-            if branch.human_prior_verified_option
+            if not branch.goal_exhaustion_recovery_root
+            and branch.human_prior_verified_option
             and branch.goal_target_signature
             and branch.goal_target_signature
             != branch.goal_source_signature
@@ -21503,7 +21792,8 @@ class VerifiedNeuralAgent:
             exhausted_semantic_branches = [
                 branch
                 for branch in eligible
-                if branch.goal_source_signature
+                if not branch.goal_exhaustion_recovery_root
+                and branch.goal_source_signature
                 and branch.goal_target_signature
                 and live_archive_goal_metrics(branch)[0] <= 0.0
                 and not (
@@ -21674,7 +21964,8 @@ class VerifiedNeuralAgent:
         hazardous_eligible = []
         for candidate in eligible:
             if (
-                live_archive_goal_metrics(candidate)[0] > 0.0
+                candidate.goal_exhaustion_recovery_root
+                or live_archive_goal_metrics(candidate)[0] > 0.0
                 or (
                     candidate.goal_total_hearts > 0
                     and candidate.goal_remaining_hearts
@@ -21723,7 +22014,8 @@ class VerifiedNeuralAgent:
         behavioral_frontier_safe = []
         for candidate in behavioral_frontier_candidates:
             if (
-                live_archive_goal_metrics(candidate)[0] > 0.0
+                candidate.goal_exhaustion_recovery_root
+                or live_archive_goal_metrics(candidate)[0] > 0.0
                 or (
                     candidate.goal_total_hearts > 0
                     and candidate.goal_remaining_hearts
@@ -21776,7 +22068,8 @@ class VerifiedNeuralAgent:
         human_prior_intervention_eligible = [
             candidate
             for candidate in human_prior_frontier_candidates
-            if candidate.plan.path[0] != Action.NOOP
+            if not candidate.goal_exhaustion_recovery_root
+            and candidate.plan.path[0] != Action.NOOP
             and candidate.goal_source_signature
         ]
         if (
@@ -21958,7 +22251,8 @@ class VerifiedNeuralAgent:
         behavioral_intervention_eligible = [
             candidate
             for candidate in behavioral_frontier_candidates
-            if candidate.plan.path[0] != Action.NOOP
+            if not candidate.goal_exhaustion_recovery_root
+            and candidate.plan.path[0] != Action.NOOP
             and candidate.origin_signature
         ]
         if (
@@ -22100,8 +22394,29 @@ class VerifiedNeuralAgent:
                 item.created,
                 item.score,
             )
+        normal_restore_eligible = [
+            candidate
+            for candidate in eligible
+            if not candidate.goal_exhaustion_recovery_root
+        ]
+        restore_eligible = normal_restore_eligible or eligible
+        deferred_recovery_roots = len(eligible) - len(restore_eligible)
+        if deferred_recovery_roots:
+            self._emit(
+                "goal_exhaustion_recovery_roots_deferred",
+                decision=self.decision_index + 1,
+                deferred_roots=deferred_recovery_roots,
+                normal_alternatives=len(restore_eligible),
+                recovery_reason=recovery_reason,
+                policy_effect="last_resort_fallback",
+                agent_visible=(
+                    self.goal_prior is None
+                    or self.goal_prior.current_player_slot is not None
+                ),
+                **self._frame_fields(self.frame),
+            )
         branch = max(
-            eligible,
+            restore_eligible,
             key=restore_key,
         )
         restored_goal_reward, restored_goal_analysis = (
@@ -22211,6 +22526,38 @@ class VerifiedNeuralAgent:
         self._discard_pending_temporal_option("archive_restore")
         restored_state_id = self._state_id(branch.state)
         self.env.load_state(branch.state)
+        if (
+            branch.goal_exhaustion_recovery_root
+            and branch.goal_exhaustion_recovery_restores
+            < self._goal_exhaustion_recovery_restore_budget()
+        ):
+            rearmed_state = self.env.save_state()
+            rearmed_branch = replace(
+                branch,
+                state=rearmed_state,
+                created=self.decision_index + 1,
+                goal_exhaustion_recovery_restores=(
+                    branch.goal_exhaustion_recovery_restores + 1
+                ),
+            )
+            self.archive.append(rearmed_branch)
+            self._record_goal_exhaustion_recovery_root(
+                rearmed_branch,
+                source="goal_exhaustion_recovery_rearmed",
+            )
+            self._prune_archive()
+            self._emit(
+                "goal_exhaustion_recovery_root_rearmed",
+                decision=self.decision_index + 1,
+                restored_state_id=restored_state_id,
+                state_id=self._state_id(rearmed_state),
+                restores=rearmed_branch.goal_exhaustion_recovery_restores,
+                restore_budget=(
+                    self._goal_exhaustion_recovery_restore_budget()
+                ),
+                agent_visible=True,
+                **self._frame_fields(branch.frame),
+            )
         release_state = getattr(self.env, "release_state", None)
         if release_state is not None:
             release_state(branch.state)
@@ -22259,6 +22606,13 @@ class VerifiedNeuralAgent:
             and (
                 restored_target_position_visits_before == 0
                 or restored_target_unexpanded_actions
+                or (
+                    branch.goal_target_signature
+                    and self.human_prior_graph_state_visits[
+                        branch.goal_target_signature
+                    ]
+                    == 0
+                )
             )
         )
         if archive_goal_milestone:
@@ -22976,6 +23330,7 @@ class VerifiedNeuralAgent:
             victim = min(
                 (branch for branch in self.archive if branch.scene in crowded_scenes),
                 key=lambda item: (
+                    item.goal_exhaustion_recovery_root,
                     self._archive_frontier_score(item),
                     (
                         -item.created

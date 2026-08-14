@@ -3580,6 +3580,56 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertFalse(reached)
         self.assertEqual(remaining, 0)
 
+    def test_episodic_route_connects_verified_transient_world_variants(
+        self,
+    ) -> None:
+        agent = VerifiedNeuralAgent(
+            ActionEffectEnv(),
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.DOWN),
+                human_prior_heart_reward=1.0,
+                human_prior_episodic_graph_guidance=True,
+            ),
+        )
+        agent.reset()
+        source = agent._human_prior_graph_signature(
+            ((7, 0),), (0, 0), None, "life-a", "world-a"
+        )
+        route = agent._human_prior_graph_signature(
+            ((7, 0),), (1, 0), None, "life-b", "world-b"
+        )
+        frontier = agent._human_prior_graph_signature(
+            ((7, 0),), (2, 0), None, "life-c", "world-c"
+        )
+        frontier_animation_variant = agent._human_prior_graph_signature(
+            ((7, 0),), (2, 0), None, "life-b", "world-b"
+        )
+        agent._record_human_prior_episodic_graph_transition(
+            source, route, 1, controls=((Action.RIGHT, 1),)
+        )
+        agent._record_human_prior_episodic_graph_transition(
+            route, frontier, 1, controls=((Action.RIGHT, 1),)
+        )
+        agent._record_human_prior_graph_edge_verification(
+            frontier_animation_variant, Action.RIGHT, 1
+        )
+
+        plan = agent._human_prior_episodic_graph_plan(source)
+
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertEqual(plan.kind, "control_frontier")
+        self.assertEqual(plan.waypoint_signature, frontier)
+        self.assertEqual(plan.frontier_actions, (Action.DOWN,))
+        self.assertEqual(
+            plan.route_controls,
+            ((Action.RIGHT, 1), (Action.RIGHT, 1)),
+        )
+
     def test_episodic_graph_plan_avoids_zero_length_milestone_route(
         self,
     ) -> None:
@@ -4839,6 +4889,86 @@ class EnsemblePlannerTests(unittest.TestCase):
             == "human_prior_best_first_archives_filtered"
         )
         self.assertTrue(filtered["episodic_graph_frontier_preferred"])
+        env.release_state(root)
+
+    def test_archive_restore_arms_grace_for_new_committed_graph_state(
+        self,
+    ) -> None:
+        env = UniqueStateEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                behavioral_best_first_archive=True,
+                human_prior_best_first_archive=True,
+                human_prior_navigation_recovery_grace=2,
+            ),
+            event_logger=logger,
+        )
+        source_frame = agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        root = env.save_state()
+        target_frame = env.step(Action.RIGHT, 1)
+        target_state = env.save_state()
+        env.load_state(root)
+        source_signature = agent._human_prior_graph_signature(
+            ((7, 0),), (0, 0), None, "life"
+        )
+        target_signature = agent._human_prior_graph_signature(
+            ((7, 0),), (1, 0), None, "life"
+        )
+        agent._record_human_prior_player_position(
+            target_signature, (1, 0)
+        )
+        agent._record_human_prior_graph_edge_verification(
+            target_signature, Action.RIGHT, 1
+        )
+        agent.archive = [
+            _ArchivedBranch(
+                state=target_state,
+                frame=target_frame,
+                plan=NeuralPlan((Action.RIGHT,), (1,), 1.0, 0.0),
+                score=1.0,
+                scene=agent._scene_signature(target_frame),
+                created=0,
+                origin_signature="source",
+                goal_source_signature=source_signature,
+                goal_target_signature=target_signature,
+                goal_heart_slots=((7, 0),),
+                goal_progress_reward=1.0,
+                goal_remaining_hearts=1,
+                goal_total_hearts=1,
+                goal_player_slot=(1, 0),
+            )
+        ]
+        agent.frame = source_frame
+        agent.human_prior_graph_recovery_pending = True
+
+        decision = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(agent.last_navigation_change_decision, 1)
+        restored = next(
+            event
+            for event in logger.events
+            if event["event"] == "archive_branch_restored"
+        )
+        self.assertTrue(restored["human_prior_navigation_grace_armed"])
+        self.assertEqual(
+            restored["human_prior_graph_state_visits_before"], 0
+        )
+        self.assertEqual(
+            restored["human_prior_target_position_visits_before"], 1
+        )
+        self.assertEqual(
+            restored["human_prior_target_unexpanded_actions"], ()
+        )
         env.release_state(root)
 
     def test_archive_restore_does_not_prefer_regressive_graph_progress_over_goal_progress(
@@ -8103,6 +8233,20 @@ class EnsemblePlannerTests(unittest.TestCase):
         ]
         self.assertEqual(len(restored), 1)
         self.assertEqual(restored[0]["recovery_cause"], "goal_exhaustion")
+        recovery_roots = [
+            branch
+            for branch in agent.archive
+            if branch.goal_exhaustion_recovery_root
+        ]
+        self.assertEqual(len(recovery_roots), 1)
+        self.assertEqual(recovery_roots[0].frame.digest, source_frame.digest)
+        archived_roots = [
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_archive_added"
+            and event.get("goal_exhaustion_recovery_root")
+        ]
+        self.assertEqual(len(archived_roots), 1)
 
     def test_goal_milestone_frontier_budget_rolls_back_without_full_exhaustion(
         self,
@@ -11786,6 +11930,66 @@ class EnsemblePlannerTests(unittest.TestCase):
 
         self.assertIsNotNone(restored)
         self.assertEqual(restored.frame.digest, alternative.digest)
+
+    def test_goal_exhaustion_recovery_root_is_a_last_resort_archive(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = UniqueStateEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                visual_stagnation_visits=1,
+            ),
+            event_logger=logger,
+        )
+        current = agent.reset()
+        scene = agent._scene_signature(current)
+        plan = NeuralPlan((Action.RIGHT,), (1,), 1.0, 0.0)
+        recovery_frame = Frame(8, 8, 1, bytes([0, 10]) + bytes(62))
+        ordinary_frame = Frame(8, 8, 1, bytes([0, 20]) + bytes(62))
+        agent.archive = [
+            _ArchivedBranch(
+                state=env.save_state(),
+                frame=recovery_frame,
+                plan=plan,
+                score=1000.0,
+                scene=scene,
+                created=2,
+                goal_exhaustion_recovery_root=True,
+            ),
+            _ArchivedBranch(
+                state=env.save_state(),
+                frame=ordinary_frame,
+                plan=plan,
+                score=0.0,
+                scene=scene,
+                created=1,
+                causal_spatial_signature="ordinary-frontier",
+            ),
+        ]
+        agent.visual_stagnation_streak = 1
+
+        restored = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(restored)
+        self.assertEqual(restored.frame.digest, ordinary_frame.digest)
+        self.assertTrue(
+            any(
+                branch.goal_exhaustion_recovery_root
+                for branch in agent.archive
+            )
+        )
+        agent.visual_stagnation_streak = 1
+        restored = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(restored)
+        self.assertEqual(restored.frame.digest, recovery_frame.digest)
 
     def test_stagnation_prefers_a_branch_from_the_current_causal_context(self) -> None:
         model = EnsembleVisualDynamicsModel(latent_size=32, action_size=8, ensemble_size=2)
