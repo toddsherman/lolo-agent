@@ -6491,6 +6491,9 @@ class EnsemblePlannerTests(unittest.TestCase):
             ],
             0,
         )
+        self.assertTrue(
+            result["endpoint_local_directional_pose_ambiguous"]
+        )
         self.assertFalse(result["confirmed"])
         self.assertFalse(result["entity_effect_confirmed"])
 

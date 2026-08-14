@@ -6567,6 +6567,18 @@ class VerifiedNeuralAgent:
             and len(common_cells)
             <= self.config.human_prior_option_effect_max_stable_cells
         )
+        endpoint_local_directional_pose_ambiguous = bool(
+            allow_endpoint_matched_local
+            and replaced_action
+            in (
+                Action.UP,
+                Action.DOWN,
+                Action.LEFT,
+                Action.RIGHT,
+            )
+            and endpoint_player_footprint_comparisons > 0
+            and not endpoint_player_footprint_matched_all
+        )
         confirmed = bool(
             safe
             and initial_cells
@@ -6575,6 +6587,7 @@ class VerifiedNeuralAgent:
             and localized
             and persistence_ratio >= 0.5
             and not endpoint_local_pose_contamination_observed
+            and not endpoint_local_directional_pose_ambiguous
             and (
                 not allow_endpoint_matched_local
                 or endpoint_matched_all
@@ -7072,6 +7085,9 @@ class VerifiedNeuralAgent:
             ),
             "endpoint_local_pose_contamination_observed": (
                 endpoint_local_pose_contamination_observed
+            ),
+            "endpoint_local_directional_pose_ambiguous": (
+                endpoint_local_directional_pose_ambiguous
             ),
             "minimum_cell_pixels": (
                 self.config.human_prior_option_effect_local_minimum_cell_pixels
