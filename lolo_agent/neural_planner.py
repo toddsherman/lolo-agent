@@ -3902,10 +3902,13 @@ class VerifiedNeuralAgent:
         duration: int,
         interaction_ray: Sequence[Tuple[int, int]],
         effect_cells: Sequence[Tuple[int, int]],
-        ignored_player_pixels: set[Tuple[int, int]],
+        factual_ignored_player_pixels: set[Tuple[int, int]],
         evidence_scope: str,
         evidence_eligible: bool = True,
         causal_effect_confirmed: bool = True,
+        control_ignored_player_pixels: Optional[
+            set[Tuple[int, int]]
+        ] = None,
     ) -> Optional[Dict[str, Any]]:
         """Predict or learn one anonymous type's controlled outcome.
 
@@ -3920,23 +3923,25 @@ class VerifiedNeuralAgent:
         model = self.entity_behavior_model
         if memory is None or model is None or not interaction_ray:
             return None
+        if control_ignored_player_pixels is None:
+            control_ignored_player_pixels = factual_ignored_player_pixels
         anchor = interaction_ray[0]
         source_feature = memory.feature_at(before_frame, *anchor)
         factual_feature = memory.feature_at(
-            factual_frame, *anchor, ignored_player_pixels
+            factual_frame, *anchor, factual_ignored_player_pixels
         )
         control_feature = memory.feature_at(
-            control_frame, *anchor, ignored_player_pixels
+            control_frame, *anchor, control_ignored_player_pixels
         )
         source_features = {
             (patch.column, patch.row): patch.feature
             for patch in before_observation.patches
         }
         factual_features = self._anonymous_entity_frame_features(
-            factual_frame, ignored_player_pixels
+            factual_frame, factual_ignored_player_pixels
         )
         control_features = self._anonymous_entity_frame_features(
-            control_frame, ignored_player_pixels
+            control_frame, control_ignored_player_pixels
         )
         relative_cells = tuple(
             sorted(
@@ -4155,7 +4160,17 @@ class VerifiedNeuralAgent:
             "evidence_eligible": evidence_eligible,
             "evidence_accepted": accepted,
             "causal_effect_confirmed": causal_effect_confirmed,
-            "ignored_player_pixels": len(ignored_player_pixels),
+            "ignored_player_pixels": len(
+                factual_ignored_player_pixels.union(
+                    control_ignored_player_pixels
+                )
+            ),
+            "factual_ignored_player_pixels": len(
+                factual_ignored_player_pixels
+            ),
+            "control_ignored_player_pixels": len(
+                control_ignored_player_pixels
+            ),
             "anonymous_type_id": type_id,
             "anonymous_type_created": created_type,
             "appearance_fingerprint": model.appearance_fingerprint(
@@ -5532,6 +5547,7 @@ class VerifiedNeuralAgent:
         action_index: int,
         allow_endpoint_matched_local: bool = False,
         expected_interaction_cell: Optional[Tuple[int, int]] = None,
+        audit_moving_directional_contact: bool = False,
     ) -> Dict[str, Any]:
         """Replace one option action with an equal-duration NOOP.
 
@@ -5554,7 +5570,8 @@ class VerifiedNeuralAgent:
         endpoint_matched_all = True
         final_factual = node.frame
         final_control = source_frame
-        final_entity_player_pixels: set[Tuple[int, int]] = set()
+        final_factual_player_pixels: set[Tuple[int, int]] = set()
+        final_control_player_pixels: set[Tuple[int, int]] = set()
         previous_control_frame: Optional[Frame] = None
         before_intervention, interaction_direction, interaction_ray = (
             self._human_prior_option_interaction_ray(
@@ -5563,6 +5580,17 @@ class VerifiedNeuralAgent:
         )
         audited_interaction_cell = (
             interaction_ray[0] if interaction_ray else None
+        )
+        moving_directional_contact = bool(
+            audit_moving_directional_contact
+            and not allow_endpoint_matched_local
+            and replaced_action
+            in (
+                Action.UP,
+                Action.DOWN,
+                Action.LEFT,
+                Action.RIGHT,
+            )
         )
         interaction_cell_matched = bool(
             expected_interaction_cell is None
@@ -5638,9 +5666,12 @@ class VerifiedNeuralAgent:
                 )
                 if endpoint_matched and allow_endpoint_matched_local:
                     ignored_player_pixels.update(entity_player_pixels)
+                    factual_player_pixels = set(entity_player_pixels)
+                    control_player_pixels = set(entity_player_pixels)
             else:
                 entity_player_pixels = set()
-            final_entity_player_pixels = entity_player_pixels
+            final_factual_player_pixels = factual_player_pixels
+            final_control_player_pixels = control_player_pixels
             spatial_signature, changed_pixels, _centroid = (
                 self._causal_spatial_effect(
                     factual,
@@ -5683,11 +5714,20 @@ class VerifiedNeuralAgent:
             world_effect_cells = self._causal_spatial_cells(
                 world_effect_signature
             )
-            audited_cells = (
-                world_effect_cells
-                if allow_endpoint_matched_local and endpoint_matched
-                else nonlocal_cells
-            )
+            if moving_directional_contact:
+                # The world-effect extractor has already removed the factual
+                # and control player cells.  Retain stable cells farther down
+                # the same action ray so a pushed appearance is not discarded
+                # merely because it remains adjacent to the moved player.
+                audited_cells = world_effect_cells.intersection(
+                    interaction_ray
+                )
+            else:
+                audited_cells = (
+                    world_effect_cells
+                    if allow_endpoint_matched_local and endpoint_matched
+                    else nonlocal_cells
+                )
             audited_cell_sets.append(audited_cells)
             safe = bool(
                 safe
@@ -5814,6 +5854,49 @@ class VerifiedNeuralAgent:
         entity_state_signature = ""
         memory = self.unlabeled_entity_memory
         if memory is not None and interaction_ray:
+            if moving_directional_contact and common_cells:
+                # Common ray cells have survived every stability check after
+                # the world-effect extractor removed both player endpoints.
+                # Do not let the conservative halo around the moved player
+                # mask a displaced appearance in one of those verified cells.
+                factual_unmasked_cells = set(common_cells)
+                control_unmasked_cells = set(common_cells)
+                if audited_interaction_cell is not None:
+                    control_unmasked_cells.add(audited_interaction_cell)
+                for player_pixels, unmasked_cells in (
+                    (
+                        final_factual_player_pixels,
+                        factual_unmasked_cells,
+                    ),
+                    (
+                        final_control_player_pixels,
+                        control_unmasked_cells,
+                    ),
+                ):
+                    for column, row in unmasked_cells:
+                        x_start = (
+                            column
+                            * final_factual.width
+                            // memory.columns
+                        )
+                        x_stop = (
+                            (column + 1)
+                            * final_factual.width
+                            // memory.columns
+                        )
+                        y_start = (
+                            row * final_factual.height // memory.rows
+                        )
+                        y_stop = (
+                            (row + 1)
+                            * final_factual.height
+                            // memory.rows
+                        )
+                        player_pixels.difference_update(
+                            (x, y)
+                            for y in range(y_start, y_stop)
+                            for x in range(x_start, x_stop)
+                        )
             before_observation = memory.observe(before_intervention)
             factual_observation = memory.observe(final_factual)
             control_observation = memory.observe(final_control)
@@ -5824,13 +5907,13 @@ class VerifiedNeuralAgent:
                     final_factual,
                     column,
                     row,
-                    final_entity_player_pixels,
+                    final_factual_player_pixels,
                 )
                 control_feature = memory.feature_at(
                     final_control,
                     column,
                     row,
-                    final_entity_player_pixels,
+                    final_control_player_pixels,
                 )
                 appearance_distance = memory.feature_distance(
                     factual_feature, control_feature
@@ -5865,7 +5948,7 @@ class VerifiedNeuralAgent:
                             final_factual,
                             column,
                             row,
-                            final_entity_player_pixels,
+                            final_factual_player_pixels,
                         )
                     )
                     for column, row in sorted(entity_effect_cells)
@@ -5896,7 +5979,7 @@ class VerifiedNeuralAgent:
                     node.durations[action_index],
                     interaction_ray,
                     tuple(sorted(entity_effect_cells)),
-                    final_entity_player_pixels,
+                    final_factual_player_pixels,
                     evidence_scope=(
                         f"option:{node.path}:{node.durations}:"
                         f"action-index-{action_index}"
@@ -5910,6 +5993,9 @@ class VerifiedNeuralAgent:
                     # effect on the interaction ray. Inert evidence remains
                     # eligible inside the observation helper.
                     causal_effect_confirmed=entity_effect_confirmed,
+                    control_ignored_player_pixels=(
+                        final_control_player_pixels
+                    ),
                 )
             )
         result = {
@@ -5929,9 +6015,13 @@ class VerifiedNeuralAgent:
             ),
             "persistence_ratio": persistence_ratio,
             "control_mode": (
-                "endpoint_matched_local"
-                if allow_endpoint_matched_local
-                else "nonlocal"
+                "moving_directional_ray"
+                if moving_directional_contact
+                else (
+                    "endpoint_matched_local"
+                    if allow_endpoint_matched_local
+                    else "nonlocal"
+                )
             ),
             "endpoint_matched": endpoint_matched_all,
             "minimum_cell_pixels": (
@@ -5962,7 +6052,9 @@ class VerifiedNeuralAgent:
             "entity_state_signature": entity_state_signature or None,
             "entity_effect_confirmed": entity_effect_confirmed,
             "entity_player_masked_pixels": len(
-                final_entity_player_pixels
+                final_factual_player_pixels.union(
+                    final_control_player_pixels
+                )
             ),
             "entity_entries": entity_entries,
             "anonymous_entity_behavior": anonymous_behavior,
@@ -6492,9 +6584,60 @@ class VerifiedNeuralAgent:
                 self.config.human_prior_option_effect_probe_limit,
             )
         )
-        candidates = candidates[
-            : effective_limit
-        ]
+        if effective_limit > 1:
+            button_candidates = [
+                item
+                for item in candidates
+                if item[0] in (Action.A, Action.B)
+            ]
+            directional_candidates = [
+                item
+                for item in candidates
+                if item[0]
+                in (
+                    Action.UP,
+                    Action.DOWN,
+                    Action.LEFT,
+                    Action.RIGHT,
+                )
+            ]
+            if button_candidates and directional_candidates:
+                paired_direction_candidates = [
+                    item
+                    for item in directional_candidates
+                    if item[1].get("target_cell")
+                    == button_candidates[0][1].get("target_cell")
+                ]
+                # Preserve intervention-class diversity under a tight probe
+                # budget.  Otherwise two unknown buttons can permanently
+                # crowd out direct contact with an adjacent appearance, so a
+                # discovered push remains usable by search but never enters
+                # the transferable behavior model. Prefer contact with the
+                # same target as the selected button to form a controlled
+                # comparison over one anonymous appearance.
+                diverse_candidates = [
+                    button_candidates[0],
+                    (
+                        paired_direction_candidates[0]
+                        if paired_direction_candidates
+                        else directional_candidates[0]
+                    ),
+                ]
+                diverse_ids = {
+                    (item[0], str(item[1].get("signature") or ""))
+                    for item in diverse_candidates
+                }
+                diverse_candidates.extend(
+                    item
+                    for item in candidates
+                    if (
+                        item[0],
+                        str(item[1].get("signature") or ""),
+                    )
+                    not in diverse_ids
+                )
+                candidates = diverse_candidates
+        candidates = candidates[:effective_limit]
         if not candidates:
             return _AdjacentEntityProbeResult()
         attempted_signature_values = [
@@ -6602,8 +6745,35 @@ class VerifiedNeuralAgent:
                 duration,
                 candidate_rank,
                 0,
-                allow_endpoint_matched_local=True,
+                # A successful directional contact can move both the player
+                # and the adjacent appearance.  Audit that case through
+                # persistent non-player cells farther along the interaction
+                # ray; blocked contacts and buttons retain the stricter local
+                # endpoint-matched comparison.
+                allow_endpoint_matched_local=bool(
+                    probe_scope != "proactive"
+                    or action not in (
+                        Action.UP,
+                        Action.DOWN,
+                        Action.LEFT,
+                        Action.RIGHT,
+                    )
+                    or immediate_analysis.target_player_slot
+                    == source_analysis.target_player_slot
+                ),
                 expected_interaction_cell=curiosity.get("target_cell"),
+                audit_moving_directional_contact=bool(
+                    probe_scope == "proactive"
+                    and action
+                    in (
+                        Action.UP,
+                        Action.DOWN,
+                        Action.LEFT,
+                        Action.RIGHT,
+                    )
+                    and immediate_analysis.target_player_slot
+                    != source_analysis.target_player_slot
+                ),
             )
             effect_confirmed = bool(result.get("entity_effect_confirmed"))
             confirmed += int(effect_confirmed)

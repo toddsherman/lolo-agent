@@ -605,6 +605,26 @@ class InteractionCellMaskedGoalPrior(PositionGoalPrior):
         return player
 
 
+class MovingAdjacentMaskGoalPrior(PositionGoalPrior):
+    @staticmethod
+    def player_pixel_mask(
+        frame: Frame,
+        slot: tuple[int, int],
+        search_padding: int = 12,
+        dilation: int = 3,
+    ) -> set[tuple[int, int]]:
+        del frame, search_padding, dilation
+        player_column = slot[0] // 4
+        return {
+            (x, y)
+            for y in range(4)
+            for x in range(
+                player_column * 4,
+                min(32, (player_column + 2) * 4),
+            )
+        }
+
+
 class FootprintPositionGoalPrior(PositionGoalPrior):
     @staticmethod
     def player_pixel_mask(
@@ -976,6 +996,46 @@ class AdjacentButtonTransformEnv(UnlabeledEntityTransformEnv):
         self.armed = True
         self.transformed = False
         return self._frame()
+
+
+class PushableEntityEnv:
+    def __init__(self) -> None:
+        self.player_column = 0
+        self.entity_column = 1
+
+    def reset(self) -> Frame:
+        self.player_column = 0
+        self.entity_column = 1
+        return self._frame()
+
+    def step(self, action: Action, frames: int = 1) -> Frame:
+        del frames
+        if (
+            action == Action.RIGHT
+            and self.entity_column == self.player_column + 1
+            and self.entity_column < 7
+        ):
+            self.player_column += 1
+            self.entity_column += 1
+        return self._frame()
+
+    def save_state(self) -> tuple[int, int]:
+        return self.player_column, self.entity_column
+
+    def load_state(self, state: tuple[int, int]) -> Frame:
+        self.player_column, self.entity_column = state
+        return self._frame()
+
+    def _frame(self) -> Frame:
+        pixels = bytearray(32 * 32)
+        for y in range(4):
+            for x in range(
+                self.entity_column * 4,
+                self.entity_column * 4 + 4,
+            ):
+                pixels[y * 32 + x] = 96
+        pixels[self.player_column * 4] = 255
+        return Frame(32, 32, 1, bytes(pixels))
 
 
 class CommonAdjacentButtonTransformEnv(AdjacentButtonTransformEnv):
@@ -6013,6 +6073,120 @@ class EnsemblePlannerTests(unittest.TestCase):
                 "observed_manipulation_effect"
             ]
         )
+        self.assertEqual(env._frame().digest, initial.digest)
+
+    def test_proactive_probe_reserves_button_and_direction_classes(
+        self,
+    ) -> None:
+        logger = RecordingLogger()
+        env = UnlabeledEntityTransformEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(
+                    Action.RIGHT,
+                    Action.DOWN,
+                    Action.A,
+                    Action.B,
+                    Action.NOOP,
+                ),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_option_search_action_frames=1,
+                human_prior_option_effect_stability_steps=1,
+                human_prior_option_effect_probe_limit=2,
+                human_prior_option_effect_phase_offsets=1,
+                human_prior_option_effect_local_controls=True,
+                human_prior_option_entity_frontier=True,
+                human_prior_proactive_entity_probe_limit=2,
+                anonymous_entity_behavior_learning=True,
+                causal_spatial_columns=8,
+                causal_spatial_rows=8,
+            ),
+            event_logger=logger,
+            entity_behavior_model=AnonymousEntityBehaviorModel(
+                minimum_prediction_samples=1
+            ),
+        )
+        agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        agent.current_pose_action = Action.RIGHT
+
+        agent._probe_current_adjacent_anonymous_affordances()
+
+        started = next(
+            event
+            for event in logger.events
+            if event["event"]
+            == "human_prior_adjacent_entity_probe_started"
+        )
+        self.assertEqual(len(started["candidate_actions"]), 2)
+        self.assertIn(Action.RIGHT, started["candidate_actions"])
+        self.assertTrue(
+            any(
+                action in (Action.A, Action.B)
+                for action in started["candidate_actions"]
+            )
+        )
+
+    def test_proactive_probe_learns_directional_entity_displacement(
+        self,
+    ) -> None:
+        logger = RecordingLogger()
+        env = PushableEntityEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.NOOP),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_option_search_action_frames=1,
+                human_prior_option_effect_stability_steps=1,
+                human_prior_option_effect_probe_limit=1,
+                human_prior_option_effect_phase_offsets=1,
+                human_prior_option_effect_local_controls=True,
+                human_prior_option_entity_frontier=True,
+                human_prior_proactive_entity_probe_limit=1,
+                anonymous_entity_behavior_learning=True,
+                causal_spatial_columns=8,
+                causal_spatial_rows=8,
+            ),
+            event_logger=logger,
+            entity_behavior_model=AnonymousEntityBehaviorModel(
+                minimum_prediction_samples=1
+            ),
+        )
+        initial = agent.reset()
+        agent.goal_prior = MovingAdjacentMaskGoalPrior()
+
+        result = agent._probe_current_adjacent_anonymous_affordances()
+
+        self.assertEqual(result.candidates, 1)
+        self.assertEqual(result.confirmed_entity_effects, 1)
+        completed = next(
+            event
+            for event in logger.events
+            if event["event"]
+            == "human_prior_adjacent_entity_probe_completed"
+        )
+        behavior = completed["anonymous_entity_behavior"]
+        self.assertEqual(completed["action"], Action.RIGHT)
+        self.assertTrue(completed["control_confirmed"])
+        self.assertTrue(completed["entity_effect_confirmed"])
+        self.assertEqual(
+            behavior["observed_entity_displacement"], (1, 0)
+        )
+        self.assertTrue(behavior["observed_manipulation_effect"])
         self.assertEqual(env._frame().digest, initial.digest)
 
     def test_proactive_probe_includes_common_unresolved_appearance(
