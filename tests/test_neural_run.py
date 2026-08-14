@@ -121,6 +121,13 @@ class StableSceneChangeDetectorTests(unittest.TestCase):
                             "marker": "child-milestone-outcome",
                         },
                         {
+                            "event": (
+                                "human_prior_navigation_detour_expired"
+                            ),
+                            "decision": 1,
+                            "marker": "child-detour-expired",
+                        },
+                        {
                             "event": "human_prior_option_branch_verified",
                             "decision": 1,
                             "marker": "child-option-branch",
@@ -180,6 +187,7 @@ class StableSceneChangeDetectorTests(unittest.TestCase):
                 "child-room-boundary",
                 "child-hazard",
                 "child-milestone-outcome",
+                "child-detour-expired",
                 "child-option-branch",
                 "child-option-neutral",
                 "child-option-local-neutral",

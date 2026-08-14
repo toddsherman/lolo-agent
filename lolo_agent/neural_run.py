@@ -441,6 +441,7 @@ def load_episodic_decision_events(
             "decision_committed",
             "goal_milestone_exhaustion_learned",
             "human_prior_milestone_outcome_recorded",
+            "human_prior_navigation_detour_expired",
             "human_prior_option_archive_added",
             "human_prior_option_branch_verified",
             "human_prior_option_local_neutral_verified",
