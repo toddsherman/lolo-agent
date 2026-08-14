@@ -8756,6 +8756,125 @@ class EnsemblePlannerTests(unittest.TestCase):
             seeded["navigation_recovery_grace_elapsed_decisions"], 0
         )
 
+    def test_navigation_detour_filters_immediate_semantic_return(self) -> None:
+        agent = VerifiedNeuralAgent(
+            UniqueStateEnv(),
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                human_prior_navigation_recovery_grace=4,
+            ),
+        )
+        source = agent.reset()
+        goal_prior = PositionGoalPrior()
+        agent.goal_prior = goal_prior
+        returning_state = object()
+        alternative_state = object()
+        returning_frame = Frame(8, 8, 1, bytes([0, 255]) + bytes(62))
+        alternative_frame = Frame(
+            8, 8, 1, bytes([0, 0, 255]) + bytes(61)
+        )
+        returning_analysis = goal_prior.analyze(source, returning_frame)
+        alternative_analysis = goal_prior.analyze(
+            source, alternative_frame
+        )
+        returning = (
+            10.0,
+            NeuralPlan((Action.RIGHT,), (1,), 10.0, 0.0),
+            returning_state,
+        )
+        alternative = (
+            1.0,
+            NeuralPlan((Action.LEFT,), (1,), 1.0, 0.0),
+            alternative_state,
+        )
+        agent.decision_index = 3
+        agent.last_navigation_change_decision = 3
+        agent.human_prior_navigation_detour_origin_signature = "origin"
+        agent.human_prior_navigation_detour_started_decision = 3
+
+        filtered, returning_rows, fail_open = (
+            agent._filter_human_prior_navigation_detour_returns(
+                [returning, alternative],
+                {
+                    id(returning_state): returning_analysis,
+                    id(alternative_state): alternative_analysis,
+                },
+                {
+                    id(returning_state): ("current", "origin"),
+                    id(alternative_state): ("current", "egress"),
+                },
+                {
+                    id(returning_state): ("world", "world", ""),
+                    id(alternative_state): ("world", "world", ""),
+                },
+            )
+        )
+
+        self.assertEqual(filtered, [alternative])
+        self.assertEqual(returning_rows, [returning])
+        self.assertFalse(fail_open)
+
+        filtered, returning_rows, fail_open = (
+            agent._filter_human_prior_navigation_detour_returns(
+                [returning],
+                {id(returning_state): returning_analysis},
+                {id(returning_state): ("current", "origin")},
+                {id(returning_state): ("world", "world", "")},
+            )
+        )
+        self.assertEqual(filtered, [returning])
+        self.assertEqual(returning_rows, [returning])
+        self.assertTrue(fail_open)
+
+    def test_seed_human_prior_memory_restores_navigation_detour(self) -> None:
+        agent = VerifiedNeuralAgent(
+            WorldEffectEnv(True),
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                human_prior_heart_reward=1.0,
+                human_prior_navigation_reward=1.0,
+                human_prior_navigation_recovery_grace=4,
+            ),
+        )
+        agent.reset()
+        events = [
+            {
+                "event": "decision_committed",
+                "run_id": "source-run",
+                "attempt": 1,
+                "decision": 7,
+                "human_prior_navigation_detour_armed": True,
+                "human_prior_navigation_detour_active": True,
+                "human_prior_navigation_detour_origin_signature": (
+                    "detour-origin"
+                ),
+                "human_prior_navigation_detour_started_decision": 7,
+                "human_prior_graph_source_signature": "detour-origin",
+                "human_prior_graph_target_signature": "detour-egress",
+                "human_prior_target_player_slot": [16, 0],
+                "human_prior_known_heart_slots": [[32, 32]],
+                "human_prior_target_hearts": [[32, 32]],
+                "human_prior_world_target_context": (
+                    "human-prior-world-root"
+                ),
+            }
+        ]
+
+        agent.seed_human_prior_episodic_memory(events)
+
+        self.assertEqual(agent.last_navigation_change_decision, 0)
+        self.assertEqual(
+            agent.human_prior_navigation_detour_origin_signature,
+            "detour-origin",
+        )
+        self.assertTrue(agent._human_prior_navigation_detour_active())
+
     def test_seed_human_prior_memory_restores_disproved_ordering(self) -> None:
         model = EnsembleVisualDynamicsModel(
             latent_size=32, action_size=8, ensemble_size=2
