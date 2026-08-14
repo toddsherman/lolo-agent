@@ -1064,6 +1064,12 @@ class VerifiedNeuralAgent:
             int
         ] = None
         self.human_prior_navigation_detour_previous_signature = ""
+        self.human_prior_navigation_detour_origin_control: Optional[
+            Tuple[Action, int]
+        ] = None
+        self.human_prior_exhausted_navigation_detours: set[
+            Tuple[str, Action, int]
+        ] = set()
         self.pending_life_hazard_choice: Optional[
             Tuple[int, str, Action, int, str]
         ] = None
@@ -1801,6 +1807,45 @@ class VerifiedNeuralAgent:
             ),
             len(progress),
         )
+
+    def _filter_human_prior_exhausted_navigation_detours(
+        self,
+        verified: List[Tuple[Any, ...]],
+        analyses: Dict[int, Optional[HeartGoalAnalysis]],
+        graph_signatures: Dict[int, Tuple[str, str]],
+        world_contexts: Dict[int, Tuple[str, str, str]],
+    ) -> Tuple[List[Tuple[Any, ...]], List[Tuple[Any, ...]]]:
+        """Remove unchanged controller egresses whose detour was exhausted."""
+
+        if not self.human_prior_exhausted_navigation_detours:
+            return verified, []
+        blocked: List[Tuple[Any, ...]] = []
+        for item in verified:
+            state = item[2]
+            analysis = analyses.get(id(state))
+            source_signature = graph_signatures.get(
+                id(state), ("", "")
+            )[0]
+            world_effect = world_contexts.get(id(state), ("", "", ""))[2]
+            edge = (
+                source_signature,
+                item[1].path[0],
+                item[1].durations[0],
+            )
+            if (
+                edge in self.human_prior_exhausted_navigation_detours
+                and analysis is not None
+                and analysis.milestone_reward <= 0.0
+                and not world_effect
+            ):
+                blocked.append(item)
+        if not blocked:
+            return verified, []
+        blocked_ids = {id(item[2]) for item in blocked}
+        filtered = [
+            item for item in verified if id(item[2]) not in blocked_ids
+        ]
+        return (filtered, blocked) if filtered else (verified, [])
 
     def _commit_goal_prior(
         self, analysis: HeartGoalAnalysis, frame: Frame
@@ -10461,6 +10506,8 @@ class VerifiedNeuralAgent:
         self.human_prior_navigation_detour_origin_signature = ""
         self.human_prior_navigation_detour_started_decision = None
         self.human_prior_navigation_detour_previous_signature = ""
+        self.human_prior_navigation_detour_origin_control = None
+        self.human_prior_exhausted_navigation_detours.clear()
         self.pending_life_hazard_choice = None
         self.pending_life_recovery = None
         self.pending_recovery_cause = None
@@ -11107,6 +11154,8 @@ class VerifiedNeuralAgent:
         navigation_detour_origin_signature = ""
         navigation_detour_started_at: Optional[int] = None
         navigation_detour_previous_signature = ""
+        navigation_detour_origin_control: Optional[Tuple[Action, int]] = None
+        exhausted_navigation_detours: set[Tuple[str, Action, int]] = set()
 
         def record_episodic_transition(
             source_signature: str,
@@ -11249,6 +11298,8 @@ class VerifiedNeuralAgent:
                 navigation_detour_origin_signature = ""
                 navigation_detour_started_at = None
                 navigation_detour_previous_signature = ""
+                navigation_detour_origin_control = None
+                exhausted_navigation_detours.clear()
                 known_slots = {
                     (int(slot[0]), int(slot[1]))
                     for slot in (
@@ -11264,6 +11315,33 @@ class VerifiedNeuralAgent:
                 latest_decision_has_semantic_state = False
                 continue
             event_type = str(event.get("event") or "")
+            if event_type == "human_prior_navigation_detour_expired":
+                exhausted_origin = str(
+                    event.get("origin_graph_signature") or ""
+                )
+                exhausted_action = event.get("origin_action")
+                exhausted_duration = event.get("origin_action_frames")
+                if (
+                    event.get("exhausted_edge_recorded", False)
+                    and exhausted_origin
+                    and exhausted_action is not None
+                    and exhausted_duration is not None
+                ):
+                    try:
+                        exhausted_navigation_detours.add(
+                            (
+                                exhausted_origin,
+                                Action(str(exhausted_action)),
+                                int(exhausted_duration),
+                            )
+                        )
+                    except (TypeError, ValueError):
+                        pass
+                navigation_detour_origin_signature = ""
+                navigation_detour_started_at = None
+                navigation_detour_previous_signature = ""
+                navigation_detour_origin_control = None
+                continue
             graph_source_signature = ""
             graph_target_signature = ""
             graph_action_cost = 1
@@ -11850,6 +11928,23 @@ class VerifiedNeuralAgent:
                     or ""
                 )
                 navigation_detour_started_at = decisions
+                raw_detour_action = event.get(
+                    "human_prior_navigation_detour_origin_action"
+                ) or next(iter(event.get("path") or ()), None)
+                raw_detour_duration = event.get(
+                    "human_prior_navigation_detour_origin_action_frames"
+                ) or next(iter(event.get("durations") or ()), None)
+                if (
+                    raw_detour_action is not None
+                    and raw_detour_duration is not None
+                ):
+                    try:
+                        navigation_detour_origin_control = (
+                            Action(str(raw_detour_action)),
+                            int(raw_detour_duration),
+                        )
+                    except (TypeError, ValueError):
+                        navigation_detour_origin_control = None
             elif "human_prior_navigation_detour_active" in event:
                 if event.get("human_prior_navigation_detour_active", False):
                     navigation_detour_origin_signature = str(
@@ -11872,6 +11967,7 @@ class VerifiedNeuralAgent:
                     navigation_detour_origin_signature = ""
                     navigation_detour_started_at = None
                     navigation_detour_previous_signature = ""
+                    navigation_detour_origin_control = None
             latest_decision_has_semantic_state = bool(
                 "human_prior_target_hearts" in event
                 or event.get("human_prior_target_player_slot") is not None
@@ -12041,6 +12137,9 @@ class VerifiedNeuralAgent:
         self.human_prior_episodic_milestone_transitions = (
             episodic_milestone_transitions
         )
+        self.human_prior_exhausted_navigation_detours = (
+            exhausted_navigation_detours
+        )
         self.temporal_option_values.update(temporal_option_values)
         self.temporal_option_samples.update(temporal_option_samples)
         navigation_grace_elapsed_decisions: Optional[int] = None
@@ -12071,6 +12170,9 @@ class VerifiedNeuralAgent:
                     )
                     self.human_prior_navigation_detour_previous_signature = (
                         navigation_detour_previous_signature
+                    )
+                    self.human_prior_navigation_detour_origin_control = (
+                        navigation_detour_origin_control
                     )
         if latest_decision_has_semantic_state:
             present_slots = event_present_slots
@@ -12122,6 +12224,9 @@ class VerifiedNeuralAgent:
             milestone_outcomes=len(self.human_prior_milestone_outcomes),
             exhausted_milestone_transitions=len(
                 self.human_prior_exhausted_milestone_transitions
+            ),
+            exhausted_navigation_detours=len(
+                self.human_prior_exhausted_navigation_detours
             ),
             ordering_progress_hypotheses=len(
                 self.human_prior_ordering_progress_hypotheses
@@ -15414,6 +15519,15 @@ class VerifiedNeuralAgent:
             self.human_prior_navigation_detour_origin_signature
             and not navigation_recovery_grace_active
         ):
+            expired_detour_edge = None
+            if self.human_prior_navigation_detour_origin_control is not None:
+                expired_detour_edge = (
+                    self.human_prior_navigation_detour_origin_signature,
+                    *self.human_prior_navigation_detour_origin_control,
+                )
+                self.human_prior_exhausted_navigation_detours.add(
+                    expired_detour_edge
+                )
             self._emit(
                 "human_prior_navigation_detour_expired",
                 decision=self.decision_index + 1,
@@ -15426,10 +15540,27 @@ class VerifiedNeuralAgent:
                 grace_decisions=(
                     self.config.human_prior_navigation_recovery_grace
                 ),
+                origin_action=(
+                    None
+                    if expired_detour_edge is None
+                    else expired_detour_edge[1]
+                ),
+                origin_action_frames=(
+                    None
+                    if expired_detour_edge is None
+                    else expired_detour_edge[2]
+                ),
+                exhausted_edge_recorded=(
+                    expired_detour_edge is not None
+                ),
+                exhausted_detour_edges=len(
+                    self.human_prior_exhausted_navigation_detours
+                ),
             )
             self.human_prior_navigation_detour_origin_signature = ""
             self.human_prior_navigation_detour_started_decision = None
             self.human_prior_navigation_detour_previous_signature = ""
+            self.human_prior_navigation_detour_origin_control = None
         human_prior_graph_stagnant = bool(
             human_prior_graph_repeated
             and not navigation_recovery_grace_active
@@ -17030,6 +17161,44 @@ class VerifiedNeuralAgent:
                     alternatives_remaining=len(selection_verified),
                     fail_open=navigation_detour_fail_open,
                 )
+            (
+                selection_verified,
+                exhausted_navigation_detour_branches,
+            ) = self._filter_human_prior_exhausted_navigation_detours(
+                selection_verified,
+                branch_goal_analyses,
+                branch_goal_signatures,
+                branch_goal_world_contexts,
+            )
+            if exhausted_navigation_detour_branches:
+                self._emit(
+                    "human_prior_exhausted_navigation_detours_filtered",
+                    decision=self.decision_index + 1,
+                    enabled=True,
+                    policy_authority=True,
+                    policy_effect="bounded_route_exhaustion",
+                    hazard_evidence=False,
+                    blocked_branches=tuple(
+                        {
+                            "source_graph_signature": (
+                                branch_goal_signatures[id(item[2])][0]
+                            ),
+                            "action": item[1].path[0],
+                            "action_frames": item[1].durations[0],
+                            "target_graph_signature": (
+                                branch_goal_signatures[id(item[2])][1]
+                            ),
+                        }
+                        for item in exhausted_navigation_detour_branches
+                    ),
+                    branches_filtered=len(
+                        exhausted_navigation_detour_branches
+                    ),
+                    alternatives_remaining=len(selection_verified),
+                    exhausted_detour_edges=len(
+                        self.human_prior_exhausted_navigation_detours
+                    ),
+                )
             milestone_goal_branches = [
                 item
                 for item in selection_verified
@@ -18131,6 +18300,10 @@ class VerifiedNeuralAgent:
                 self.human_prior_navigation_detour_previous_signature = (
                     committed_goal_source_signature
                 )
+                self.human_prior_navigation_detour_origin_control = (
+                    plan.path[0],
+                    plan.durations[0],
+                )
                 self._emit(
                     "human_prior_navigation_detour_armed",
                     decision=self.decision_index,
@@ -18147,6 +18320,8 @@ class VerifiedNeuralAgent:
                     grace_decisions=(
                         self.config.human_prior_navigation_recovery_grace
                     ),
+                    origin_action=plan.path[0],
+                    origin_action_frames=plan.durations[0],
                     reason="bounded_search_regressive_egress",
                 )
             elif (
@@ -18176,6 +18351,7 @@ class VerifiedNeuralAgent:
                 self.human_prior_navigation_detour_origin_signature = ""
                 self.human_prior_navigation_detour_started_decision = None
                 self.human_prior_navigation_detour_previous_signature = ""
+                self.human_prior_navigation_detour_origin_control = None
             frontier_reward = (
                 float(target_signature_is_new)
                 + self.config.scene_novelty_weight * float(target_scene_is_new)
@@ -19467,6 +19643,21 @@ class VerifiedNeuralAgent:
                     self.human_prior_navigation_detour_previous_signature
                     or None
                 ),
+                human_prior_navigation_detour_origin_action=(
+                    None
+                    if self.human_prior_navigation_detour_origin_control
+                    is None
+                    else self.human_prior_navigation_detour_origin_control[0]
+                ),
+                human_prior_navigation_detour_origin_action_frames=(
+                    None
+                    if self.human_prior_navigation_detour_origin_control
+                    is None
+                    else self.human_prior_navigation_detour_origin_control[1]
+                ),
+                human_prior_exhausted_navigation_detours=(
+                    len(self.human_prior_exhausted_navigation_detours)
+                ),
                 **self._human_prior_fields(committed_goal_analysis),
                 action_counts=self.action_counts,
                 duration_counts=self.duration_counts,
@@ -19776,6 +19967,7 @@ class VerifiedNeuralAgent:
         self.human_prior_navigation_detour_origin_signature = ""
         self.human_prior_navigation_detour_started_decision = None
         self.human_prior_navigation_detour_previous_signature = ""
+        self.human_prior_navigation_detour_origin_control = None
         self.pending_life_hazard_choice = None
         self._restore_goal_prior(
             checkpoint.goal_heart_slots,
@@ -19931,6 +20123,7 @@ class VerifiedNeuralAgent:
         self.human_prior_navigation_detour_origin_signature = ""
         self.human_prior_navigation_detour_started_decision = None
         self.human_prior_navigation_detour_previous_signature = ""
+        self.human_prior_navigation_detour_origin_control = None
         self.pending_life_hazard_choice = None
         self._restore_goal_prior(
             checkpoint.goal_heart_slots,
@@ -21363,6 +21556,7 @@ class VerifiedNeuralAgent:
         self.human_prior_navigation_detour_origin_signature = ""
         self.human_prior_navigation_detour_started_decision = None
         self.human_prior_navigation_detour_previous_signature = ""
+        self.human_prior_navigation_detour_origin_control = None
         if milestone_checkpoint_source is not None:
             assert self.pending_goal_milestone_checkpoint is not None
             self._emit(

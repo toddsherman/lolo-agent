@@ -8817,6 +8817,29 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(returning_rows, [returning])
         self.assertFalse(fail_open)
 
+        agent.human_prior_exhausted_navigation_detours.add(
+            ("current", Action.RIGHT, 1)
+        )
+        filtered, exhausted_rows = (
+            agent._filter_human_prior_exhausted_navigation_detours(
+                [returning, alternative],
+                {
+                    id(returning_state): returning_analysis,
+                    id(alternative_state): alternative_analysis,
+                },
+                {
+                    id(returning_state): ("current", "origin"),
+                    id(alternative_state): ("current", "egress"),
+                },
+                {
+                    id(returning_state): ("world", "world", ""),
+                    id(alternative_state): ("world", "world", ""),
+                },
+            )
+        )
+        self.assertEqual(filtered, [alternative])
+        self.assertEqual(exhausted_rows, [returning])
+
         filtered, returning_rows, fail_open = (
             agent._filter_human_prior_navigation_detour_returns(
                 [returning],
@@ -8917,6 +8940,16 @@ class EnsemblePlannerTests(unittest.TestCase):
         agent.reset()
         events = [
             {
+                "event": "human_prior_navigation_detour_expired",
+                "run_id": "source-run",
+                "attempt": 1,
+                "decision": 6,
+                "origin_graph_signature": "old-origin",
+                "origin_action": "left",
+                "origin_action_frames": 4,
+                "exhausted_edge_recorded": True,
+            },
+            {
                 "event": "decision_committed",
                 "run_id": "source-run",
                 "attempt": 1,
@@ -8927,6 +8960,8 @@ class EnsemblePlannerTests(unittest.TestCase):
                     "detour-origin"
                 ),
                 "human_prior_navigation_detour_started_decision": 7,
+                "human_prior_navigation_detour_origin_action": "left",
+                "human_prior_navigation_detour_origin_action_frames": 16,
                 "human_prior_graph_source_signature": "detour-origin",
                 "human_prior_graph_target_signature": "detour-egress",
                 "human_prior_target_player_slot": [16, 0],
@@ -8948,6 +8983,14 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(
             agent.human_prior_navigation_detour_previous_signature,
             "detour-origin",
+        )
+        self.assertEqual(
+            agent.human_prior_navigation_detour_origin_control,
+            (Action.LEFT, 16),
+        )
+        self.assertIn(
+            ("old-origin", Action.LEFT, 4),
+            agent.human_prior_exhausted_navigation_detours,
         )
         self.assertTrue(agent._human_prior_navigation_detour_active())
 
