@@ -1308,6 +1308,27 @@ class VerifiedNeuralAgent:
         checkpoint = self.pending_goal_milestone_checkpoint
         if checkpoint is None or checkpoint.exploration_steps <= 0:
             return
+        if checkpoint.goal_exhaustion_topology_search_attempted:
+            # The final topology audit is deliberately a bounded last chance.
+            # Its animation/context variants may still expose nominally new
+            # positions, but those endpoints were discovered by the audit
+            # itself and must not buy another full exploration window. A real
+            # milestone supersedes this checkpoint through the normal goal
+            # progress path.
+            self._emit(
+                "goal_milestone_exhaustion_progress_reset_suppressed",
+                decision=self.decision_index,
+                reason=reason,
+                milestone_choice=checkpoint.choice,
+                milestone_decision=checkpoint.decision,
+                exploration_steps=checkpoint.exploration_steps,
+                target_graph_signature=target_graph_signature or None,
+                target_player_slot=target_player_slot,
+                policy_effect="final_topology_audit_remains_bounded",
+                agent_visible=True,
+                **self._frame_fields(self.frame),
+            )
+            return
         previous_steps = checkpoint.exploration_steps
         checkpoint.exploration_steps = 0
         self._persist_goal_milestone_checkpoint(checkpoint)
@@ -4114,10 +4135,18 @@ class VerifiedNeuralAgent:
         world_state_frontier = bool(
             branch.goal_world_effect_signature
             and branch.goal_target_signature
-            and self.human_prior_graph_state_visits[
-                branch.goal_target_signature
-            ]
-            == 0
+            and (
+                # Verifying and persisting an option necessarily observes its
+                # target semantic state.  That observation must not consume
+                # the saved branch before recovery has actually restored it.
+                # Verified option archives are removed on restore, so this
+                # keeps the learned manipulation available exactly once.
+                branch.human_prior_verified_option
+                or self.human_prior_graph_state_visits[
+                    branch.goal_target_signature
+                ]
+                == 0
+            )
         )
         local_control_frontier = bool(
             branch.goal_target_signature
@@ -23316,11 +23345,31 @@ class VerifiedNeuralAgent:
             return None
         human_prior_best_first_applied = False
         human_prior_episodic_graph_best_first_applied = False
-        human_prior_frontier_candidates = (
-            global_goal_eligible
-            if global_goal_eligible
-            else behavioral_frontier_candidates
+        preparation_ordering_active = (
+            self._human_prior_preparation_ordering_active()
         )
+        preparation_option_effect_candidates = [
+            candidate
+            for candidate in behavioral_frontier_candidates
+            if preparation_ordering_active
+            and candidate.human_prior_verified_option
+            and candidate.goal_world_effect_signature
+            and self._human_prior_archive_frontier_flags(candidate)[1]
+        ]
+        if global_goal_eligible:
+            human_prior_frontier_candidates = list(global_goal_eligible)
+            if not authoritative_milestone_route:
+                included_candidate_ids = {
+                    id(candidate)
+                    for candidate in human_prior_frontier_candidates
+                }
+                human_prior_frontier_candidates.extend(
+                    candidate
+                    for candidate in preparation_option_effect_candidates
+                    if id(candidate) not in included_candidate_ids
+                )
+        else:
+            human_prior_frontier_candidates = behavioral_frontier_candidates
         human_prior_intervention_eligible = [
             candidate
             for candidate in human_prior_frontier_candidates
@@ -23408,8 +23457,20 @@ class VerifiedNeuralAgent:
                     if candidate.human_prior_option_effect_frontier_reason
                     == "immediate_reachability_gain"
                 ]
+                preparation_option_effect_eligible = [
+                    candidate
+                    for candidate in option_effect_frontier_eligible
+                    if preparation_ordering_active
+                ]
+                authoritative_milestone_route_eligible = (
+                    episodic_graph_eligible
+                    if authoritative_milestone_route
+                    else []
+                )
                 eligible = (
                     milestone_goal_eligible
+                    or authoritative_milestone_route_eligible
+                    or preparation_option_effect_eligible
                     or episodic_graph_eligible
                     or option_effect_frontier_eligible
                     or physical_frontier_eligible
@@ -23454,6 +23515,10 @@ class VerifiedNeuralAgent:
                     immediate_option_effect_frontier_preferred=bool(
                         immediate_option_effect_frontier_eligible
                     ),
+                    preparation_option_effect_frontier_preferred=bool(
+                        preparation_option_effect_eligible
+                        and eligible is preparation_option_effect_eligible
+                    ),
                     episodic_graph_frontier_preferred=bool(
                         episodic_graph_eligible
                         and eligible is episodic_graph_eligible
@@ -23488,6 +23553,9 @@ class VerifiedNeuralAgent:
                     ),
                     immediate_reachability_option_effects=len(
                         immediate_option_effect_frontier_eligible
+                    ),
+                    preparation_option_effects=len(
+                        preparation_option_effect_eligible
                     ),
                     unvisited_player_positions=len(
                         physical_frontier_eligible

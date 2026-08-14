@@ -6130,6 +6130,87 @@ class EnsemblePlannerTests(unittest.TestCase):
         )
         self.assertFalse(filtered["physical_frontier_preferred"])
 
+    def test_verified_effect_remains_actionable_during_failed_ordering(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            WorldEffectAndMovementEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.A),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=4,
+                human_prior_option_search_action_frames=1,
+                human_prior_option_effect_stability_steps=2,
+                human_prior_option_effect_probe_limit=4,
+                human_prior_option_effect_phase_offsets=2,
+                human_prior_option_causal_effect_frontier=True,
+                causal_spatial_columns=8,
+                causal_spatial_rows=8,
+            ),
+            event_logger=logger,
+        )
+        source_frame = agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        source_signature = agent._current_human_prior_graph_signature()
+        agent.human_prior_graph_state_visits[source_signature] = 1
+        agent.human_prior_player_position_visits[(0, 0)] = 1
+
+        added = agent._search_human_prior_options()
+
+        self.assertEqual(added, 2)
+        primary = next(
+            branch
+            for branch in agent.archive
+            if not branch.goal_world_effect_signature
+        )
+        effect = next(
+            branch
+            for branch in agent.archive
+            if branch.goal_world_effect_signature
+        )
+        effect.human_prior_option_effect_frontier_reason = (
+            "delayed_causal_effect"
+        )
+        # Persisting the verified branch observes its target.  On a later
+        # process resume this visit must not consume the branch before the
+        # planner has actually restored it.
+        agent.human_prior_graph_state_visits[
+            effect.goal_target_signature
+        ] = 3
+        agent.frame = agent.env.load_state((0, False))
+        agent.goal_prior.restore(((7, 0),), source_frame, (0, 0))
+        agent._signature = lambda frame: "same-coarse-scene"
+        agent._human_prior_preparation_ordering_active = lambda: True
+        agent.human_prior_graph_recovery_pending = True
+
+        restored = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(restored)
+        self.assertEqual(agent.frame, effect.frame)
+        self.assertNotEqual(agent.frame, primary.frame)
+        self.assertNotIn(effect, agent.archive)
+        filtered = next(
+            event
+            for event in logger.events
+            if event["event"]
+            == "human_prior_best_first_archives_filtered"
+        )
+        self.assertTrue(filtered["positive_goal_frontier_constraint_applied"])
+        self.assertTrue(
+            filtered["preparation_option_effect_frontier_preferred"]
+        )
+        self.assertEqual(filtered["preparation_option_effects"], 1)
+
     def test_option_effect_controllability_detects_new_reachable_slot(
         self,
     ) -> None:
@@ -9538,6 +9619,63 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(len(resets), 1)
         self.assertEqual(resets[0]["previous_exploration_steps"], 6)
         self.assertEqual(resets[0]["reason"], "new_player_position")
+
+    def test_final_topology_audit_does_not_reset_exhaustion_clock(
+        self,
+    ) -> None:
+        env = ActionEffectEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(actions=(Action.RIGHT,)),
+            event_logger=logger,
+        )
+        frame = agent.reset()
+        agent.pending_goal_milestone_checkpoint = _LifeHazardCheckpoint(
+            state=env.save_state(),
+            frame=frame,
+            choice=(agent.current_frontier_signature, Action.RIGHT, 1),
+            decision=0,
+            frontier_signature=agent.current_frontier_signature,
+            causal_context_signature=agent.current_causal_context_signature,
+            scene=agent.current_scene,
+            pose_action=None,
+            last_action=None,
+            last_duration=None,
+            action_streak=0,
+            goal_heart_slots=((7, 0), (9, 0)),
+            goal_player_slot=(0, 0),
+            kind="goal_milestone",
+            exploration_steps=21,
+            goal_target_heart_slots=((7, 0),),
+            goal_target_heart_slots_known=True,
+            goal_exhaustion_topology_search_attempted=True,
+        )
+
+        agent._reset_goal_milestone_exhaustion_evidence(
+            "new_player_position_archive",
+            target_graph_signature="animated-context-variant",
+            target_player_slot=(1, 0),
+        )
+
+        checkpoint = agent.pending_goal_milestone_checkpoint
+        assert checkpoint is not None
+        self.assertEqual(checkpoint.exploration_steps, 21)
+        suppressed = [
+            event
+            for event in logger.events
+            if event["event"]
+            == "goal_milestone_exhaustion_progress_reset_suppressed"
+        ]
+        self.assertEqual(len(suppressed), 1)
+        self.assertEqual(
+            suppressed[0]["policy_effect"],
+            "final_topology_audit_remains_bounded",
+        )
 
     def test_navigation_stagnation_shares_transient_world_contexts(
         self,
