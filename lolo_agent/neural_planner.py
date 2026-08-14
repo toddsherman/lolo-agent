@@ -11179,7 +11179,24 @@ class VerifiedNeuralAgent:
                 if node.confirmed_world_effect_signature
                 or node.confirmed_entity_state_signature
             ]
-            selection_endpoints = ordinary_endpoints or causal_endpoints
+            positive_goal_endpoints = [
+                node
+                for node in endpoints
+                if self._human_prior_ordering_adjusted_total_reward(
+                    node.analysis
+                )
+                > 0.0
+            ]
+            preferred_endpoint_ids = {
+                id(node) for node in positive_goal_endpoints
+            }
+            preferred_endpoints = list(positive_goal_endpoints)
+            preferred_endpoints.extend(
+                node
+                for node in ordinary_endpoints
+                if id(node) not in preferred_endpoint_ids
+            )
+            selection_endpoints = preferred_endpoints or causal_endpoints
             if not selection_endpoints:
                 ordering_hypothesis_disproved = (
                     self._maybe_disprove_human_prior_ordering_hypothesis(
@@ -11671,6 +11688,9 @@ class VerifiedNeuralAgent:
                     closed_control_leaf_endpoints
                 ),
                 ordinary_eligible_endpoints=len(ordinary_endpoints),
+                positive_goal_eligible_endpoints=len(
+                    positive_goal_endpoints
+                ),
                 confirmed_effect_fallback_used=bool(
                     selected.confirmed_world_effect_signature
                 ),
@@ -23027,14 +23047,10 @@ class VerifiedNeuralAgent:
                     **self._persistent_change_fields(),
                 )
         behavioral_frontier_candidates = list(eligible)
-        global_goal_eligible = [
+        global_direct_goal_eligible = [
             branch
             for branch in eligible
             if live_archive_goal_metrics(branch)[0] > 0.0
-            or (
-                self.config.human_prior_episodic_graph_guidance
-                and live_archive_episodic_graph_metrics(branch)[0] > 0.0
-            )
             or (
                 branch.goal_total_hearts > 0
                 and branch.goal_remaining_hearts
@@ -23045,6 +23061,26 @@ class VerifiedNeuralAgent:
                 and not current_goal_chest_obtained
             )
         ]
+        global_episodic_goal_eligible = [
+            branch
+            for branch in eligible
+            if self.config.human_prior_episodic_graph_guidance
+            and live_archive_episodic_graph_metrics(branch)[0] > 0.0
+        ]
+        authoritative_milestone_route = bool(
+            archive_episodic_graph_plan is not None
+            and archive_episodic_graph_plan.kind == "milestone_route"
+            and archive_episodic_graph_plan.known_route
+        )
+        global_goal_eligible = (
+            global_episodic_goal_eligible
+            if authoritative_milestone_route
+            and global_episodic_goal_eligible
+            else (
+                global_direct_goal_eligible
+                or global_episodic_goal_eligible
+            )
+        )
         global_causal_event_eligible = [
             branch for branch in eligible if branch.causal_event_outcome
         ]
@@ -23355,7 +23391,15 @@ class VerifiedNeuralAgent:
                         milestone_goal_eligible
                     ),
                     positive_goal_frontier_constraint_applied=bool(
-                        global_goal_eligible
+                        global_direct_goal_eligible
+                    ),
+                    episodic_goal_frontier_fallback_applied=bool(
+                        not global_direct_goal_eligible
+                        and global_episodic_goal_eligible
+                    ),
+                    authoritative_milestone_route_applied=(
+                        authoritative_milestone_route
+                        and bool(global_episodic_goal_eligible)
                     ),
                     episodic_graph_frontiers=len(
                         episodic_graph_eligible

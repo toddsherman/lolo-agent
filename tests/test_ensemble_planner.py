@@ -3434,7 +3434,7 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(filtered, [milestone_leaf])
         self.assertEqual(leaves, [])
 
-    def test_human_prior_option_search_rejects_globally_visited_states(
+    def test_human_prior_option_search_rejects_globally_visited_nonprogress_states(
         self,
     ) -> None:
         model = EnsembleVisualDynamicsModel(
@@ -3459,7 +3459,7 @@ class EnsemblePlannerTests(unittest.TestCase):
             event_logger=logger,
         )
         source = agent.reset()
-        agent.goal_prior = PositionGoalPrior()
+        agent.goal_prior = RegressivePositionGoalPrior()
         source_signature = agent._current_human_prior_graph_signature()
         agent.human_prior_graph_state_visits[source_signature] = 1
         agent.human_prior_player_position_visits[(0, 0)] = 1
@@ -3483,8 +3483,8 @@ class EnsemblePlannerTests(unittest.TestCase):
             for event in logger.events
             if event["event"] == "human_prior_option_search_completed"
         )
-        self.assertEqual(completed["reason"], "no_globally_novel_endpoint")
-        self.assertEqual(completed["globally_novel_endpoints"], 0)
+        self.assertEqual(completed["reason"], "no_unexpanded_endpoint")
+        self.assertEqual(completed["eligible_endpoints"], 0)
 
     def test_episodic_graph_plan_targets_closest_missing_bridge(
         self,
@@ -4089,6 +4089,61 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertGreater(
             completed["human_prior_episodic_graph_progress"], 0.0
         )
+
+    def test_option_search_reuses_visited_positive_goal_waypoint(
+        self,
+    ) -> None:
+        env = UniqueStateEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.A),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=2,
+                human_prior_option_search_action_frames=1,
+            ),
+            event_logger=logger,
+        )
+        source = agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        root = env.save_state()
+        target = env.step(Action.RIGHT, 2)
+        analysis = agent.goal_prior.analyze(source, target)
+        target_signature = agent._human_prior_graph_signatures(
+            analysis
+        )[1]
+        agent.human_prior_graph_state_visits[target_signature] = 1
+        for _ in range(3):
+            agent._record_human_prior_player_position(
+                target_signature, (2, 0)
+            )
+        env.load_state(root)
+
+        added = agent._search_human_prior_options()
+
+        self.assertEqual(added, 1)
+        self.assertEqual(agent.archive[0].goal_player_slot, (2, 0))
+        self.assertEqual(
+            agent.archive[0].plan.path,
+            (Action.RIGHT, Action.RIGHT),
+        )
+        completed = next(
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_search_completed"
+        )
+        self.assertGreaterEqual(
+            completed["positive_goal_eligible_endpoints"], 1
+        )
+        env.release_state(root)
 
     def test_exhausted_option_frontier_filter_avoids_reentry(self) -> None:
         model = EnsembleVisualDynamicsModel(
@@ -5317,6 +5372,7 @@ class EnsemblePlannerTests(unittest.TestCase):
             NeuralPlanningConfig(
                 behavioral_best_first_archive=True,
                 human_prior_best_first_archive=True,
+                human_prior_episodic_graph_guidance=True,
             ),
             event_logger=logger,
         )
@@ -5370,6 +5426,20 @@ class EnsemblePlannerTests(unittest.TestCase):
             goal_player_slot=(4, 0),
         )
         agent.archive = [regressive_graph, goal_progress]
+        agent._human_prior_episodic_graph_plan = lambda _source: (
+            SimpleNamespace(
+                kind="control_frontier",
+                source_signature="current-source",
+                known_route=False,
+            )
+        )
+        agent._human_prior_episodic_graph_progress = (
+            lambda _plan, target: (
+                (1.0, False, 0)
+                if target == "regressive-target"
+                else (0.0, False, None)
+            )
+        )
         agent.human_prior_graph_recovery_pending = True
 
         decision = agent._restore_if_stagnant()
@@ -5401,6 +5471,9 @@ class EnsemblePlannerTests(unittest.TestCase):
         )
         self.assertTrue(
             filtered["positive_goal_frontier_constraint_applied"]
+        )
+        self.assertFalse(
+            filtered["episodic_goal_frontier_fallback_applied"]
         )
         self.assertFalse(filtered["episodic_graph_frontier_preferred"])
         env.release_state(root)
