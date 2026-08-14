@@ -2102,6 +2102,26 @@ class VerifiedNeuralAgent:
             )
         else:
             phase = "unresolved"
+        persistent_world_context = (
+            self.current_human_prior_world_context_signature
+        )
+        if persistent_world_context not in (
+            "",
+            "human-prior-world-root",
+        ):
+            # A compact persistent pixel effect can represent a consumable
+            # visual resource or another mode that is absent from the local
+            # entity patch.  Conditioning the anonymous phase on that learned
+            # context prevents an interaction observed while the resource was
+            # unavailable from suppressing a fresh probe when it is present.
+            # The value is itself learned from action-matched pixels; no HUD
+            # region or resource meaning is supplied.
+            phase = hashlib.sha256(
+                (
+                    f"{phase}|persistent-world="
+                    f"{persistent_world_context}"
+                ).encode("ascii")
+            ).hexdigest()[:16]
         return {
             "context_signature": model.factored_context_signature(
                 relation, neighborhood, phase
@@ -2110,6 +2130,9 @@ class VerifiedNeuralAgent:
             "neighborhood_signature": neighborhood,
             "phase_signature": phase,
             "phase_stable_cells": len(stable_phase_cells),
+            "persistent_world_context_signature": (
+                persistent_world_context
+            ),
         }
 
     def _update_anonymous_phase_stability(
@@ -4085,7 +4108,14 @@ class VerifiedNeuralAgent:
         )
         evidence_payload = (
             f"{evidence_scope}|{before_frame.digest}|{factual_frame.digest}|"
-            f"{control_frame.digest}|{action.value}|{duration}|{anchor}"
+            f"{control_frame.digest}|{action.value}|{duration}|{anchor}|"
+            # Extraction can become more accurate while the underlying
+            # emulator frames remain identical (for example, when an
+            # adjacent target was formerly swallowed by the player mask).
+            # Include the measured outcome so corrected evidence is accepted,
+            # while an exact replay of the same interpretation still
+            # deduplicates normally.
+            f"{outcome_signature}"
         )
         evidence_id = hashlib.sha256(
             evidence_payload.encode("ascii")
@@ -5572,27 +5602,44 @@ class VerifiedNeuralAgent:
                 == control_analysis.target_player_slot
             )
             ignored_player_pixels: set[Tuple[int, int]] = set()
-            entity_player_pixels: set[Tuple[int, int]] = set()
+            factual_player_pixels: set[Tuple[int, int]] = set()
+            control_player_pixels: set[Tuple[int, int]] = set()
             player_pixel_mask = getattr(
                 self.goal_prior, "player_pixel_mask", None
             )
             if callable(player_pixel_mask):
                 if factual_analysis.target_player_slot is not None:
-                    entity_player_pixels.update(
+                    factual_player_pixels.update(
                         player_pixel_mask(
                             factual,
                             factual_analysis.target_player_slot,
                         )
                     )
                 if control_analysis.target_player_slot is not None:
-                    entity_player_pixels.update(
+                    control_player_pixels.update(
                         player_pixel_mask(
                             control,
                             control_analysis.target_player_slot,
                         )
                     )
+                # Only pixels independently attributed to the player in both
+                # matched endpoints are safe to ignore.  A union lets an
+                # adjacent factual-only appearance (for example a newly
+                # white transformed object) expand the conservative player
+                # halo and erase the very causal effect being audited.
+                entity_player_pixels = (
+                    factual_player_pixels.intersection(
+                        control_player_pixels
+                    )
+                    if endpoint_matched and allow_endpoint_matched_local
+                    else factual_player_pixels.union(
+                        control_player_pixels
+                    )
+                )
                 if endpoint_matched and allow_endpoint_matched_local:
                     ignored_player_pixels.update(entity_player_pixels)
+            else:
+                entity_player_pixels = set()
             final_entity_player_pixels = entity_player_pixels
             spatial_signature, changed_pixels, _centroid = (
                 self._causal_spatial_effect(
@@ -6450,11 +6497,11 @@ class VerifiedNeuralAgent:
         ]
         if not candidates:
             return _AdjacentEntityProbeResult()
-        attempted_signatures = tuple(
+        attempted_signature_values = [
             str(curiosity.get("signature") or "")
             for _action, curiosity in candidates
             if curiosity.get("signature")
-        )
+        ]
         self._emit(
             "human_prior_adjacent_entity_probe_started",
             decision=self.decision_index + 1,
@@ -6481,6 +6528,9 @@ class VerifiedNeuralAgent:
         )
         confirmed = 0
         promoted = 0
+        blocked_direction_candidates: List[
+            Tuple[Action, Dict[str, Any]]
+        ] = []
         for candidate_rank, (action, curiosity) in enumerate(candidates, 1):
             self.env.load_state(root)
             immediate_frame = self.env.step(action, duration)
@@ -6596,11 +6646,211 @@ class VerifiedNeuralAgent:
                 agent_visible=True,
                 **self._frame_fields(immediate_frame),
             )
+            if (
+                action
+                in (
+                    Action.UP,
+                    Action.DOWN,
+                    Action.LEFT,
+                    Action.RIGHT,
+                )
+                and immediate_analysis.target_player_slot
+                == source_analysis.target_player_slot
+            ):
+                blocked_direction_candidates.append((action, curiosity))
+
+        # A blocked directional press can still be useful because it changes
+        # facing without changing the detected player tile.  Test a bounded
+        # set of direction-then-button compositions against the matched
+        # direction-then-NOOP control.  This discovers generic targeted
+        # interactions without knowing what the adjacent appearance is.
+        facing_button_candidates: List[
+            Tuple[Action, Action, Dict[str, Any]]
+        ] = []
+        for facing_action, _direction_curiosity in (
+            blocked_direction_candidates
+        ):
+            for button in (Action.A, Action.B):
+                if button not in self.config.actions:
+                    continue
+                button_curiosity = (
+                    self._human_prior_option_entity_curiosity(
+                        source_frame,
+                        source_analysis.target_player_slot,
+                        facing_action,
+                        button,
+                        duration,
+                        feature_index,
+                    )
+                )
+                interaction_signature = str(
+                    button_curiosity.get("signature") or ""
+                )
+                if (
+                    not button_curiosity
+                    or (
+                        interaction_signature
+                        and interaction_signature
+                        in excluded_interactions
+                    )
+                    or interaction_signature
+                    in attempted_signature_values
+                ):
+                    continue
+                facing_button_candidates.append(
+                    (button, facing_action, button_curiosity)
+                )
+        facing_button_candidates.sort(
+            key=lambda item: (
+                not bool(
+                    item[2].get(
+                        "behavior_exact_context_known", False
+                    )
+                ),
+                float(item[2].get("manipulation_probability", 0.0)),
+                float(item[2].get("behavior_novelty", 0.0)),
+                float(item[2].get("spatial_rarity", 0.0)),
+                item[0].value,
+                item[1].value,
+            ),
+            reverse=True,
+        )
+        facing_button_candidates = facing_button_candidates[
+            :effective_limit
+        ]
+        for composite_offset, (
+            button,
+            facing_action,
+            curiosity,
+        ) in enumerate(facing_button_candidates, 1):
+            interaction_signature = str(
+                curiosity.get("signature") or ""
+            )
+            if interaction_signature:
+                attempted_signature_values.append(
+                    interaction_signature
+                )
+            self.env.load_state(root)
+            self.env.step(facing_action, duration)
+            composite_frame = self.env.step(button, duration)
+            composite_analysis = self.goal_prior.analyze(
+                source_frame,
+                composite_frame,
+                target_player_reference=(
+                    source_analysis.target_player_slot
+                ),
+            )
+            _, target_signature = self._human_prior_graph_signatures(
+                composite_analysis
+            )
+            composite_node = _HumanPriorOptionNode(
+                state=root,
+                frame=composite_frame,
+                path=(facing_action, button),
+                durations=(duration, duration),
+                analysis=composite_analysis,
+                source_signature=source_signature,
+                target_signature=target_signature,
+                score=float(curiosity.get("curiosity", 0.0)),
+                depth=2,
+                target_state_visits=(
+                    0
+                    if not target_signature
+                    else self.human_prior_graph_state_visits[
+                        target_signature
+                    ]
+                ),
+                target_position_visits=(
+                    0
+                    if composite_analysis.target_player_slot is None
+                    else self._human_prior_position_visits(
+                        target_signature,
+                        composite_analysis.target_player_slot,
+                    )
+                ),
+                pose_action=facing_action,
+                entity_interaction_signature=interaction_signature,
+                entity_interaction_action=button,
+                entity_interaction_action_index=1,
+                entity_interaction_direction=facing_action,
+                entity_interaction_cell=curiosity.get("target_cell"),
+                entity_interaction_appearance_fingerprint=str(
+                    curiosity.get("appearance_fingerprint") or ""
+                ),
+                entity_interaction_type_id=curiosity.get(
+                    "anonymous_type_id"
+                ),
+                entity_interaction_context_signature=str(
+                    curiosity.get("context_signature") or ""
+                ),
+                entity_interaction_phase_signature=str(
+                    curiosity.get("phase_signature") or ""
+                ),
+                entity_interaction_neighborhood_signature=str(
+                    curiosity.get("neighborhood_signature") or ""
+                ),
+            )
+            composite_rank = len(candidates) + composite_offset
+            result = self._probe_human_prior_option_action_control(
+                root,
+                source_frame,
+                composite_node,
+                duration,
+                composite_rank,
+                1,
+                allow_endpoint_matched_local=True,
+                expected_interaction_cell=curiosity.get("target_cell"),
+            )
+            effect_confirmed = bool(
+                result.get("entity_effect_confirmed")
+            )
+            confirmed += int(effect_confirmed)
+            promoted_before = promoted
+            if effect_confirmed and promote_frontiers:
+                promoted += int(
+                    self._promote_human_prior_option_entity_frontier(
+                        root,
+                        source_frame,
+                        composite_node,
+                        duration,
+                        composite_rank,
+                        source_signature,
+                        (result,),
+                        endpoints,
+                        saved_states,
+                    )
+                )
+            self._emit(
+                "human_prior_adjacent_facing_button_probe_completed",
+                decision=self.decision_index + 1,
+                candidate_rank=composite_rank,
+                probe_scope=probe_scope,
+                facing_action=facing_action,
+                action=button,
+                path=composite_node.path,
+                durations=composite_node.durations,
+                interaction_cell=curiosity.get("target_cell"),
+                context_signature=curiosity.get("context_signature"),
+                phase_signature=curiosity.get("phase_signature"),
+                neighborhood_signature=curiosity.get(
+                    "neighborhood_signature"
+                ),
+                control_confirmed=bool(result.get("confirmed")),
+                entity_effect_confirmed=effect_confirmed,
+                entity_frontier_promoted=bool(
+                    promoted > promoted_before
+                ),
+                anonymous_entity_behavior=result.get(
+                    "anonymous_entity_behavior"
+                ),
+                agent_visible=True,
+                **self._frame_fields(composite_frame),
+            )
         self.env.load_state(root)
         self._emit(
             "human_prior_adjacent_entity_probe_summary",
             decision=self.decision_index + 1,
-            candidates=len(candidates),
+            candidates=len(candidates) + len(facing_button_candidates),
             confirmed_entity_effects=confirmed,
             promoted_entity_frontiers=promoted,
             probe_scope=probe_scope,
@@ -6611,10 +6861,10 @@ class VerifiedNeuralAgent:
             **self._frame_fields(source_frame),
         )
         return _AdjacentEntityProbeResult(
-            candidates=len(candidates),
+            candidates=len(candidates) + len(facing_button_candidates),
             confirmed_entity_effects=confirmed,
             promoted_entity_frontiers=promoted,
-            attempted_signatures=attempted_signatures,
+            attempted_signatures=tuple(attempted_signature_values),
         )
 
     def _probe_current_adjacent_anonymous_affordances(
@@ -16334,6 +16584,7 @@ class VerifiedNeuralAgent:
             branch_goal_world_contexts: Dict[
                 int, Tuple[str, str, str]
             ] = {}
+            branch_goal_isolated_nonlocal_effects: Dict[int, bool] = {}
             verified_goal_edges: List[Tuple[str, Action, int]] = []
             for (
                 plan,
@@ -16665,6 +16916,21 @@ class VerifiedNeuralAgent:
                     )
                     if not world_effect_confirmed:
                         goal_world_effect_signature = ""
+                branch_goal_isolated_nonlocal_effects[id(state)] = bool(
+                    goal_world_effect_signature
+                    and plan.path[0] in (Action.A, Action.B)
+                    and goal_analysis is not None
+                    and goal_analysis.milestone_reward <= 0.0
+                    and world_effect_stability is not None
+                    and world_effect_stability[
+                        "stable_world_effect_cells"
+                    ]
+                    > 0
+                    and world_effect_stability[
+                        "local_only_persistent_world_effect_cells"
+                    ]
+                    == 0
+                )
                 goal_target_world_context = (
                     self._next_human_prior_world_context(
                         source_human_prior_world_context_signature,
@@ -17000,6 +17266,63 @@ class VerifiedNeuralAgent:
                     ),
                     alternatives_remaining=len(selection_verified),
                     fail_open=anonymous_entity_hazard_fail_open,
+                )
+            isolated_nonlocal_effect_branches = [
+                item
+                for item in selection_verified
+                if branch_goal_isolated_nonlocal_effects.get(
+                    id(item[2]), False
+                )
+            ]
+            resource_conserving_alternatives = [
+                item
+                for item in selection_verified
+                if not branch_goal_isolated_nonlocal_effects.get(
+                    id(item[2]), False
+                )
+                and branch_goal_analyses.get(id(item[2])) is not None
+                and branch_goal_analyses[id(item[2])].life_loss_penalty
+                >= 0.0
+            ]
+            isolated_nonlocal_effect_fail_open = bool(
+                isolated_nonlocal_effect_branches
+                and not resource_conserving_alternatives
+            )
+            if (
+                isolated_nonlocal_effect_branches
+                and resource_conserving_alternatives
+            ):
+                selection_verified = resource_conserving_alternatives
+            if isolated_nonlocal_effect_branches:
+                self._emit(
+                    "human_prior_isolated_nonlocal_effect_filter_evaluated",
+                    decision=self.decision_index + 1,
+                    enabled=True,
+                    policy_authority=True,
+                    policy_effect="conserve_unexplained_visual_resource",
+                    hazard_evidence=False,
+                    branches_detected=len(
+                        isolated_nonlocal_effect_branches
+                    ),
+                    branches_filtered=(
+                        0
+                        if isolated_nonlocal_effect_fail_open
+                        else len(isolated_nonlocal_effect_branches)
+                    ),
+                    alternatives_remaining=len(selection_verified),
+                    fail_open=isolated_nonlocal_effect_fail_open,
+                    branches=tuple(
+                        {
+                            "action": item[1].path[0],
+                            "action_frames": item[1].durations[0],
+                            "world_effect_signature": (
+                                branch_goal_world_contexts[
+                                    id(item[2])
+                                ][2]
+                            ),
+                        }
+                        for item in isolated_nonlocal_effect_branches
+                    ),
                 )
             # Route-memory filters run before optional frontier-exhaustion
             # filters.  Otherwise those filters can leave only a previously
@@ -18928,6 +19251,27 @@ class VerifiedNeuralAgent:
                 alternative_goal_analysis = branch_goal_analyses[
                     id(alternative_state)
                 ]
+                if branch_goal_isolated_nonlocal_effects.get(
+                    id(alternative_state), False
+                ):
+                    self._emit(
+                        "archive_branch_rejected",
+                        decision=self.decision_index,
+                        reason="isolated_nonlocal_button_effect",
+                        action=alternative_plan.path[0],
+                        action_frames=alternative_plan.durations[0],
+                        policy_effect=(
+                            "retain_behavior_evidence_without_"
+                            "resource_state_restore"
+                        ),
+                        hazard_evidence=False,
+                        state_id=self._state_id(alternative_state),
+                        **self._human_prior_fields(
+                            alternative_goal_analysis
+                        ),
+                        **self._frame_fields(alternative_frame),
+                    )
+                    continue
                 if (
                     alternative_goal_analysis is not None
                     and self._human_prior_milestone_ordering_blocked(

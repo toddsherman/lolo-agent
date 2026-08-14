@@ -588,6 +588,23 @@ class OverlappingPlayerGoalPrior(PositionGoalPrior):
         return {(0, 0), (4, 0), (5, 0), (6, 0)}
 
 
+class InteractionCellMaskedGoalPrior(PositionGoalPrior):
+    @staticmethod
+    def player_pixel_mask(
+        frame: Frame,
+        slot: tuple[int, int],
+        search_padding: int = 12,
+        dilation: int = 3,
+    ) -> set[tuple[int, int]]:
+        del slot, search_padding, dilation
+        player = {(x, y) for y in range(4) for x in range(4)}
+        if 224 in frame.pixels:
+            player.update(
+                (x, y) for y in range(4) for x in range(4, 8)
+            )
+        return player
+
+
 class FootprintPositionGoalPrior(PositionGoalPrior):
     @staticmethod
     def player_pixel_mask(
@@ -5066,7 +5083,7 @@ class EnsemblePlannerTests(unittest.TestCase):
                 agent.reset()
                 agent.goal_prior = PositionGoalPrior()
 
-                agent.decide()
+                decision = agent.decide()
 
                 confirmation = next(
                     event
@@ -5091,6 +5108,37 @@ class EnsemblePlannerTests(unittest.TestCase):
                     bool(branch["human_prior_world_effect_signature"]),
                     persistent,
                 )
+                resource_filters = [
+                    event
+                    for event in logger.events
+                    if event["event"]
+                    == (
+                        "human_prior_isolated_nonlocal_effect_"
+                        "filter_evaluated"
+                    )
+                ]
+                self.assertEqual(
+                    len(resource_filters), int(persistent)
+                )
+                if persistent:
+                    self.assertGreater(
+                        resource_filters[0]["branches_filtered"], 0
+                    )
+                    self.assertNotEqual(decision.action, Action.A)
+                    self.assertTrue(
+                        any(
+                            event["event"] == "archive_branch_rejected"
+                            and event.get("reason")
+                            == "isolated_nonlocal_button_effect"
+                            for event in logger.events
+                        )
+                    )
+                    self.assertFalse(
+                        any(
+                            branch.plan.path[0] == Action.A
+                            for branch in agent.archive
+                        )
+                    )
 
     def test_human_prior_option_effect_frontier_rejects_effect_without_gain(
         self,
@@ -5903,6 +5951,70 @@ class EnsemblePlannerTests(unittest.TestCase):
             )
         )
 
+    def test_proactive_probe_composes_blocked_facing_with_button(
+        self,
+    ) -> None:
+        logger = RecordingLogger()
+        behavior_model = AnonymousEntityBehaviorModel(
+            minimum_prediction_samples=1
+        )
+        env = UnlabeledEntityTransformEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.A, Action.NOOP),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=2,
+                human_prior_option_search_action_frames=1,
+                human_prior_option_effect_stability_steps=1,
+                human_prior_option_effect_probe_limit=1,
+                human_prior_option_effect_phase_offsets=1,
+                human_prior_option_effect_local_controls=True,
+                human_prior_option_entity_frontier=True,
+                human_prior_proactive_entity_probe_limit=1,
+                anonymous_entity_behavior_learning=True,
+                causal_spatial_columns=8,
+                causal_spatial_rows=8,
+            ),
+            event_logger=logger,
+            entity_behavior_model=behavior_model,
+        )
+        initial = agent.reset()
+        # Model the native close-range case where the conservative player
+        # halo spans both the player cell and the adjacent interaction cell.
+        agent.goal_prior = InteractionCellMaskedGoalPrior()
+
+        result = agent._probe_current_adjacent_anonymous_affordances()
+
+        self.assertEqual(result.candidates, 2)
+        self.assertEqual(result.confirmed_entity_effects, 1)
+        self.assertEqual(len(result.attempted_signatures), 2)
+        composite = next(
+            event
+            for event in logger.events
+            if event["event"]
+            == "human_prior_adjacent_facing_button_probe_completed"
+        )
+        self.assertEqual(composite["facing_action"], Action.RIGHT)
+        self.assertEqual(composite["action"], Action.A)
+        self.assertEqual(composite["path"], (Action.RIGHT, Action.A))
+        self.assertTrue(composite["control_confirmed"])
+        self.assertTrue(composite["entity_effect_confirmed"])
+        self.assertTrue(
+            composite["anonymous_entity_behavior"][
+                "observed_manipulation_effect"
+            ]
+        )
+        self.assertEqual(env._frame().digest, initial.digest)
+
     def test_proactive_probe_includes_common_unresolved_appearance(
         self,
     ) -> None:
@@ -6060,6 +6172,10 @@ class EnsemblePlannerTests(unittest.TestCase):
         changed_second_context = agent._anonymous_entity_context_factors(
             changed_second, (1, 1), ((0, 0),)
         )
+        agent.current_human_prior_world_context_signature = "01"
+        resource_context = agent._anonymous_entity_context_factors(
+            source, (1, 1), ((0, 0),)
+        )
 
         self.assertGreater(source_context["phase_stable_cells"], 0)
         self.assertNotEqual(
@@ -6069,6 +6185,14 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(
             changed_first_context["phase_signature"],
             changed_second_context["phase_signature"],
+        )
+        self.assertNotEqual(
+            source_context["phase_signature"],
+            resource_context["phase_signature"],
+        )
+        self.assertEqual(
+            resource_context["persistent_world_context_signature"],
+            "01",
         )
 
     def test_global_phase_evidence_rejects_local_or_single_cell_change(
