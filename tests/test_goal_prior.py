@@ -1356,6 +1356,18 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
         self.assertEqual(len(prior.current_slots()), 2)
         self.assertEqual(prior.best_remaining_hearts, 1)
 
+    def test_restored_descendant_updates_best_progress(self) -> None:
+        source = room_frame(((48, 48), (64, 48)))
+        one_collected = room_frame(((64, 48),))
+        prior = PixelHeartGoalPrior()
+        prior.observe_room(source)
+        self.assertEqual(prior.best_remaining_hearts, 2)
+
+        prior.restore(((64, 48),), one_collected)
+
+        self.assertEqual(prior.current_slots(), ((64, 48),))
+        self.assertEqual(prior.best_remaining_hearts, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

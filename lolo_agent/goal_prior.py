@@ -736,6 +736,12 @@ class PixelHeartGoalPrior:
             self.initialized = True
         if self.initialized:
             self.current_present = set(present) if present else discovered
+            remaining = len(self.current_present)
+            self.best_remaining_hearts = (
+                remaining
+                if self.best_remaining_hearts is None
+                else min(self.best_remaining_hearts, remaining)
+            )
         self.current_life_signature = self._life_signature(frame)
         self.current_player_slot = (
             player_slot
