@@ -6263,6 +6263,10 @@ class VerifiedNeuralAgent:
         audited_cell_sets: List[set[Tuple[int, int]]] = []
         safe = True
         endpoint_matched_all = True
+        endpoint_player_footprint_matched_all = True
+        endpoint_player_footprint_comparisons = 0
+        endpoint_player_footprint_max_symmetric_difference = 0
+        endpoint_local_pose_contamination_observed = False
         final_factual = node.frame
         final_control = source_frame
         final_factual_player_pixels: set[Tuple[int, int]] = set()
@@ -6273,6 +6277,49 @@ class VerifiedNeuralAgent:
                 root, source_frame, node, action_index
             )
         )
+        player_pixel_mask = getattr(
+            self.goal_prior, "player_pixel_mask", None
+        )
+        endpoint_local_source_player_pixels: set[Tuple[int, int]] = set()
+        endpoint_local_source_player_cells: set[Tuple[int, int]] = set()
+        if allow_endpoint_matched_local and callable(player_pixel_mask):
+            before_analysis = self.goal_prior.analyze(
+                source_frame, before_intervention
+            )
+            before_player_slot = before_analysis.target_player_slot
+            if before_player_slot is not None:
+                endpoint_local_source_player_pixels.update(
+                    player_pixel_mask(
+                        before_intervention, before_player_slot
+                    )
+                )
+            columns = self.config.causal_spatial_columns
+            rows = self.config.causal_spatial_rows
+            for column in range(columns):
+                x_start = column * before_intervention.width // columns
+                x_stop = (
+                    (column + 1) * before_intervention.width // columns
+                )
+                for row in range(rows):
+                    y_start = row * before_intervention.height // rows
+                    y_stop = (
+                        (row + 1) * before_intervention.height // rows
+                    )
+                    cell_pixels = max(
+                        1, (x_stop - x_start) * (y_stop - y_start)
+                    )
+                    masked_pixels = sum(
+                        x_start <= x < x_stop and y_start <= y < y_stop
+                        for x, y in endpoint_local_source_player_pixels
+                    )
+                    # The inferred mask includes a small outline halo.  Only
+                    # cells substantially occupied by the controlled sprite
+                    # are pose-contaminated; a thin halo into an adjacent
+                    # object cell must not erase a real transformation.
+                    if masked_pixels / cell_pixels >= 0.2:
+                        endpoint_local_source_player_cells.add(
+                            (column, row)
+                        )
         audited_interaction_cell = (
             interaction_ray[0] if interaction_ray else None
         )
@@ -6327,9 +6374,6 @@ class VerifiedNeuralAgent:
             ignored_player_pixels: set[Tuple[int, int]] = set()
             factual_player_pixels: set[Tuple[int, int]] = set()
             control_player_pixels: set[Tuple[int, int]] = set()
-            player_pixel_mask = getattr(
-                self.goal_prior, "player_pixel_mask", None
-            )
             if callable(player_pixel_mask):
                 if factual_analysis.target_player_slot is not None:
                     factual_player_pixels.update(
@@ -6360,6 +6404,22 @@ class VerifiedNeuralAgent:
                     )
                 )
                 if endpoint_matched and allow_endpoint_matched_local:
+                    endpoint_player_footprint_comparisons += 1
+                    player_footprint_symmetric_difference = len(
+                        factual_player_pixels.symmetric_difference(
+                            control_player_pixels
+                        )
+                    )
+                    endpoint_player_footprint_max_symmetric_difference = max(
+                        endpoint_player_footprint_max_symmetric_difference,
+                        player_footprint_symmetric_difference,
+                    )
+                    endpoint_player_footprint_matched_all = bool(
+                        endpoint_player_footprint_matched_all
+                        and factual_player_pixels
+                        and control_player_pixels
+                        and player_footprint_symmetric_difference == 0
+                    )
                     ignored_player_pixels.update(entity_player_pixels)
                     factual_player_pixels = set(entity_player_pixels)
                     control_player_pixels = set(entity_player_pixels)
@@ -6423,6 +6483,16 @@ class VerifiedNeuralAgent:
                     if allow_endpoint_matched_local and endpoint_matched
                     else nonlocal_cells
                 )
+            endpoint_local_pose_cells_filtered = (
+                audited_cells.intersection(
+                    endpoint_local_source_player_cells
+                )
+            )
+            if endpoint_local_pose_cells_filtered:
+                endpoint_local_pose_contamination_observed = True
+                audited_cells = audited_cells.difference(
+                    endpoint_local_pose_cells_filtered
+                )
             audited_cell_sets.append(audited_cells)
             safe = bool(
                 safe
@@ -6445,6 +6515,9 @@ class VerifiedNeuralAgent:
                         nonlocal_cells
                     ),
                     "world_effect_audited_cells": sorted(audited_cells),
+                    "endpoint_local_pose_cells_filtered": sorted(
+                        endpoint_local_pose_cells_filtered
+                    ),
                     "endpoint_matched": endpoint_matched,
                     "ignored_player_pixels": len(
                         ignored_player_pixels
@@ -6501,6 +6574,7 @@ class VerifiedNeuralAgent:
             and common_cells
             and localized
             and persistence_ratio >= 0.5
+            and not endpoint_local_pose_contamination_observed
             and (
                 not allow_endpoint_matched_local
                 or endpoint_matched_all
@@ -6981,6 +7055,24 @@ class VerifiedNeuralAgent:
                 )
             ),
             "endpoint_matched": endpoint_matched_all,
+            "endpoint_player_footprint_matched": (
+                endpoint_player_footprint_matched_all
+            ),
+            "endpoint_player_footprint_comparisons": (
+                endpoint_player_footprint_comparisons
+            ),
+            "endpoint_player_footprint_max_symmetric_difference_pixels": (
+                endpoint_player_footprint_max_symmetric_difference
+            ),
+            "endpoint_local_source_player_mask_pixels": len(
+                endpoint_local_source_player_pixels
+            ),
+            "endpoint_local_source_player_cells": tuple(
+                sorted(endpoint_local_source_player_cells)
+            ),
+            "endpoint_local_pose_contamination_observed": (
+                endpoint_local_pose_contamination_observed
+            ),
             "minimum_cell_pixels": (
                 self.config.human_prior_option_effect_local_minimum_cell_pixels
                 if allow_endpoint_matched_local

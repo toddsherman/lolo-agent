@@ -876,7 +876,7 @@ class PosePositionGoalPrior(PositionGoalPrior):
     ) -> set[tuple[int, int]]:
         del slot, search_padding, dilation
         return {
-            (index, 0)
+            (index % frame.width, index // frame.width)
             for index, value in enumerate(frame.pixels)
             if value == 255
         }
@@ -6429,6 +6429,70 @@ class EnsemblePlannerTests(unittest.TestCase):
             controls[0]["observations"][0]["ignored_player_pixels"],
             0,
         )
+
+    def test_endpoint_local_control_rejects_player_pose_difference(
+        self,
+    ) -> None:
+        env = PoseControllabilityGainEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.LEFT,),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_option_effect_stability_steps=1,
+                human_prior_option_effect_phase_offsets=1,
+                human_prior_option_effect_local_controls=True,
+                human_prior_option_effect_local_minimum_cell_pixels=1,
+                causal_spatial_columns=8,
+                causal_spatial_rows=8,
+            ),
+        )
+        source = agent.reset()
+        agent.goal_prior = PosePositionGoalPrior()
+        root = env.save_state()
+        factual = env.step(Action.LEFT)
+        analysis = agent.goal_prior.analyze(source, factual)
+        node = _HumanPriorOptionNode(
+            state=env.save_state(),
+            frame=factual,
+            path=(Action.LEFT,),
+            durations=(1,),
+            analysis=analysis,
+            source_signature="source",
+            target_signature="target",
+            score=0.0,
+            depth=1,
+            target_state_visits=0,
+            target_position_visits=0,
+        )
+
+        result = agent._probe_human_prior_option_action_control(
+            root,
+            source,
+            node,
+            1,
+            1,
+            0,
+            allow_endpoint_matched_local=True,
+        )
+
+        self.assertTrue(result["endpoint_matched"])
+        self.assertFalse(result["endpoint_player_footprint_matched"])
+        self.assertEqual(result["endpoint_player_footprint_comparisons"], 2)
+        self.assertGreater(
+            result[
+                "endpoint_player_footprint_max_symmetric_difference_pixels"
+            ],
+            0,
+        )
+        self.assertFalse(result["confirmed"])
+        self.assertFalse(result["entity_effect_confirmed"])
 
     def test_unlabeled_entity_frontier_archives_local_transformation(
         self,
