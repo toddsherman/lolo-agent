@@ -2892,6 +2892,33 @@ class VerifiedNeuralAgent:
             and not field.startswith("world=")
         )
 
+    @staticmethod
+    def _human_prior_topology_graph_signature(signature: str) -> str:
+        """Collapse pending-goal variants for verified route transfer.
+
+        Routes learned while any visible goals remain can propose controls in
+        another pending-goal configuration.  The empty-goal phase is kept
+        distinct because collecting the final goal can change autonomous
+        behavior.  This key is never used for archive identity, rewards, or
+        emulator state; it only indexes already verified controller edges.
+        """
+
+        fields = []
+        for field in signature.split("|"):
+            if not field:
+                continue
+            if field.startswith("hearts="):
+                fields.append(
+                    "goals=pending"
+                    if field.split("=", 1)[1]
+                    else "goals=complete"
+                )
+                continue
+            if field.startswith("life=") or field.startswith("world="):
+                continue
+            fields.append(field)
+        return "|".join(fields)
+
     def _human_prior_navigation_graph_visits(
         self, signature: str
     ) -> int:
@@ -3218,6 +3245,199 @@ class VerifiedNeuralAgent:
                 )
         return ()
 
+    def _human_prior_episodic_topology_graph(
+        self,
+    ) -> Tuple[
+        Dict[str, Dict[str, int]],
+        Dict[str, Dict[str, int]],
+        Dict[Tuple[str, str], Tuple[Tuple[Action, int], ...]],
+    ]:
+        """Project exact verified edges into a pending-goal topology graph."""
+
+        edges: Dict[str, Dict[str, int]] = {}
+        reverse_edges: Dict[str, Dict[str, int]] = {}
+        controls: Dict[
+            Tuple[str, str], Tuple[Tuple[Action, int], ...]
+        ] = {}
+        for exact_source, exact_targets in (
+            self.human_prior_episodic_graph_edges.items()
+        ):
+            source = self._human_prior_topology_graph_signature(
+                exact_source
+            )
+            for exact_target, action_cost in exact_targets.items():
+                target = self._human_prior_topology_graph_signature(
+                    exact_target
+                )
+                if not source or not target or source == target:
+                    continue
+                cost = max(1, int(action_cost))
+                prior_cost = edges.setdefault(source, {}).get(target)
+                edges[source][target] = min(
+                    cost, edges[source].get(target, cost)
+                )
+                reverse_edges.setdefault(target, {})[source] = min(
+                    cost,
+                    reverse_edges.setdefault(target, {}).get(source, cost),
+                )
+                exact_controls = (
+                    self.human_prior_episodic_graph_controls.get(
+                        (exact_source, exact_target)
+                    )
+                )
+                controls_valid = bool(
+                    exact_controls and len(exact_controls) == cost
+                )
+                edge = (source, target)
+                if prior_cost is None or cost < prior_cost:
+                    if controls_valid:
+                        controls[edge] = exact_controls
+                    else:
+                        controls.pop(edge, None)
+                elif cost == prior_cost and controls_valid:
+                    prior_controls = controls.get(edge)
+                    control_key = tuple(
+                        (action.value, duration)
+                        for action, duration in exact_controls
+                    )
+                    prior_key = tuple(
+                        (action.value, duration)
+                        for action, duration in (prior_controls or ())
+                    )
+                    if prior_controls is None or control_key < prior_key:
+                        controls[edge] = exact_controls
+        return edges, reverse_edges, controls
+
+    @staticmethod
+    def _human_prior_episodic_control_route_in_graph(
+        source_signature: str,
+        target_signature: str,
+        edges: Dict[str, Dict[str, int]],
+        controls: Dict[
+            Tuple[str, str], Tuple[Tuple[Action, int], ...]
+        ],
+    ) -> Tuple[Tuple[Action, int], ...]:
+        if (
+            not source_signature
+            or not target_signature
+            or source_signature == target_signature
+        ):
+            return ()
+        route_ranks: Dict[
+            str, Tuple[int, Tuple[Tuple[str, int], ...]]
+        ] = {source_signature: (0, ())}
+        routes: Dict[str, Tuple[Tuple[Action, int], ...]] = {
+            source_signature: ()
+        }
+        queue: List[
+            Tuple[int, Tuple[Tuple[str, int], ...], str]
+        ] = [(0, (), source_signature)]
+        while queue:
+            cost, route_key, current = heapq.heappop(queue)
+            if route_ranks.get(current) != (cost, route_key):
+                continue
+            if current == target_signature:
+                return routes[current]
+            for target in sorted(edges.get(current, {})):
+                edge_controls = controls.get((current, target))
+                if not edge_controls:
+                    continue
+                edge_cost = max(1, int(edges[current][target]))
+                if len(edge_controls) != edge_cost:
+                    continue
+                candidate_cost = cost + edge_cost
+                candidate_key = route_key + tuple(
+                    (action.value, duration)
+                    for action, duration in edge_controls
+                )
+                candidate_rank = (candidate_cost, candidate_key)
+                if candidate_rank >= route_ranks.get(
+                    target, (math.inf, ())
+                ):
+                    continue
+                route_ranks[target] = candidate_rank
+                routes[target] = routes[current] + edge_controls
+                heapq.heappush(
+                    queue, (candidate_cost, candidate_key, target)
+                )
+        return ()
+
+    def _human_prior_episodic_topology_transfer_plan(
+        self,
+        source_signature: str,
+    ) -> Optional[_HumanPriorEpisodicGraphPlan]:
+        """Replay verified topology toward a position unseen in this phase."""
+
+        source_hearts = self._human_prior_graph_heart_slots(
+            source_signature
+        )
+        if not source_hearts:
+            return None
+        source = self._human_prior_topology_graph_signature(
+            source_signature
+        )
+        source_player = self._human_prior_graph_player_slot(source)
+        if not source or source_player is None:
+            return None
+        edges, reverse_edges, controls = (
+            self._human_prior_episodic_topology_graph()
+        )
+        nodes = {source, *edges, *reverse_edges}
+        forward_distances = self._human_prior_episodic_graph_distances(
+            (source,), edges, nodes
+        )
+        current_position_phase = self._human_prior_position_phase(
+            source_signature
+        )
+        candidates: List[Tuple[int, int, str]] = []
+        for target, route_cost in forward_distances.items():
+            if target == source or route_cost <= 0:
+                continue
+            player = self._human_prior_graph_player_slot(target)
+            if player is None or player == source_player:
+                continue
+            if self.human_prior_phase_player_position_visits[
+                (current_position_phase, player)
+            ] > 0:
+                continue
+            route_controls = (
+                self._human_prior_episodic_control_route_in_graph(
+                    source, target, edges, controls
+                )
+            )
+            if not route_controls:
+                continue
+            displacement = abs(player[0] - source_player[0]) + abs(
+                player[1] - source_player[1]
+            )
+            candidates.append((route_cost, -displacement, target))
+        if not candidates:
+            return None
+        _route_cost, _displacement_rank, waypoint = min(candidates)
+        remaining_costs = self._human_prior_episodic_graph_distances(
+            (waypoint,), reverse_edges, nodes
+        )
+        source_remaining_cost = remaining_costs.get(source)
+        if source_remaining_cost is None or source_remaining_cost <= 0:
+            return None
+        return _HumanPriorEpisodicGraphPlan(
+            kind="topology_transfer",
+            source_signature=source,
+            waypoint_signature=waypoint,
+            bridge_target_signature=waypoint,
+            milestone_source_signature="",
+            known_route=True,
+            gap_distance=0,
+            source_remaining_cost=source_remaining_cost,
+            remaining_costs=remaining_costs,
+            milestone_component=frozenset(),
+            route_controls=(
+                self._human_prior_episodic_control_route_in_graph(
+                    source, waypoint, edges, controls
+                )
+            ),
+        )
+
     def _human_prior_episodic_control_frontier_plan(
         self,
         source_signature: str,
@@ -3366,10 +3586,37 @@ class VerifiedNeuralAgent:
         )
         if source_signature not in allowed:
             return None
-        if not milestone_sources:
-            return self._human_prior_episodic_control_frontier_plan(
-                source_signature, allowed
+        topology_transfer_plan = (
+            self._human_prior_episodic_topology_transfer_plan(
+                source_signature
             )
+        )
+        if not milestone_sources:
+            exact_control_plan = (
+                self._human_prior_episodic_control_frontier_plan(
+                    source_signature, allowed
+                )
+            )
+            if exact_control_plan is not None:
+                exact_waypoint_player = (
+                    self._human_prior_graph_player_slot(
+                        exact_control_plan.waypoint_signature
+                    )
+                )
+                current_position_phase = (
+                    self._human_prior_position_phase(source_signature)
+                )
+                if (
+                    exact_waypoint_player is not None
+                    and self.human_prior_phase_player_position_visits[
+                        (current_position_phase, exact_waypoint_player)
+                    ]
+                    == 0
+                ):
+                    return exact_control_plan
+            if topology_transfer_plan is not None:
+                return topology_transfer_plan
+            return exact_control_plan
         if source_signature in milestone_sources:
             return self._human_prior_episodic_control_frontier_plan(
                 source_signature, allowed
@@ -3475,24 +3722,29 @@ class VerifiedNeuralAgent:
             ),
         )
 
-    @staticmethod
     def _human_prior_episodic_graph_progress(
+        self,
         plan: Optional[_HumanPriorEpisodicGraphPlan],
         target_signature: str,
     ) -> Tuple[float, bool, Optional[int]]:
         if plan is None or not target_signature:
             return 0.0, False, None
-        if target_signature == plan.source_signature:
+        target_key = (
+            self._human_prior_topology_graph_signature(target_signature)
+            if plan.kind == "topology_transfer"
+            else target_signature
+        )
+        if target_key == plan.source_signature:
             return (
                 0.0,
                 False,
-                plan.remaining_costs.get(target_signature),
+                plan.remaining_costs.get(target_key),
             )
         bridge_reached = bool(
             not plan.known_route
-            and target_signature in plan.milestone_component
+            and target_key in plan.milestone_component
         )
-        target_remaining = plan.remaining_costs.get(target_signature)
+        target_remaining = plan.remaining_costs.get(target_key)
         progress = 0.0
         if target_remaining is not None and plan.source_remaining_cost > 0:
             progress = max(
@@ -3510,6 +3762,61 @@ class VerifiedNeuralAgent:
         ):
             progress = max(1.0, progress)
         return progress, bridge_reached, target_remaining
+
+    def _human_prior_live_goal_exhaustion_progress(
+        self,
+        source_signature: str,
+    ) -> Tuple[
+        Optional[_HumanPriorEpisodicGraphPlan],
+        Tuple[Tuple[_ArchivedBranch, float, bool, Optional[int]], ...],
+    ]:
+        """Revalidate archived route progress before milestone rollback.
+
+        Goal-exhaustion recovery is intentionally bounded, but it must not
+        discard a verified continuation that the current route plan can
+        already consume.  Stored archive progress is deliberately ignored:
+        every candidate is scored against the live plan and current visible
+        goal configuration so a stale branch cannot defer rollback forever.
+        """
+
+        if (
+            not self.config.human_prior_episodic_graph_guidance
+            or self.goal_prior is None
+            or not source_signature
+        ):
+            return None, ()
+        current_hearts = tuple(sorted(self.goal_prior.current_slots()))
+        if not current_hearts:
+            return None, ()
+        plan = self._human_prior_episodic_graph_plan(source_signature)
+        if plan is None:
+            return None, ()
+        candidates = []
+        for branch in self.archive:
+            if (
+                branch.goal_exhaustion_recovery_root
+                or not branch.human_prior_verified_option
+                or branch.plan.path[0] == Action.NOOP
+                or not branch.goal_target_signature
+                or tuple(sorted(branch.goal_heart_slots)) != current_hearts
+                or self._human_prior_archive_ordering_blocked(branch)
+                or not self._human_prior_archive_is_non_regressive(
+                    branch,
+                    self.goal_prior.best_remaining_hearts,
+                )
+            ):
+                continue
+            progress, bridge_reached, remaining_cost = (
+                self._human_prior_episodic_graph_progress(
+                    plan, branch.goal_target_signature
+                )
+            )
+            if progress <= 0.0 and not bridge_reached:
+                continue
+            candidates.append(
+                (branch, progress, bridge_reached, remaining_cost)
+            )
+        return plan, tuple(candidates)
 
     def _human_prior_position_visits(
         self, signature: str, player_slot: Tuple[int, int]
@@ -8138,7 +8445,14 @@ class VerifiedNeuralAgent:
                             episodic_graph_route_replay_prefix
                             and episodic_graph_plan is not None
                             and depth == len(episodic_route_controls)
-                            and target_signature
+                            and (
+                                self._human_prior_topology_graph_signature(
+                                    target_signature
+                                )
+                                if episodic_graph_plan.kind
+                                == "topology_transfer"
+                                else target_signature
+                            )
                             == episodic_graph_plan.waypoint_signature
                         )
                         score = (
@@ -16410,6 +16724,7 @@ class VerifiedNeuralAgent:
             human_prior_graph_stagnant and self.archive
         )
         option_search_exhausted = False
+        milestone_verified_route_search_due = False
         if human_prior_graph_stagnant:
             self._emit(
                 "human_prior_graph_stagnation_detected",
@@ -16443,14 +16758,54 @@ class VerifiedNeuralAgent:
                     agent_visible=True,
                     **self._frame_fields(self.frame),
                 )
-                goal_exhaustion_recovery = (
-                    self._restore_goal_milestone_after_exhaustion(
-                        current_goal_graph_signature,
-                        current_goal_graph_visits,
-                    )
+                (
+                    live_exhaustion_plan,
+                    live_exhaustion_progress,
+                ) = self._human_prior_live_goal_exhaustion_progress(
+                    current_goal_graph_signature
                 )
-                if goal_exhaustion_recovery is not None:
-                    return goal_exhaustion_recovery
+                verified_route_search_due = bool(
+                    live_exhaustion_plan is not None
+                    and live_exhaustion_plan.route_controls
+                    and not live_exhaustion_progress
+                )
+                if verified_route_search_due:
+                    milestone_verified_route_search_due = True
+                    self._emit(
+                        "goal_milestone_frontier_recovery_deferred",
+                        decision=self.decision_index + 1,
+                        reason="current_verified_route_requires_search",
+                        milestone_choice=milestone_checkpoint.choice,
+                        milestone_decision=milestone_checkpoint.decision,
+                        exploration_steps=(
+                            milestone_checkpoint.exploration_steps
+                        ),
+                        frontier_budget=milestone_frontier_budget,
+                        exhausted_graph_signature=(
+                            current_goal_graph_signature
+                        ),
+                        live_plan_kind=live_exhaustion_plan.kind,
+                        verified_route_controls=len(
+                            live_exhaustion_plan.route_controls
+                        ),
+                        source_remaining_cost=(
+                            live_exhaustion_plan.source_remaining_cost
+                        ),
+                        policy_effect=(
+                            "one_exact_search_before_late_rollback"
+                        ),
+                        agent_visible=True,
+                        **self._frame_fields(self.frame),
+                    )
+                else:
+                    goal_exhaustion_recovery = (
+                        self._restore_goal_milestone_after_exhaustion(
+                            current_goal_graph_signature,
+                            current_goal_graph_visits,
+                        )
+                    )
+                    if goal_exhaustion_recovery is not None:
+                        return goal_exhaustion_recovery
             unvisited_archive_endpoints = (
                 self._human_prior_unvisited_archive_endpoints(
                     current_goal_graph_signature
@@ -16489,6 +16844,7 @@ class VerifiedNeuralAgent:
                 )
             if (
                 self.config.human_prior_option_search_depth >= 2
+                and not milestone_verified_route_search_due
                 and (
                     unvisited_archive_endpoints > 0
                     or global_archive_frontiers > 0
@@ -20790,6 +21146,51 @@ class VerifiedNeuralAgent:
                 **self._frame_fields(self.frame),
             )
             return None
+        (
+            live_episodic_plan,
+            live_episodic_progress,
+        ) = self._human_prior_live_goal_exhaustion_progress(
+            exhausted_graph_signature
+        )
+        if live_episodic_progress:
+            self._emit(
+                "goal_milestone_exhaustion_deferred",
+                decision=self.decision_index + 1,
+                reason="live_verified_episodic_progress",
+                milestone_choice=checkpoint.choice,
+                milestone_decision=checkpoint.decision,
+                exploration_steps=checkpoint.exploration_steps,
+                minimum_exploration_steps=(
+                    self.config.human_prior_goal_exhaustion_minimum_steps
+                ),
+                remaining_exploration_steps=0,
+                exhausted_graph_signature=exhausted_graph_signature,
+                exhausted_graph_visits=exhausted_graph_visits,
+                live_plan_kind=(
+                    None
+                    if live_episodic_plan is None
+                    else live_episodic_plan.kind
+                ),
+                live_progress_archives=len(live_episodic_progress),
+                maximum_live_progress=max(
+                    item[1] for item in live_episodic_progress
+                ),
+                live_bridges=sum(
+                    item[2] for item in live_episodic_progress
+                ),
+                minimum_remaining_cost=min(
+                    (
+                        item[3]
+                        for item in live_episodic_progress
+                        if item[3] is not None
+                    ),
+                    default=None,
+                ),
+                policy_effect="consume_verified_route_before_rollback",
+                agent_visible=True,
+                **self._frame_fields(self.frame),
+            )
+            return None
         self.pending_goal_milestone_checkpoint = None
         exhausted_transition = (
             tuple(checkpoint.goal_heart_slots),
@@ -21891,6 +22292,10 @@ class VerifiedNeuralAgent:
             for branch in eligible
             if live_archive_goal_metrics(branch)[0] > 0.0
             or (
+                self.config.human_prior_episodic_graph_guidance
+                and live_archive_episodic_graph_metrics(branch)[0] > 0.0
+            )
+            or (
                 branch.goal_total_hearts > 0
                 and branch.goal_remaining_hearts
                 < current_goal_heart_count
@@ -22606,6 +23011,7 @@ class VerifiedNeuralAgent:
             and (
                 restored_target_position_visits_before == 0
                 or restored_target_unexpanded_actions
+                or restored_episodic_graph_progress > 0.0
                 or (
                     branch.goal_target_signature
                     and self.human_prior_graph_state_visits[

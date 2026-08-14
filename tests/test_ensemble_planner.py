@@ -24,6 +24,7 @@ from lolo_agent.neural_planner import (
     VerifiedNeuralAgent,
     _ArchivedBranch,
     _BehaviorProbeSelection,
+    _HumanPriorEpisodicGraphPlan,
     _HumanPriorOptionNode,
     _LifeHazardCheckpoint,
     _OptionCounterfactual,
@@ -3630,6 +3631,89 @@ class EnsemblePlannerTests(unittest.TestCase):
             ((Action.RIGHT, 1), (Action.RIGHT, 1)),
         )
 
+    def test_episodic_topology_transfers_between_pending_goal_phases(
+        self,
+    ) -> None:
+        agent = VerifiedNeuralAgent(
+            ActionEffectEnv(),
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.DOWN),
+                human_prior_heart_reward=1.0,
+                human_prior_episodic_graph_guidance=True,
+            ),
+        )
+        agent.reset()
+        old_hearts = ((7, 0), (9, 0))
+        new_hearts = ((9, 0),)
+        old_source = agent._human_prior_graph_signature(
+            old_hearts, (0, 0), None, "life-a", "world-a"
+        )
+        old_route = agent._human_prior_graph_signature(
+            old_hearts, (1, 0), None, "life-b", "world-b"
+        )
+        old_frontier = agent._human_prior_graph_signature(
+            old_hearts, (2, 0), None, "life-c", "world-c"
+        )
+        current_source = agent._human_prior_graph_signature(
+            new_hearts, (0, 0), None, "life-d", "world-d"
+        )
+        current_route = agent._human_prior_graph_signature(
+            new_hearts, (1, 0), None, "life-e", "world-e"
+        )
+        agent._record_human_prior_episodic_graph_transition(
+            old_source,
+            old_route,
+            1,
+            controls=((Action.RIGHT, 1),),
+        )
+        agent._record_human_prior_episodic_graph_transition(
+            old_route,
+            old_frontier,
+            1,
+            controls=((Action.RIGHT, 1),),
+        )
+        current_phase = agent._human_prior_position_phase(current_source)
+        agent.human_prior_phase_player_position_visits[
+            (current_phase, (0, 0))
+        ] = 1
+        agent.human_prior_phase_player_position_visits[
+            (current_phase, (1, 0))
+        ] = 1
+
+        plan = agent._human_prior_episodic_graph_plan(current_source)
+
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertEqual(plan.kind, "topology_transfer")
+        self.assertEqual(
+            plan.waypoint_signature,
+            agent._human_prior_topology_graph_signature(old_frontier),
+        )
+        self.assertEqual(
+            plan.route_controls,
+            ((Action.RIGHT, 1), (Action.RIGHT, 1)),
+        )
+        progress, reached, remaining = (
+            agent._human_prior_episodic_graph_progress(
+                plan, current_route
+            )
+        )
+        self.assertEqual(progress, 0.5)
+        self.assertFalse(reached)
+        self.assertEqual(remaining, 1)
+
+        completed_source = agent._human_prior_graph_signature(
+            (), (0, 0), None, "life-f", "world-f"
+        )
+        completed = agent._human_prior_episodic_graph_plan(
+            completed_source
+        )
+        self.assertIsNone(completed)
+
     def test_episodic_graph_plan_avoids_zero_length_milestone_route(
         self,
     ) -> None:
@@ -4890,6 +4974,121 @@ class EnsemblePlannerTests(unittest.TestCase):
         )
         self.assertTrue(filtered["episodic_graph_frontier_preferred"])
         env.release_state(root)
+
+    def test_archive_route_progress_survives_opposing_local_shaping(
+        self,
+    ) -> None:
+        env = UniqueStateEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.LEFT, Action.RIGHT),
+                planning_depth=1,
+                behavioral_best_first_archive=True,
+                human_prior_best_first_archive=True,
+                human_prior_episodic_graph_guidance=True,
+            ),
+        )
+        agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        env.position = 2
+        current_frame = env._frame()
+        current_state = env.save_state()
+        env.position = 1
+        route_frame = env._frame()
+        route_state = env.save_state()
+        env.position = 3
+        shaping_frame = env._frame()
+        shaping_state = env.save_state()
+        env.load_state(current_state)
+        agent.frame = current_frame
+        agent.goal_prior.current_player_slot = (2, 0)
+        source_signature = agent._human_prior_graph_signature(
+            ((7, 0),), (2, 0), None, "life"
+        )
+        route_signature = agent._human_prior_graph_signature(
+            ((7, 0),), (1, 0), None, "life"
+        )
+        shaping_signature = agent._human_prior_graph_signature(
+            ((7, 0),), (3, 0), None, "life"
+        )
+        agent._current_human_prior_graph_signature = (
+            lambda: source_signature
+        )
+        agent._human_prior_episodic_graph_plan = lambda _source: (
+            _HumanPriorEpisodicGraphPlan(
+                kind="milestone_route",
+                source_signature=source_signature,
+                waypoint_signature=route_signature,
+                bridge_target_signature=route_signature,
+                milestone_source_signature=route_signature,
+                known_route=True,
+                gap_distance=0,
+                source_remaining_cost=1,
+                remaining_costs={
+                    source_signature: 1,
+                    route_signature: 0,
+                },
+                milestone_component=frozenset(),
+            )
+        )
+        agent._record_human_prior_player_position(
+            route_signature, (1, 0)
+        )
+        agent.human_prior_graph_state_visits[route_signature] = 1
+        agent._record_human_prior_graph_edge_verification(
+            route_signature, Action.LEFT, 1
+        )
+        agent._record_human_prior_graph_edge_verification(
+            route_signature, Action.RIGHT, 1
+        )
+        common = dict(
+            score=1.0,
+            scene=agent._scene_signature(current_frame),
+            created=0,
+            origin_signature="source",
+            goal_source_signature=source_signature,
+            goal_heart_slots=((7, 0),),
+            goal_remaining_hearts=1,
+            goal_total_hearts=1,
+        )
+        agent.archive = [
+            _ArchivedBranch(
+                state=route_state,
+                frame=route_frame,
+                plan=NeuralPlan((Action.LEFT,), (1,), -1.0, 0.0),
+                goal_target_signature=route_signature,
+                goal_progress_reward=-1.0,
+                goal_player_slot=(1, 0),
+                human_prior_verified_option=True,
+                **common,
+            ),
+            _ArchivedBranch(
+                state=shaping_state,
+                frame=shaping_frame,
+                plan=NeuralPlan((Action.RIGHT,), (1,), 1.0, 0.0),
+                goal_target_signature=shaping_signature,
+                goal_progress_reward=1.0,
+                goal_player_slot=(3, 0),
+                human_prior_verified_option=True,
+                **common,
+            ),
+        ]
+        agent.human_prior_graph_recovery_pending = True
+
+        decision = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(env.position, 1)
+        self.assertEqual(
+            agent.last_navigation_change_decision,
+            agent.decision_index,
+        )
+        env.release_state(current_state)
 
     def test_archive_restore_arms_grace_for_new_committed_graph_state(
         self,
@@ -8248,6 +8447,181 @@ class EnsemblePlannerTests(unittest.TestCase):
         ]
         self.assertEqual(len(archived_roots), 1)
 
+    def test_goal_milestone_exhaustion_consumes_live_route_before_rollback(
+        self,
+    ) -> None:
+        env = ActionEffectEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                human_prior_best_first_archive=True,
+                human_prior_graph_stagnation_visits=1,
+                human_prior_goal_exhaustion_rollback=True,
+                human_prior_goal_exhaustion_minimum_steps=0,
+                human_prior_option_search_depth=2,
+                human_prior_episodic_graph_guidance=True,
+            ),
+            event_logger=logger,
+        )
+        source_frame = agent.reset()
+        source_state = env.save_state()
+        target_frame = env.step(Action.RIGHT, 1)
+        target_state = env.save_state()
+        env.load_state(source_state)
+        agent.frame = source_frame
+        agent.goal_prior = PositionGoalPrior()
+        source_signature = agent._human_prior_graph_signature(
+            ((7, 0),), (0, 0), None, "life"
+        )
+        target_signature = agent._human_prior_graph_signature(
+            ((7, 0),), (1, 0), None, "life"
+        )
+        waypoint_signature = agent._human_prior_graph_signature(
+            ((7, 0),), (2, 0), None, "life"
+        )
+        live_plan = _HumanPriorEpisodicGraphPlan(
+            kind="milestone_route",
+            source_signature=source_signature,
+            waypoint_signature=waypoint_signature,
+            bridge_target_signature=waypoint_signature,
+            milestone_source_signature=waypoint_signature,
+            known_route=True,
+            gap_distance=0,
+            source_remaining_cost=2,
+            remaining_costs={
+                source_signature: 2,
+                target_signature: 1,
+                waypoint_signature: 0,
+            },
+            milestone_component=frozenset(),
+        )
+        agent._human_prior_episodic_graph_plan = (
+            lambda _source: live_plan
+        )
+        branch = _ArchivedBranch(
+            state=target_state,
+            frame=target_frame,
+            plan=NeuralPlan((Action.RIGHT,), (1,), -1.0, 0.0),
+            score=-1.0,
+            scene=agent._scene_signature(target_frame),
+            created=0,
+            origin_signature="source",
+            goal_source_signature=source_signature,
+            goal_target_signature=target_signature,
+            goal_heart_slots=((7, 0),),
+            goal_progress_reward=-1.0,
+            goal_remaining_hearts=1,
+            goal_total_hearts=1,
+            goal_player_slot=(1, 0),
+            human_prior_verified_option=True,
+        )
+        agent.archive = [branch]
+        checkpoint = _LifeHazardCheckpoint(
+            state=source_state,
+            frame=source_frame,
+            choice=(source_signature, Action.RIGHT, 1),
+            decision=0,
+            frontier_signature=source_signature,
+            causal_context_signature=agent.current_causal_context_signature,
+            scene=agent.current_scene,
+            pose_action=None,
+            last_action=None,
+            last_duration=None,
+            action_streak=0,
+            goal_heart_slots=((7, 0), (9, 0)),
+            goal_player_slot=(0, 0),
+            kind="goal_milestone",
+            goal_target_heart_slots=((7, 0),),
+            goal_target_heart_slots_known=True,
+        )
+        agent.pending_goal_milestone_checkpoint = checkpoint
+
+        decision = agent._restore_goal_milestone_after_exhaustion(
+            source_signature, 3
+        )
+
+        self.assertIsNone(decision)
+        self.assertIs(agent.pending_goal_milestone_checkpoint, checkpoint)
+        self.assertEqual(agent.archive, [branch])
+        self.assertFalse(
+            any(
+                event["event"] == "goal_milestone_exhaustion_learned"
+                for event in logger.events
+            )
+        )
+        deferred = [
+            event
+            for event in logger.events
+            if event["event"] == "goal_milestone_exhaustion_deferred"
+        ]
+        self.assertEqual(len(deferred), 1)
+        self.assertEqual(
+            deferred[0]["reason"], "live_verified_episodic_progress"
+        )
+        self.assertEqual(deferred[0]["live_progress_archives"], 1)
+        self.assertEqual(deferred[0]["maximum_live_progress"], 0.5)
+
+    def test_goal_exhaustion_ignores_stored_route_progress_without_live_plan(
+        self,
+    ) -> None:
+        env = ActionEffectEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                human_prior_episodic_graph_guidance=True,
+            ),
+        )
+        source_frame = agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        source_signature = agent._human_prior_graph_signature(
+            ((7, 0),), (0, 0), None, "life"
+        )
+        target_signature = agent._human_prior_graph_signature(
+            ((7, 0),), (1, 0), None, "life"
+        )
+        agent.archive = [
+            _ArchivedBranch(
+                state=env.save_state(),
+                frame=source_frame,
+                plan=NeuralPlan((Action.RIGHT,), (1,), 1.0, 0.0),
+                score=1.0,
+                scene=agent._scene_signature(source_frame),
+                created=0,
+                goal_source_signature=source_signature,
+                goal_target_signature=target_signature,
+                goal_heart_slots=((7, 0),),
+                goal_remaining_hearts=1,
+                goal_total_hearts=1,
+                goal_player_slot=(1, 0),
+                human_prior_verified_option=True,
+                human_prior_episodic_graph_plan_kind="milestone_route",
+                human_prior_episodic_graph_progress=1.0,
+                human_prior_episodic_graph_remaining_cost=0,
+            )
+        ]
+        agent._human_prior_episodic_graph_plan = lambda _source: None
+
+        plan, progress = (
+            agent._human_prior_live_goal_exhaustion_progress(
+                source_signature
+            )
+        )
+
+        self.assertIsNone(plan)
+        self.assertEqual(progress, ())
+
     def test_goal_milestone_frontier_budget_rolls_back_without_full_exhaustion(
         self,
     ) -> None:
@@ -8324,6 +8698,119 @@ class EnsemblePlannerTests(unittest.TestCase):
             (((7, 0),), ((3, 0),), False),
             agent.human_prior_exhausted_milestone_transitions,
         )
+
+    def test_goal_frontier_budget_searches_current_verified_route_before_rollback(
+        self,
+    ) -> None:
+        env = ActionEffectEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                human_prior_best_first_archive=True,
+                human_prior_graph_stagnation_visits=1,
+                human_prior_goal_exhaustion_rollback=True,
+                human_prior_goal_exhaustion_minimum_steps=0,
+                human_prior_goal_exhaustion_frontier_budget=2,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=1,
+                human_prior_option_search_action_frames=1,
+                human_prior_episodic_graph_guidance=True,
+            ),
+            event_logger=logger,
+        )
+        source_frame = agent.reset()
+        source_state = env.save_state()
+        source_signature = agent.current_frontier_signature
+        choice = (source_signature, Action.RIGHT, 1)
+        agent.pending_goal_milestone_checkpoint = _LifeHazardCheckpoint(
+            state=source_state,
+            frame=source_frame,
+            choice=choice,
+            decision=0,
+            frontier_signature=source_signature,
+            causal_context_signature=agent.current_causal_context_signature,
+            scene=agent.current_scene,
+            pose_action=None,
+            last_action=None,
+            last_duration=None,
+            action_streak=0,
+            goal_heart_slots=((7, 0), (9, 0)),
+            goal_player_slot=(0, 0),
+            kind="goal_milestone",
+            exploration_steps=1,
+            goal_target_heart_slots=((7, 0),),
+            goal_target_heart_slots_known=True,
+        )
+        agent.frame = env.step(Action.RIGHT, 1)
+        agent.goal_prior = PositionGoalPrior()
+        agent._calibrate_goal_prior = lambda _frame: None
+        agent._current_human_prior_graph_signature = (
+            lambda: "stagnant-route"
+        )
+        agent.human_prior_graph_state_visits["stagnant-route"] = 1
+        agent._human_prior_episodic_graph_plan = lambda _source: (
+            _HumanPriorEpisodicGraphPlan(
+                kind="topology_transfer",
+                source_signature="stagnant-route",
+                waypoint_signature="route-target",
+                bridge_target_signature="route-target",
+                milestone_source_signature="",
+                known_route=True,
+                gap_distance=0,
+                source_remaining_cost=1,
+                remaining_costs={
+                    "stagnant-route": 1,
+                    "route-target": 0,
+                },
+                milestone_component=frozenset(),
+                route_controls=((Action.RIGHT, 1),),
+            )
+        )
+        searches = 0
+
+        def exhausted_search() -> int:
+            nonlocal searches
+            searches += 1
+            return 0
+
+        agent._search_human_prior_options = exhausted_search
+        agent._human_prior_unvisited_archive_endpoints = (
+            lambda _source: 1
+        )
+
+        decision = agent.decide()
+
+        self.assertEqual(searches, 1)
+        self.assertTrue(decision.restored_archive)
+        deferred = [
+            event
+            for event in logger.events
+            if event["event"]
+            == "goal_milestone_frontier_recovery_deferred"
+        ]
+        self.assertEqual(len(deferred), 1)
+        self.assertEqual(
+            deferred[0]["reason"],
+            "current_verified_route_requires_search",
+        )
+        self.assertEqual(deferred[0]["verified_route_controls"], 1)
+        self.assertEqual(
+            deferred[0]["policy_effect"],
+            "one_exact_search_before_late_rollback",
+        )
+        learned = [
+            event
+            for event in logger.events
+            if event["event"] == "goal_milestone_exhaustion_learned"
+        ]
+        self.assertEqual(len(learned), 1)
 
     def test_goal_milestone_exhaustion_waits_for_committed_exploration(
         self,
