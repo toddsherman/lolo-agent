@@ -3411,6 +3411,62 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertFalse(fail_open)
         self.assertEqual(restored_detours, [alternative_branch])
 
+    def test_exhausted_milestone_reopens_after_world_context_change(
+        self,
+    ) -> None:
+        env = ActionEffectEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(),
+        )
+        source = agent.reset()
+        target = env.step(Action.RIGHT, 1)
+        base = PositionGoalPrior().analyze(source, target)
+        source_hearts = ((1, 0), (7, 0))
+        milestone = replace(
+            base,
+            known_slots=source_hearts,
+            source_present=source_hearts,
+            target_present=((7, 0),),
+            collected=((1, 0),),
+            heart_reward=25.0,
+            navigation_reward=0.0,
+            total_reward=25.0,
+        )
+        transition = (source_hearts, ((7, 0),), False)
+        agent.human_prior_exhausted_milestone_transitions.add(transition)
+        agent.human_prior_exhausted_milestone_contexts[transition] = {
+            "unprepared-world"
+        }
+
+        agent.current_human_prior_world_context_signature = (
+            "unprepared-world"
+        )
+        self.assertTrue(
+            agent._human_prior_milestone_transition_exhausted(milestone)
+        )
+        self.assertEqual(
+            agent._human_prior_failed_ordering_targets(
+                source_hearts, False
+            ),
+            ((1, 0),),
+        )
+
+        agent.current_human_prior_world_context_signature = "prepared-world"
+        self.assertFalse(
+            agent._human_prior_milestone_transition_exhausted(milestone)
+        )
+        self.assertEqual(
+            agent._human_prior_failed_ordering_targets(
+                source_hearts, False
+            ),
+            (),
+        )
+
     def test_option_search_filters_fully_mapped_control_leaves(
         self,
     ) -> None:
@@ -11049,6 +11105,9 @@ class EnsemblePlannerTests(unittest.TestCase):
                     [[64, 32]],
                     False,
                 ],
+                "exhausted_graph_signature": (
+                    "hearts=64,32|player=16,16|world=observed-world"
+                ),
             },
             {
                 "event": "human_prior_option_archive_added",
@@ -11072,6 +11131,12 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertIn(
             (source_hearts, ((64, 32),), False),
             agent.human_prior_exhausted_milestone_transitions,
+        )
+        self.assertEqual(
+            agent.human_prior_exhausted_milestone_contexts[
+                (source_hearts, ((64, 32),), False)
+            ],
+            {"observed-world"},
         )
         self.assertIn(
             ordering_key,

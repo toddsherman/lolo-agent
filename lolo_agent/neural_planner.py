@@ -1047,6 +1047,9 @@ class VerifiedNeuralAgent:
         ] = Counter()
         self.human_prior_milestone_outcomes: set[tuple] = set()
         self.human_prior_exhausted_milestone_transitions: set[tuple] = set()
+        self.human_prior_exhausted_milestone_contexts: Dict[
+            tuple, set[str]
+        ] = {}
         self.human_prior_ordering_progress_hypotheses: set[tuple] = set()
         self.human_prior_disproved_ordering_hypotheses: set[tuple] = set()
         self.human_prior_exhausted_option_frontiers: Dict[str, int] = {}
@@ -3050,6 +3053,13 @@ class VerifiedNeuralAgent:
         return None
 
     @staticmethod
+    def _human_prior_graph_world_context(signature: str) -> str:
+        for field in signature.split("|"):
+            if field.startswith("world="):
+                return field.split("=", 1)[1]
+        return ""
+
+    @staticmethod
     def _human_prior_graph_treasure_obtained(signature: str) -> bool:
         return any(
             field == "treasure=obtained"
@@ -3110,6 +3120,12 @@ class VerifiedNeuralAgent:
             return bool(
                 transition
                 in self.human_prior_exhausted_milestone_transitions
+                and self._human_prior_exhaustion_context_matches(
+                    transition,
+                    self._human_prior_graph_world_context(
+                        source_signature
+                    ),
+                )
                 and ordering_key
                 not in self.human_prior_disproved_ordering_hypotheses
             )
@@ -3135,6 +3151,10 @@ class VerifiedNeuralAgent:
         return any(
             transition[0] == source_hearts
             and transition[2] == source_treasure
+            and self._human_prior_exhaustion_context_matches(
+                transition,
+                self._human_prior_graph_world_context(source_signature),
+            )
             and transition_exhausted(transition)
             for transition in self.human_prior_exhausted_milestone_transitions
         )
@@ -12463,6 +12483,7 @@ class VerifiedNeuralAgent:
         self.human_prior_phase_player_position_visits = Counter()
         self.human_prior_milestone_outcomes = set()
         self.human_prior_exhausted_milestone_transitions = set()
+        self.human_prior_exhausted_milestone_contexts = {}
         self.human_prior_ordering_progress_hypotheses = set()
         self.human_prior_disproved_ordering_hypotheses = set()
         self.human_prior_option_exhausted_sources: set[tuple] = set()
@@ -12989,6 +13010,7 @@ class VerifiedNeuralAgent:
         self.human_prior_phase_player_position_visits = Counter()
         self.human_prior_milestone_outcomes = set()
         self.human_prior_exhausted_milestone_transitions = set()
+        self.human_prior_exhausted_milestone_contexts = {}
         self.human_prior_ordering_progress_hypotheses = set()
         self.human_prior_disproved_ordering_hypotheses = set()
         self.human_prior_option_exhausted_sources = set()
@@ -13143,6 +13165,7 @@ class VerifiedNeuralAgent:
             Tuple[str, Action, int]
         ] = Counter()
         exhausted_milestone_transitions: set[tuple] = set()
+        exhausted_milestone_contexts: Dict[tuple, set[str]] = {}
         ordering_progress_hypotheses: set[tuple] = set()
         disproved_ordering_hypotheses: set[tuple] = set()
         budget_invalidated_ordering_disproofs = 0
@@ -13907,6 +13930,22 @@ class VerifiedNeuralAgent:
                         exhausted_milestone_transitions.add(
                             parsed_transition
                         )
+                        exhausted_world_context = str(
+                            event.get("exhausted_world_context")
+                            or self._human_prior_graph_world_context(
+                                str(
+                                    event.get(
+                                        "exhausted_graph_signature"
+                                    )
+                                    or ""
+                                )
+                            )
+                            or ""
+                        )
+                        if exhausted_world_context:
+                            exhausted_milestone_contexts.setdefault(
+                                parsed_transition, set()
+                            ).add(exhausted_world_context)
                         if event.get("ordering_hypothesis_reactivated"):
                             reactivated_key = (
                                 tuple(sorted(parsed_transition[0])),
@@ -14247,6 +14286,9 @@ class VerifiedNeuralAgent:
         self.human_prior_exhausted_milestone_transitions = (
             exhausted_milestone_transitions
         )
+        self.human_prior_exhausted_milestone_contexts = (
+            exhausted_milestone_contexts
+        )
         self.human_prior_ordering_progress_hypotheses = (
             ordering_progress_hypotheses
             - disproved_ordering_hypotheses
@@ -14361,6 +14403,12 @@ class VerifiedNeuralAgent:
             milestone_outcomes=len(self.human_prior_milestone_outcomes),
             exhausted_milestone_transitions=len(
                 self.human_prior_exhausted_milestone_transitions
+            ),
+            exhausted_milestone_contexts=sum(
+                len(contexts)
+                for contexts in (
+                    self.human_prior_exhausted_milestone_contexts.values()
+                )
             ),
             exhausted_navigation_detours=len(
                 self.human_prior_exhausted_navigation_detours
@@ -15854,24 +15902,57 @@ class VerifiedNeuralAgent:
         )
 
     def _human_prior_milestone_transition_exhausted(
-        self, analysis: HeartGoalAnalysis
+        self,
+        analysis: HeartGoalAnalysis,
+        world_context: Optional[str] = None,
     ) -> bool:
         ordering_key = self._human_prior_ordering_hypothesis_key(
             analysis.source_present,
             analysis.chest_obtained,
+            world_context,
         )
         return bool(
             analysis.milestone_reward > 0.0
             and self._human_prior_milestone_transition_key(analysis)
             in self.human_prior_exhausted_milestone_transitions
+            and self._human_prior_exhaustion_context_matches(
+                self._human_prior_milestone_transition_key(analysis),
+                world_context,
+            )
             and ordering_key
             not in self.human_prior_disproved_ordering_hypotheses
         )
+
+    def _human_prior_exhaustion_context_matches(
+        self,
+        transition: tuple,
+        world_context: Optional[str] = None,
+    ) -> bool:
+        """Match an ordering failure only in the world state that produced it.
+
+        Empty context sets are legacy/manual evidence and retain their former
+        room-semantic scope.  Persisted native evidence records a learned
+        pixel-world signature, allowing a preparation change to reopen an
+        otherwise identical goal ordering.
+        """
+
+        contexts = self.human_prior_exhausted_milestone_contexts.get(
+            transition, set()
+        )
+        if not contexts:
+            return True
+        candidate = (
+            self.current_human_prior_world_context_signature
+            if world_context is None
+            else world_context
+        )
+        return bool(candidate and candidate in contexts)
 
     def _human_prior_raw_failed_ordering_targets(
         self,
         source_hearts: Tuple[Tuple[int, int], ...],
         chest_obtained: bool,
+        world_context: Optional[str] = None,
     ) -> Tuple[Tuple[int, int], ...]:
         """Return goal slots whose collection led to bounded exhaustion."""
 
@@ -15883,6 +15964,14 @@ class VerifiedNeuralAgent:
             if (
                 tuple(sorted(transition_source)) != normalized_source
                 or bool(transition_chest) != bool(chest_obtained)
+                or not self._human_prior_exhaustion_context_matches(
+                    (
+                        transition_source,
+                        transition_target,
+                        transition_chest,
+                    ),
+                    world_context,
+                )
             ):
                 continue
             removed.update(
@@ -15894,11 +15983,13 @@ class VerifiedNeuralAgent:
         self,
         source_hearts: Tuple[Tuple[int, int], ...],
         chest_obtained: bool,
+        world_context: Optional[str] = None,
     ) -> Optional[tuple]:
         normalized_source = tuple(sorted(source_hearts))
         removed = self._human_prior_raw_failed_ordering_targets(
             normalized_source,
             chest_obtained,
+            world_context,
         )
         if not removed:
             return None
@@ -15908,12 +15999,14 @@ class VerifiedNeuralAgent:
         self,
         source_hearts: Tuple[Tuple[int, int], ...],
         chest_obtained: bool,
+        world_context: Optional[str] = None,
     ) -> Tuple[Tuple[int, int], ...]:
         """Return active targets, excluding disproven interpretations."""
 
         ordering_key = self._human_prior_ordering_hypothesis_key(
             source_hearts,
             chest_obtained,
+            world_context,
         )
         if (
             ordering_key is None
@@ -16007,15 +16100,20 @@ class VerifiedNeuralAgent:
         ordering_key = self._human_prior_ordering_hypothesis_key(
             source_hearts,
             bool(branch.goal_chest_obtained),
+            branch.goal_source_world_context,
+        )
+        transition = (
+            source_hearts,
+            target_hearts,
+            bool(branch.goal_chest_obtained),
         )
         return bool(
             source_hearts != target_hearts
-            and (
-                source_hearts,
-                target_hearts,
-                bool(branch.goal_chest_obtained),
-            )
+            and transition
             in self.human_prior_exhausted_milestone_transitions
+            and self._human_prior_exhaustion_context_matches(
+                transition, branch.goal_source_world_context
+            )
             and ordering_key
             not in self.human_prior_disproved_ordering_hypotheses
         )
@@ -16033,6 +16131,7 @@ class VerifiedNeuralAgent:
             in self._human_prior_failed_ordering_targets(
                 source_hearts,
                 bool(branch.goal_chest_obtained),
+                branch.goal_source_world_context,
             )
         )
 
@@ -22396,9 +22495,17 @@ class VerifiedNeuralAgent:
         self.human_prior_exhausted_milestone_transitions.add(
             exhausted_transition
         )
+        exhausted_world_context = (
+            checkpoint.human_prior_world_context_signature
+        )
+        if exhausted_world_context:
+            self.human_prior_exhausted_milestone_contexts.setdefault(
+                exhausted_transition, set()
+            ).add(exhausted_world_context)
         ordering_key = self._human_prior_ordering_hypothesis_key(
             exhausted_transition[0],
             exhausted_transition[2],
+            exhausted_world_context,
         )
         ordering_hypothesis_reactivated = bool(
             ordering_key
@@ -22447,6 +22554,7 @@ class VerifiedNeuralAgent:
                 ordering_hypothesis_reactivated
             ),
             exhausted_milestone_transition=exhausted_transition,
+            exhausted_world_context=exhausted_world_context,
             recovery_state_id=checkpoint.state_id,
             agent_visible=True,
             **self._frame_fields(self.frame),
