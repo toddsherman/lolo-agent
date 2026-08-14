@@ -2784,6 +2784,7 @@ class VerifiedNeuralAgent:
         action: Action,
         interaction_cell: Optional[Tuple[int, int]],
         effect_cells: Iterable[Tuple[int, int]],
+        manipulation_probability: float = 1.0,
     ) -> set[Tuple[int, int]]:
         """Retain anonymous near-contact changes that may encode a push.
 
@@ -2793,8 +2794,10 @@ class VerifiedNeuralAgent:
         so retaining only that exact destination represents the resulting
         world configuration without treating nearby sprite animation as part
         of it.
-        This is deliberately an observational state key, not a claim that
-        any particular appearance is pushable.
+        The state key is enabled only after learned matched-control outcomes
+        assign majority probability to manipulation.  Unknown appearances
+        remain available to causal curiosity probes, while ordinary movement
+        patches do not multiply the exact-search beam.
         """
 
         direction = {
@@ -2803,7 +2806,11 @@ class VerifiedNeuralAgent:
             Action.LEFT: (-1, 0),
             Action.RIGHT: (1, 0),
         }.get(action)
-        if direction is None or interaction_cell is None:
+        if (
+            direction is None
+            or interaction_cell is None
+            or manipulation_probability < 0.5
+        ):
             return set()
         destination = (
             interaction_cell[0] + direction[0],
@@ -9441,6 +9448,11 @@ class VerifiedNeuralAgent:
                                 action,
                                 direct_interaction_cell,
                                 direct_effect_cells,
+                                float(
+                                    entity_curiosity.get(
+                                        "manipulation_probability", 0.0
+                                    )
+                                ),
                             )
                         )
                         parent_effect_target_aligned = bool(
