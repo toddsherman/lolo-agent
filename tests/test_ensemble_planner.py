@@ -8390,9 +8390,57 @@ class EnsemblePlannerTests(unittest.TestCase):
         ]
         self.assertEqual(len(resets), 1)
         self.assertEqual(resets[0]["previous_exploration_steps"], 6)
-        self.assertIn(
-            resets[0]["reason"],
-            {"new_goal_graph_state", "new_player_position"},
+        self.assertEqual(resets[0]["reason"], "new_player_position")
+
+    def test_navigation_stagnation_shares_transient_world_contexts(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        agent = VerifiedNeuralAgent(
+            ActionEffectEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(),
+        )
+        first = agent._human_prior_graph_signature(
+            ((144, 192),),
+            (112, 32),
+            None,
+            "life-pose-a",
+            "world-context-a",
+        )
+        second = agent._human_prior_graph_signature(
+            ((144, 192),),
+            (112, 32),
+            None,
+            "life-pose-b",
+            "world-context-b",
+        )
+        distinct_goal_phase = agent._human_prior_graph_signature(
+            (),
+            (112, 32),
+            None,
+            "life-pose-b",
+            "world-context-b",
+        )
+        agent.human_prior_graph_state_visits[first] = 2
+        agent.human_prior_graph_state_visits[second] = 3
+        agent.human_prior_graph_state_visits[distinct_goal_phase] = 7
+
+        self.assertEqual(
+            agent._human_prior_navigation_graph_signature(first),
+            agent._human_prior_navigation_graph_signature(second),
+        )
+        self.assertNotEqual(
+            agent._human_prior_navigation_graph_signature(first),
+            agent._human_prior_navigation_graph_signature(
+                distinct_goal_phase
+            ),
+        )
+        self.assertEqual(
+            agent._human_prior_navigation_graph_visits(first), 5
         )
 
     def test_archive_restored_goal_milestone_preserves_source_checkpoint(

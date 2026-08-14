@@ -2681,6 +2681,44 @@ class VerifiedNeuralAgent:
         )
 
     @staticmethod
+    def _human_prior_navigation_graph_signature(signature: str) -> str:
+        """Collapse transient world variants for navigation stagnation.
+
+        The exact assisted graph deliberately retains learned persistent world
+        contexts so save-state planning can distinguish transformations and
+        other action-caused room changes.  Entity motion can also produce many
+        verified context variants at the same controlled position, however,
+        and those variants must not postpone bounded frontier exhaustion
+        forever.  Navigation stagnation therefore shares visit evidence across
+        exact contexts while preserving the visible goal configuration,
+        treasure phase, and player position.  Life loss remains handled by its
+        independent pixel-confirmed rollback path.
+        """
+
+        return "|".join(
+            field
+            for field in signature.split("|")
+            if field
+            and not field.startswith("life=")
+            and not field.startswith("world=")
+        )
+
+    def _human_prior_navigation_graph_visits(
+        self, signature: str
+    ) -> int:
+        if not signature:
+            return 0
+        navigation_signature = (
+            self._human_prior_navigation_graph_signature(signature)
+        )
+        return sum(
+            int(visits)
+            for candidate, visits in self.human_prior_graph_state_visits.items()
+            if self._human_prior_navigation_graph_signature(candidate)
+            == navigation_signature
+        )
+
+    @staticmethod
     def _human_prior_graph_player_slot(
         signature: str,
     ) -> Optional[Tuple[int, int]]:
@@ -15996,12 +16034,17 @@ class VerifiedNeuralAgent:
         current_goal_graph_signature = (
             self._current_human_prior_graph_signature()
         )
-        current_goal_graph_visits = (
+        current_goal_graph_exact_visits = (
             0
             if not current_goal_graph_signature
             else self.human_prior_graph_state_visits[
                 current_goal_graph_signature
             ]
+        )
+        current_goal_graph_visits = (
+            self._human_prior_navigation_graph_visits(
+                current_goal_graph_signature
+            )
         )
         human_prior_graph_repeated = bool(
             self.config.human_prior_best_first_archive
@@ -16095,6 +16138,12 @@ class VerifiedNeuralAgent:
                 reason="navigation_recovery_grace",
                 goal_signature=current_goal_graph_signature,
                 state_visits=current_goal_graph_visits,
+                exact_state_visits=current_goal_graph_exact_visits,
+                navigation_signature=(
+                    self._human_prior_navigation_graph_signature(
+                        current_goal_graph_signature
+                    )
+                ),
                 navigation_change_decision=(
                     self.last_navigation_change_decision
                 ),
@@ -16118,6 +16167,12 @@ class VerifiedNeuralAgent:
                 decision=self.decision_index + 1,
                 goal_signature=current_goal_graph_signature,
                 state_visits=current_goal_graph_visits,
+                exact_state_visits=current_goal_graph_exact_visits,
+                navigation_signature=(
+                    self._human_prior_navigation_graph_signature(
+                        current_goal_graph_signature
+                    )
+                ),
                 stagnation_limit=semantic_stagnation_limit,
                 archive_size=len(self.archive),
                 **self._frame_fields(self.frame),
@@ -18925,21 +18980,11 @@ class VerifiedNeuralAgent:
             self.decision_index += 1
             milestone_progress_reason = None
             if (
-                committed_goal_target_signature
-                and committed_goal_graph_state_visits_before == 0
-            ):
-                milestone_progress_reason = "new_goal_graph_state"
-            elif (
                 committed_goal_analysis is not None
                 and committed_goal_analysis.target_player_slot is not None
                 and committed_goal_target_position_visits_before == 0
             ):
                 milestone_progress_reason = "new_player_position"
-            elif (
-                committed_goal_source_world_context
-                != committed_goal_target_world_context
-            ):
-                milestone_progress_reason = "new_world_context"
             if milestone_progress_reason is not None:
                 self._reset_goal_milestone_exhaustion_evidence(
                     milestone_progress_reason,
@@ -22359,20 +22404,10 @@ class VerifiedNeuralAgent:
             )
         milestone_progress_reason = None
         if (
-            branch.goal_target_signature
-            and restored_goal_graph_state_visits_before == 0
-        ):
-            milestone_progress_reason = "new_goal_graph_state_archive"
-        elif (
             restored_goal_player_slot is not None
             and restored_target_position_visits_before == 0
         ):
             milestone_progress_reason = "new_player_position_archive"
-        elif (
-            branch.goal_source_world_context
-            != branch.goal_target_world_context
-        ):
-            milestone_progress_reason = "new_world_context_archive"
         if milestone_progress_reason is not None:
             self._reset_goal_milestone_exhaustion_evidence(
                 milestone_progress_reason,
