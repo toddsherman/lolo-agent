@@ -16542,7 +16542,7 @@ class VerifiedNeuralAgent:
         cls,
         nodes: Sequence[_HumanPriorOptionNode],
     ) -> Tuple[Tuple[_HumanPriorOptionNode, ...], int]:
-        """Cover appearances first, then action/locus interactions."""
+        """Cover practical action/locus experiments before appearances."""
 
         ranked = sorted(
             nodes,
@@ -16552,7 +16552,9 @@ class VerifiedNeuralAgent:
         appearance_representatives: Dict[
             tuple, _HumanPriorOptionNode
         ] = {}
-        group_representatives: Dict[tuple, _HumanPriorOptionNode] = {}
+        interaction_representatives: Dict[
+            tuple, _HumanPriorOptionNode
+        ] = {}
         for node in ranked:
             appearance_group = (
                 node.entity_interaction_type_id,
@@ -16561,13 +16563,16 @@ class VerifiedNeuralAgent:
             appearance_representatives.setdefault(
                 appearance_group, node
             )
+            # Animation phases and visually distinct appearances at the same
+            # physical locus are useful transfer evidence, but they should not
+            # consume the bounded causal-probe budget before the agent has
+            # tried a different action or locus.  Appearance-specific variants
+            # remain in the tail for any budget left after practical coverage.
             interaction_group = (
                 (
                     "cell-action",
                     node.entity_interaction_cell,
                     getattr(node, "entity_interaction_action", None),
-                    node.entity_interaction_type_id,
-                    node.entity_interaction_appearance_fingerprint,
                 )
                 if node.entity_interaction_cell is not None
                 else (
@@ -16578,19 +16583,18 @@ class VerifiedNeuralAgent:
                     getattr(node, "entity_interaction_action", None),
                 )
             )
-            group_representatives.setdefault(interaction_group, node)
-        diverse = list(appearance_representatives.values())
+            interaction_representatives.setdefault(interaction_group, node)
+        diverse = list(interaction_representatives.values())
         diverse_ids = {id(node) for node in diverse}
         diverse.extend(
-            node
-            for node in group_representatives.values()
+            node for node in appearance_representatives.values()
             if id(node) not in diverse_ids
         )
         diverse_ids = {id(node) for node in diverse}
         diverse.extend(
             node for node in ranked if id(node) not in diverse_ids
         )
-        return tuple(diverse), len(group_representatives)
+        return tuple(diverse), len(interaction_representatives)
 
     @staticmethod
     def _human_prior_entity_curiosity_probe_slot_count(
@@ -16599,7 +16603,7 @@ class VerifiedNeuralAgent:
         candidate_count: int,
         distinct_interaction_groups: int,
     ) -> int:
-        """Audit each anonymous cell/action/appearance group at most once."""
+        """Audit each anonymous practical cell/action group at most once."""
 
         return min(
             reserve,

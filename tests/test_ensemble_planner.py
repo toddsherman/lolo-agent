@@ -7680,7 +7680,7 @@ class EnsemblePlannerTests(unittest.TestCase):
                 (same_cell_best, same_cell_other_appearance)
             )
         )
-        self.assertEqual(groups, 2)
+        self.assertEqual(groups, 1)
         self.assertEqual(
             {id(node) for node in ranked},
             {id(same_cell_best), id(same_cell_other_appearance)},
@@ -7715,8 +7715,8 @@ class EnsemblePlannerTests(unittest.TestCase):
             )
         )
         self.assertIs(ranked[0], first_appearance)
-        self.assertIs(ranked[1], second_appearance)
-        self.assertIs(ranked[2], repeated_appearance)
+        self.assertIs(ranked[1], repeated_appearance)
+        self.assertIs(ranked[2], second_appearance)
 
     def test_entity_curiosity_probe_slots_stop_at_distinct_groups(
         self,
