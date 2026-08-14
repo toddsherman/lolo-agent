@@ -451,6 +451,26 @@ class AnonymousEntityBehaviorModelTests(unittest.TestCase):
         self.assertEqual(prediction.samples, 2)
         self.assertEqual(prediction.entity_displacement_probability, 1.0)
 
+        inert = model.effect_descriptor(
+            second_appearance,
+            second_appearance,
+            second_appearance,
+        )
+        for _ in range(2):
+            model.observe(
+                second_appearance,
+                Action.RIGHT,
+                16,
+                inert.signature,
+                outcome_descriptor=inert,
+            )
+
+        split_prediction = model.predict(
+            first_appearance, Action.RIGHT, 16
+        )
+        self.assertEqual(split_prediction.predictive_family_size, 1)
+        self.assertFalse(split_prediction.predictive_family_pooled)
+
     def test_descriptor_preserves_limited_visual_resource_transition(
         self,
     ) -> None:

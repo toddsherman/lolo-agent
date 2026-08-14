@@ -347,6 +347,15 @@ class AnonymousEntityBehaviorModel:
         ] = {}
         self._evidence_ids: set[str] = set()
         self._causal_hazard_evidence_ids: set[str] = set()
+        self._unconditional_rule_keys_by_type: Dict[
+            int, set[Tuple[int, str, int, bool, str]]
+        ] = {}
+        self._predictive_profile_cache: Dict[
+            int, Optional[Tuple[Tuple[Any, ...], ...]]
+        ] = {}
+        self._predictive_family_cache: Dict[
+            int, Tuple[Optional[int], Tuple[int, ...]]
+        ] = {}
 
     @property
     def type_count(self) -> int:
@@ -393,6 +402,11 @@ class AnonymousEntityBehaviorModel:
         if previous is not None:
             return False
         self._outcome_descriptors[outcome_signature] = descriptor
+        # Descriptors supply the semantics used by predictive families.  A
+        # descriptor may be registered after empirical counts were loaded, so
+        # conservatively invalidate every cached profile.
+        self._predictive_profile_cache.clear()
+        self._predictive_family_cache.clear()
         return True
 
     @staticmethod
@@ -777,8 +791,12 @@ class AnonymousEntityBehaviorModel:
     ) -> Optional[Tuple[Tuple[Any, ...], ...]]:
         """Return behavior semantics independent of animation appearance."""
 
+        if type_id in self._predictive_profile_cache:
+            return self._predictive_profile_cache[type_id]
         rows = []
-        for key, rule in sorted(self._rules.items()):
+        keys = self._unconditional_rule_keys_by_type.get(type_id, set())
+        for key in sorted(keys):
+            rule = self._rules[key]
             row_type, action, duration, autonomous, context = key
             if (
                 row_type != type_id
@@ -798,7 +816,9 @@ class AnonymousEntityBehaviorModel:
                 key=lambda item: (item[1], repr(item[0])),
             )[0]
             rows.append((action, duration, autonomous, *dominant))
-        return tuple(rows) if rows else None
+        profile = tuple(rows) if rows else None
+        self._predictive_profile_cache[type_id] = profile
+        return profile
 
     def predictive_family(
         self, type_id: Optional[int]
@@ -807,15 +827,23 @@ class AnonymousEntityBehaviorModel:
 
         if type_id is None or not 0 <= type_id < self.type_count:
             return None, ()
+        cached = self._predictive_family_cache.get(type_id)
+        if cached is not None:
+            return cached
         profile = self._predictive_profile(type_id)
         if profile is None:
-            return type_id, (type_id,)
+            result = (type_id, (type_id,))
+            self._predictive_family_cache[type_id] = result
+            return result
         members = tuple(
             candidate
             for candidate in range(self.type_count)
             if self._predictive_profile(candidate) == profile
         )
-        return min(members), members
+        result = (min(members), members)
+        for member in members:
+            self._predictive_family_cache[member] = result
+        return result
 
     @staticmethod
     def _merge_rules(rules: Sequence[_RuleStats]) -> _RuleStats:
@@ -1219,6 +1247,15 @@ class AnonymousEntityBehaviorModel:
                 rule.causal_hazardous += int(hazardous)
             if context_signature:
                 rule.contexts.add(context_signature)
+            if condition == self._UNCONDITIONAL_CONTEXT:
+                self._unconditional_rule_keys_by_type.setdefault(
+                    type_id, set()
+                ).add(key)
+        # Only this type's empirical semantics changed.  Cached profiles for
+        # every other type remain valid, while family membership must be
+        # regrouped around the updated profile.
+        self._predictive_profile_cache.pop(type_id, None)
+        self._predictive_family_cache.clear()
         if evidence_id:
             self._evidence_ids.add(evidence_id)
             if causal_hazard_evidence:
@@ -1448,6 +1485,10 @@ class AnonymousEntityBehaviorModel:
                 causal_hazardous=causal_hazardous,
                 causal_hazard_samples=causal_hazard_samples,
             )
+            if key[4] == model._UNCONDITIONAL_CONTEXT:
+                model._unconditional_rule_keys_by_type.setdefault(
+                    type_id, set()
+                ).add(key)
         model._evidence_ids = {
             str(value) for value in payload.get("evidence_ids") or ()
         }

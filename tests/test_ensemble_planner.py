@@ -691,7 +691,8 @@ class WorldEffectEnv:
 
 
 class WorldEffectAndMovementEnv:
-    def __init__(self) -> None:
+    def __init__(self, persistent: bool = True) -> None:
+        self.persistent = persistent
         self.position = 0
         self.world_active = False
 
@@ -706,6 +707,8 @@ class WorldEffectAndMovementEnv:
             self.position = min(1, self.position + 1)
         elif action == Action.A:
             self.world_active = True
+        elif action == Action.NOOP and not self.persistent:
+            self.world_active = False
         return self._frame()
 
     def save_state(self) -> tuple[int, bool]:
@@ -5032,6 +5035,62 @@ class EnsemblePlannerTests(unittest.TestCase):
                             ],
                             1,
                         )
+
+    def test_immediate_world_context_requires_temporal_persistence(
+        self,
+    ) -> None:
+        for persistent in (False, True):
+            with self.subTest(persistent=persistent):
+                model = EnsembleVisualDynamicsModel(
+                    latent_size=32, action_size=8, ensemble_size=2
+                )
+                logger = RecordingLogger()
+                agent = VerifiedNeuralAgent(
+                    WorldEffectAndMovementEnv(persistent=persistent),
+                    model,
+                    "cpu",
+                    NeuralPlanningConfig(
+                        actions=(Action.A, Action.RIGHT, Action.NOOP),
+                        planning_depth=1,
+                        verify_actions=3,
+                        action_frames=1,
+                        control_collapse_confirmation_steps=1,
+                        human_prior_heart_reward=1.0,
+                        human_prior_best_first_archive=True,
+                        human_prior_option_effect_stability_steps=2,
+                        causal_spatial_columns=8,
+                        causal_spatial_rows=8,
+                    ),
+                    event_logger=logger,
+                )
+                agent.reset()
+                agent.goal_prior = PositionGoalPrior()
+
+                agent.decide()
+
+                confirmation = next(
+                    event
+                    for event in logger.events
+                    if event["event"]
+                    == "human_prior_world_effect_confirmation"
+                    and event["action"] == Action.A
+                )
+                self.assertEqual(
+                    confirmation["accepted"], persistent
+                )
+                self.assertEqual(
+                    confirmation["temporally_stable"], persistent
+                )
+                branch = next(
+                    event
+                    for event in logger.events
+                    if event["event"] == "branch_verified"
+                    and event["action"] == Action.A
+                )
+                self.assertEqual(
+                    bool(branch["human_prior_world_effect_signature"]),
+                    persistent,
+                )
 
     def test_human_prior_option_effect_frontier_rejects_effect_without_gain(
         self,

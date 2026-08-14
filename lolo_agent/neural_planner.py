@@ -16539,6 +16539,7 @@ class VerifiedNeuralAgent:
                     )
                 )
                 world_effect_confirmation: Optional[Dict[str, Any]] = None
+                world_effect_stability: Optional[Dict[str, Any]] = None
                 if (
                     goal_world_effect_signature
                     and self.config.human_prior_best_first_archive
@@ -16565,6 +16566,56 @@ class VerifiedNeuralAgent:
                         ]
                         == 1
                     )
+                    if world_effect_confirmed and goal_analysis is not None:
+                        immediate_node = _HumanPriorOptionNode(
+                            state=state,
+                            frame=target,
+                            path=(plan.path[0],),
+                            durations=(duration,),
+                            analysis=goal_analysis,
+                            source_signature=self._human_prior_graph_signatures(
+                                goal_analysis,
+                                source_human_prior_world_context_signature,
+                                source_human_prior_world_context_signature,
+                            )[0],
+                            target_signature="",
+                            score=intrinsic_score,
+                            depth=1,
+                            target_state_visits=0,
+                            target_position_visits=0,
+                            world_effect_signature=(
+                                goal_world_effect_signature
+                            ),
+                        )
+                        try:
+                            world_effect_stability = (
+                                self._probe_human_prior_option_world_effect(
+                                    root,
+                                    source_frame,
+                                    immediate_node,
+                                    duration,
+                                    candidate_rank,
+                                )
+                            )
+                        finally:
+                            self.env.load_state(root)
+                        world_effect_confirmed = bool(
+                            world_effect_stability["stable"]
+                            or world_effect_stability["local_candidate"]
+                        )
+                        if world_effect_confirmed:
+                            goal_world_effect_signature = str(
+                                (
+                                    world_effect_stability.get(
+                                        "stable_world_effect_signature"
+                                    )
+                                    if world_effect_stability["stable"]
+                                    else world_effect_stability.get(
+                                        "persistent_world_effect_signature"
+                                    )
+                                )
+                                or ""
+                            )
                     self._emit(
                         "human_prior_world_effect_confirmation",
                         decision=self.decision_index + 1,
@@ -16573,6 +16624,41 @@ class VerifiedNeuralAgent:
                         accepted=world_effect_confirmed,
                         human_prior_world_effect_signature=(
                             goal_world_effect_signature
+                        ),
+                        temporally_stable=bool(
+                            world_effect_stability is not None
+                            and (
+                                world_effect_stability["stable"]
+                                or world_effect_stability[
+                                    "local_candidate"
+                                ]
+                            )
+                        ),
+                        stable_world_effect_cells=(
+                            None
+                            if world_effect_stability is None
+                            else world_effect_stability[
+                                "stable_world_effect_cells"
+                            ]
+                        ),
+                        persistent_world_effect_cells=(
+                            None
+                            if world_effect_stability is None
+                            else world_effect_stability[
+                                "persistent_world_effect_cells"
+                            ]
+                        ),
+                        persistence_ratio=(
+                            None
+                            if world_effect_stability is None
+                            else max(
+                                world_effect_stability[
+                                    "persistence_ratio"
+                                ],
+                                world_effect_stability[
+                                    "raw_persistence_ratio"
+                                ],
+                            )
                         ),
                         **world_effect_confirmation,
                         **self._frame_fields(target),
