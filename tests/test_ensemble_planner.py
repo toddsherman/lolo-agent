@@ -12089,6 +12089,32 @@ class EnsemblePlannerTests(unittest.TestCase):
             ),
             "human-prior-world-root",
         )
+        first_appearance_context = (
+            agent._next_human_prior_world_context(
+                "human-prior-world-root",
+                bytes((0, 0, 1, 0)).hex(),
+                "appearance-one",
+            )
+        )
+        second_appearance_context = (
+            agent._next_human_prior_world_context(
+                first_appearance_context,
+                bytes((0, 0, 1, 0)).hex(),
+                "appearance-two",
+            )
+        )
+        self.assertNotEqual(
+            first_appearance_context,
+            "human-prior-world-root",
+        )
+        self.assertNotEqual(
+            second_appearance_context,
+            "human-prior-world-root",
+        )
+        self.assertNotEqual(
+            second_appearance_context,
+            first_appearance_context,
+        )
 
         # A real native trace produced two visually identical room states
         # whose only differing pixels occupied the player sprite bounding box.

@@ -2795,10 +2795,37 @@ class VerifiedNeuralAgent:
 
     @staticmethod
     def _next_human_prior_world_context(
-        source_context: str, world_effect_signature: str
+        source_context: str,
+        world_effect_signature: str,
+        world_effect_state_signature: str = "",
     ) -> str:
+        """Advance the anonymous persistent-world identity.
+
+        A spatial effect mask alone can say *where* pixels changed, but not
+        *what state* those pixels now occupy.  The original XOR accumulator
+        therefore collapsed two successive transformations of the same cell
+        back to the root context even when the second appearance differed
+        from both the first appearance and the room baseline.  When an
+        absolute appearance signature is available, retain it in an opaque
+        transition hash.  This remains rule-free: neither the changed cells
+        nor their appearances receive an object or resource label.
+
+        The XOR fallback preserves compatibility for older checkpoints and
+        callers that have only a verified spatial mask.
+        """
+
         if not world_effect_signature:
             return source_context
+        if world_effect_state_signature:
+            payload = "|".join(
+                (
+                    "anonymous-world-context-v2",
+                    source_context,
+                    world_effect_signature,
+                    world_effect_state_signature,
+                )
+            )
+            return hashlib.sha256(payload.encode("ascii")).hexdigest()
         effect = bytes.fromhex(world_effect_signature)
         width = max(1, (len(effect) + 3) // 4)
         try:
@@ -10760,6 +10787,10 @@ class VerifiedNeuralAgent:
                                 self._next_human_prior_world_context(
                                     self.current_human_prior_world_context_signature,
                                     stable_effect_signature,
+                                    self._human_prior_world_effect_state_signature(
+                                        node.frame,
+                                        stable_effect_signature,
+                                    ),
                                 )
                             )
                             _, target_signature = (
@@ -18767,6 +18798,10 @@ class VerifiedNeuralAgent:
                     self._next_human_prior_world_context(
                         source_human_prior_world_context_signature,
                         goal_world_effect_signature,
+                        self._human_prior_world_effect_state_signature(
+                            target,
+                            goal_world_effect_signature,
+                        ),
                     )
                 )
                 branch_goal_world_contexts[id(state)] = (
