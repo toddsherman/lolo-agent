@@ -7,6 +7,7 @@ from lolo_agent.neural_run import (
     StableSceneChangeDetector,
     load_active_option_archives,
     load_active_goal_milestone_checkpoint,
+    load_logged_decision_semantic_state,
     load_episodic_decision_events,
 )
 from lolo_agent.pixels import Frame
@@ -237,6 +238,34 @@ class StableSceneChangeDetectorTests(unittest.TestCase):
         self.assertEqual(active_at_one[0].frame, frame)
         self.assertEqual(active_at_one[0].source_state_id, "state-1")
         self.assertEqual(active_at_two, [])
+
+    def test_loads_semantic_state_only_from_matching_decision_frame(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            logger = RunLogger(Path(temporary), run_id="semantic-state")
+            frame = self.frame(96)
+            logger.log(
+                "decision_committed",
+                decision=1,
+                action="down",
+                human_prior_world_target_context="learned-context",
+                **logger.frame_fields(frame),
+            )
+            logger.store_decision_snapshot(1, b"decision-1", frame)
+            logger.close()
+
+            semantic = load_logged_decision_semantic_state(
+                logger.run_dir, 1
+            )
+
+        self.assertIsNotNone(semantic)
+        assert semantic is not None
+        self.assertEqual(
+            semantic["human_prior_world_target_context"],
+            "learned-context",
+        )
+        self.assertEqual(semantic["action"], "down")
 
     def test_loads_goal_milestone_checkpoint_active_at_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

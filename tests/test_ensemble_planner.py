@@ -3130,7 +3130,7 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertTrue(ordering_rejections[0]["exhausted_transition"])
         self.assertFalse(ordering_rejections[0]["exhausted_precursor"])
 
-    def test_reachable_failed_milestone_disproves_ordering_without_alternate_progress(
+    def test_reachable_failed_milestone_preserves_empirical_ordering_without_alternate_progress(
         self,
     ) -> None:
         model = EnsembleVisualDynamicsModel(
@@ -3171,27 +3171,27 @@ class EnsemblePlannerTests(unittest.TestCase):
         added = agent._search_human_prior_options()
 
         self.assertEqual(added, 1)
-        self.assertIn(
+        self.assertEqual(agent.archive[0].goal_heart_slots, source_hearts)
+        self.assertNotIn(
             ordering_key,
             agent.human_prior_disproved_ordering_hypotheses,
         )
-        self.assertEqual(agent.archive[0].goal_heart_slots, ((-15, 0),))
-        self.assertFalse(
-            any(
-                event["event"]
-                == "human_prior_option_ordering_endpoint_rejected"
-                for event in logger.events
-            )
-        )
-        disproved = next(
+        ordering_rejections = [
             event
             for event in logger.events
             if event["event"]
-            == "human_prior_ordering_hypothesis_disproved"
+            == "human_prior_option_ordering_endpoint_rejected"
+        ]
+        self.assertEqual(len(ordering_rejections), 1)
+        self.assertTrue(
+            ordering_rejections[0]["exhausted_transition"]
         )
-        self.assertEqual(
-            disproved["reason"],
-            "reachable_failed_milestone_without_alternate_progress",
+        self.assertFalse(
+            any(
+                event["event"]
+                == "human_prior_ordering_hypothesis_disproved"
+                for event in logger.events
+            )
         )
 
     def test_exhausted_milestone_transition_uses_semantic_alternative(
@@ -9055,6 +9055,89 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertIsNone(plan)
         self.assertEqual(progress, ())
 
+    def test_goal_exhaustion_does_not_defer_for_topology_transfer(
+        self,
+    ) -> None:
+        env = ActionEffectEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                human_prior_episodic_graph_guidance=True,
+            ),
+        )
+        source_frame = agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        source_signature = agent._human_prior_graph_signature(
+            ((7, 0),), (0, 0), None, "life"
+        )
+        target_signature = agent._human_prior_graph_signature(
+            ((7, 0),), (1, 0), None, "life"
+        )
+        agent.pending_goal_milestone_checkpoint = _LifeHazardCheckpoint(
+            state=env.save_state(),
+            frame=source_frame,
+            choice=(source_signature, Action.RIGHT, 1),
+            decision=0,
+            frontier_signature=source_signature,
+            causal_context_signature=agent.current_causal_context_signature,
+            scene=agent.current_scene,
+            pose_action=None,
+            last_action=None,
+            last_duration=None,
+            action_streak=0,
+            goal_heart_slots=((7, 0), (9, 0)),
+            goal_player_slot=(0, 0),
+            kind="goal_milestone",
+            goal_target_heart_slots=((7, 0),),
+            goal_target_heart_slots_known=True,
+            goal_exhaustion_topology_search_attempted=True,
+        )
+        topology_plan = _HumanPriorEpisodicGraphPlan(
+            kind="topology_transfer",
+            source_signature=source_signature,
+            waypoint_signature=target_signature,
+            bridge_target_signature=target_signature,
+            milestone_source_signature="",
+            known_route=True,
+            gap_distance=0,
+            source_remaining_cost=1,
+            remaining_costs={source_signature: 1, target_signature: 0},
+            milestone_component=frozenset(),
+            route_controls=((Action.RIGHT, 1),),
+        )
+        agent._human_prior_episodic_graph_plan = (
+            lambda _source: topology_plan
+        )
+        agent.archive = [
+            _ArchivedBranch(
+                state=env.save_state(),
+                frame=source_frame,
+                plan=NeuralPlan((Action.RIGHT,), (1,), 1.0, 0.0),
+                score=1.0,
+                scene=agent._scene_signature(source_frame),
+                created=0,
+                goal_source_signature=source_signature,
+                goal_target_signature=target_signature,
+                goal_heart_slots=((7, 0),),
+                goal_remaining_hearts=1,
+                goal_total_hearts=1,
+                goal_player_slot=(1, 0),
+                human_prior_verified_option=True,
+            )
+        ]
+
+        plan, progress = agent._human_prior_live_goal_exhaustion_progress(
+            source_signature
+        )
+
+        self.assertIs(plan, topology_plan)
+        self.assertEqual(progress, ())
+
     def test_goal_milestone_frontier_budget_rolls_back_without_full_exhaustion(
         self,
     ) -> None:
@@ -9643,6 +9726,7 @@ class EnsemblePlannerTests(unittest.TestCase):
             "human_prior_world_context_signature": "world",
             "checkpoint_kind": "goal_milestone",
             "exploration_steps": 11,
+            "goal_exhaustion_topology_search_attempted": True,
         }
 
         agent.seed_goal_milestone_checkpoint(
@@ -9658,6 +9742,9 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(checkpoint.goal_heart_slots, ((1, 2), (3, 4)))
         self.assertEqual(checkpoint.goal_target_heart_slots, ())
         self.assertTrue(checkpoint.goal_target_heart_slots_known)
+        self.assertTrue(
+            checkpoint.goal_exhaustion_topology_search_attempted
+        )
         created = [
             event
             for event in logger.events
@@ -10632,6 +10719,139 @@ class EnsemblePlannerTests(unittest.TestCase):
             seeded["budget_invalidated_ordering_disproofs"], 1
         )
 
+    def test_seed_memory_downstream_milestone_progress_disproves_ordering(
+        self,
+    ) -> None:
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            ActionEffectEnv(),
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                human_prior_navigation_reward=1.0,
+                human_prior_option_search_depth=8,
+                human_prior_option_search_beam_width=32,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        source_hearts = ((32, 32), (64, 32), (96, 32))
+        first_target = ((64, 32), (96, 32))
+        events = [
+            {
+                "event": "goal_milestone_exhaustion_learned",
+                "exhausted_milestone_transition": [
+                    [list(slot) for slot in source_hearts],
+                    [list(slot) for slot in first_target],
+                    False,
+                ],
+            },
+            {
+                "event": "human_prior_milestone_outcome_recorded",
+                "run_id": "later-run",
+                "decision": 4,
+                "source_heart_slots": [list(slot) for slot in first_target],
+                "target_heart_slots": [[96, 32]],
+                "target_player_slot": [64, 32],
+                "human_prior_chest_obtained": False,
+            },
+        ]
+
+        agent.seed_human_prior_episodic_memory(events)
+
+        ordering_key = (source_hearts, ((32, 32),), False)
+        self.assertIn(
+            ordering_key,
+            agent.human_prior_disproved_ordering_hypotheses,
+        )
+        self.assertEqual(
+            agent._human_prior_failed_ordering_targets(
+                source_hearts, False
+            ),
+            (),
+        )
+        seeded = next(
+            event
+            for event in logger.events
+            if event["event"] == "episodic_human_prior_memory_seeded"
+        )
+        self.assertEqual(
+            seeded["downstream_progress_disproved_orderings"], 1
+        )
+
+    def test_seed_memory_exhausted_downstream_milestone_preserves_ordering(
+        self,
+    ) -> None:
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            ActionEffectEnv(),
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                human_prior_navigation_reward=1.0,
+                human_prior_option_search_depth=8,
+                human_prior_option_search_beam_width=32,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        source_hearts = ((32, 32), (64, 32), (96, 32))
+        first_target = ((64, 32), (96, 32))
+        second_target = ((96, 32),)
+        events = [
+            {
+                "event": "goal_milestone_exhaustion_learned",
+                "exhausted_milestone_transition": [
+                    [list(slot) for slot in source_hearts],
+                    [list(slot) for slot in first_target],
+                    False,
+                ],
+            },
+            {
+                "event": "goal_milestone_exhaustion_learned",
+                "exhausted_milestone_transition": [
+                    [list(slot) for slot in first_target],
+                    [list(slot) for slot in second_target],
+                    False,
+                ],
+            },
+            {
+                "event": "human_prior_milestone_outcome_recorded",
+                "run_id": "later-run",
+                "decision": 4,
+                "source_heart_slots": [list(slot) for slot in first_target],
+                "target_heart_slots": [list(slot) for slot in second_target],
+                "target_player_slot": [64, 32],
+                "human_prior_chest_obtained": False,
+            },
+        ]
+
+        agent.seed_human_prior_episodic_memory(events)
+
+        ordering_key = (source_hearts, ((32, 32),), False)
+        self.assertNotIn(
+            ordering_key,
+            agent.human_prior_disproved_ordering_hypotheses,
+        )
+        self.assertEqual(
+            agent._human_prior_failed_ordering_targets(
+                source_hearts, False
+            ),
+            ((32, 32),),
+        )
+        seeded = next(
+            event
+            for event in logger.events
+            if event["event"] == "episodic_human_prior_memory_seeded"
+        )
+        self.assertEqual(
+            seeded["downstream_progress_disproved_orderings"], 0
+        )
+
     def test_seed_human_prior_memory_restores_exhausted_option_frontier(
         self,
     ) -> None:
@@ -10913,6 +11133,76 @@ class EnsemblePlannerTests(unittest.TestCase):
             if event["event"] == "episodic_human_prior_memory_seeded"
         ][0]
         self.assertEqual(seeded["current_state_source"], "resume_frame")
+
+    def test_seed_human_prior_memory_preserves_state_override_pixels(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            WorldEffectEnv(True),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        assert agent.goal_prior is not None
+        agent.goal_prior.known_slots = {(48, 48)}
+        agent.goal_prior.current_present = {(48, 48)}
+        agent.goal_prior.initialized = True
+        agent.goal_prior.current_life_signature = "branch-life"
+        agent.goal_prior.current_player_slot = (8, 8)
+        events = [
+            {
+                "event": "decision_committed",
+                "action": "right",
+                "action_frames": 1,
+                "human_prior_known_heart_slots": [[32, 32]],
+                "human_prior_target_hearts": [[32, 32]],
+                "human_prior_target_player_slot": [32, 0],
+                "human_prior_target_life_signature": "later-life",
+                "human_prior_world_target_context": "later-context",
+            }
+        ]
+
+        agent.seed_human_prior_episodic_memory(
+            events,
+            preserve_observed_state=True,
+            observed_world_context_override="branch-context",
+            observed_pose_action_override="down",
+        )
+
+        self.assertEqual(agent.goal_prior.current_present, {(48, 48)})
+        self.assertEqual(
+            agent.goal_prior.current_life_signature, "branch-life"
+        )
+        self.assertEqual(agent.goal_prior.current_player_slot, (8, 8))
+        self.assertEqual(
+            agent.current_human_prior_world_context_signature,
+            "branch-context",
+        )
+        self.assertEqual(agent.current_pose_action, Action.DOWN)
+        seeded = next(
+            event
+            for event in logger.events
+            if event["event"] == "episodic_human_prior_memory_seeded"
+        )
+        self.assertEqual(
+            seeded["current_state_source"],
+            "resume_frame_state_override",
+        )
+        self.assertEqual(
+            seeded["observed_world_context_override"],
+            "branch-context",
+        )
 
     def test_seed_human_prior_memory_respects_novel_room_boundary(
         self,

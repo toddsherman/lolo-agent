@@ -457,6 +457,43 @@ def load_episodic_decision_events(
     return events
 
 
+def load_logged_decision_semantic_state(
+    run_dir: Path, through_decision: int
+) -> Optional[Dict[str, Any]]:
+    """Return learned semantic context attached to an exact saved decision.
+
+    Pixels remain authoritative for visible goal state after a branched
+    restore.  Persistent world context and facing direction, however, are
+    learned transition state that cannot be reconstructed from one isolated
+    frame.  Accept them only from the committed event whose frame exactly
+    matches the decision snapshot being restored.
+    """
+
+    if through_decision <= 0:
+        raise ValueError("semantic state decision must be positive")
+    run_dir = Path(run_dir).expanduser().resolve()
+    committed: Optional[Dict[str, Any]] = None
+    for event in read_events(run_dir):
+        event_decision = int(event.get("decision", 0))
+        if (
+            event.get("event") == "decision_committed"
+            and event_decision == through_decision
+        ):
+            committed = event
+            continue
+        if (
+            event.get("event") != "decision_snapshot_stored"
+            or event_decision != through_decision
+        ):
+            continue
+        if committed is None or str(committed.get("frame") or "") != str(
+            event.get("frame") or ""
+        ):
+            return None
+        return committed
+    return None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run a frozen neural rollout planner")
     parser.add_argument("--host", type=Path, required=True)
@@ -1006,6 +1043,19 @@ def main() -> None:
         help="committed decision to reconstruct from --resume-run",
     )
     parser.add_argument(
+        "--resume-state-run",
+        type=Path,
+        help=(
+            "optional telemetry run supplying the emulator state while "
+            "--resume-run continues to supply later episodic memory"
+        ),
+    )
+    parser.add_argument(
+        "--resume-state-decision",
+        type=int,
+        help="committed decision to reconstruct from --resume-state-run",
+    )
+    parser.add_argument(
         "--allow-compatible-resume-host",
         action="store_true",
         help=(
@@ -1019,6 +1069,14 @@ def main() -> None:
         help=(
             "diagnostic matched resume: restore the committed state and "
             "episodic graph but omit uncommitted option-archive save states"
+        ),
+    )
+    parser.add_argument(
+        "--resume-option-search",
+        action="store_true",
+        help=(
+            "run one bounded exact option search immediately after restoring "
+            "a telemetry state"
         ),
     )
     parser.add_argument("--no-frame-images", action="store_true")
@@ -1042,8 +1100,18 @@ def main() -> None:
     args = parser.parse_args()
     if (args.resume_run is None) != (args.resume_decision is None):
         parser.error("--resume-run and --resume-decision must be supplied together")
+    if (args.resume_state_run is None) != (
+        args.resume_state_decision is None
+    ):
+        parser.error(
+            "--resume-state-run and --resume-state-decision must be supplied together"
+        )
+    if args.resume_state_run is not None and args.resume_run is None:
+        parser.error("--resume-state-run requires --resume-run")
     if args.skip_resume_option_archives and args.resume_run is None:
         parser.error("--skip-resume-option-archives requires --resume-run")
+    if args.resume_option_search and args.resume_run is None:
+        parser.error("--resume-option-search requires --resume-run")
     if args.resume_run is not None and args.bootstrap != "none":
         parser.error("--resume-run cannot be combined with --bootstrap")
     if args.stop_on_stable_scene_change < 0:
@@ -1774,9 +1842,44 @@ def main() -> None:
             "source_reward_track": resume_reward_track,
             "compatible_host_migration": args.allow_compatible_resume_host,
             "option_archive_import": (
-                "skipped" if args.skip_resume_option_archives else "imported"
+                "skipped_decoupled_state_source"
+                if args.resume_state_run is not None
+                else (
+                    "skipped"
+                    if args.skip_resume_option_archives
+                    else "imported"
+                )
             ),
+            "goal_milestone_checkpoint_import": (
+                "state_source_if_active"
+                if args.resume_state_run is not None
+                else "imported_if_active"
+            ),
+            "immediate_option_search": args.resume_option_search,
         }
+        if args.resume_state_run is not None:
+            state_manifest = validate_replay_inputs(
+                args.resume_state_run,
+                args.host,
+                args.core,
+                args.rom,
+                allow_host_mismatch=args.allow_compatible_resume_host,
+            )
+            state_events = (
+                args.resume_state_run.expanduser().resolve()
+                / "events.jsonl"
+            )
+            resume_metadata.update(
+                {
+                    "state_source_run": str(
+                        args.resume_state_run.expanduser().resolve()
+                    ),
+                    "state_source_run_id": state_manifest.get("run_id"),
+                    "state_source_decision": args.resume_state_decision,
+                    "state_source_events_sha256": sha256_file(state_events),
+                    "memory_state_decoupled": True,
+                }
+            )
     entity_curiosity_selection_enabled = bool(
         args.human_prior_option_entity_curiosity_weight > 0.0
         or args.human_prior_option_entity_curiosity_reserve > 0
@@ -1918,11 +2021,24 @@ def main() -> None:
                 base_height=native_env.base_height,
                 fps=native_env.fps,
             )
+            resume_state_run = args.resume_state_run or args.resume_run
+            resume_state_decision = (
+                args.resume_state_decision
+                if args.resume_state_decision is not None
+                else args.resume_decision
+            )
             restored = (
                 None
                 if args.resume_run is None
                 else restore_logged_decision(
-                    native_env, args.resume_run, args.resume_decision
+                    native_env, resume_state_run, resume_state_decision
+                )
+            )
+            restored_semantic_state = (
+                None
+                if args.resume_state_run is None
+                else load_logged_decision_semantic_state(
+                    resume_state_run, resume_state_decision
                 )
             )
             env = LoggedEnvironment(native_env, logger)
@@ -1948,6 +2064,11 @@ def main() -> None:
                     source_run_id=restored.run_id,
                     source_decision=restored.decision,
                     source_event_seq=restored.event_seq,
+                    memory_source_run_id=source_manifest.get("run_id"),
+                    memory_source_decision=args.resume_decision,
+                    memory_state_decoupled=(
+                        args.resume_state_run is not None
+                    ),
                     **logger.frame_fields(initial_frame),
                 )
                 agent.reset(initial_frame=initial_frame)
@@ -1959,13 +2080,36 @@ def main() -> None:
                 agent.seed_human_prior_episodic_memory(
                     load_episodic_decision_events(
                         args.resume_run, args.resume_decision
-                    )
+                    ),
+                    preserve_observed_state=(
+                        args.resume_state_run is not None
+                    ),
+                    observed_world_context_override=(
+                        None
+                        if restored_semantic_state is None
+                        else restored_semantic_state.get(
+                            "human_prior_world_target_context"
+                        )
+                    ),
+                    observed_pose_action_override=(
+                        None
+                        if restored_semantic_state is None
+                        else (
+                            restored_semantic_state.get(
+                                "target_pose_action"
+                            )
+                            or restored_semantic_state.get("action")
+                        )
+                    ),
                 )
                 persisted_archives = load_active_option_archives(
                     args.resume_run, args.resume_decision
                 )
                 imported_archives = []
-                if args.skip_resume_option_archives:
+                if (
+                    args.skip_resume_option_archives
+                    or args.resume_state_run is not None
+                ):
                     logger.log(
                         "episodic_option_archive_import_skipped",
                         decision=0,
@@ -1973,7 +2117,15 @@ def main() -> None:
                         source_decision=restored.decision,
                         active_archives_skipped=len(persisted_archives),
                         policy_effect=(
-                            "matched_committed_state_without_uncommitted_frontiers"
+                            "semantic_memory_without_cross_branch_physical_states"
+                            if args.resume_state_run is not None
+                            else (
+                                "matched_committed_state_without_"
+                                "uncommitted_frontiers"
+                            )
+                        ),
+                        state_source_decoupled=(
+                            args.resume_state_run is not None
                         ),
                         agent_visible=False,
                     )
@@ -1997,8 +2149,18 @@ def main() -> None:
                     agent.seed_human_prior_option_archives(
                         imported_archives
                     )
+                milestone_source_run = (
+                    resume_state_run
+                    if args.resume_state_run is not None
+                    else args.resume_run
+                )
+                milestone_source_decision = (
+                    resume_state_decision
+                    if args.resume_state_run is not None
+                    else args.resume_decision
+                )
                 persisted_milestone = load_active_goal_milestone_checkpoint(
-                    args.resume_run, args.resume_decision
+                    milestone_source_run, milestone_source_decision
                 )
                 if persisted_milestone is not None:
                     milestone_handle = (
@@ -2020,6 +2182,38 @@ def main() -> None:
                         persisted_milestone.metadata,
                         persisted_milestone.source_run_id,
                         persisted_milestone.source_state_id,
+                    )
+                    logger.log(
+                        "episodic_goal_milestone_checkpoint_import_policy",
+                        decision=0,
+                        checkpoint_source=(
+                            "restored_state_source"
+                            if args.resume_state_run is not None
+                            else "memory_and_state_source"
+                        ),
+                        memory_state_decoupled=(
+                            args.resume_state_run is not None
+                        ),
+                        policy_effect=(
+                            "rollback_capability_follows_physical_state_lineage"
+                        ),
+                        agent_visible=False,
+                    )
+                if args.resume_option_search:
+                    added = (
+                        agent.search_human_prior_options_from_current_state(
+                            reason="explicit_resume_branch_audit"
+                        )
+                    )
+                    logger.log(
+                        "episodic_resume_option_search_completed",
+                        decision=0,
+                        archive_branches_added=added,
+                        source_run_id=restored.run_id,
+                        source_decision=restored.decision,
+                        policy_effect="bounded_save_state_branch_audit",
+                        agent_visible=True,
+                        **logger.frame_fields(agent.frame),
                     )
             elif bootstrap_fixture is None:
                 initial_frame = agent.reset()

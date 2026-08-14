@@ -418,6 +418,7 @@ class _LifeHazardCheckpoint:
     exploration_steps: int = 0
     goal_target_heart_slots: Tuple[Tuple[int, int], ...] = ()
     goal_target_heart_slots_known: bool = False
+    goal_exhaustion_topology_search_attempted: bool = False
 
 
 @dataclass
@@ -1115,6 +1116,9 @@ class VerifiedNeuralAgent:
             ),
             checkpoint_kind=checkpoint.kind,
             exploration_steps=checkpoint.exploration_steps,
+            goal_exhaustion_topology_search_attempted=(
+                checkpoint.goal_exhaustion_topology_search_attempted
+            ),
         )
 
     def _goal_exhaustion_recovery_restore_budget(self) -> int:
@@ -1392,6 +1396,11 @@ class VerifiedNeuralAgent:
             goal_target_heart_slots_known=bool(
                 metadata.get("goal_target_heart_slots_known", False)
                 or metadata.get("goal_target_heart_slots")
+            ),
+            goal_exhaustion_topology_search_attempted=bool(
+                metadata.get(
+                    "goal_exhaustion_topology_search_attempted", False
+                )
             ),
         )
         if checkpoint.kind != "goal_milestone":
@@ -3792,6 +3801,20 @@ class VerifiedNeuralAgent:
         plan = self._human_prior_episodic_graph_plan(source_signature)
         if plan is None:
             return None, ()
+        checkpoint = self.pending_goal_milestone_checkpoint
+        if (
+            plan.kind == "topology_transfer"
+            and checkpoint is not None
+            and checkpoint.goal_exhaustion_topology_search_attempted
+        ):
+            # A topology-transfer route only reaches a position that was
+            # unseen under the current visible goal phase.  It does not lead
+            # to a known milestone and therefore is not evidence that the
+            # current milestone ordering remains solvable.  Give it one exact
+            # late search per checkpoint, but after that bounded audit it
+            # must not postpone rollback indefinitely as animated world
+            # variants manufacture more nominally unseen positions.
+            return plan, ()
         candidates = []
         for branch in self.archive:
             if (
@@ -8327,6 +8350,17 @@ class VerifiedNeuralAgent:
                 if not active_failure:
                     raise
 
+    def search_human_prior_options_from_current_state(
+        self, *, reason: str
+    ) -> int:
+        """Run one explicit save-state branch audit at the current frame."""
+
+        if self.frame is None:
+            raise RuntimeError("agent must be reset before option search")
+        return self._search_human_prior_options(
+            force_reopen_reason=reason
+        )
+
     def _search_human_prior_options(
         self, *, force_reopen_reason: Optional[str] = None
     ) -> int:
@@ -10793,72 +10827,6 @@ class VerifiedNeuralAgent:
             milestone_representatives: Dict[
                 tuple, _HumanPriorOptionNode
             ] = {}
-            ordering_key = self._human_prior_ordering_hypothesis_key(
-                source_analysis.source_present,
-                source_analysis.chest_obtained,
-            )
-            active_ordering_targets = (
-                ()
-                if ordering_key is None
-                else tuple(
-                    sorted(set(ordering_key[0]) - set(ordering_key[1]))
-                )
-            )
-            reachable_blocked_milestone = any(
-                endpoint.analysis.milestone_reward > 0.0
-                and self._human_prior_milestone_ordering_blocked(
-                    endpoint.analysis
-                )
-                for endpoint in pre_settlement_endpoints
-            )
-
-            def demonstrates_alternate_ordering_progress(
-                endpoint: _HumanPriorOptionNode,
-            ) -> bool:
-                if self._human_prior_milestone_ordering_blocked(
-                    endpoint.analysis
-                ):
-                    return False
-                if (
-                    endpoint.analysis.milestone_reward > 0.0
-                    and set(endpoint.analysis.collected).intersection(
-                        active_ordering_targets
-                    )
-                ):
-                    return True
-                navigation = self._human_prior_ordering_navigation_fields(
-                    endpoint.analysis
-                )
-                return bool(
-                    navigation["human_prior_navigation_retargeted"]
-                    and navigation[
-                        "human_prior_navigation_ordering_reward"
-                    ]
-                    > 0.0
-                )
-
-            if (
-                ordering_key is not None
-                and active_ordering_targets
-                and reachable_blocked_milestone
-                and not any(
-                    demonstrates_alternate_ordering_progress(endpoint)
-                    for endpoint in pre_settlement_endpoints
-                )
-            ):
-                # A larger retry budget may reactivate a previously disproved
-                # ordering hypothesis.  If that retry can reach the forbidden
-                # milestone again but produces no endpoint that approaches or
-                # collects an alternative visible goal, unrelated animation or
-                # causal-effect endpoints must not keep the stale ordering alive
-                # forever.  Disproving it before endpoint processing lets the
-                # same verified milestone remain actionable in this search.
-                self._maybe_disprove_human_prior_ordering_hypothesis(
-                    source_analysis,
-                    source_signature,
-                    "reachable_failed_milestone_without_alternate_progress",
-                    search_budget_sha256,
-                )
             for endpoint in pre_settlement_endpoints:
                 if self._human_prior_milestone_ordering_blocked(
                     endpoint.analysis
@@ -12736,9 +12704,21 @@ class VerifiedNeuralAgent:
         )
 
     def seed_human_prior_episodic_memory(
-        self, events: Sequence[Dict[str, Any]]
+        self,
+        events: Sequence[Dict[str, Any]],
+        *,
+        preserve_observed_state: bool = False,
+        observed_world_context_override: Optional[str] = None,
+        observed_pose_action_override: Optional[str] = None,
     ) -> None:
-        """Reconstruct temporary assisted frontier memory from telemetry."""
+        """Reconstruct temporary assisted frontier memory from telemetry.
+
+        A normal matched resume uses the latest committed semantic state.
+        Save-state branching may deliberately pair later memory with an older
+        emulator state; in that case the pixels observed at reset remain the
+        authority for the current room state while historical discoveries are
+        still imported.
+        """
 
         if self.goal_prior is None:
             return
@@ -12824,6 +12804,22 @@ class VerifiedNeuralAgent:
             self.current_human_prior_world_context_signature
         )
         observed_pose_action = self.current_pose_action
+        if preserve_observed_state and observed_world_context_override:
+            observed_world_context = str(
+                observed_world_context_override
+            )
+        if preserve_observed_state and observed_pose_action_override:
+            try:
+                candidate_pose = Action(str(observed_pose_action_override))
+            except ValueError:
+                candidate_pose = None
+            if candidate_pose in {
+                Action.UP,
+                Action.DOWN,
+                Action.LEFT,
+                Action.RIGHT,
+            }:
+                observed_pose_action = candidate_pose
         observed_chest_obtained = self.goal_prior.chest_obtained
         event_present_slots = observed_present_slots
         event_life_signature = observed_life_signature
@@ -13798,6 +13794,52 @@ class VerifiedNeuralAgent:
         self.human_prior_milestone_outcomes = set(
             milestone_outcomes_by_decision.values()
         )
+        downstream_progress_ordering_keys: set[tuple] = set()
+        for (
+            exhausted_source,
+            exhausted_target,
+            exhausted_chest_obtained,
+        ) in exhausted_milestone_transitions:
+            target_set = set(exhausted_target)
+            downstream_progress = any(
+                bool(outcome_source)
+                and set(outcome_source).issubset(target_set)
+                and len(outcome_target) < len(outcome_source)
+                and bool(outcome_chest_obtained)
+                == bool(exhausted_chest_obtained)
+                and (
+                    tuple(outcome_source),
+                    tuple(outcome_target),
+                    bool(outcome_chest_obtained),
+                )
+                not in exhausted_milestone_transitions
+                for (
+                    outcome_source,
+                    outcome_target,
+                    _outcome_player,
+                    _outcome_chest_completed,
+                    outcome_chest_obtained,
+                ) in milestone_outcomes_by_decision.values()
+            )
+            if not downstream_progress:
+                continue
+            ordering_key = (
+                tuple(sorted(exhausted_source)),
+                tuple(
+                    sorted(
+                        set(exhausted_source) - set(exhausted_target)
+                    )
+                ),
+                bool(exhausted_chest_obtained),
+            )
+            if not ordering_key[1]:
+                continue
+            downstream_progress_ordering_keys.add(ordering_key)
+            disproved_ordering_hypotheses.add(ordering_key)
+            ordering_progress_hypotheses.discard(ordering_key)
+        downstream_progress_disproved_orderings = len(
+            downstream_progress_ordering_keys
+        )
         self.human_prior_exhausted_milestone_transitions = (
             exhausted_milestone_transitions
         )
@@ -13861,7 +13903,7 @@ class VerifiedNeuralAgent:
                     self.human_prior_navigation_detour_origin_control = (
                         navigation_detour_origin_control
                     )
-        if latest_decision_has_semantic_state:
+        if latest_decision_has_semantic_state and not preserve_observed_state:
             present_slots = event_present_slots
             life_signature = event_life_signature
             player_slot = event_player_slot
@@ -13876,7 +13918,11 @@ class VerifiedNeuralAgent:
             world_context = observed_world_context
             pose_action = observed_pose_action
             chest_obtained = observed_chest_obtained
-            current_state_source = "resume_frame"
+            current_state_source = (
+                "resume_frame_state_override"
+                if preserve_observed_state
+                else "resume_frame"
+            )
         self.current_human_prior_world_context_signature = world_context
         self.current_pose_action = pose_action
         self.goal_prior.seed_episodic_memory(
@@ -13920,6 +13966,9 @@ class VerifiedNeuralAgent:
             ),
             budget_invalidated_ordering_disproofs=(
                 budget_invalidated_ordering_disproofs
+            ),
+            downstream_progress_disproved_orderings=(
+                downstream_progress_disproved_orderings
             ),
             disproved_ordering_hypotheses=len(
                 self.human_prior_disproved_ordering_hypotheses
@@ -13970,6 +14019,16 @@ class VerifiedNeuralAgent:
             pose_action=pose_action,
             chest_obtained=chest_obtained,
             current_state_source=current_state_source,
+            observed_world_context_override=(
+                observed_world_context_override
+                if preserve_observed_state
+                else None
+            ),
+            observed_pose_action_override=(
+                observed_pose_action_override
+                if preserve_observed_state
+                else None
+            ),
             navigation_recovery_grace_restored=(
                 navigation_recovery_grace_restored
             ),
@@ -17478,9 +17537,21 @@ class VerifiedNeuralAgent:
                     live_exhaustion_plan is not None
                     and live_exhaustion_plan.route_controls
                     and not live_exhaustion_progress
+                    and (
+                        live_exhaustion_plan.kind != "topology_transfer"
+                        or not milestone_checkpoint
+                        .goal_exhaustion_topology_search_attempted
+                    )
                 )
                 if verified_route_search_due:
                     milestone_verified_route_search_due = True
+                    if live_exhaustion_plan.kind == "topology_transfer":
+                        milestone_checkpoint.goal_exhaustion_topology_search_attempted = (
+                            True
+                        )
+                        self._persist_goal_milestone_checkpoint(
+                            milestone_checkpoint
+                        )
                     self._emit(
                         "goal_milestone_frontier_recovery_deferred",
                         decision=self.decision_index + 1,
@@ -17503,6 +17574,10 @@ class VerifiedNeuralAgent:
                         ),
                         policy_effect=(
                             "one_exact_search_before_late_rollback"
+                        ),
+                        topology_search_attempted=(
+                            milestone_checkpoint
+                            .goal_exhaustion_topology_search_attempted
                         ),
                         agent_visible=True,
                         **self._frame_fields(self.frame),
