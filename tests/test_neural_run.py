@@ -282,6 +282,7 @@ class StableSceneChangeDetectorTests(unittest.TestCase):
             (((16, 16), (32, 16)), ((32, 16),), False),
         )
         self.assertEqual(inferred[0]["state_source_option_event_seq"], 17)
+        self.assertTrue(inferred[0]["ordering_hypothesis_reactivated"])
 
     def test_loads_only_option_archives_active_at_decision_snapshot(
         self,
