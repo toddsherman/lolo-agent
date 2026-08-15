@@ -2330,6 +2330,31 @@ class VerifiedNeuralAgent:
         )
         return hashlib.sha256(payload.encode("ascii")).hexdigest()[:16]
 
+    def _human_prior_player_pixels(
+        self,
+        observations: Sequence[
+            Tuple[Frame, Optional[Tuple[int, int]]]
+        ],
+    ) -> set[Tuple[int, int]]:
+        """Return controlled-sprite pixels across factual and control frames.
+
+        Action and neutral rollouts can render the player at different
+        locations or animation phases. Masking only the factual endpoint
+        leaves the neutral player's old pose in the causal difference and
+        falsely promotes ordinary locomotion as an anonymous world change.
+        """
+
+        player_pixel_mask = getattr(
+            self.goal_prior, "player_pixel_mask", None
+        )
+        if not callable(player_pixel_mask):
+            return set()
+        ignored: set[Tuple[int, int]] = set()
+        for frame, slot in observations:
+            if slot is not None:
+                ignored.update(player_pixel_mask(frame, slot))
+        return ignored
+
     def _human_prior_option_entity_feature_index(
         self, frame: Frame
     ) -> Tuple[
@@ -4463,8 +4488,39 @@ class VerifiedNeuralAgent:
                 neutral = self.env.step(Action.NOOP, future_duration)
 
             analysis = self.goal_prior.analyze(source_frame, factual)
+            neutral_analysis = self.goal_prior.analyze(
+                source_frame, neutral
+            )
+            factual_player_slot = (
+                analysis.target_player_slot
+                or node.analysis.target_player_slot
+            )
+            neutral_player_slot = (
+                neutral_analysis.target_player_slot
+                or analysis.source_player_slot
+                or node.analysis.source_player_slot
+            )
+            ignored_player_pixels = self._human_prior_player_pixels(
+                (
+                    (factual, factual_player_slot),
+                    (neutral, neutral_player_slot),
+                )
+            )
             spatial_signature, changed_pixels, _centroid = (
-                self._causal_spatial_effect(factual, neutral)
+                self._causal_spatial_effect(
+                    factual,
+                    neutral,
+                    ignored_pixels=(
+                        ignored_player_pixels
+                        if ignored_player_pixels
+                        else None
+                    ),
+                    minimum_cell_pixels=(
+                        self.config.human_prior_option_effect_local_minimum_cell_pixels
+                        if ignored_player_pixels
+                        else 1
+                    ),
+                )
             )
             world_effect_signature = (
                 self._human_prior_world_effect_signature(
@@ -4502,8 +4558,10 @@ class VerifiedNeuralAgent:
                         nonlocal_cells
                     ),
                     "changed_pixels": changed_pixels,
-                    "target_player_slot": (
-                        analysis.target_player_slot
+                    "target_player_slot": factual_player_slot,
+                    "target_player_slot_inferred": bool(
+                        analysis.target_player_slot is None
+                        and factual_player_slot is not None
                     ),
                     "life_counter_changed": (
                         analysis.life_counter_changed
@@ -9368,12 +9426,37 @@ class VerifiedNeuralAgent:
                                 source_signature, path, durations
                             )
                         )
+                        ignored_option_player_pixels = (
+                            self._human_prior_player_pixels(
+                                (
+                                    (
+                                        target,
+                                        analysis.target_player_slot,
+                                    ),
+                                    (
+                                        neutral_target,
+                                        neutral_analysis.target_player_slot,
+                                    ),
+                                )
+                            )
+                        )
                         (
                             option_spatial_signature,
                             option_changed_pixels,
                             _option_change_centroid,
                         ) = self._causal_spatial_effect(
-                            target, neutral_target
+                            target,
+                            neutral_target,
+                            ignored_pixels=(
+                                ignored_option_player_pixels
+                                if ignored_option_player_pixels
+                                else None
+                            ),
+                            minimum_cell_pixels=(
+                                self.config.human_prior_option_effect_local_minimum_cell_pixels
+                                if ignored_option_player_pixels
+                                else 1
+                            ),
                         )
                         option_world_effect_signature = (
                             self._human_prior_world_effect_signature(

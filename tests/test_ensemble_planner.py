@@ -7422,8 +7422,8 @@ class EnsemblePlannerTests(unittest.TestCase):
             if event["event"] == "human_prior_option_branch_verified"
         ]
         self.assertTrue(
-            any(
-                event[
+            all(
+                not event[
                     "human_prior_option_world_effect_state_signature"
                 ]
                 for event in verified
@@ -8280,6 +8280,44 @@ class EnsemblePlannerTests(unittest.TestCase):
 
         self.assertNotEqual(unmasked_signature, background_signature)
         self.assertEqual(masked_signature, background_signature)
+
+    def test_causal_world_effect_masks_both_player_poses(self) -> None:
+        background = Frame(32, 16, 3, bytes(32 * 16 * 3))
+
+        def with_player(x0: int) -> Frame:
+            pixels = bytearray(background.pixels)
+            for y in range(4, 12):
+                for x in range(x0 + 4, x0 + 12):
+                    colour = (
+                        (21, 95, 217)
+                        if (x + y) % 2
+                        else (255, 255, 255)
+                    )
+                    offset = (y * 32 + x) * 3
+                    pixels[offset : offset + 3] = bytes(colour)
+            return Frame(32, 16, 3, bytes(pixels))
+
+        neutral = with_player(0)
+        factual = with_player(16)
+        agent = object.__new__(VerifiedNeuralAgent)
+        agent.goal_prior = PixelHeartGoalPrior()
+        agent.config = NeuralPlanningConfig(
+            causal_spatial_columns=2,
+            causal_spatial_rows=1,
+        )
+        ignored = agent._human_prior_player_pixels(
+            ((factual, (16, 0)), (neutral, (0, 0)))
+        )
+
+        signature, changed_pixels, _centroid = agent._causal_spatial_effect(
+            factual,
+            neutral,
+            ignored_pixels=ignored,
+            minimum_cell_pixels=1,
+        )
+
+        self.assertIsNone(signature)
+        self.assertEqual(changed_pixels, 0)
 
     def test_milestone_reserve_keeps_one_continuation_per_heart_set(
         self,
