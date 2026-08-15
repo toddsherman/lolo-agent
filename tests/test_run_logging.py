@@ -646,6 +646,21 @@ class RunLoggingTests(unittest.TestCase):
                 "human_prior_option_position_reserve_depths", summary
             )
             self.assertIn(
+                "human_prior_option_world_state_reserve_depths", summary
+            )
+            self.assertIn(
+                "human_prior_option_world_state_reserve_parents_retained",
+                summary,
+            )
+            self.assertIn(
+                "human_prior_option_world_state_reserve_unique_signatures",
+                summary,
+            )
+            self.assertIn(
+                "human_prior_option_world_state_representative_archives",
+                summary,
+            )
+            self.assertIn(
                 "human_prior_option_position_reserve_parents_retained",
                 summary,
             )

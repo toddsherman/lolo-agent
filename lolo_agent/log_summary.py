@@ -2216,6 +2216,46 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             if event["event"]
             == "human_prior_option_search_depth_completed"
         ),
+        "human_prior_option_world_state_reserve_depths": sum(
+            event["event"]
+            == "human_prior_option_search_depth_completed"
+            and int(
+                event.get("human_prior_option_world_state_reserve", 0)
+            )
+            > 0
+            for event in events
+        ),
+        "human_prior_option_world_state_reserve_parents_retained": sum(
+            int(
+                event.get(
+                    "human_prior_option_world_state_parents_retained", 0
+                )
+            )
+            for event in events
+            if event["event"]
+            == "human_prior_option_search_depth_completed"
+        ),
+        "human_prior_option_world_state_reserve_unique_signatures": len(
+            {
+                signature
+                for event in events
+                if event["event"]
+                == "human_prior_option_search_depth_completed"
+                for signature in event.get(
+                    "human_prior_option_world_state_signatures_retained", ()
+                )
+                if signature
+            }
+        ),
+        "human_prior_option_world_state_representative_archives": sum(
+            event["event"] == "human_prior_option_archive_added"
+            and bool(
+                event.get(
+                    "human_prior_option_archive_world_state_representative"
+                )
+            )
+            for event in events
+        ),
         "human_prior_option_position_reserve_depths": sum(
             event["event"]
             == "human_prior_option_search_depth_completed"

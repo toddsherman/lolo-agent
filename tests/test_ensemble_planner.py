@@ -7800,6 +7800,42 @@ class EnsemblePlannerTests(unittest.TestCase):
             set(),
         )
 
+    def test_world_state_reserve_deduplicates_cumulative_configuration(
+        self,
+    ) -> None:
+        def candidate(
+            signature: str,
+            score: float,
+            *,
+            cells: tuple[tuple[int, int], ...] = ((3, 4),),
+            hearts: tuple[tuple[int, int], ...] = ((7, 2),),
+        ) -> SimpleNamespace:
+            return SimpleNamespace(
+                tracked_world_effect_cells=cells,
+                tracked_world_state_signature=signature,
+                analysis=SimpleNamespace(
+                    target_present=hearts,
+                    milestone_reward=0.0,
+                ),
+                action_dependent_endpoint=True,
+                target_state_visits=0,
+                score=score,
+                depth=3,
+            )
+
+        lower = candidate("first", 1.0)
+        higher = candidate("first", 2.0)
+        distinct = candidate("second", 0.5)
+        untracked = candidate("", 10.0, cells=())
+
+        reserved = (
+            VerifiedNeuralAgent._human_prior_world_state_reserve_candidates(
+                (lower, distinct, untracked, higher)
+            )
+        )
+
+        self.assertEqual(reserved, (higher, distinct))
+
     def test_entity_probe_ranking_prefers_observed_neutral_persistence(
         self,
     ) -> None:

@@ -127,6 +127,7 @@ class NeuralPlanningConfig:
     human_prior_option_search_depth: int = 0
     human_prior_option_search_beam_width: int = 8
     human_prior_option_search_milestone_reserve: int = 0
+    human_prior_option_search_world_state_reserve: int = 0
     human_prior_option_search_position_reserve: int = 0
     human_prior_option_search_missing_player_reserve: int = 8
     human_prior_option_search_missing_player_max_streak: int = 2
@@ -679,6 +680,11 @@ class VerifiedNeuralAgent:
         if self.config.human_prior_option_search_beam_width <= 0:
             raise ValueError(
                 "human-prior option search beam width must be positive"
+            )
+        if self.config.human_prior_option_search_world_state_reserve < 0:
+            raise ValueError(
+                "human-prior option search world-state reserve must be "
+                "non-negative"
             )
         if self.config.human_prior_option_search_position_reserve < 0:
             raise ValueError(
@@ -1847,6 +1853,9 @@ class VerifiedNeuralAgent:
             chest_obtained=ordering_key[2],
             maximum_depth=self.config.human_prior_option_search_depth,
             beam_width=self.config.human_prior_option_search_beam_width,
+            human_prior_option_search_world_state_reserve=(
+                self.config.human_prior_option_search_world_state_reserve
+            ),
             human_prior_option_search_position_reserve=(
                 self.config.human_prior_option_search_position_reserve
             ),
@@ -8751,6 +8760,9 @@ class VerifiedNeuralAgent:
                 self.config.human_prior_option_search_milestone_reserve
             ),
             int(
+                self.config.human_prior_option_search_world_state_reserve
+            ),
+            int(
                 self.config.human_prior_option_search_position_reserve
             ),
             int(
@@ -10424,6 +10436,11 @@ class VerifiedNeuralAgent:
                     if node.analysis.target_player_slot is not None
                     or node.analysis.milestone_reward > 0.0
                 ]
+                world_state_candidates = list(
+                    self._human_prior_world_state_reserve_candidates(
+                        observed_candidates
+                    )
+                )
                 all_missing_player_candidates = [
                     node
                     for node in expansion_candidates
@@ -10522,6 +10539,20 @@ class VerifiedNeuralAgent:
                             >= milestone_continuation_slots
                         ):
                             break
+                world_state_slots = min(
+                    self.config.human_prior_option_search_world_state_reserve,
+                    max(0, beam_width - len(retained_parent_ids)),
+                    len(world_state_candidates),
+                )
+                world_state_parents = []
+                if world_state_slots > 0:
+                    for node in world_state_candidates:
+                        if id(node) in retained_parent_ids:
+                            continue
+                        world_state_parents.append(node)
+                        retained_parent_ids.add(id(node))
+                        if len(world_state_parents) >= world_state_slots:
+                            break
                 entity_curiosity_slots = min(
                     self.config.human_prior_option_entity_curiosity_reserve,
                     max(0, beam_width - len(retained_parent_ids)),
@@ -10615,6 +10646,7 @@ class VerifiedNeuralAgent:
                             break
                 parents = list(route_replay_parents)
                 parents.extend(milestone_continuation_parents)
+                parents.extend(world_state_parents)
                 parents.extend(entity_curiosity_parents)
                 parents.extend(position_reserve_parents)
                 parents.extend(
@@ -10699,6 +10731,19 @@ class VerifiedNeuralAgent:
                             tuple(sorted(node.analysis.target_present))
                             for node in milestone_continuation_parents
                         )
+                    ),
+                    human_prior_option_world_state_reserve=(
+                        self.config.human_prior_option_search_world_state_reserve
+                    ),
+                    human_prior_option_world_state_candidates=len(
+                        world_state_candidates
+                    ),
+                    human_prior_option_world_state_parents_retained=len(
+                        world_state_parents
+                    ),
+                    human_prior_option_world_state_signatures_retained=tuple(
+                        node.tracked_world_state_signature
+                        for node in world_state_parents
                     ),
                     human_prior_option_position_reserve=(
                         self.config.human_prior_option_search_position_reserve
@@ -11735,10 +11780,21 @@ class VerifiedNeuralAgent:
                 )
                 > 0.0
             ]
+            world_state_endpoints = list(
+                self._human_prior_world_state_reserve_candidates(endpoints)
+            )
             preferred_endpoint_ids = {
                 id(node) for node in positive_goal_endpoints
             }
             preferred_endpoints = list(positive_goal_endpoints)
+            preferred_endpoints.extend(
+                node
+                for node in world_state_endpoints
+                if id(node) not in preferred_endpoint_ids
+            )
+            preferred_endpoint_ids.update(
+                id(node) for node in preferred_endpoints
+            )
             preferred_endpoints.extend(
                 node
                 for node in ordinary_endpoints
@@ -11831,6 +11887,19 @@ class VerifiedNeuralAgent:
                 0,
                 self.config.human_prior_option_archive_representatives - 1,
             )
+            additional_world_state_endpoints = [
+                node
+                for node in world_state_endpoints
+                if node is not selected
+            ][:representative_budget]
+            world_state_representative_ids = {
+                id(node) for node in additional_world_state_endpoints
+            }
+            remaining_after_world_states = max(
+                0,
+                representative_budget
+                - len(additional_world_state_endpoints),
+            )
             archive_position_representatives: Dict[
                 Tuple[int, int], _HumanPriorOptionNode
             ] = {}
@@ -11894,17 +11963,18 @@ class VerifiedNeuralAgent:
                         archive_position_representatives.items()
                     )
                     if node is not selected
+                    and id(node) not in world_state_representative_ids
                     and position != selected_player_slot
                 ),
                 key=archive_position_key,
                 reverse=True,
-            )[:representative_budget]
+            )[:remaining_after_world_states]
             position_representative_ids = {
                 id(node) for node in additional_position_frontier_endpoints
             }
             remaining_semantic_budget = max(
                 0,
-                representative_budget
+                remaining_after_world_states
                 - len(additional_position_frontier_endpoints),
             )
             additional_semantic_frontier_endpoints = sorted(
@@ -11925,6 +11995,12 @@ class VerifiedNeuralAgent:
                 additional_causal_frontier_endpoints[
                     : max(0, available_slots - 1)
                 ]
+            )
+            archived_ids = {id(node) for node in archived_endpoints}
+            archived_endpoints.extend(
+                node
+                for node in additional_world_state_endpoints
+                if id(node) not in archived_ids
             )
             archived_ids = {id(node) for node in archived_endpoints}
             archived_endpoints.extend(
@@ -12188,7 +12264,16 @@ class VerifiedNeuralAgent:
                     human_prior_option_world_effect_changed_pixels=(
                         archived.world_effect_changed_pixels
                     ),
+                    human_prior_option_tracked_world_effect_cells=(
+                        archived.tracked_world_effect_cells
+                    ),
+                    human_prior_option_tracked_world_state_signature=(
+                        archived.tracked_world_state_signature or None
+                    ),
                     selected_primary=(archived is selected),
+                    human_prior_option_archive_world_state_representative=(
+                        id(archived) in world_state_representative_ids
+                    ),
                     human_prior_option_archive_position_representative=(
                         id(archived) in position_representative_ids
                     ),
@@ -12243,6 +12328,13 @@ class VerifiedNeuralAgent:
                     selected.confirmed_world_effect_signature
                 ),
                 archive_branches_added=len(archived_endpoints),
+                world_state_representatives_available=len(
+                    world_state_endpoints
+                ),
+                world_state_representatives_archived=sum(
+                    id(node) in world_state_representative_ids
+                    for node in archived_endpoints
+                ),
                 position_representatives_available=len(
                     archive_position_representatives
                 ),
@@ -13997,6 +14089,13 @@ class VerifiedNeuralAgent:
                                     )
                                     or 0
                                 )
+                                prior_world_state_reserve = int(
+                                    event.get(
+                                        "human_prior_option_search_world_state_reserve",
+                                        0,
+                                    )
+                                    or 0
+                                )
                                 stronger_search_budget = bool(
                                     self.config.human_prior_option_search_depth
                                     > prior_depth
@@ -14004,6 +14103,8 @@ class VerifiedNeuralAgent:
                                     > prior_beam_width
                                     or self.config.human_prior_option_search_position_reserve
                                     > prior_position_reserve
+                                    or self.config.human_prior_option_search_world_state_reserve
+                                    > prior_world_state_reserve
                                 )
                                 if stronger_search_budget:
                                     budget_invalidated_ordering_disproofs += 1
@@ -16619,6 +16720,52 @@ class VerifiedNeuralAgent:
             retry_alternatives,
             False,
             restored_detours,
+        )
+
+    @staticmethod
+    def _human_prior_world_state_reserve_key(
+        node: _HumanPriorOptionNode,
+    ) -> tuple:
+        return (
+            node.analysis.milestone_reward,
+            node.action_dependent_endpoint,
+            node.target_state_visits == 0,
+            node.score,
+            -node.depth,
+        )
+
+    @classmethod
+    def _human_prior_world_state_reserve_candidates(
+        cls,
+        nodes: Sequence[_HumanPriorOptionNode],
+    ) -> Tuple[_HumanPriorOptionNode, ...]:
+        """Choose one best endpoint per cumulative anonymous world state."""
+
+        representatives: Dict[tuple, _HumanPriorOptionNode] = {}
+        for node in nodes:
+            if not (
+                node.tracked_world_effect_cells
+                and node.tracked_world_state_signature
+            ):
+                continue
+            world_key = (
+                tuple(sorted(node.analysis.target_present)),
+                node.tracked_world_effect_cells,
+                node.tracked_world_state_signature,
+            )
+            previous = representatives.get(world_key)
+            if (
+                previous is None
+                or cls._human_prior_world_state_reserve_key(node)
+                > cls._human_prior_world_state_reserve_key(previous)
+            ):
+                representatives[world_key] = node
+        return tuple(
+            sorted(
+                representatives.values(),
+                key=cls._human_prior_world_state_reserve_key,
+                reverse=True,
+            )
         )
 
     @staticmethod
