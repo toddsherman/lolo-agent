@@ -2784,7 +2784,7 @@ class VerifiedNeuralAgent:
         action: Action,
         interaction_cell: Optional[Tuple[int, int]],
         effect_cells: Iterable[Tuple[int, int]],
-        manipulation_probability: float = 1.0,
+        displacement_probability: float = 1.0,
     ) -> set[Tuple[int, int]]:
         """Retain anonymous near-contact changes that may encode a push.
 
@@ -2795,12 +2795,12 @@ class VerifiedNeuralAgent:
         world configuration without treating nearby sprite animation as part
         of it.
         The state key is enabled only after learned matched-control outcomes
-        assign material probability to manipulation.  Unknown appearances
+        assign material probability to displacement.  Unknown appearances
         remain available to causal curiosity probes, while ordinary movement
-        patches do not multiply the exact-search beam.  Ten percent is above
-        the sparse false-positive floor observed from pose changes while
-        retaining conditional interactions that work only from some approach
-        contexts.
+        patches and mere appearance transformations do not multiply the exact-
+        search beam.  Five percent retains conditional displacements that work
+        only from some approach contexts while excluding the animation-only
+        families observed in native audits.
         """
 
         direction = {
@@ -2812,7 +2812,7 @@ class VerifiedNeuralAgent:
         if (
             direction is None
             or interaction_cell is None
-            or manipulation_probability < 0.1
+            or displacement_probability < 0.05
         ):
             return set()
         destination = (
@@ -9453,7 +9453,8 @@ class VerifiedNeuralAgent:
                                 direct_effect_cells,
                                 float(
                                     entity_curiosity.get(
-                                        "manipulation_probability", 0.0
+                                        "entity_displacement_probability",
+                                        0.0,
                                     )
                                 ),
                             )

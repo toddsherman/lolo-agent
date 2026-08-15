@@ -7765,7 +7765,7 @@ class EnsemblePlannerTests(unittest.TestCase):
                 Action.RIGHT,
                 (4, 4),
                 cells,
-                manipulation_probability=0.09,
+                displacement_probability=0.04,
             ),
             set(),
         )
@@ -7774,7 +7774,7 @@ class EnsemblePlannerTests(unittest.TestCase):
                 Action.RIGHT,
                 (4, 4),
                 cells,
-                manipulation_probability=0.1,
+                displacement_probability=0.05,
             ),
             {(5, 4)},
         )
