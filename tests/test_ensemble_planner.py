@@ -8103,6 +8103,48 @@ class EnsemblePlannerTests(unittest.TestCase):
 
         self.assertEqual(reserved, (first, second, first_variant))
 
+    def test_world_state_reachability_does_not_cross_appearance_states(
+        self,
+    ) -> None:
+        def candidate(
+            signature: str,
+            score: float,
+            player: tuple[int, int],
+        ) -> SimpleNamespace:
+            return SimpleNamespace(
+                tracked_world_effect_cells=((3, 4),),
+                tracked_world_state_signature=signature,
+                world_state_reachability_axes=0,
+                world_state_reachability_count=0,
+                world_state_reachability_span=0,
+                analysis=SimpleNamespace(
+                    target_present=((7, 2),),
+                    target_player_slot=player,
+                    milestone_reward=0.0,
+                ),
+                action_dependent_endpoint=True,
+                target_state_visits=0,
+                score=score,
+                depth=3,
+            )
+
+        first = candidate("first", 1.0, (0, 0))
+        second = candidate("second", 2.0, (64, 32))
+
+        reserved = (
+            VerifiedNeuralAgent._human_prior_world_state_reserve_candidates(
+                (first, second)
+            )
+        )
+
+        self.assertEqual(reserved, (second, first))
+        self.assertEqual(first.world_state_reachability_axes, 0)
+        self.assertEqual(first.world_state_reachability_count, 1)
+        self.assertEqual(first.world_state_reachability_span, 0)
+        self.assertEqual(second.world_state_reachability_axes, 0)
+        self.assertEqual(second.world_state_reachability_count, 1)
+        self.assertEqual(second.world_state_reachability_span, 0)
+
     def test_world_state_reserve_interleaves_nearest_goal_regions(
         self,
     ) -> None:

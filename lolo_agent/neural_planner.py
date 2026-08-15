@@ -17137,7 +17137,7 @@ class VerifiedNeuralAgent:
         """
 
         exact_representatives: Dict[tuple, _HumanPriorOptionNode] = {}
-        locus_positions: Dict[tuple, set[Tuple[int, int]]] = defaultdict(set)
+        exact_positions: Dict[tuple, set[Tuple[int, int]]] = defaultdict(set)
 
         def safe_goal_node(node: _HumanPriorOptionNode) -> bool:
             return bool(
@@ -17161,8 +17161,8 @@ class VerifiedNeuralAgent:
             locus = locus_key(node)
             player = node.analysis.target_player_slot
             assert player is not None
-            locus_positions[locus].add(player)
             exact_key = (*locus, node.tracked_world_state_signature)
+            exact_positions[exact_key].add(player)
             previous = exact_representatives.get(exact_key)
             if previous is None:
                 exact_representatives[exact_key] = node
@@ -17190,8 +17190,12 @@ class VerifiedNeuralAgent:
             ):
                 exact_representatives[exact_key] = node
 
-        def reachability(locus: tuple) -> Tuple[int, int, int]:
-            positions = locus_positions[locus]
+        def reachability(node: _HumanPriorOptionNode) -> Tuple[int, int, int]:
+            exact_key = (
+                *locus_key(node),
+                node.tracked_world_state_signature,
+            )
+            positions = exact_positions[exact_key]
             if not positions:
                 return (0, 0, 0)
             axes = int(
@@ -17214,7 +17218,7 @@ class VerifiedNeuralAgent:
             return (
                 distance is not None,
                 -(distance if distance is not None else math.inf),
-                reachability(locus_key(node)),
+                reachability(node),
                 node.action_dependent_endpoint,
                 node.target_position_visits == 0,
                 node.target_state_visits == 0,
@@ -17250,12 +17254,11 @@ class VerifiedNeuralAgent:
     ) -> Tuple[_HumanPriorOptionNode, ...]:
         """Choose useful endpoints per cumulative anonymous world state.
 
-        A manipulated cell set seen from several controlled-player positions
-        has empirical evidence of supporting a larger reachable region.
-        Prefer that evidence over an equally novel locus observed from only
+        An exact anonymous configuration seen from several controlled-player
+        positions has empirical evidence of supporting a larger reachable
+        region. Prefer that evidence over a configuration observed from only
         one pose. Cover distinct causal loci before adding multiple exact
-        appearance variants of one locus, while still selecting the best
-        endpoint within every exact anonymous state.
+        appearance variants of one locus.
         """
 
         representatives: Dict[tuple, _HumanPriorOptionNode] = {}
@@ -17273,9 +17276,8 @@ class VerifiedNeuralAgent:
                 node.tracked_world_effect_cells,
                 node.tracked_world_state_signature,
             )
-            reachability_key = world_key[:2]
             if node.analysis.target_player_slot is not None:
-                reachable_positions[reachability_key].add(
+                reachable_positions[world_key].add(
                     node.analysis.target_player_slot
                 )
             previous = representatives.get(world_key)
@@ -17288,9 +17290,8 @@ class VerifiedNeuralAgent:
 
         exact_world_keys: Dict[int, tuple] = {}
         for world_key, representative in representatives.items():
-            reachability_key = world_key[:2]
-            exact_world_keys[id(representative)] = reachability_key
-            positions = reachable_positions[reachability_key]
+            exact_world_keys[id(representative)] = world_key[:2]
+            positions = reachable_positions[world_key]
             representative.world_state_reachability_count = len(positions)
             representative.world_state_reachability_axes = (
                 0
