@@ -9,6 +9,7 @@ from lolo_agent.neural_run import (
     load_active_goal_milestone_checkpoint,
     load_logged_decision_semantic_state,
     load_episodic_decision_events,
+    iter_episodic_decision_events,
 )
 from lolo_agent.pixels import Frame
 from lolo_agent.run_logging import RunLogger
@@ -177,6 +178,9 @@ class StableSceneChangeDetectorTests(unittest.TestCase):
             )
 
             events = load_episodic_decision_events(child, 1)
+            streamed_events = list(
+                iter_episodic_decision_events(child, 1)
+            )
 
         self.assertEqual(
             [event["marker"] for event in events],
@@ -199,6 +203,7 @@ class StableSceneChangeDetectorTests(unittest.TestCase):
                 "child-ordering-disproof",
             ],
         )
+        self.assertEqual(streamed_events, events)
 
     def test_loads_only_option_archives_active_at_decision_snapshot(
         self,

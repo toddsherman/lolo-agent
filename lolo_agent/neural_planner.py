@@ -10,6 +10,7 @@ from typing import (
     AbstractSet,
     Any,
     Counter as CounterType,
+    Callable,
     Dict,
     Iterable,
     List,
@@ -13656,7 +13657,10 @@ class VerifiedNeuralAgent:
 
     def seed_human_prior_episodic_memory(
         self,
-        events: Sequence[Dict[str, Any]],
+        events: Union[
+            Iterable[Dict[str, Any]],
+            Callable[[], Iterable[Dict[str, Any]]],
+        ],
         *,
         preserve_observed_state: bool = False,
         observed_world_context_override: Optional[str] = None,
@@ -13673,6 +13677,7 @@ class VerifiedNeuralAgent:
 
         if self.goal_prior is None:
             return
+        event_factory = events if callable(events) else lambda: iter(events)
         graph_states: CounterType[str] = Counter()
         player_positions: CounterType[Tuple[int, int]] = Counter()
         phase_player_positions: CounterType[
@@ -13855,7 +13860,7 @@ class VerifiedNeuralAgent:
                 if prior_controls is None or control_key < prior_key:
                     episodic_graph_controls[edge] = normalized_controls
 
-        for memory_event in events:
+        for memory_event in event_factory():
             memory_event_type = str(memory_event.get("event") or "")
             run_id = str(memory_event.get("run_id") or "")
             attempt = int(memory_event.get("attempt", 1))
@@ -13907,7 +13912,9 @@ class VerifiedNeuralAgent:
                 )
             ] = frame_digest
 
-        for event in events:
+        source_event_count = 0
+        for event in event_factory():
+            source_event_count += 1
             if event.get("event") == "pixel_novel_room_started":
                 room_boundaries += 1
                 graph_states.clear()
@@ -14939,7 +14946,7 @@ class VerifiedNeuralAgent:
         self._emit(
             "episodic_human_prior_memory_seeded",
             decision=self.decision_index,
-            source_events=len(events),
+            source_events=source_event_count,
             committed_decisions=decisions,
             room_boundaries=room_boundaries,
             graph_states=len(graph_states),

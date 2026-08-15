@@ -417,6 +417,27 @@ def load_episodic_decision_events(
 ) -> list[Dict[str, Any]]:
     """Load temporary planner-memory telemetry across a resume chain."""
 
+    return list(
+        iter_episodic_decision_events(
+            run_dir,
+            through_decision,
+            visited=visited,
+        )
+    )
+
+
+def iter_episodic_decision_events(
+    run_dir: Path,
+    through_decision: int,
+    visited: Optional[set[Path]] = None,
+):
+    """Stream planner-memory telemetry across a resume chain.
+
+    Long exact-search runs can contain tens of thousands of large path events.
+    Resume seeding needs two ordered passes over them, but it does not need to
+    retain the decoded dictionaries between passes.
+    """
+
     run_dir = Path(run_dir).expanduser().resolve()
     visited = set() if visited is None else visited
     if run_dir in visited:
@@ -425,21 +446,17 @@ def load_episodic_decision_events(
     manifest = json.loads(
         (run_dir / "manifest.json").read_text(encoding="utf-8")
     )
-    events: list[Dict[str, Any]] = []
     resume = manifest.get("metadata", {}).get("episodic_resume")
     if resume:
-        events.extend(
-            load_episodic_decision_events(
+        yield from iter_episodic_decision_events(
                 Path(resume["source_run"]),
                 int(resume["source_decision"]),
                 visited,
             )
-        )
-    events.extend(
-        event
-        for event in read_events(run_dir)
-        if event.get("event")
-        in {
+    for event in read_events(run_dir):
+        if (
+            event.get("event")
+            in {
             "archive_branch_restored",
             "branch_verified",
             "decision_committed",
@@ -456,9 +473,9 @@ def load_episodic_decision_events(
             "human_prior_ordering_progress_recorded",
             "pixel_novel_room_started",
         }
-        and int(event.get("decision", 0)) <= through_decision
-    )
-    return events
+            and int(event.get("decision", 0)) <= through_decision
+        ):
+            yield event
 
 
 def load_logged_decision_semantic_state(
@@ -2220,8 +2237,9 @@ def main() -> None:
                     )
                 )
                 agent.seed_human_prior_episodic_memory(
-                    load_episodic_decision_events(
-                        args.resume_run, args.resume_decision
+                    lambda: iter_episodic_decision_events(
+                        args.resume_run,
+                        args.resume_decision,
                     ),
                     preserve_observed_state=(
                         args.resume_state_run is not None

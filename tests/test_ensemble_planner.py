@@ -10983,7 +10983,7 @@ class EnsemblePlannerTests(unittest.TestCase):
             },
         ]
 
-        agent.seed_human_prior_episodic_memory(events)
+        agent.seed_human_prior_episodic_memory(lambda: iter(events))
 
         self.assertEqual(agent.human_prior_graph_state_visits["state-1"], 1)
         self.assertEqual(agent.human_prior_graph_state_visits["state-2"], 1)
