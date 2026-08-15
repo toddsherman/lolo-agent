@@ -10747,6 +10747,10 @@ class VerifiedNeuralAgent:
                         node.tracked_world_state_signature
                         for node in world_state_parents
                     ),
+                    human_prior_option_world_state_goal_regions_retained=tuple(
+                        self._human_prior_nearest_visible_target(node)
+                        for node in world_state_parents
+                    ),
                     human_prior_option_world_state_reachability_counts_retained=tuple(
                         node.world_state_reachability_count
                         for node in world_state_parents
@@ -12292,6 +12296,9 @@ class VerifiedNeuralAgent:
                     ),
                     human_prior_option_world_state_reachability_span=(
                         archived.world_state_reachability_span
+                    ),
+                    human_prior_option_world_state_goal_region=(
+                        self._human_prior_nearest_visible_target(archived)
                     ),
                     selected_primary=(archived is selected),
                     human_prior_option_archive_world_state_representative=(
@@ -16757,6 +16764,23 @@ class VerifiedNeuralAgent:
             -node.depth,
         )
 
+    @staticmethod
+    def _human_prior_nearest_visible_target(
+        node: _HumanPriorOptionNode,
+    ) -> Optional[Tuple[int, int]]:
+        player = node.analysis.target_player_slot
+        targets = tuple(sorted(node.analysis.target_present))
+        if player is None or not targets:
+            return None
+        return min(
+            targets,
+            key=lambda target: (
+                abs(player[0] - target[0])
+                + abs(player[1] - target[1]),
+                target,
+            ),
+        )
+
     @classmethod
     def _human_prior_world_state_reserve_candidates(
         cls,
@@ -16837,6 +16861,43 @@ class VerifiedNeuralAgent:
                 cls._human_prior_world_state_reserve_key(node),
             )
 
+        def interleave_goal_regions(
+            candidates: Sequence[_HumanPriorOptionNode],
+        ) -> List[_HumanPriorOptionNode]:
+            """Cover every nearest visible goal before repeating a region."""
+
+            buckets: Dict[
+                Optional[Tuple[int, int]], List[_HumanPriorOptionNode]
+            ] = defaultdict(list)
+            for candidate in candidates:
+                buckets[cls._human_prior_nearest_visible_target(candidate)].append(
+                    candidate
+                )
+            for bucket in buckets.values():
+                bucket.sort(key=topology_rank, reverse=True)
+            goal_order = sorted(
+                buckets,
+                key=lambda goal: (
+                    topology_rank(buckets[goal][0]),
+                    goal is not None,
+                    goal or (-1, -1),
+                ),
+                reverse=True,
+            )
+            interleaved: List[_HumanPriorOptionNode] = []
+            offset = 0
+            while True:
+                added = False
+                for goal in goal_order:
+                    bucket = buckets[goal]
+                    if offset >= len(bucket):
+                        continue
+                    interleaved.append(bucket[offset])
+                    added = True
+                if not added:
+                    return interleaved
+                offset += 1
+
         locus_representatives: Dict[tuple, _HumanPriorOptionNode] = {}
         for representative in representatives.values():
             locus_key = exact_world_keys[id(representative)]
@@ -16846,20 +16907,16 @@ class VerifiedNeuralAgent:
                 or topology_rank(representative) > topology_rank(previous)
             ):
                 locus_representatives[locus_key] = representative
-        primary = sorted(
-            locus_representatives.values(),
-            key=topology_rank,
-            reverse=True,
+        primary = interleave_goal_regions(
+            tuple(locus_representatives.values())
         )
         primary_ids = {id(node) for node in primary}
-        variants = sorted(
-            (
+        variants = interleave_goal_regions(
+            tuple(
                 node
                 for node in representatives.values()
                 if id(node) not in primary_ids
-            ),
-            key=topology_rank,
-            reverse=True,
+            )
         )
         return tuple((*primary, *variants))
 

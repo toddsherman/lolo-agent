@@ -7949,6 +7949,44 @@ class EnsemblePlannerTests(unittest.TestCase):
 
         self.assertEqual(reserved, (first, second, first_variant))
 
+    def test_world_state_reserve_interleaves_nearest_goal_regions(
+        self,
+    ) -> None:
+        def candidate(
+            signature: str,
+            score: float,
+            cells: tuple[tuple[int, int], ...],
+            player: tuple[int, int],
+        ) -> SimpleNamespace:
+            return SimpleNamespace(
+                tracked_world_effect_cells=cells,
+                tracked_world_state_signature=signature,
+                world_state_reachability_axes=0,
+                world_state_reachability_count=0,
+                world_state_reachability_span=0,
+                analysis=SimpleNamespace(
+                    target_present=((0, 0), (160, 0)),
+                    target_player_slot=player,
+                    milestone_reward=0.0,
+                ),
+                action_dependent_endpoint=True,
+                target_state_visits=0,
+                score=score,
+                depth=3,
+            )
+
+        left_high = candidate("left-high", 3.0, ((1, 1),), (0, 0))
+        left_low = candidate("left-low", 2.0, ((2, 1),), (16, 0))
+        right = candidate("right", 1.0, ((9, 1),), (160, 0))
+
+        reserved = (
+            VerifiedNeuralAgent._human_prior_world_state_reserve_candidates(
+                (left_high, left_low, right)
+            )
+        )
+
+        self.assertEqual(reserved, (left_high, right, left_low))
+
     def test_cumulative_world_state_signature_masks_player_pixels(
         self,
     ) -> None:
