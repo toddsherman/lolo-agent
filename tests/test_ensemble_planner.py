@@ -7815,6 +7815,7 @@ class EnsemblePlannerTests(unittest.TestCase):
             return SimpleNamespace(
                 tracked_world_effect_cells=cells,
                 tracked_world_state_signature=signature,
+                world_state_reachability_axes=0,
                 world_state_reachability_count=0,
                 world_state_reachability_span=0,
                 analysis=SimpleNamespace(
@@ -7854,6 +7855,7 @@ class EnsemblePlannerTests(unittest.TestCase):
             return SimpleNamespace(
                 tracked_world_effect_cells=cells,
                 tracked_world_state_signature=signature,
+                world_state_reachability_axes=0,
                 world_state_reachability_count=0,
                 world_state_reachability_span=0,
                 analysis=SimpleNamespace(
@@ -7875,16 +7877,39 @@ class EnsemblePlannerTests(unittest.TestCase):
         )
         broad_low = candidate("broad", 1.0, (0, 0))
         broad_high = candidate("broad", 2.0, (32, 16))
+        corridor_low = candidate(
+            "corridor", 3.0, (0, 0), cells=((8, 8),)
+        )
+        corridor_mid = candidate(
+            "corridor", 4.0, (64, 0), cells=((8, 8),)
+        )
+        corridor_high = candidate(
+            "corridor", 5.0, (128, 0), cells=((8, 8),)
+        )
 
         reserved = (
             VerifiedNeuralAgent._human_prior_world_state_reserve_candidates(
-                (narrow, broad_low, broad_high)
+                (
+                    narrow,
+                    broad_low,
+                    broad_high,
+                    corridor_low,
+                    corridor_mid,
+                    corridor_high,
+                )
             )
         )
 
-        self.assertEqual(reserved, (broad_high, narrow))
+        self.assertEqual(
+            reserved,
+            (broad_high, corridor_high, narrow),
+        )
+        self.assertEqual(broad_high.world_state_reachability_axes, 2)
         self.assertEqual(broad_high.world_state_reachability_count, 2)
         self.assertEqual(broad_high.world_state_reachability_span, 48)
+        self.assertEqual(corridor_high.world_state_reachability_axes, 1)
+        self.assertEqual(corridor_high.world_state_reachability_count, 3)
+        self.assertEqual(corridor_high.world_state_reachability_span, 128)
         self.assertEqual(narrow.world_state_reachability_count, 1)
 
     def test_world_state_reserve_covers_loci_before_state_variants(
@@ -7898,6 +7923,7 @@ class EnsemblePlannerTests(unittest.TestCase):
             return SimpleNamespace(
                 tracked_world_effect_cells=cells,
                 tracked_world_state_signature=signature,
+                world_state_reachability_axes=0,
                 world_state_reachability_count=0,
                 world_state_reachability_span=0,
                 analysis=SimpleNamespace(

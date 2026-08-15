@@ -261,6 +261,7 @@ class _HumanPriorOptionNode:
     world_effect_state_signature: str = ""
     tracked_world_effect_cells: Tuple[Tuple[int, int], ...] = ()
     tracked_world_state_signature: str = ""
+    world_state_reachability_axes: int = 0
     world_state_reachability_count: int = 0
     world_state_reachability_span: int = 0
     stationary_action_history: Tuple[Tuple[Action, int], ...] = ()
@@ -10750,6 +10751,10 @@ class VerifiedNeuralAgent:
                         node.world_state_reachability_count
                         for node in world_state_parents
                     ),
+                    human_prior_option_world_state_reachability_axes_retained=tuple(
+                        node.world_state_reachability_axes
+                        for node in world_state_parents
+                    ),
                     human_prior_option_world_state_reachability_spans_retained=tuple(
                         node.world_state_reachability_span
                         for node in world_state_parents
@@ -12281,6 +12286,9 @@ class VerifiedNeuralAgent:
                     ),
                     human_prior_option_world_state_reachability_count=(
                         archived.world_state_reachability_count
+                    ),
+                    human_prior_option_world_state_reachability_axes=(
+                        archived.world_state_reachability_axes
                     ),
                     human_prior_option_world_state_reachability_span=(
                         archived.world_state_reachability_span
@@ -16798,6 +16806,18 @@ class VerifiedNeuralAgent:
             exact_world_keys[id(representative)] = reachability_key
             positions = reachable_positions[reachability_key]
             representative.world_state_reachability_count = len(positions)
+            representative.world_state_reachability_axes = (
+                0
+                if not positions
+                else int(
+                    max(position[0] for position in positions)
+                    > min(position[0] for position in positions)
+                )
+                + int(
+                    max(position[1] for position in positions)
+                    > min(position[1] for position in positions)
+                )
+            )
             representative.world_state_reachability_span = (
                 0
                 if not positions
@@ -16811,6 +16831,7 @@ class VerifiedNeuralAgent:
 
         def topology_rank(node: _HumanPriorOptionNode) -> tuple:
             return (
+                node.world_state_reachability_axes,
                 node.world_state_reachability_count,
                 node.world_state_reachability_span,
                 cls._human_prior_world_state_reserve_key(node),
