@@ -3022,6 +3022,69 @@ class EnsemblePlannerTests(unittest.TestCase):
             completed["position_representative_max_divergence"], 0
         )
 
+    def test_option_archive_persists_goal_proximity_representatives(
+        self,
+    ) -> None:
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            DivergentPositionEnv(),
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.LEFT, Action.DOWN),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=3,
+                human_prior_option_search_goal_proximity_reserve=2,
+                human_prior_option_search_action_frames=1,
+                human_prior_option_archive_representatives=3,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        source_signature = agent._current_human_prior_graph_signature()
+        agent.human_prior_graph_state_visits[source_signature] = 1
+
+        added = agent._search_human_prior_options()
+
+        self.assertEqual(added, 3)
+        archived_events = [
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_archive_added"
+        ]
+        proximity_events = [
+            event
+            for event in archived_events
+            if event[
+                "human_prior_option_archive_goal_proximity_representative"
+            ]
+        ]
+        self.assertEqual(len(proximity_events), 2)
+        self.assertTrue(
+            all(
+                event["human_prior_target_heart_distance"] is not None
+                for event in proximity_events
+            )
+        )
+        completed = next(
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_search_completed"
+        )
+        self.assertEqual(
+            completed["goal_proximity_representatives_archived"], 2
+        )
+        self.assertIsNotNone(
+            completed["goal_proximity_min_distance_archived"]
+        )
+
     def test_human_prior_option_search_retains_distinct_semantic_states(
         self,
     ) -> None:

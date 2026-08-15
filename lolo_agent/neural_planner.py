@@ -11970,17 +11970,41 @@ class VerifiedNeuralAgent:
                 - 1
                 - len(additional_milestone_endpoints),
             )
+            goal_proximity_archive_candidates = list(
+                self._human_prior_goal_proximity_reserve_candidates(
+                    ordinary_endpoints
+                )
+            )
+            additional_goal_proximity_endpoints = [
+                node
+                for node in goal_proximity_archive_candidates
+                if node is not selected
+            ][
+                : min(
+                    representative_budget,
+                    self.config.human_prior_option_search_goal_proximity_reserve,
+                )
+            ]
+            goal_proximity_representative_ids = {
+                id(node) for node in additional_goal_proximity_endpoints
+            }
+            remaining_after_goal_proximity = max(
+                0,
+                representative_budget
+                - len(additional_goal_proximity_endpoints),
+            )
             additional_world_state_endpoints = [
                 node
                 for node in world_state_endpoints
                 if node is not selected
-            ][:representative_budget]
+                and id(node) not in goal_proximity_representative_ids
+            ][:remaining_after_goal_proximity]
             world_state_representative_ids = {
                 id(node) for node in additional_world_state_endpoints
             }
             remaining_after_world_states = max(
                 0,
-                representative_budget
+                remaining_after_goal_proximity
                 - len(additional_world_state_endpoints),
             )
             archive_position_representatives: Dict[
@@ -12046,6 +12070,7 @@ class VerifiedNeuralAgent:
                         archive_position_representatives.items()
                     )
                     if node is not selected
+                    and id(node) not in goal_proximity_representative_ids
                     and id(node) not in world_state_representative_ids
                     and position != selected_player_slot
                 ),
@@ -12065,6 +12090,7 @@ class VerifiedNeuralAgent:
                     node
                     for node in semantic_frontier_representatives.values()
                     if node is not selected
+                    and id(node) not in goal_proximity_representative_ids
                     and id(node) not in position_representative_ids
                 ),
                 key=selection_key,
@@ -12075,10 +12101,19 @@ class VerifiedNeuralAgent:
             )
             archived_endpoints = [selected]
             archived_endpoints.extend(additional_milestone_endpoints)
+            archived_ids = {id(node) for node in archived_endpoints}
             archived_endpoints.extend(
-                additional_causal_frontier_endpoints[
-                    : max(0, available_slots - len(archived_endpoints))
-                ]
+                node
+                for node in additional_goal_proximity_endpoints
+                if id(node) not in archived_ids
+            )
+            archived_ids = {id(node) for node in archived_endpoints}
+            archived_endpoints.extend(
+                [
+                    node
+                    for node in additional_causal_frontier_endpoints
+                    if id(node) not in archived_ids
+                ][: max(0, available_slots - len(archived_endpoints))]
             )
             archived_ids = {id(node) for node in archived_endpoints}
             archived_endpoints.extend(
@@ -12381,6 +12416,9 @@ class VerifiedNeuralAgent:
                     human_prior_option_archive_world_state_representative=(
                         id(archived) in world_state_representative_ids
                     ),
+                    human_prior_option_archive_goal_proximity_representative=(
+                        id(archived) in goal_proximity_representative_ids
+                    ),
                     human_prior_option_archive_position_representative=(
                         id(archived) in position_representative_ids
                     ),
@@ -12441,6 +12479,22 @@ class VerifiedNeuralAgent:
                 world_state_representatives_archived=sum(
                     id(node) in world_state_representative_ids
                     for node in archived_endpoints
+                ),
+                goal_proximity_representatives_available=len(
+                    goal_proximity_archive_candidates
+                ),
+                goal_proximity_representatives_archived=sum(
+                    id(node) in goal_proximity_representative_ids
+                    for node in archived_endpoints
+                ),
+                goal_proximity_min_distance_archived=min(
+                    (
+                        self._human_prior_visible_goal_distance(node)
+                        for node in archived_endpoints
+                        if id(node)
+                        in goal_proximity_representative_ids
+                    ),
+                    default=None,
                 ),
                 milestone_representatives_available=len(
                     milestone_archive_candidates

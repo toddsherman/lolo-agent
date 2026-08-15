@@ -2292,6 +2292,28 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             ),
             default=None,
         ),
+        "human_prior_option_goal_proximity_representative_archives": sum(
+            event["event"] == "human_prior_option_archive_added"
+            and bool(
+                event.get(
+                    "human_prior_option_archive_goal_proximity_representative"
+                )
+            )
+            for event in events
+        ),
+        "human_prior_option_goal_proximity_archive_min_distance": min(
+            (
+                float(event["human_prior_target_heart_distance"])
+                for event in events
+                if event["event"] == "human_prior_option_archive_added"
+                and event.get(
+                    "human_prior_option_archive_goal_proximity_representative"
+                )
+                and event.get("human_prior_target_heart_distance")
+                is not None
+            ),
+            default=None,
+        ),
         "human_prior_option_position_reserve_depths": sum(
             event["event"]
             == "human_prior_option_search_depth_completed"

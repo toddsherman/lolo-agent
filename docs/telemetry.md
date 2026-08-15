@@ -308,7 +308,11 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   pixel-derived distance to a visible remaining heart or chest. This small
   reserve complements causal world-state and broad position coverage when
   all closer poses would otherwise fall out of the beam. The depth event
-  records the candidate count, retained count, distances, and positions;
+  records the candidate count, retained count, distances, and positions.
+  Final option archival applies the same reserve before causal/world/position
+  representatives and marks saved states with
+  `human_prior_option_archive_goal_proximity_representative`, so a closer
+  frontier remains available for a staged continuation;
 - `human_prior_option_world_effect_stability`, which replays a bounded sample
   of distinct option effects beside duration-matched all-`NOOP` controls at
   future horizons and records the intersected coarse cells, conservative
