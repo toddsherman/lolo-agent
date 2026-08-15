@@ -7943,6 +7943,59 @@ class EnsemblePlannerTests(unittest.TestCase):
 
         self.assertEqual(reserved, (close_high, middle, far))
 
+    def test_goal_world_state_reserve_couples_near_poses_to_loci(
+        self,
+    ) -> None:
+        def candidate(
+            distance: float,
+            player: tuple[int, int],
+            cells: tuple[tuple[int, int], ...],
+            signature: str,
+            score: float,
+        ) -> SimpleNamespace:
+            return SimpleNamespace(
+                tracked_world_effect_cells=cells,
+                tracked_world_state_signature=signature,
+                analysis=SimpleNamespace(
+                    target_heart_distance=distance,
+                    target_chest_distance=None,
+                    target_player_slot=player,
+                    target_present=((9, 12),),
+                    life_counter_changed=False,
+                    dark_transition_started=False,
+                ),
+                target_position_visits=0,
+                action_dependent_endpoint=True,
+                target_state_visits=0,
+                score=score,
+                depth=3,
+            )
+
+        first_far = candidate(2.0, (7, 10), ((3, 4),), "a", 1.0)
+        first_near = candidate(1.0, (7, 11), ((3, 4),), "a", 0.5)
+        first_variant = candidate(
+            3.0, (7, 9), ((3, 4),), "b", 10.0
+        )
+        second_locus = candidate(
+            4.0, (4, 8), ((8, 8),), "c", 20.0
+        )
+        untracked = candidate(0.0, (7, 12), (), "", 100.0)
+
+        reserved = VerifiedNeuralAgent._human_prior_goal_world_state_reserve_candidates(
+            (
+                first_far,
+                first_near,
+                first_variant,
+                second_locus,
+                untracked,
+            )
+        )
+
+        self.assertEqual(
+            reserved,
+            (first_near, second_locus, first_variant),
+        )
+
     def test_world_state_reserve_prefers_empirical_reachability(
         self,
     ) -> None:

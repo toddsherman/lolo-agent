@@ -129,6 +129,7 @@ class NeuralPlanningConfig:
     human_prior_option_search_milestone_reserve: int = 0
     human_prior_option_search_world_state_reserve: int = 0
     human_prior_option_search_goal_proximity_reserve: int = 0
+    human_prior_option_search_goal_world_state_reserve: int = 0
     human_prior_option_search_position_reserve: int = 0
     human_prior_option_search_missing_player_reserve: int = 8
     human_prior_option_search_missing_player_max_streak: int = 2
@@ -694,6 +695,11 @@ class VerifiedNeuralAgent:
         if self.config.human_prior_option_search_goal_proximity_reserve < 0:
             raise ValueError(
                 "human-prior option search goal-proximity reserve must be "
+                "non-negative"
+            )
+        if self.config.human_prior_option_search_goal_world_state_reserve < 0:
+            raise ValueError(
+                "human-prior option search goal-world-state reserve must be "
                 "non-negative"
             )
         if self.config.human_prior_option_search_position_reserve < 0:
@@ -1868,6 +1874,9 @@ class VerifiedNeuralAgent:
             ),
             human_prior_option_search_goal_proximity_reserve=(
                 self.config.human_prior_option_search_goal_proximity_reserve
+            ),
+            human_prior_option_search_goal_world_state_reserve=(
+                self.config.human_prior_option_search_goal_world_state_reserve
             ),
             human_prior_option_search_position_reserve=(
                 self.config.human_prior_option_search_position_reserve
@@ -8799,6 +8808,9 @@ class VerifiedNeuralAgent:
                 self.config.human_prior_option_search_goal_proximity_reserve
             ),
             int(
+                self.config.human_prior_option_search_goal_world_state_reserve
+            ),
+            int(
                 self.config.human_prior_option_search_position_reserve
             ),
             int(
@@ -10461,6 +10473,11 @@ class VerifiedNeuralAgent:
                         observed_candidates
                     )
                 )
+                goal_world_state_candidates = list(
+                    self._human_prior_goal_world_state_reserve_candidates(
+                        observed_candidates
+                    )
+                )
                 all_missing_player_candidates = [
                     node
                     for node in expansion_candidates
@@ -10573,6 +10590,23 @@ class VerifiedNeuralAgent:
                         retained_parent_ids.add(id(node))
                         if len(goal_proximity_parents) >= goal_proximity_slots:
                             break
+                goal_world_state_slots = min(
+                    self.config.human_prior_option_search_goal_world_state_reserve,
+                    max(0, beam_width - len(retained_parent_ids)),
+                    len(goal_world_state_candidates),
+                )
+                goal_world_state_parents = []
+                if goal_world_state_slots > 0:
+                    for node in goal_world_state_candidates:
+                        if id(node) in retained_parent_ids:
+                            continue
+                        goal_world_state_parents.append(node)
+                        retained_parent_ids.add(id(node))
+                        if (
+                            len(goal_world_state_parents)
+                            >= goal_world_state_slots
+                        ):
+                            break
                 world_state_slots = min(
                     self.config.human_prior_option_search_world_state_reserve,
                     max(0, beam_width - len(retained_parent_ids)),
@@ -10681,6 +10715,7 @@ class VerifiedNeuralAgent:
                 parents = list(route_replay_parents)
                 parents.extend(milestone_continuation_parents)
                 parents.extend(goal_proximity_parents)
+                parents.extend(goal_world_state_parents)
                 parents.extend(world_state_parents)
                 parents.extend(entity_curiosity_parents)
                 parents.extend(position_reserve_parents)
@@ -10786,6 +10821,27 @@ class VerifiedNeuralAgent:
                     human_prior_option_goal_proximity_slots_retained=tuple(
                         node.analysis.target_player_slot
                         for node in goal_proximity_parents
+                    ),
+                    human_prior_option_goal_world_state_reserve=(
+                        self.config.human_prior_option_search_goal_world_state_reserve
+                    ),
+                    human_prior_option_goal_world_state_candidates=len(
+                        goal_world_state_candidates
+                    ),
+                    human_prior_option_goal_world_state_parents_retained=len(
+                        goal_world_state_parents
+                    ),
+                    human_prior_option_goal_world_state_distances_retained=tuple(
+                        self._human_prior_visible_goal_distance(node)
+                        for node in goal_world_state_parents
+                    ),
+                    human_prior_option_goal_world_state_cells_retained=tuple(
+                        node.tracked_world_effect_cells
+                        for node in goal_world_state_parents
+                    ),
+                    human_prior_option_goal_world_state_signatures_retained=tuple(
+                        node.tracked_world_state_signature
+                        for node in goal_world_state_parents
                     ),
                     human_prior_option_world_state_candidates=len(
                         world_state_candidates
@@ -11970,6 +12026,29 @@ class VerifiedNeuralAgent:
                 - 1
                 - len(additional_milestone_endpoints),
             )
+            goal_world_state_archive_candidates = list(
+                self._human_prior_goal_world_state_reserve_candidates(
+                    ordinary_endpoints
+                )
+            )
+            additional_goal_world_state_endpoints = [
+                node
+                for node in goal_world_state_archive_candidates
+                if node is not selected
+            ][
+                : min(
+                    representative_budget,
+                    self.config.human_prior_option_search_goal_world_state_reserve,
+                )
+            ]
+            goal_world_state_representative_ids = {
+                id(node) for node in additional_goal_world_state_endpoints
+            }
+            remaining_after_goal_world_state = max(
+                0,
+                representative_budget
+                - len(additional_goal_world_state_endpoints),
+            )
             goal_proximity_archive_candidates = list(
                 self._human_prior_goal_proximity_reserve_candidates(
                     ordinary_endpoints
@@ -11979,9 +12058,10 @@ class VerifiedNeuralAgent:
                 node
                 for node in goal_proximity_archive_candidates
                 if node is not selected
+                and id(node) not in goal_world_state_representative_ids
             ][
                 : min(
-                    representative_budget,
+                    remaining_after_goal_world_state,
                     self.config.human_prior_option_search_goal_proximity_reserve,
                 )
             ]
@@ -11990,7 +12070,7 @@ class VerifiedNeuralAgent:
             }
             remaining_after_goal_proximity = max(
                 0,
-                representative_budget
+                remaining_after_goal_world_state
                 - len(additional_goal_proximity_endpoints),
             )
             additional_world_state_endpoints = [
@@ -11998,6 +12078,7 @@ class VerifiedNeuralAgent:
                 for node in world_state_endpoints
                 if node is not selected
                 and id(node) not in goal_proximity_representative_ids
+                and id(node) not in goal_world_state_representative_ids
             ][:remaining_after_goal_proximity]
             world_state_representative_ids = {
                 id(node) for node in additional_world_state_endpoints
@@ -12071,6 +12152,7 @@ class VerifiedNeuralAgent:
                     )
                     if node is not selected
                     and id(node) not in goal_proximity_representative_ids
+                    and id(node) not in goal_world_state_representative_ids
                     and id(node) not in world_state_representative_ids
                     and position != selected_player_slot
                 ),
@@ -12091,6 +12173,7 @@ class VerifiedNeuralAgent:
                     for node in semantic_frontier_representatives.values()
                     if node is not selected
                     and id(node) not in goal_proximity_representative_ids
+                    and id(node) not in goal_world_state_representative_ids
                     and id(node) not in position_representative_ids
                 ),
                 key=selection_key,
@@ -12101,6 +12184,12 @@ class VerifiedNeuralAgent:
             )
             archived_endpoints = [selected]
             archived_endpoints.extend(additional_milestone_endpoints)
+            archived_ids = {id(node) for node in archived_endpoints}
+            archived_endpoints.extend(
+                node
+                for node in additional_goal_world_state_endpoints
+                if id(node) not in archived_ids
+            )
             archived_ids = {id(node) for node in archived_endpoints}
             archived_endpoints.extend(
                 node
@@ -12419,6 +12508,10 @@ class VerifiedNeuralAgent:
                     human_prior_option_archive_goal_proximity_representative=(
                         id(archived) in goal_proximity_representative_ids
                     ),
+                    human_prior_option_archive_goal_world_state_representative=(
+                        id(archived)
+                        in goal_world_state_representative_ids
+                    ),
                     human_prior_option_archive_position_representative=(
                         id(archived) in position_representative_ids
                     ),
@@ -12493,6 +12586,22 @@ class VerifiedNeuralAgent:
                         for node in archived_endpoints
                         if id(node)
                         in goal_proximity_representative_ids
+                    ),
+                    default=None,
+                ),
+                goal_world_state_representatives_available=len(
+                    goal_world_state_archive_candidates
+                ),
+                goal_world_state_representatives_archived=sum(
+                    id(node) in goal_world_state_representative_ids
+                    for node in archived_endpoints
+                ),
+                goal_world_state_min_distance_archived=min(
+                    (
+                        self._human_prior_visible_goal_distance(node)
+                        for node in archived_endpoints
+                        if id(node)
+                        in goal_world_state_representative_ids
                     ),
                     default=None,
                 ),
@@ -14271,6 +14380,19 @@ class VerifiedNeuralAgent:
                                     )
                                     or 0
                                 )
+                                prior_goal_world_state_reserve = int(
+                                    event.get(
+                                        "human_prior_option_search_"
+                                        "goal_world_state_reserve",
+                                        0,
+                                    )
+                                    or 0
+                                )
+                                goal_world_state_reserve = getattr(
+                                    self.config,
+                                    "human_prior_option_search_"
+                                    "goal_world_state_reserve",
+                                )
                                 stronger_search_budget = bool(
                                     self.config.human_prior_option_search_depth
                                     > prior_depth
@@ -14282,6 +14404,8 @@ class VerifiedNeuralAgent:
                                     > prior_world_state_reserve
                                     or self.config.human_prior_option_search_goal_proximity_reserve
                                     > prior_goal_proximity_reserve
+                                    or goal_world_state_reserve
+                                    > prior_goal_world_state_reserve
                                 )
                                 if stronger_search_budget:
                                     budget_invalidated_ordering_disproofs += 1
@@ -16990,6 +17114,127 @@ class VerifiedNeuralAgent:
         return tuple(
             sorted(representatives.values(), key=rank, reverse=True)
         )
+
+    @classmethod
+    def _human_prior_goal_world_state_reserve_candidates(
+        cls,
+        nodes: Sequence[_HumanPriorOptionNode],
+    ) -> Tuple[_HumanPriorOptionNode, ...]:
+        """Keep goal-near poses coupled to anonymous world configurations.
+
+        A pose-only reserve can preserve the closest side of an obstacle while
+        a world-state reserve preserves a useful manipulation elsewhere.  That
+        separation loses the continuation that needs both facts at once.  This
+        reserve uses only cumulative pixel-change loci and appearance hashes;
+        it does not assign object identities or encode game mechanics.
+        """
+
+        exact_representatives: Dict[tuple, _HumanPriorOptionNode] = {}
+        locus_positions: Dict[tuple, set[Tuple[int, int]]] = defaultdict(set)
+
+        def safe_goal_node(node: _HumanPriorOptionNode) -> bool:
+            return bool(
+                node.analysis.target_player_slot is not None
+                and cls._human_prior_visible_goal_distance(node) is not None
+                and node.tracked_world_effect_cells
+                and node.tracked_world_state_signature
+                and not node.analysis.life_counter_changed
+                and not node.analysis.dark_transition_started
+            )
+
+        def locus_key(node: _HumanPriorOptionNode) -> tuple:
+            return (
+                tuple(sorted(node.analysis.target_present)),
+                node.tracked_world_effect_cells,
+            )
+
+        for node in nodes:
+            if not safe_goal_node(node):
+                continue
+            locus = locus_key(node)
+            player = node.analysis.target_player_slot
+            assert player is not None
+            locus_positions[locus].add(player)
+            exact_key = (*locus, node.tracked_world_state_signature)
+            previous = exact_representatives.get(exact_key)
+            if previous is None:
+                exact_representatives[exact_key] = node
+                continue
+            node_distance = cls._human_prior_visible_goal_distance(node)
+            previous_distance = cls._human_prior_visible_goal_distance(
+                previous
+            )
+            if (
+                -(node_distance if node_distance is not None else math.inf),
+                node.action_dependent_endpoint,
+                node.target_state_visits == 0,
+                node.score,
+                -node.depth,
+            ) > (
+                -(
+                    previous_distance
+                    if previous_distance is not None
+                    else math.inf
+                ),
+                previous.action_dependent_endpoint,
+                previous.target_state_visits == 0,
+                previous.score,
+                -previous.depth,
+            ):
+                exact_representatives[exact_key] = node
+
+        def reachability(locus: tuple) -> Tuple[int, int, int]:
+            positions = locus_positions[locus]
+            if not positions:
+                return (0, 0, 0)
+            axes = int(
+                max(position[0] for position in positions)
+                > min(position[0] for position in positions)
+            ) + int(
+                max(position[1] for position in positions)
+                > min(position[1] for position in positions)
+            )
+            span = (
+                max(position[0] for position in positions)
+                - min(position[0] for position in positions)
+                + max(position[1] for position in positions)
+                - min(position[1] for position in positions)
+            )
+            return (axes, len(positions), span)
+
+        def rank(node: _HumanPriorOptionNode) -> tuple:
+            distance = cls._human_prior_visible_goal_distance(node)
+            return (
+                distance is not None,
+                -(distance if distance is not None else math.inf),
+                reachability(locus_key(node)),
+                node.action_dependent_endpoint,
+                node.target_position_visits == 0,
+                node.target_state_visits == 0,
+                node.score,
+                -node.depth,
+            )
+
+        locus_representatives: Dict[tuple, _HumanPriorOptionNode] = {}
+        for representative in exact_representatives.values():
+            locus = locus_key(representative)
+            previous = locus_representatives.get(locus)
+            if previous is None or rank(representative) > rank(previous):
+                locus_representatives[locus] = representative
+        primary = sorted(
+            locus_representatives.values(), key=rank, reverse=True
+        )
+        primary_ids = {id(node) for node in primary}
+        variants = sorted(
+            (
+                node
+                for node in exact_representatives.values()
+                if id(node) not in primary_ids
+            ),
+            key=rank,
+            reverse=True,
+        )
+        return tuple((*primary, *variants))
 
     @classmethod
     def _human_prior_world_state_reserve_candidates(
