@@ -322,6 +322,7 @@ class _HumanPriorOptionNode:
     local_action_dependent: bool = False
     local_action_dependent_visual_difference: float = 0.0
     player_matches_neutral: bool = False
+    known_milestone_continuation: bool = False
 
 
 @dataclass(frozen=True)
@@ -11542,10 +11543,11 @@ class VerifiedNeuralAgent:
                 if self._human_prior_milestone_outcome_known(
                     endpoint.analysis
                 ):
+                    endpoint.known_milestone_continuation = True
                     self._emit(
-                        "human_prior_option_milestone_duplicate_rejected",
+                        "human_prior_option_milestone_duplicate_retained",
                         decision=self.decision_index + 1,
-                        reason="milestone_outcome_already_committed",
+                        reason="contextual_continuation_checkpoint",
                         path=endpoint.path,
                         durations=endpoint.durations,
                         target_graph_signature=(
@@ -11560,7 +11562,6 @@ class VerifiedNeuralAgent:
                         **endpoint.analysis.telemetry(),
                         **self._frame_fields(endpoint.frame),
                     )
-                    continue
                 previous = milestone_representatives.get(outcome_key)
                 if previous is None or (
                     endpoint.target_state_visits == 0,
@@ -11889,6 +11890,19 @@ class VerifiedNeuralAgent:
                 key=selection_key,
                 reverse=True,
             )
+            milestone_archive_candidates = list(
+                self._human_prior_milestone_continuation_candidates(
+                    endpoints
+                )
+            )
+            additional_milestone_endpoints = [
+                node
+                for node in milestone_archive_candidates
+                if node is not selected
+            ]
+            milestone_archive_ids = {
+                id(node) for node in additional_milestone_endpoints
+            }
             semantic_frontier_representatives: Dict[
                 str, _HumanPriorOptionNode
             ] = {}
@@ -11903,7 +11917,9 @@ class VerifiedNeuralAgent:
                     semantic_frontier_representatives[semantic_key] = node
             representative_budget = max(
                 0,
-                self.config.human_prior_option_archive_representatives - 1,
+                self.config.human_prior_option_archive_representatives
+                - 1
+                - len(additional_milestone_endpoints),
             )
             additional_world_state_endpoints = [
                 node
@@ -12009,9 +12025,10 @@ class VerifiedNeuralAgent:
                 1, self.config.archive_capacity - len(self.archive)
             )
             archived_endpoints = [selected]
+            archived_endpoints.extend(additional_milestone_endpoints)
             archived_endpoints.extend(
                 additional_causal_frontier_endpoints[
-                    : max(0, available_slots - 1)
+                    : max(0, available_slots - len(archived_endpoints))
                 ]
             )
             archived_ids = {id(node) for node in archived_endpoints}
@@ -12112,6 +12129,11 @@ class VerifiedNeuralAgent:
                     goal_progress_reward=(
                         self._human_prior_ordering_adjusted_total_reward(
                             archived.analysis
+                        )
+                        - (
+                            archived.analysis.milestone_reward
+                            if archived.known_milestone_continuation
+                            else 0.0
                         )
                     ),
                     goal_remaining_hearts=(
@@ -12300,6 +12322,12 @@ class VerifiedNeuralAgent:
                     human_prior_option_world_state_goal_region=(
                         self._human_prior_nearest_visible_target(archived)
                     ),
+                    human_prior_option_known_milestone_continuation=(
+                        archived.known_milestone_continuation
+                    ),
+                    human_prior_option_archive_milestone_representative=(
+                        id(archived) in milestone_archive_ids
+                    ),
                     selected_primary=(archived is selected),
                     human_prior_option_archive_world_state_representative=(
                         id(archived) in world_state_representative_ids
@@ -12363,6 +12391,13 @@ class VerifiedNeuralAgent:
                 ),
                 world_state_representatives_archived=sum(
                     id(node) in world_state_representative_ids
+                    for node in archived_endpoints
+                ),
+                milestone_representatives_available=len(
+                    milestone_archive_candidates
+                ),
+                milestone_representatives_archived=sum(
+                    node.analysis.milestone_reward > 0.0
                     for node in archived_endpoints
                 ),
                 position_representatives_available=len(
@@ -17135,7 +17170,11 @@ class VerifiedNeuralAgent:
             and not node.confirmed_entity_state_signature
         )
         return (
-            base[0],
+            (
+                0.0
+                if getattr(node, "known_milestone_continuation", False)
+                else base[0]
+            ),
             not repeated_navigation_regression,
             base[1],
             base[2],

@@ -9170,15 +9170,22 @@ class EnsemblePlannerTests(unittest.TestCase):
 
         agent._search_human_prior_options()
 
-        duplicates = [
+        retained_duplicates = [
             event
             for event in logger.events
             if event["event"]
-            == "human_prior_option_milestone_duplicate_rejected"
+            == "human_prior_option_milestone_duplicate_retained"
         ]
-        self.assertGreaterEqual(len(duplicates), 1)
-        # The already-recorded +25 milestone must not be archived again.
-        # Ordinary endpoints may retain their signed navigation progress.
+        self.assertGreaterEqual(len(retained_duplicates), 1)
+        # The already-recorded milestone remains available as a contextual
+        # continuation checkpoint, but its one-time milestone reward is
+        # removed so it cannot be exploited repeatedly.
+        self.assertTrue(
+            any(
+                branch.goal_remaining_hearts == 0
+                for branch in agent.archive
+            )
+        )
         self.assertTrue(
             all(branch.goal_progress_reward < 25.0 for branch in agent.archive)
         )
