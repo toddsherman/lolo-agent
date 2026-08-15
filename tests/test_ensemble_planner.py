@@ -7774,6 +7774,17 @@ class EnsemblePlannerTests(unittest.TestCase):
                 Action.RIGHT,
                 (4, 4),
                 cells,
+                displacement_probability=0.5,
+                appearance_correspondence=True,
+                phase_stable_correspondence=False,
+            ),
+            set(),
+        )
+        self.assertEqual(
+            VerifiedNeuralAgent._human_prior_directional_interaction_effect_cells(
+                Action.RIGHT,
+                (4, 4),
+                cells,
                 displacement_probability=0.05,
             ),
             {(5, 4)},

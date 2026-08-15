@@ -2786,6 +2786,7 @@ class VerifiedNeuralAgent:
         effect_cells: Iterable[Tuple[int, int]],
         displacement_probability: float = 1.0,
         appearance_correspondence: bool = True,
+        phase_stable_correspondence: bool = True,
     ) -> set[Tuple[int, int]]:
         """Retain anonymous near-contact changes that may encode a push.
 
@@ -2797,12 +2798,13 @@ class VerifiedNeuralAgent:
         of it.
         The state key is enabled only after learned matched-control outcomes
         assign material probability to displacement and the contacted rare
-        appearance reappears at the candidate destination. Unknown appearances
-        remain available to causal curiosity probes, while ordinary movement
-        patches and mere appearance transformations do not multiply the exact-
-        search beam.  Five percent retains conditional displacements that work
-        only from some approach contexts while excluding the animation-only
-        families observed in native audits.
+        appearance reappears at the candidate destination and both cells were
+        stable under neutral observations. Unknown appearances remain
+        available to causal curiosity probes, while ordinary movement,
+        repeating textures, and mere appearance transformations do not
+        multiply the exact-search beam. Five percent retains conditional
+        displacements that work only from some approach contexts while
+        excluding the animation-only families observed in native audits.
         """
 
         direction = {
@@ -2816,6 +2818,7 @@ class VerifiedNeuralAgent:
             or interaction_cell is None
             or displacement_probability < 0.05
             or not appearance_correspondence
+            or not phase_stable_correspondence
         ):
             return set()
         destination = (
@@ -9450,6 +9453,7 @@ class VerifiedNeuralAgent:
                             )
                         )
                         directional_appearance_correspondence = False
+                        directional_phase_stable_correspondence = False
                         direction_delta = {
                             Action.UP: (0, -1),
                             Action.DOWN: (0, 1),
@@ -9474,6 +9478,23 @@ class VerifiedNeuralAgent:
                                 0 <= destination[0] < memory.columns
                                 and 0 <= destination[1] < memory.rows
                             ):
+                                directional_phase_stable_correspondence = all(
+                                    self.anonymous_phase_stable_observations[
+                                        cell
+                                    ]
+                                    >= 2
+                                    and self.anonymous_phase_stable_observations[
+                                        cell
+                                    ]
+                                    > 2
+                                    * self.anonymous_phase_changed_observations[
+                                        cell
+                                    ]
+                                    for cell in (
+                                        direct_interaction_cell,
+                                        destination,
+                                    )
+                                )
                                 source_features, source_fingerprints = (
                                     entity_feature_index(parent.frame)
                                 )
@@ -9511,6 +9532,7 @@ class VerifiedNeuralAgent:
                                     )
                                 ),
                                 directional_appearance_correspondence,
+                                directional_phase_stable_correspondence,
                             )
                         )
                         parent_effect_target_aligned = bool(
@@ -10141,6 +10163,9 @@ class VerifiedNeuralAgent:
                             ),
                             human_prior_option_directional_appearance_correspondence=(
                                 directional_appearance_correspondence
+                            ),
+                            human_prior_option_directional_phase_stable_correspondence=(
+                                directional_phase_stable_correspondence
                             ),
                             human_prior_option_entity_interaction_signature=(
                                 node.entity_interaction_signature or None
