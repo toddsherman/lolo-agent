@@ -3262,6 +3262,63 @@ class EnsemblePlannerTests(unittest.TestCase):
             )
         )
 
+    def test_option_search_grants_fresh_horizon_after_milestone(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = VisibleMovingMilestoneSettlesEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.A, Action.NOOP),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=2,
+                human_prior_option_search_milestone_reserve=1,
+                human_prior_option_search_milestone_extension=2,
+                human_prior_option_search_action_frames=1,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.goal_prior = MovingMilestoneGoalPrior()
+
+        agent._search_human_prior_options()
+
+        depths = [
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_search_depth_completed"
+        ]
+        self.assertEqual([event["depth"] for event in depths], [1, 2, 3, 4])
+        self.assertFalse(depths[0]["human_prior_option_milestone_extension_active"])
+        self.assertTrue(
+            all(
+                event["human_prior_option_milestone_extension_active"]
+                for event in depths[1:]
+            )
+        )
+        self.assertTrue(
+            all(
+                event["human_prior_option_effective_beam_width"] == 1
+                for event in depths[1:]
+            )
+        )
+        exhausted = [
+            event
+            for event in logger.events
+            if event["event"]
+            == "human_prior_option_milestone_extension_exhausted"
+        ]
+        self.assertEqual(len(exhausted), 1)
+        self.assertEqual(exhausted[0]["depth"], 4)
+
     def test_reachable_failed_milestone_preserves_empirical_ordering_without_alternate_progress(
         self,
     ) -> None:

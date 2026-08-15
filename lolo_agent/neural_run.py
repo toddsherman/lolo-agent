@@ -794,6 +794,16 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--human-prior-option-search-milestone-extension",
+        type=int,
+        default=0,
+        help=(
+            "fresh action horizon granted after each newly observed visual "
+            "milestone; only milestone descendants continue beyond the base "
+            "search depth"
+        ),
+    )
+    parser.add_argument(
         "--human-prior-option-search-world-state-reserve",
         type=int,
         default=0,
@@ -1367,6 +1377,19 @@ def main() -> None:
             "--human-prior-option-search-milestone-reserve must be "
             "non-negative"
         )
+    if args.human_prior_option_search_milestone_extension < 0:
+        parser.error(
+            "--human-prior-option-search-milestone-extension must be "
+            "non-negative"
+        )
+    if (
+        args.human_prior_option_search_milestone_extension > 0
+        and args.human_prior_option_search_milestone_reserve <= 0
+    ):
+        parser.error(
+            "--human-prior-option-search-milestone-extension requires a "
+            "positive milestone reserve"
+        )
     if args.human_prior_option_search_world_state_reserve < 0:
         parser.error(
             "--human-prior-option-search-world-state-reserve must be "
@@ -1854,6 +1877,9 @@ def main() -> None:
         ),
         human_prior_option_search_milestone_reserve=(
             args.human_prior_option_search_milestone_reserve
+        ),
+        human_prior_option_search_milestone_extension=(
+            args.human_prior_option_search_milestone_extension
         ),
         human_prior_option_search_world_state_reserve=(
             args.human_prior_option_search_world_state_reserve

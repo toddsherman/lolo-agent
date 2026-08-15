@@ -128,6 +128,7 @@ class NeuralPlanningConfig:
     human_prior_option_search_depth: int = 0
     human_prior_option_search_beam_width: int = 8
     human_prior_option_search_milestone_reserve: int = 0
+    human_prior_option_search_milestone_extension: int = 0
     human_prior_option_search_world_state_reserve: int = 0
     human_prior_option_search_goal_proximity_reserve: int = 0
     human_prior_option_search_goal_world_state_reserve: int = 0
@@ -326,6 +327,7 @@ class _HumanPriorOptionNode:
     local_action_dependent_visual_difference: float = 0.0
     player_matches_neutral: bool = False
     known_milestone_continuation: bool = False
+    latest_milestone_depth: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -687,6 +689,24 @@ class VerifiedNeuralAgent:
         if self.config.human_prior_option_search_beam_width <= 0:
             raise ValueError(
                 "human-prior option search beam width must be positive"
+            )
+        if self.config.human_prior_option_search_milestone_reserve < 0:
+            raise ValueError(
+                "human-prior option search milestone reserve must be "
+                "non-negative"
+            )
+        if self.config.human_prior_option_search_milestone_extension < 0:
+            raise ValueError(
+                "human-prior option search milestone extension must be "
+                "non-negative"
+            )
+        if (
+            self.config.human_prior_option_search_milestone_extension > 0
+            and self.config.human_prior_option_search_milestone_reserve <= 0
+        ):
+            raise ValueError(
+                "human-prior option search milestone extension requires a "
+                "positive milestone reserve"
             )
         if self.config.human_prior_option_search_world_state_reserve < 0:
             raise ValueError(
@@ -8764,6 +8784,8 @@ class VerifiedNeuralAgent:
                 *(
                     (Action.NOOP,)
                     if self.config.human_prior_option_entity_frontier
+                    or self.config.human_prior_option_search_milestone_extension
+                    > 0
                     else ()
                 ),
             )
@@ -8801,6 +8823,9 @@ class VerifiedNeuralAgent:
             int(self.config.human_prior_option_search_beam_width),
             int(
                 self.config.human_prior_option_search_milestone_reserve
+            ),
+            int(
+                self.config.human_prior_option_search_milestone_extension
             ),
             int(
                 self.config.human_prior_option_search_world_state_reserve
@@ -8867,6 +8892,14 @@ class VerifiedNeuralAgent:
         )[1]
         if not source_signature:
             return 0
+        base_search_depth = self.config.human_prior_option_search_depth
+        milestone_extension = (
+            self.config.human_prior_option_search_milestone_extension
+        )
+        maximum_search_depth = base_search_depth + milestone_extension * max(
+            1,
+            len(source_analysis.source_present) + 1,
+        )
         source_graph_phase = self._human_prior_episodic_graph_phase(
             source_signature
         )
@@ -9123,12 +9156,18 @@ class VerifiedNeuralAgent:
             Optional[Action],
             str,
             Tuple[Tuple[Action, int], ...],
+            str,
         ]:
             return (
                 node.target_signature or node.frame.digest,
                 node.pose_action,
                 node.tracked_world_state_signature,
                 node.stationary_action_history,
+                (
+                    node.frame.digest
+                    if node.latest_milestone_depth is not None
+                    else ""
+                ),
             )
 
         seen_option_states = {option_state_key(root_node)}
@@ -9140,6 +9179,9 @@ class VerifiedNeuralAgent:
             source_state_id=self._state_id(root),
             source_graph_signature=source_signature,
             maximum_depth=self.config.human_prior_option_search_depth,
+            base_maximum_depth=base_search_depth,
+            milestone_extension=milestone_extension,
+            maximum_extended_depth=maximum_search_depth,
             beam_width=self.config.human_prior_option_search_beam_width,
             actions=actions,
             action_frames=duration,
@@ -9170,9 +9212,28 @@ class VerifiedNeuralAgent:
         neutral_events: set[Tuple[int, int]] = set()
         local_neutral_events: set[Tuple[int, int]] = set()
         try:
-            for depth in range(
-                1, self.config.human_prior_option_search_depth + 1
-            ):
+            for depth in range(1, maximum_search_depth + 1):
+                if depth > base_search_depth:
+                    parents = [
+                        parent
+                        for parent in parents
+                        if parent.latest_milestone_depth is not None
+                        and depth
+                        <= parent.latest_milestone_depth
+                        + milestone_extension
+                    ]
+                    if not parents:
+                        self._emit(
+                            "human_prior_option_milestone_extension_exhausted",
+                            decision=self.decision_index + 1,
+                            depth=depth - 1,
+                            base_maximum_depth=base_search_depth,
+                            milestone_extension=milestone_extension,
+                            maximum_extended_depth=maximum_search_depth,
+                            agent_visible=True,
+                            **self._frame_fields(source_frame),
+                        )
+                        break
                 depth_candidates: List[_HumanPriorOptionNode] = []
                 for parent in parents:
                     for action, edge_duration in action_edges:
@@ -10016,6 +10077,11 @@ class VerifiedNeuralAgent:
                             player_matches_neutral=(
                                 player_matches_neutral
                             ),
+                            latest_milestone_depth=(
+                                depth
+                                if local_positive_milestone
+                                else parent.latest_milestone_depth
+                            ),
                         )
                         depth_candidates.append(node)
                         branches_verified += 1
@@ -10359,7 +10425,13 @@ class VerifiedNeuralAgent:
                 if not depth_candidates:
                     break
                 deduplicated: Dict[
-                    Tuple[str, Optional[Action], str],
+                    Tuple[
+                        str,
+                        Optional[Action],
+                        str,
+                        Tuple[Tuple[Action, int], ...],
+                        str,
+                    ],
                     _HumanPriorOptionNode,
                 ] = {}
                 for node in depth_candidates:
@@ -10432,10 +10504,19 @@ class VerifiedNeuralAgent:
                     )
                     for node in ranked_candidates
                 )
+                extension_active = bool(
+                    milestone_extension > 0
+                    and depth >= base_search_depth
+                    and any(
+                        node.latest_milestone_depth is not None
+                        for node in ranked_candidates
+                    )
+                )
                 expansion_candidates = [
                     node
                     for node in ranked_candidates
-                    if not (
+                    if extension_active
+                    or not (
                         node.analysis.milestone_reward > 0.0
                         and (
                             self._human_prior_milestone_outcome_known(
@@ -10448,7 +10529,15 @@ class VerifiedNeuralAgent:
                     )
                 ]
                 beam_width = (
-                    self.config.human_prior_option_search_beam_width
+                    min(
+                        self.config.human_prior_option_search_beam_width,
+                        max(
+                            1,
+                            self.config.human_prior_option_search_milestone_reserve,
+                        ),
+                    )
+                    if extension_active
+                    else self.config.human_prior_option_search_beam_width
                 )
                 milestone_continuation_candidates = list(
                     self._human_prior_milestone_continuation_candidates(
@@ -10884,6 +10973,19 @@ class VerifiedNeuralAgent:
                         for node in position_reserve_parents
                     ),
                     retained_parents=len(parents),
+                    human_prior_option_milestone_extension_active=(
+                        extension_active
+                    ),
+                    human_prior_option_effective_beam_width=beam_width,
+                    human_prior_option_extended_latest_milestone_depths=tuple(
+                        sorted(
+                            {
+                                node.latest_milestone_depth
+                                for node in parents
+                                if node.latest_milestone_depth is not None
+                            }
+                        )
+                    ),
                     repeated_milestone_candidates=(
                         repeated_milestone_candidates
                     ),
