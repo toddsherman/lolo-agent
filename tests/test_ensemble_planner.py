@@ -11808,6 +11808,46 @@ class EnsemblePlannerTests(unittest.TestCase):
             (),
         )
 
+    def test_new_unscoped_exhaustion_clears_stale_world_context(self) -> None:
+        agent = VerifiedNeuralAgent(
+            ActionEffectEnv(),
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(human_prior_navigation_reward=1.0),
+        )
+        agent.reset()
+        transition = (((32, 32), (64, 32)), ((64, 32),), False)
+        agent.seed_human_prior_episodic_memory(
+            [
+                {
+                    "event": "goal_milestone_exhaustion_learned",
+                    "exhausted_milestone_transition": transition,
+                    "exhausted_world_context": "stale-context",
+                },
+                {
+                    "event": "goal_milestone_exhaustion_learned",
+                    "exhausted_milestone_transition": transition,
+                    "exhaustion_context_unscoped": True,
+                    "ordering_hypothesis_reactivated": True,
+                },
+            ]
+        )
+
+        self.assertIn(
+            transition, agent.human_prior_exhausted_milestone_transitions
+        )
+        self.assertNotIn(
+            transition, agent.human_prior_exhausted_milestone_contexts
+        )
+        self.assertEqual(
+            agent._human_prior_failed_ordering_targets(
+                ((32, 32), (64, 32)), False, "different-context"
+            ),
+            ((32, 32),),
+        )
+
     def test_seed_memory_retries_ordering_after_stronger_search_budget(
         self,
     ) -> None:

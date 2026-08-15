@@ -14692,7 +14692,11 @@ class VerifiedNeuralAgent:
                             )
                             or ""
                         )
-                        if exhausted_world_context:
+                        if event.get("exhaustion_context_unscoped"):
+                            exhausted_milestone_contexts.pop(
+                                parsed_transition, None
+                            )
+                        elif exhausted_world_context:
                             exhausted_milestone_contexts.setdefault(
                                 parsed_transition, set()
                             ).add(exhausted_world_context)

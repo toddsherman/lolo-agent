@@ -553,6 +553,7 @@ def iter_episodic_decision_events(
         ),
         "state_source_option_event_seq": int(state_source_event_seq),
         "ordering_hypothesis_reactivated": True,
+        "exhaustion_context_unscoped": True,
         "policy_effect": "milestone_priority_only",
         "hazard_evidence": False,
     }
