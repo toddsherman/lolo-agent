@@ -23,6 +23,7 @@ from .pixels import Frame, signature_key
 from .replay import (
     restore_logged_decision,
     restore_logged_option_archive,
+    restore_logged_option_branch,
     validate_replay_inputs,
 )
 from .run_logging import LoggedEnvironment, RunLogger, read_events, sha256_file
@@ -1131,6 +1132,14 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--resume-state-option-event-seq",
+        type=int,
+        help=(
+            "verified self-discovered option event to replay from "
+            "--resume-state-run and use as the physical resume state"
+        ),
+    )
+    parser.add_argument(
         "--allow-compatible-resume-host",
         action="store_true",
         help=(
@@ -1175,21 +1184,25 @@ def main() -> None:
     args = parser.parse_args()
     if (args.resume_run is None) != (args.resume_decision is None):
         parser.error("--resume-run and --resume-decision must be supplied together")
-    if args.resume_state_decision is not None and (
-        args.resume_state_archive_id is not None
-    ):
+    state_selectors = sum(
+        selector is not None
+        for selector in (
+            args.resume_state_decision,
+            args.resume_state_archive_id,
+            args.resume_state_option_event_seq,
+        )
+    )
+    if state_selectors > 1:
         parser.error(
-            "--resume-state-decision and --resume-state-archive-id are "
+            "resume state decision, archive ID, and option event are "
             "mutually exclusive"
         )
-    state_selector_supplied = bool(
-        args.resume_state_decision is not None
-        or args.resume_state_archive_id is not None
-    )
+    state_selector_supplied = state_selectors == 1
     if (args.resume_state_run is not None) != state_selector_supplied:
         parser.error(
             "--resume-state-run requires exactly one of "
-            "--resume-state-decision or --resume-state-archive-id"
+            "--resume-state-decision, --resume-state-archive-id, or "
+            "--resume-state-option-event-seq"
         )
     if args.resume_state_run is not None and args.resume_run is None:
         parser.error("--resume-state-run requires --resume-run")
@@ -2004,6 +2017,9 @@ def main() -> None:
                     "state_source_archive_id": (
                         args.resume_state_archive_id
                     ),
+                    "state_source_option_event_seq": (
+                        args.resume_state_option_event_seq
+                    ),
                     "state_source_events_sha256": sha256_file(state_events),
                     "memory_state_decoupled": True,
                 }
@@ -2164,29 +2180,51 @@ def main() -> None:
                     args.resume_state_archive_id,
                 )
             )
+            restored_branch = (
+                None
+                if args.resume_state_option_event_seq is None
+                else restore_logged_option_branch(
+                    native_env,
+                    resume_state_run,
+                    args.resume_state_option_event_seq,
+                )
+            )
             restored = (
-                restored_archive
-                if restored_archive is not None
+                restored_branch
+                if restored_branch is not None
                 else (
-                    None
-                    if args.resume_run is None
-                    else restore_logged_decision(
-                        native_env,
-                        resume_state_run,
-                        resume_state_decision,
+                    restored_archive
+                    if restored_archive is not None
+                    else (
+                        None
+                        if args.resume_run is None
+                        else restore_logged_decision(
+                            native_env,
+                            resume_state_run,
+                            resume_state_decision,
+                        )
                     )
                 )
             )
-            if restored_archive is not None:
+            if restored_branch is not None:
+                resume_state_decision = restored_branch.decision
+            elif restored_archive is not None:
                 resume_state_decision = restored_archive.decision
             restored_semantic_state = (
                 (
-                    restored_archive.metadata
-                    if restored_archive is not None
-                    else None
+                    restored_branch.metadata
+                    if restored_branch is not None
+                    else (
+                        restored_archive.metadata
+                        if restored_archive is not None
+                        else None
+                    )
                 )
                 if args.resume_state_run is not None
-                and args.resume_state_archive_id is not None
+                and (
+                    args.resume_state_archive_id is not None
+                    or args.resume_state_option_event_seq is not None
+                )
                 else (
                     None
                     if args.resume_state_run is None
@@ -2222,6 +2260,11 @@ def main() -> None:
                         None
                         if restored_archive is None
                         else restored_archive.state_id
+                    ),
+                    source_option_branch_event_seq=(
+                        None
+                        if restored_branch is None
+                        else restored_branch.event_seq
                     ),
                     memory_source_run_id=source_manifest.get("run_id"),
                     memory_source_decision=args.resume_decision,

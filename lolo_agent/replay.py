@@ -43,6 +43,15 @@ class RestoredOptionArchive:
     metadata: Dict[str, Any]
 
 
+@dataclass(frozen=True)
+class RestoredOptionBranch:
+    frame: Frame
+    decision: int
+    event_seq: int
+    run_id: str
+    metadata: Dict[str, Any]
+
+
 def _verify_input(path: Path, recorded: Dict[str, Any], kind: str) -> None:
     expected = recorded.get("sha256") or recorded.get("file_sha256")
     if expected is None:
@@ -298,6 +307,89 @@ def restore_logged_option_archive(
         run_id=str(manifest.get("run_id", run_dir.name)),
         state_id=state_id,
         metadata=dict(metadata),
+    )
+
+
+def restore_logged_option_branch(
+    env: NativeLibretroEnv,
+    run_dir: Path,
+    event_seq: int,
+) -> RestoredOptionBranch:
+    """Replay one self-discovered exact option path from its verified root."""
+
+    if event_seq <= 0:
+        raise ValueError("resume option event sequence must be positive")
+    run_dir = Path(run_dir).expanduser().resolve()
+    manifest = json.loads(
+        (run_dir / "manifest.json").read_text(encoding="utf-8")
+    )
+    branch: Optional[Dict[str, Any]] = None
+    for event in read_events(run_dir):
+        if int(event.get("seq", 0)) != event_seq:
+            continue
+        if event.get("event") != "human_prior_option_branch_verified":
+            raise ValueError(
+                f"event {event_seq} is not a verified option branch"
+            )
+        branch = event
+        break
+    if branch is None:
+        raise ValueError(
+            f"option branch event {event_seq} not found in {run_dir}"
+        )
+    decision = int(branch.get("decision", 0))
+    if decision <= 0:
+        raise ValueError("verified option branch has no positive decision")
+
+    if decision > 1:
+        root = restore_logged_decision(env, run_dir, decision - 1)
+    else:
+        resume = manifest.get("metadata", {}).get("episodic_resume") or {}
+        state_source_run = resume.get("state_source_run")
+        state_source_archive_id = resume.get("state_source_archive_id")
+        state_source_decision = resume.get("state_source_decision")
+        if state_source_run and state_source_archive_id:
+            root = restore_logged_option_archive(
+                env,
+                Path(str(state_source_run)),
+                str(state_source_archive_id),
+            )
+        elif state_source_run and state_source_decision is not None:
+            root = restore_logged_decision(
+                env,
+                Path(str(state_source_run)),
+                int(state_source_decision),
+            )
+        else:
+            source_run = resume.get("source_run")
+            source_decision = resume.get("source_decision")
+            if not source_run or source_decision is None:
+                raise ValueError(
+                    "first-decision option branch has no logged resume root"
+                )
+            root = restore_logged_decision(
+                env,
+                Path(str(source_run)),
+                int(source_decision),
+            )
+
+    path = tuple(branch.get("path") or ())
+    durations = tuple(branch.get("durations") or ())
+    if not path or len(path) != len(durations):
+        raise ValueError("verified option branch has an invalid control path")
+    current = root.frame
+    for action_value, duration_value in zip(path, durations):
+        current = env.step(
+            Action(str(action_value)),
+            int(duration_value),
+        )
+    _check_frame(current, branch)
+    return RestoredOptionBranch(
+        frame=current,
+        decision=decision,
+        event_seq=event_seq,
+        run_id=str(manifest.get("run_id", run_dir.name)),
+        metadata=dict(branch),
     )
 
 
