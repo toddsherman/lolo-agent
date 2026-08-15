@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import heapq
 import math
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field, replace
 from itertools import product
 from typing import (
@@ -261,6 +261,8 @@ class _HumanPriorOptionNode:
     world_effect_state_signature: str = ""
     tracked_world_effect_cells: Tuple[Tuple[int, int], ...] = ()
     tracked_world_state_signature: str = ""
+    world_state_reachability_count: int = 0
+    world_state_reachability_span: int = 0
     stationary_action_history: Tuple[Tuple[Action, int], ...] = ()
     world_effect_changed_pixels: int = 0
     confirmed_world_effect_signature: str = ""
@@ -10744,6 +10746,14 @@ class VerifiedNeuralAgent:
                         node.tracked_world_state_signature
                         for node in world_state_parents
                     ),
+                    human_prior_option_world_state_reachability_counts_retained=tuple(
+                        node.world_state_reachability_count
+                        for node in world_state_parents
+                    ),
+                    human_prior_option_world_state_reachability_spans_retained=tuple(
+                        node.world_state_reachability_span
+                        for node in world_state_parents
+                    ),
                     human_prior_option_position_reserve=(
                         self.config.human_prior_option_search_position_reserve
                     ),
@@ -12268,6 +12278,12 @@ class VerifiedNeuralAgent:
                     ),
                     human_prior_option_tracked_world_state_signature=(
                         archived.tracked_world_state_signature or None
+                    ),
+                    human_prior_option_world_state_reachability_count=(
+                        archived.world_state_reachability_count
+                    ),
+                    human_prior_option_world_state_reachability_span=(
+                        archived.world_state_reachability_span
                     ),
                     selected_primary=(archived is selected),
                     human_prior_option_archive_world_state_representative=(
@@ -16738,9 +16754,19 @@ class VerifiedNeuralAgent:
         cls,
         nodes: Sequence[_HumanPriorOptionNode],
     ) -> Tuple[_HumanPriorOptionNode, ...]:
-        """Choose one best endpoint per cumulative anonymous world state."""
+        """Choose useful endpoints per cumulative anonymous world state.
+
+        A configuration seen from several controlled-player positions has
+        empirical evidence of supporting a larger reachable region. Prefer
+        that evidence over an equally novel configuration observed from only
+        one pose, while still selecting the best endpoint within each exact
+        anonymous state.
+        """
 
         representatives: Dict[tuple, _HumanPriorOptionNode] = {}
+        reachable_positions: Dict[
+            tuple, set[Tuple[int, int]]
+        ] = defaultdict(set)
         for node in nodes:
             if not (
                 node.tracked_world_effect_cells
@@ -16752,6 +16778,10 @@ class VerifiedNeuralAgent:
                 node.tracked_world_effect_cells,
                 node.tracked_world_state_signature,
             )
+            if node.analysis.target_player_slot is not None:
+                reachable_positions[world_key].add(
+                    node.analysis.target_player_slot
+                )
             previous = representatives.get(world_key)
             if (
                 previous is None
@@ -16759,10 +16789,32 @@ class VerifiedNeuralAgent:
                 > cls._human_prior_world_state_reserve_key(previous)
             ):
                 representatives[world_key] = node
+
+        for world_key, representative in representatives.items():
+            positions = reachable_positions[world_key]
+            representative.world_state_reachability_count = len(positions)
+            representative.world_state_reachability_span = (
+                0
+                if not positions
+                else (
+                    max(position[0] for position in positions)
+                    - min(position[0] for position in positions)
+                    + max(position[1] for position in positions)
+                    - min(position[1] for position in positions)
+                )
+            )
+
+        def topology_rank(node: _HumanPriorOptionNode) -> tuple:
+            return (
+                node.world_state_reachability_count,
+                node.world_state_reachability_span,
+                cls._human_prior_world_state_reserve_key(node),
+            )
+
         return tuple(
             sorted(
                 representatives.values(),
-                key=cls._human_prior_world_state_reserve_key,
+                key=topology_rank,
                 reverse=True,
             )
         )

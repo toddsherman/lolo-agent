@@ -7810,13 +7810,17 @@ class EnsemblePlannerTests(unittest.TestCase):
             *,
             cells: tuple[tuple[int, int], ...] = ((3, 4),),
             hearts: tuple[tuple[int, int], ...] = ((7, 2),),
+            player: tuple[int, int] = (0, 0),
         ) -> SimpleNamespace:
             return SimpleNamespace(
                 tracked_world_effect_cells=cells,
                 tracked_world_state_signature=signature,
+                world_state_reachability_count=0,
+                world_state_reachability_span=0,
                 analysis=SimpleNamespace(
                     target_present=hearts,
                     milestone_reward=0.0,
+                    target_player_slot=player,
                 ),
                 action_dependent_endpoint=True,
                 target_state_visits=0,
@@ -7836,6 +7840,45 @@ class EnsemblePlannerTests(unittest.TestCase):
         )
 
         self.assertEqual(reserved, (higher, distinct))
+
+    def test_world_state_reserve_prefers_empirical_reachability(
+        self,
+    ) -> None:
+        def candidate(
+            signature: str,
+            score: float,
+            player: tuple[int, int],
+        ) -> SimpleNamespace:
+            return SimpleNamespace(
+                tracked_world_effect_cells=((3, 4),),
+                tracked_world_state_signature=signature,
+                world_state_reachability_count=0,
+                world_state_reachability_span=0,
+                analysis=SimpleNamespace(
+                    target_present=((7, 2),),
+                    target_player_slot=player,
+                    milestone_reward=0.0,
+                ),
+                action_dependent_endpoint=True,
+                target_state_visits=0,
+                score=score,
+                depth=3,
+            )
+
+        narrow = candidate("narrow", 10.0, (0, 0))
+        broad_low = candidate("broad", 1.0, (0, 0))
+        broad_high = candidate("broad", 2.0, (32, 16))
+
+        reserved = (
+            VerifiedNeuralAgent._human_prior_world_state_reserve_candidates(
+                (narrow, broad_low, broad_high)
+            )
+        )
+
+        self.assertEqual(reserved, (broad_high, narrow))
+        self.assertEqual(broad_high.world_state_reachability_count, 2)
+        self.assertEqual(broad_high.world_state_reachability_span, 48)
+        self.assertEqual(narrow.world_state_reachability_count, 1)
 
     def test_cumulative_world_state_signature_masks_player_pixels(
         self,
