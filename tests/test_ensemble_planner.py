@@ -13094,6 +13094,22 @@ class EnsemblePlannerTests(unittest.TestCase):
             ),
             bytes((0, 0, 1, 0)).hex(),
         )
+        collected_goal = replace(
+            analysis,
+            source_present=((0, 16),),
+            target_present=(),
+            collected=((0, 16),),
+        )
+        self.assertEqual(
+            agent._human_prior_world_effect_signature(
+                with_world_change,
+                collected_goal,
+                frame,
+                Action.RIGHT,
+                allow_nonlocal=True,
+            ),
+            "",
+        )
         stationary = replace(
             analysis,
             target_player_slot=analysis.source_player_slot,

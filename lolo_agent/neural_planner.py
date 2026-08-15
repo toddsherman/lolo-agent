@@ -2216,16 +2216,18 @@ class VerifiedNeuralAgent:
         action: Optional[Action] = None,
         allow_nonlocal: bool = False,
     ) -> str:
-        """Remove detected player motion from a matched causal pixel effect.
+        """Remove assisted sprites from a matched causal pixel effect.
 
         The remaining cells are a rule-free, action-conditioned indication
         that something in the room changed independently of the controlled
         sprite.  Comparing against a duration-matched NOOP has already
         removed autonomous animation; masking the source and target player
         tiles prevents ordinary movement from creating path-dependent world
-        states. Multi-action matched-time probes may retain non-local cells
-        because their controlled path can legitimately affect several parts
-        of the screen before the endpoint is observed.
+        states.  Detected goals are masked for the same reason: their
+        disappearance remains reward evidence, but is not an anonymous
+        obstacle transformation. Multi-action matched-time probes may retain
+        non-local cells because their controlled path can legitimately affect
+        several parts of the screen before the endpoint is observed.
         """
 
         if not spatial_signature or analysis is None:
@@ -2248,6 +2250,18 @@ class VerifiedNeuralAgent:
             gx = min(columns - 1, max(0, slot[0] * columns // frame.width))
             gy = min(rows - 1, max(0, slot[1] * rows // frame.height))
             player_cells.add((gx, gy))
+            occupied[gy * columns + gx] = 0
+        goal_slots = set(analysis.collected)
+        if analysis.chest_completed or analysis.chest_obtained:
+            for slot in (
+                analysis.source_chest_slot,
+                analysis.target_chest_slot,
+            ):
+                if slot is not None:
+                    goal_slots.add(slot)
+        for x, y in goal_slots:
+            gx = min(columns - 1, max(0, x * columns // frame.width))
+            gy = min(rows - 1, max(0, y * rows // frame.height))
             occupied[gy * columns + gx] = 0
         if (
             not allow_nonlocal
