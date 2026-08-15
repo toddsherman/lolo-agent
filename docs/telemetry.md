@@ -303,6 +303,12 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   a necessary temporary move away from the shaped goal to survive alongside
   high-reward candidates. The depth event records the candidate count,
   retained count, and exact reserved positions;
+  `--human-prior-option-search-goal-proximity-reserve` separately preserves
+  one representative per detected player position, ordered by the smallest
+  pixel-derived distance to a visible remaining heart or chest. This small
+  reserve complements causal world-state and broad position coverage when
+  all closer poses would otherwise fall out of the beam. The depth event
+  records the candidate count, retained count, distances, and positions;
 - `human_prior_option_world_effect_stability`, which replays a bounded sample
   of distinct option effects beside duration-matched all-`NOOP` controls at
   future horizons and records the intersected coarse cells, conservative

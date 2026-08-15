@@ -2256,6 +2256,42 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             )
             for event in events
         ),
+        "human_prior_option_goal_proximity_reserve_depths": sum(
+            event["event"]
+            == "human_prior_option_search_depth_completed"
+            and int(
+                event.get(
+                    "human_prior_option_goal_proximity_reserve", 0
+                )
+            )
+            > 0
+            for event in events
+        ),
+        "human_prior_option_goal_proximity_parents_retained": sum(
+            int(
+                event.get(
+                    "human_prior_option_goal_proximity_parents_retained",
+                    0,
+                )
+            )
+            for event in events
+            if event["event"]
+            == "human_prior_option_search_depth_completed"
+        ),
+        "human_prior_option_goal_proximity_min_distance": min(
+            (
+                float(distance)
+                for event in events
+                if event["event"]
+                == "human_prior_option_search_depth_completed"
+                for distance in event.get(
+                    "human_prior_option_goal_proximity_distances_retained",
+                    (),
+                )
+                if distance is not None
+            ),
+            default=None,
+        ),
         "human_prior_option_position_reserve_depths": sum(
             event["event"]
             == "human_prior_option_search_depth_completed"

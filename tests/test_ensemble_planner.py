@@ -7842,6 +7842,44 @@ class EnsemblePlannerTests(unittest.TestCase):
 
         self.assertEqual(reserved, (higher, distinct))
 
+    def test_goal_proximity_reserve_keeps_closest_distinct_positions(
+        self,
+    ) -> None:
+        def candidate(
+            distance: float | None,
+            player: tuple[int, int],
+            score: float,
+        ) -> SimpleNamespace:
+            return SimpleNamespace(
+                analysis=SimpleNamespace(
+                    target_heart_distance=distance,
+                    target_chest_distance=None,
+                    target_player_slot=player,
+                    target_present=((9, 12),),
+                    life_counter_changed=False,
+                    dark_transition_started=False,
+                ),
+                target_position_visits=0,
+                action_dependent_endpoint=True,
+                target_state_visits=0,
+                score=score,
+                depth=3,
+            )
+
+        close_low = candidate(2.0, (7, 10), 1.0)
+        close_high = candidate(2.0, (7, 10), 2.0)
+        middle = candidate(3.0, (7, 9), 10.0)
+        far = candidate(6.0, (7, 6), 20.0)
+        unknown = candidate(None, (7, 11), 100.0)
+
+        reserved = (
+            VerifiedNeuralAgent._human_prior_goal_proximity_reserve_candidates(
+                (far, close_low, unknown, middle, close_high)
+            )
+        )
+
+        self.assertEqual(reserved, (close_high, middle, far))
+
     def test_world_state_reserve_prefers_empirical_reachability(
         self,
     ) -> None:

@@ -784,6 +784,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--human-prior-option-search-goal-proximity-reserve",
+        type=int,
+        default=0,
+        help=(
+            "maximum beam slots reserved for distinct detected player "
+            "positions nearest a visible remaining goal"
+        ),
+    )
+    parser.add_argument(
         "--human-prior-episodic-graph-guidance",
         action="store_true",
         help=(
@@ -1312,6 +1321,11 @@ def main() -> None:
             "--human-prior-option-search-world-state-reserve must be "
             "non-negative"
         )
+    if args.human_prior_option_search_goal_proximity_reserve < 0:
+        parser.error(
+            "--human-prior-option-search-goal-proximity-reserve must be "
+            "non-negative"
+        )
     if args.human_prior_option_archive_representatives <= 0:
         parser.error(
             "--human-prior-option-archive-representatives must be positive"
@@ -1787,6 +1801,9 @@ def main() -> None:
         ),
         human_prior_option_search_world_state_reserve=(
             args.human_prior_option_search_world_state_reserve
+        ),
+        human_prior_option_search_goal_proximity_reserve=(
+            args.human_prior_option_search_goal_proximity_reserve
         ),
         human_prior_option_search_position_reserve=(
             args.human_prior_option_search_position_reserve
