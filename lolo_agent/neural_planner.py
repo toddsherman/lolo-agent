@@ -2251,17 +2251,37 @@ class VerifiedNeuralAgent:
         self,
         frame: Frame,
         cells: Sequence[Tuple[int, int]],
+        player_slot: Optional[Tuple[int, int]] = None,
     ) -> str:
-        """Hash current appearances at a cumulative anonymous cell set."""
+        """Hash anonymous cell appearances without the controlled sprite.
+
+        A genuinely manipulated cell can later be occupied by the player.
+        Leaving those pixels in the cumulative fingerprint makes one world
+        configuration look different for every player pose and wastes the
+        configuration reserve on locomotion.  The visual player detector is
+        used only to mask the controlled sprite; the remaining anonymous
+        appearance still determines the state identity.
+        """
 
         memory = self.unlabeled_entity_memory
         if memory is None or not cells:
             return ""
+        ignored_pixels: Optional[set[Tuple[int, int]]] = None
+        player_pixel_mask = getattr(
+            self.goal_prior, "player_pixel_mask", None
+        )
+        if player_slot is not None and callable(player_pixel_mask):
+            ignored_pixels = player_pixel_mask(frame, player_slot)
         payload = ";".join(
             f"{column},{row}="
             + ",".join(
                 str(value)
-                for value in memory.feature_at(frame, column, row)
+                for value in memory.feature_at(
+                    frame,
+                    column,
+                    row,
+                    ignored_pixels,
+                )
             )
             for column, row in sorted(cells)
         )
@@ -9623,6 +9643,7 @@ class VerifiedNeuralAgent:
                             self._human_prior_world_effect_cells_state_signature(
                                 target,
                                 tracked_world_effect_cells_tuple,
+                                analysis.target_player_slot,
                             )
                         )
                         stationary_action_history = ()
@@ -10400,35 +10421,13 @@ class VerifiedNeuralAgent:
                 beam_width = (
                     self.config.human_prior_option_search_beam_width
                 )
-                milestone_continuation_representatives: Dict[
-                    Tuple[
-                        Tuple[Tuple[int, int], ...],
-                        Optional[Tuple[int, int]],
-                        str,
-                    ],
-                    _HumanPriorOptionNode,
-                ] = {}
-                if (
-                    self.config.human_prior_option_search_milestone_reserve
-                    > 0
-                ):
-                    for node in ranked_candidates:
-                        if (
-                            node.analysis.milestone_reward <= 0.0
-                            or node.analysis.life_counter_changed
-                            or node.analysis.dark_transition_started
-                        ):
-                            continue
-                        continuation_key = (
-                            tuple(sorted(node.analysis.target_present)),
-                            node.analysis.target_player_slot,
-                            node.world_effect_state_signature,
-                        )
-                        milestone_continuation_representatives.setdefault(
-                            continuation_key, node
-                        )
                 milestone_continuation_candidates = list(
-                    milestone_continuation_representatives.values()
+                    self._human_prior_milestone_continuation_candidates(
+                        ranked_candidates
+                        if self.config.human_prior_option_search_milestone_reserve
+                        > 0
+                        else ()
+                    )
                 )
                 observed_candidates = [
                     node
@@ -16764,6 +16763,46 @@ class VerifiedNeuralAgent:
             sorted(
                 representatives.values(),
                 key=cls._human_prior_world_state_reserve_key,
+                reverse=True,
+            )
+        )
+
+    @classmethod
+    def _human_prior_milestone_continuation_candidates(
+        cls,
+        nodes: Sequence[_HumanPriorOptionNode],
+    ) -> Tuple[_HumanPriorOptionNode, ...]:
+        """Keep one best continuation per distinct semantic milestone.
+
+        Player pose and anonymous world configuration have their own beam
+        reserves. Including them in this key lets many renderings of one
+        already-known heart outcome consume the milestone reserve, crowding
+        out the prerequisite manipulation branches that could establish a
+        different ordering.
+        """
+
+        representatives: Dict[
+            Tuple[Tuple[int, int], ...], _HumanPriorOptionNode
+        ] = {}
+        for node in nodes:
+            if (
+                node.analysis.milestone_reward <= 0.0
+                or node.analysis.life_counter_changed
+                or node.analysis.dark_transition_started
+            ):
+                continue
+            key = tuple(sorted(node.analysis.target_present))
+            previous = representatives.get(key)
+            if (
+                previous is None
+                or cls._human_prior_option_selection_key(node)
+                > cls._human_prior_option_selection_key(previous)
+            ):
+                representatives[key] = node
+        return tuple(
+            sorted(
+                representatives.values(),
+                key=cls._human_prior_option_selection_key,
                 reverse=True,
             )
         )

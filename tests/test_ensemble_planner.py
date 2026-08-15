@@ -31,6 +31,7 @@ from lolo_agent.neural_planner import (
     _TemporalOptionTrace,
 )
 from lolo_agent.pixels import Frame
+from lolo_agent.unlabeled_entities import UnlabeledEntityMemory
 
 
 class AutonomousAnimationEnv:
@@ -7835,6 +7836,94 @@ class EnsemblePlannerTests(unittest.TestCase):
         )
 
         self.assertEqual(reserved, (higher, distinct))
+
+    def test_cumulative_world_state_signature_masks_player_pixels(
+        self,
+    ) -> None:
+        background = Frame(32, 16, 3, bytes(32 * 16 * 3))
+        pixels = bytearray(background.pixels)
+        for y in range(4, 12):
+            for x in range(4, 12):
+                colour = (21, 95, 217) if (x + y) % 2 else (255, 255, 255)
+                offset = (y * 32 + x) * 3
+                pixels[offset : offset + 3] = bytes(colour)
+        occupied = Frame(32, 16, 3, bytes(pixels))
+        agent = object.__new__(VerifiedNeuralAgent)
+        agent.unlabeled_entity_memory = UnlabeledEntityMemory(
+            columns=2,
+            rows=1,
+        )
+        agent.goal_prior = PixelHeartGoalPrior()
+
+        background_signature = (
+            agent._human_prior_world_effect_cells_state_signature(
+                background,
+                ((0, 0),),
+            )
+        )
+        unmasked_signature = (
+            agent._human_prior_world_effect_cells_state_signature(
+                occupied,
+                ((0, 0),),
+            )
+        )
+        masked_signature = (
+            agent._human_prior_world_effect_cells_state_signature(
+                occupied,
+                ((0, 0),),
+                (0, 0),
+            )
+        )
+
+        self.assertNotEqual(unmasked_signature, background_signature)
+        self.assertEqual(masked_signature, background_signature)
+
+    def test_milestone_reserve_keeps_one_continuation_per_heart_set(
+        self,
+    ) -> None:
+        def candidate(
+            hearts: tuple[tuple[int, int], ...],
+            score: float,
+            *,
+            player: tuple[int, int] = (0, 0),
+            world: str = "world",
+        ) -> SimpleNamespace:
+            return SimpleNamespace(
+                analysis=SimpleNamespace(
+                    target_present=hearts,
+                    target_player_slot=player,
+                    milestone_reward=1.0,
+                    life_counter_changed=False,
+                    dark_transition_started=False,
+                    target_heart_distance=1.0,
+                    target_chest_distance=None,
+                    total_reward=1.0,
+                ),
+                episodic_graph_bridge_reached=False,
+                episodic_graph_progress=0.0,
+                world_effect_state_signature=world,
+                target_position_visits=0,
+                target_state_visits=0,
+                score=score,
+                depth=3,
+            )
+
+        lower = candidate(((7, 2),), 1.0)
+        same_outcome = candidate(
+            ((7, 2),),
+            2.0,
+            player=(2, 0),
+            world="alternate",
+        )
+        distinct = candidate(((3, 1),), 0.5)
+
+        reserved = (
+            VerifiedNeuralAgent._human_prior_milestone_continuation_candidates(
+                (lower, distinct, same_outcome)
+            )
+        )
+
+        self.assertEqual(reserved, (same_outcome, distinct))
 
     def test_entity_probe_ranking_prefers_observed_neutral_persistence(
         self,
