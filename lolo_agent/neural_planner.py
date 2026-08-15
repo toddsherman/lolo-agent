@@ -16756,11 +16756,12 @@ class VerifiedNeuralAgent:
     ) -> Tuple[_HumanPriorOptionNode, ...]:
         """Choose useful endpoints per cumulative anonymous world state.
 
-        A configuration seen from several controlled-player positions has
-        empirical evidence of supporting a larger reachable region. Prefer
-        that evidence over an equally novel configuration observed from only
-        one pose, while still selecting the best endpoint within each exact
-        anonymous state.
+        A manipulated cell set seen from several controlled-player positions
+        has empirical evidence of supporting a larger reachable region.
+        Prefer that evidence over an equally novel locus observed from only
+        one pose. Cover distinct causal loci before adding multiple exact
+        appearance variants of one locus, while still selecting the best
+        endpoint within every exact anonymous state.
         """
 
         representatives: Dict[tuple, _HumanPriorOptionNode] = {}
@@ -16778,8 +16779,9 @@ class VerifiedNeuralAgent:
                 node.tracked_world_effect_cells,
                 node.tracked_world_state_signature,
             )
+            reachability_key = world_key[:2]
             if node.analysis.target_player_slot is not None:
-                reachable_positions[world_key].add(
+                reachable_positions[reachability_key].add(
                     node.analysis.target_player_slot
                 )
             previous = representatives.get(world_key)
@@ -16790,8 +16792,11 @@ class VerifiedNeuralAgent:
             ):
                 representatives[world_key] = node
 
+        exact_world_keys: Dict[int, tuple] = {}
         for world_key, representative in representatives.items():
-            positions = reachable_positions[world_key]
+            reachability_key = world_key[:2]
+            exact_world_keys[id(representative)] = reachability_key
+            positions = reachable_positions[reachability_key]
             representative.world_state_reachability_count = len(positions)
             representative.world_state_reachability_span = (
                 0
@@ -16811,13 +16816,31 @@ class VerifiedNeuralAgent:
                 cls._human_prior_world_state_reserve_key(node),
             )
 
-        return tuple(
-            sorted(
-                representatives.values(),
-                key=topology_rank,
-                reverse=True,
-            )
+        locus_representatives: Dict[tuple, _HumanPriorOptionNode] = {}
+        for representative in representatives.values():
+            locus_key = exact_world_keys[id(representative)]
+            previous = locus_representatives.get(locus_key)
+            if (
+                previous is None
+                or topology_rank(representative) > topology_rank(previous)
+            ):
+                locus_representatives[locus_key] = representative
+        primary = sorted(
+            locus_representatives.values(),
+            key=topology_rank,
+            reverse=True,
         )
+        primary_ids = {id(node) for node in primary}
+        variants = sorted(
+            (
+                node
+                for node in representatives.values()
+                if id(node) not in primary_ids
+            ),
+            key=topology_rank,
+            reverse=True,
+        )
+        return tuple((*primary, *variants))
 
     @classmethod
     def _human_prior_milestone_continuation_candidates(
