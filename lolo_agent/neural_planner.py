@@ -2785,6 +2785,7 @@ class VerifiedNeuralAgent:
         interaction_cell: Optional[Tuple[int, int]],
         effect_cells: Iterable[Tuple[int, int]],
         displacement_probability: float = 1.0,
+        appearance_correspondence: bool = True,
     ) -> set[Tuple[int, int]]:
         """Retain anonymous near-contact changes that may encode a push.
 
@@ -2795,7 +2796,8 @@ class VerifiedNeuralAgent:
         world configuration without treating nearby sprite animation as part
         of it.
         The state key is enabled only after learned matched-control outcomes
-        assign material probability to displacement.  Unknown appearances
+        assign material probability to displacement and the contacted rare
+        appearance reappears at the candidate destination. Unknown appearances
         remain available to causal curiosity probes, while ordinary movement
         patches and mere appearance transformations do not multiply the exact-
         search beam.  Five percent retains conditional displacements that work
@@ -2813,6 +2815,7 @@ class VerifiedNeuralAgent:
             direction is None
             or interaction_cell is None
             or displacement_probability < 0.05
+            or not appearance_correspondence
         ):
             return set()
         destination = (
@@ -9446,6 +9449,56 @@ class VerifiedNeuralAgent:
                                 for cell in direct_effect_cells
                             )
                         )
+                        directional_appearance_correspondence = False
+                        direction_delta = {
+                            Action.UP: (0, -1),
+                            Action.DOWN: (0, 1),
+                            Action.LEFT: (-1, 0),
+                            Action.RIGHT: (1, 0),
+                        }.get(action)
+                        memory = self.unlabeled_entity_memory
+                        behavior_model = self.entity_behavior_model
+                        if (
+                            direction_delta is not None
+                            and direct_interaction_cell is not None
+                            and memory is not None
+                            and behavior_model is not None
+                        ):
+                            destination = (
+                                direct_interaction_cell[0]
+                                + direction_delta[0],
+                                direct_interaction_cell[1]
+                                + direction_delta[1],
+                            )
+                            if (
+                                0 <= destination[0] < memory.columns
+                                and 0 <= destination[1] < memory.rows
+                            ):
+                                source_features, source_fingerprints = (
+                                    entity_feature_index(parent.frame)
+                                )
+                                source_feature = source_features.get(
+                                    direct_interaction_cell
+                                )
+                                if source_feature is not None:
+                                    source_fingerprint = (
+                                        behavior_model.appearance_fingerprint(
+                                            source_feature
+                                        )
+                                    )
+                                    directional_appearance_correspondence = bool(
+                                        source_fingerprints[
+                                            source_fingerprint
+                                        ]
+                                        <= 4
+                                        and memory.feature_distance(
+                                            source_feature,
+                                            memory.feature_at(
+                                                target, *destination
+                                            ),
+                                        )
+                                        <= memory.match_threshold
+                                    )
                         directional_interaction_effect_cells = (
                             self._human_prior_directional_interaction_effect_cells(
                                 action,
@@ -9457,6 +9510,7 @@ class VerifiedNeuralAgent:
                                         0.0,
                                     )
                                 ),
+                                directional_appearance_correspondence,
                             )
                         )
                         parent_effect_target_aligned = bool(
@@ -10084,6 +10138,9 @@ class VerifiedNeuralAgent:
                             ),
                             human_prior_option_directional_interaction_effect_cells=(
                                 sorted(directional_interaction_effect_cells)
+                            ),
+                            human_prior_option_directional_appearance_correspondence=(
+                                directional_appearance_correspondence
                             ),
                             human_prior_option_entity_interaction_signature=(
                                 node.entity_interaction_signature or None
