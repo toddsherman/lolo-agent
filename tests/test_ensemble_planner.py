@@ -3228,9 +3228,6 @@ class EnsemblePlannerTests(unittest.TestCase):
         agent.human_prior_milestone_outcomes.add(
             agent._human_prior_milestone_outcome_key(milestone)
         )
-        agent.human_prior_exhausted_milestone_transitions.add(
-            (((7, 0),), (), False)
-        )
         agent.frame = env.reset()
 
         agent._search_human_prior_options()
@@ -3318,6 +3315,61 @@ class EnsemblePlannerTests(unittest.TestCase):
         ]
         self.assertEqual(len(exhausted), 1)
         self.assertEqual(exhausted[0]["depth"], 4)
+
+    def test_failed_milestone_grants_horizon_to_alternate_order(self) -> None:
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            MovingMilestoneSettlesEnv(),
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.A),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=25.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=2,
+                human_prior_option_search_milestone_reserve=1,
+                human_prior_option_search_milestone_extension=2,
+                human_prior_option_search_action_frames=1,
+                human_prior_option_effect_stability_steps=0,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.goal_prior = TwoGoalMovingMilestoneGoalPrior()
+        source_hearts = ((-15, 0), (7, 0))
+        agent.human_prior_exhausted_milestone_transitions.add(
+            (source_hearts, ((-15, 0),), False)
+        )
+
+        agent._search_human_prior_options()
+
+        depths = [
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_search_depth_completed"
+        ]
+        self.assertEqual([event["depth"] for event in depths], [1, 2, 3, 4])
+        extended = [
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_branch_verified"
+            and event["depth"] > 2
+        ]
+        self.assertTrue(extended)
+        self.assertTrue(
+            all(event["human_prior_remaining_hearts"] == 2 for event in extended)
+        )
+        self.assertFalse(
+            any(
+                event["human_prior_collected_hearts"]
+                for event in extended
+            )
+        )
 
     def test_reachable_failed_milestone_preserves_empirical_ordering_without_alternate_progress(
         self,

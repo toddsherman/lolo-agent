@@ -8954,6 +8954,13 @@ class VerifiedNeuralAgent:
         milestone_extension = (
             self.config.human_prior_option_search_milestone_extension
         )
+        ordering_preparation_extension = bool(
+            milestone_extension > 0
+            and self._human_prior_failed_ordering_targets(
+                source_analysis.source_present,
+                source_analysis.chest_obtained,
+            )
+        )
         maximum_search_depth = base_search_depth + milestone_extension * max(
             1,
             len(source_analysis.source_present) + 1,
@@ -9275,10 +9282,19 @@ class VerifiedNeuralAgent:
                     parents = [
                         parent
                         for parent in parents
-                        if parent.latest_milestone_depth is not None
-                        and depth
-                        <= parent.latest_milestone_depth
-                        + milestone_extension
+                        if (
+                            parent.latest_milestone_depth is not None
+                            and depth
+                            <= parent.latest_milestone_depth
+                            + milestone_extension
+                        )
+                        or (
+                            ordering_preparation_extension
+                            and parent.latest_milestone_depth is None
+                            and parent.analysis.milestone_reward <= 0.0
+                            and depth
+                            <= base_search_depth + milestone_extension
+                        )
                     ]
                     if not parents:
                         self._emit(
@@ -9502,15 +9518,20 @@ class VerifiedNeuralAgent:
                             == neutral_analysis.target_player_slot
                         )
                         local_positive_milestone = bool(
-                            len(analysis.target_present)
-                            < len(local_neutral_analysis.target_present)
-                            or (
-                                analysis.chest_completed
-                                and not local_neutral_analysis.chest_completed
+                            not self._human_prior_milestone_transition_exhausted(
+                                analysis
                             )
-                            or (
-                                analysis.chest_obtained
-                                and not local_neutral_analysis.chest_obtained
+                            and (
+                                len(analysis.target_present)
+                                < len(local_neutral_analysis.target_present)
+                                or (
+                                    analysis.chest_completed
+                                    and not local_neutral_analysis.chest_completed
+                                )
+                                or (
+                                    analysis.chest_obtained
+                                    and not local_neutral_analysis.chest_obtained
+                                )
                             )
                         )
                         entity_curiosity = (
@@ -10592,20 +10613,24 @@ class VerifiedNeuralAgent:
                     and depth >= base_search_depth
                     and any(
                         node.latest_milestone_depth is not None
+                        or (
+                            ordering_preparation_extension
+                            and node.analysis.milestone_reward <= 0.0
+                        )
                         for node in ranked_candidates
                     )
                 )
                 expansion_candidates = [
                     node
                     for node in ranked_candidates
-                    if extension_active
-                    or not (
-                        node.analysis.milestone_reward > 0.0
-                        and (
-                            self._human_prior_milestone_outcome_known(
-                                node.analysis
-                            )
-                            or self._human_prior_milestone_transition_exhausted(
+                    if not self._human_prior_milestone_transition_exhausted(
+                        node.analysis
+                    )
+                    and (
+                        extension_active
+                        or not (
+                            node.analysis.milestone_reward > 0.0
+                            and self._human_prior_milestone_outcome_known(
                                 node.analysis
                             )
                         )
@@ -10624,7 +10649,13 @@ class VerifiedNeuralAgent:
                 )
                 milestone_continuation_candidates = list(
                     self._human_prior_milestone_continuation_candidates(
-                        ranked_candidates
+                        (
+                            node
+                            for node in ranked_candidates
+                            if not self._human_prior_milestone_transition_exhausted(
+                                node.analysis
+                            )
+                        )
                         if self.config.human_prior_option_search_milestone_reserve
                         > 0
                         else ()
