@@ -10,6 +10,7 @@ from lolo_agent.replay import (
     _save_logged_state,
     committed_timeline,
     restore_logged_decision,
+    restore_logged_goal_milestone_checkpoint,
     restore_logged_option_archive,
     restore_logged_option_branch,
     write_player,
@@ -143,6 +144,52 @@ class ReplayTests(unittest.TestCase):
             self.assertEqual(
                 restored.metadata["human_prior_world_target_context"],
                 "world-two",
+            )
+            self.assertEqual(env.imported, (state, frame))
+
+    def test_goal_milestone_checkpoint_restores_by_logged_event(self) -> None:
+        class SnapshotEnvironment:
+            def __init__(self) -> None:
+                self.imported = None
+
+            def import_state(self, state: bytes, frame: Frame) -> Frame:
+                self.imported = (state, frame)
+                return frame
+
+        with tempfile.TemporaryDirectory() as directory:
+            logger = RunLogger(Path(directory), run_id="checkpoint-run")
+            frame = Frame(2, 2, 3, bytes(range(12)))
+            state = b"pre-milestone-state"
+            stored = logger.store_goal_milestone_checkpoint_snapshot(
+                4,
+                "state-checkpoint",
+                state,
+                frame,
+                checkpoint_decision=3,
+                choice=["visual-frontier", "right", 8],
+                checkpoint_kind="goal_milestone",
+                goal_heart_slots=[[16, 32], [48, 64]],
+                goal_target_heart_slots=[[48, 64]],
+                goal_target_heart_slots_known=True,
+                human_prior_world_context_signature="anonymous-world",
+                pose_action="right",
+            )
+            logger.close()
+
+            env = SnapshotEnvironment()
+            restored = restore_logged_goal_milestone_checkpoint(
+                env,
+                logger.run_dir,
+                stored["seq"],
+            )
+
+            self.assertEqual(restored.frame, frame)
+            self.assertEqual(restored.event_seq, stored["seq"])
+            self.assertEqual(restored.decision, 3)
+            self.assertEqual(restored.state_id, "state-checkpoint")
+            self.assertEqual(
+                restored.metadata["human_prior_world_context_signature"],
+                "anonymous-world",
             )
             self.assertEqual(env.imported, (state, frame))
 

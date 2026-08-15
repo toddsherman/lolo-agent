@@ -22,6 +22,7 @@ from .neural_world_model import ACTION_ORDER, choose_torch_device
 from .pixels import Frame, signature_key
 from .replay import (
     restore_logged_decision,
+    restore_logged_goal_milestone_checkpoint,
     restore_logged_option_archive,
     restore_logged_option_branch,
     validate_replay_inputs,
@@ -1140,6 +1141,14 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--resume-state-checkpoint-event-seq",
+        type=int,
+        help=(
+            "persisted learned goal-milestone checkpoint event to restore "
+            "from --resume-state-run as the physical resume state"
+        ),
+    )
+    parser.add_argument(
         "--allow-compatible-resume-host",
         action="store_true",
         help=(
@@ -1190,11 +1199,13 @@ def main() -> None:
             args.resume_state_decision,
             args.resume_state_archive_id,
             args.resume_state_option_event_seq,
+            args.resume_state_checkpoint_event_seq,
         )
     )
     if state_selectors > 1:
         parser.error(
-            "resume state decision, archive ID, and option event are "
+            "resume state decision, archive ID, option event, and checkpoint "
+            "event are "
             "mutually exclusive"
         )
     state_selector_supplied = state_selectors == 1
@@ -1202,7 +1213,8 @@ def main() -> None:
         parser.error(
             "--resume-state-run requires exactly one of "
             "--resume-state-decision, --resume-state-archive-id, or "
-            "--resume-state-option-event-seq"
+            "--resume-state-option-event-seq, or "
+            "--resume-state-checkpoint-event-seq"
         )
     if args.resume_state_run is not None and args.resume_run is None:
         parser.error("--resume-state-run requires --resume-run")
@@ -2020,6 +2032,9 @@ def main() -> None:
                     "state_source_option_event_seq": (
                         args.resume_state_option_event_seq
                     ),
+                    "state_source_checkpoint_event_seq": (
+                        args.resume_state_checkpoint_event_seq
+                    ),
                     "state_source_events_sha256": sha256_file(state_events),
                     "memory_state_decoupled": True,
                 }
@@ -2189,41 +2204,61 @@ def main() -> None:
                     args.resume_state_option_event_seq,
                 )
             )
+            restored_checkpoint = (
+                None
+                if args.resume_state_checkpoint_event_seq is None
+                else restore_logged_goal_milestone_checkpoint(
+                    native_env,
+                    resume_state_run,
+                    args.resume_state_checkpoint_event_seq,
+                )
+            )
             restored = (
-                restored_branch
-                if restored_branch is not None
+                restored_checkpoint
+                if restored_checkpoint is not None
                 else (
-                    restored_archive
-                    if restored_archive is not None
+                    restored_branch
+                    if restored_branch is not None
                     else (
-                        None
-                        if args.resume_run is None
-                        else restore_logged_decision(
-                            native_env,
-                            resume_state_run,
-                            resume_state_decision,
+                        restored_archive
+                        if restored_archive is not None
+                        else (
+                            None
+                            if args.resume_run is None
+                            else restore_logged_decision(
+                                native_env,
+                                resume_state_run,
+                                resume_state_decision,
+                            )
                         )
                     )
                 )
             )
-            if restored_branch is not None:
+            if restored_checkpoint is not None:
+                resume_state_decision = restored_checkpoint.decision
+            elif restored_branch is not None:
                 resume_state_decision = restored_branch.decision
             elif restored_archive is not None:
                 resume_state_decision = restored_archive.decision
             restored_semantic_state = (
                 (
-                    restored_branch.metadata
-                    if restored_branch is not None
+                    restored_checkpoint.metadata
+                    if restored_checkpoint is not None
                     else (
-                        restored_archive.metadata
-                        if restored_archive is not None
-                        else None
+                        restored_branch.metadata
+                        if restored_branch is not None
+                        else (
+                            restored_archive.metadata
+                            if restored_archive is not None
+                            else None
+                        )
                     )
                 )
                 if args.resume_state_run is not None
                 and (
                     args.resume_state_archive_id is not None
                     or args.resume_state_option_event_seq is not None
+                    or args.resume_state_checkpoint_event_seq is not None
                 )
                 else (
                     None
@@ -2266,6 +2301,11 @@ def main() -> None:
                         if restored_branch is None
                         else restored_branch.event_seq
                     ),
+                    source_goal_milestone_checkpoint_event_seq=(
+                        None
+                        if restored_checkpoint is None
+                        else restored_checkpoint.event_seq
+                    ),
                     memory_source_run_id=source_manifest.get("run_id"),
                     memory_source_decision=args.resume_decision,
                     memory_state_decoupled=(
@@ -2292,7 +2332,10 @@ def main() -> None:
                         if restored_semantic_state is None
                         else restored_semantic_state.get(
                             "human_prior_world_target_context"
-                        )
+                            )
+                            or restored_semantic_state.get(
+                                "human_prior_world_context_signature"
+                            )
                     ),
                     observed_pose_action_override=(
                         None
@@ -2302,6 +2345,7 @@ def main() -> None:
                                 "target_pose_action"
                             )
                             or restored_semantic_state.get("action")
+                            or restored_semantic_state.get("pose_action")
                         )
                     ),
                 )

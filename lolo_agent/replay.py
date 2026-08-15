@@ -52,6 +52,16 @@ class RestoredOptionBranch:
     metadata: Dict[str, Any]
 
 
+@dataclass(frozen=True)
+class RestoredGoalMilestoneCheckpoint:
+    frame: Frame
+    decision: int
+    event_seq: int
+    run_id: str
+    state_id: str
+    metadata: Dict[str, Any]
+
+
 def _verify_input(path: Path, recorded: Dict[str, Any], kind: str) -> None:
     expected = recorded.get("sha256") or recorded.get("file_sha256")
     if expected is None:
@@ -310,6 +320,57 @@ def restore_logged_option_archive(
     )
 
 
+def restore_logged_goal_milestone_checkpoint(
+    env: NativeLibretroEnv,
+    run_dir: Path,
+    event_seq: int,
+) -> RestoredGoalMilestoneCheckpoint:
+    """Restore an exact pre-milestone state retained for learned rollback."""
+
+    if event_seq <= 0:
+        raise ValueError("resume checkpoint event sequence must be positive")
+    run_dir = Path(run_dir).expanduser().resolve()
+    manifest = json.loads(
+        (run_dir / "manifest.json").read_text(encoding="utf-8")
+    )
+    snapshot: Optional[Dict[str, Any]] = None
+    for event in read_events(run_dir):
+        if int(event.get("seq", 0)) != event_seq:
+            continue
+        if event.get("event") != "goal_milestone_checkpoint_snapshot_stored":
+            raise ValueError(
+                f"event {event_seq} is not a goal milestone checkpoint snapshot"
+            )
+        snapshot = event
+        break
+    if snapshot is None:
+        raise ValueError(
+            f"goal milestone checkpoint event {event_seq} not found in {run_dir}"
+        )
+    relative = Path(str(snapshot["state_file"]))
+    state_path = (run_dir / relative).resolve()
+    if not state_path.is_relative_to(run_dir):
+        raise RuntimeError("goal milestone checkpoint escapes its telemetry run")
+    if sha256_file(state_path) != str(snapshot["state_sha256"]):
+        raise RuntimeError("goal milestone checkpoint snapshot digest mismatch")
+    frame_digest = str(snapshot["frame"])
+    frame = decode_logged_png(run_dir / "frames" / f"{frame_digest}.png")
+    current = env.import_state(state_path.read_bytes(), frame)
+    _check_frame(current, snapshot)
+    return RestoredGoalMilestoneCheckpoint(
+        frame=current,
+        decision=int(
+            snapshot.get("checkpoint_decision")
+            or snapshot.get("decision")
+            or 0
+        ),
+        event_seq=int(snapshot["seq"]),
+        run_id=str(manifest.get("run_id", run_dir.name)),
+        state_id=str(snapshot.get("state_id") or ""),
+        metadata=dict(snapshot),
+    )
+
+
 def restore_logged_option_branch(
     env: NativeLibretroEnv,
     run_dir: Path,
@@ -398,6 +459,9 @@ def _restore_episodic_resume_root(
     )
     if state_run is not None:
         option_event_seq = resume.get("state_source_option_event_seq")
+        checkpoint_event_seq = resume.get(
+            "state_source_checkpoint_event_seq"
+        )
         archive_id = resume.get("state_source_archive_id")
         decision = resume.get("state_source_decision")
         if option_event_seq is not None:
@@ -405,6 +469,12 @@ def _restore_episodic_resume_root(
                 env,
                 state_run,
                 int(option_event_seq),
+            ).frame
+        if checkpoint_event_seq is not None:
+            return restore_logged_goal_milestone_checkpoint(
+                env,
+                state_run,
+                int(checkpoint_event_seq),
             ).frame
         if archive_id:
             return restore_logged_option_archive(
