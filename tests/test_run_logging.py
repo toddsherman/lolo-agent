@@ -646,6 +646,23 @@ class RunLoggingTests(unittest.TestCase):
                 "human_prior_option_position_reserve_depths", summary
             )
             self.assertIn(
+                "human_prior_option_milestone_extension_depths", summary
+            )
+            self.assertIn(
+                "human_prior_option_milestone_extension_exhaustions",
+                summary,
+            )
+            self.assertIn(
+                "human_prior_option_maximum_extended_depth", summary
+            )
+            self.assertIn(
+                "human_prior_option_extended_milestone_depths", summary
+            )
+            self.assertIn(
+                "human_prior_option_extension_minimum_effective_beam_width",
+                summary,
+            )
+            self.assertIn(
                 "human_prior_option_world_state_reserve_depths", summary
             )
             self.assertIn(

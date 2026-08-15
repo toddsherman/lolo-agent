@@ -2216,6 +2216,64 @@ def build_run_summary(run_dir: Path) -> Dict[str, Any]:
             if event["event"]
             == "human_prior_option_search_depth_completed"
         ),
+        "human_prior_option_milestone_extension_depths": sum(
+            event["event"] == "human_prior_option_search_depth_completed"
+            and bool(
+                event.get(
+                    "human_prior_option_milestone_extension_active"
+                )
+            )
+            for event in events
+        ),
+        "human_prior_option_milestone_extension_exhaustions": (
+            event_counts.get(
+                "human_prior_option_milestone_extension_exhausted", 0
+            )
+        ),
+        "human_prior_option_maximum_extended_depth": max(
+            (
+                int(event.get("depth", 0))
+                for event in events
+                if event["event"]
+                == "human_prior_option_search_depth_completed"
+                and bool(
+                    event.get(
+                        "human_prior_option_milestone_extension_active"
+                    )
+                )
+            ),
+            default=0,
+        ),
+        "human_prior_option_extended_milestone_depths": sorted(
+            {
+                int(milestone_depth)
+                for event in events
+                if event["event"]
+                == "human_prior_option_search_depth_completed"
+                for milestone_depth in event.get(
+                    "human_prior_option_extended_latest_milestone_depths",
+                    (),
+                )
+            }
+        ),
+        "human_prior_option_extension_minimum_effective_beam_width": min(
+            (
+                int(
+                    event.get(
+                        "human_prior_option_effective_beam_width", 0
+                    )
+                )
+                for event in events
+                if event["event"]
+                == "human_prior_option_search_depth_completed"
+                and bool(
+                    event.get(
+                        "human_prior_option_milestone_extension_active"
+                    )
+                )
+            ),
+            default=0,
+        ),
         "human_prior_option_world_state_reserve_depths": sum(
             event["event"]
             == "human_prior_option_search_depth_completed"
