@@ -2907,15 +2907,16 @@ class VerifiedNeuralAgent:
         so retaining only that exact destination represents the resulting
         world configuration without treating nearby sprite animation as part
         of it.
-        The state key is enabled only after learned matched-control outcomes
-        assign material probability to displacement and the contacted rare
-        appearance reappears at the candidate destination and both cells were
-        stable under neutral observations. Unknown appearances remain
-        available to causal curiosity probes, while ordinary movement,
-        repeating textures, and mere appearance transformations do not
-        multiply the exact-search beam. Five percent retains conditional
-        displacements that work only from some approach contexts while
-        excluding the animation-only families observed in native audits.
+        The state key is enabled when the contacted rare appearance reappears
+        at the candidate destination and both cells were stable under neutral
+        observations.  This visual correspondence is also the bootstrap
+        evidence for previously unknown appearances: requiring an already
+        learned displacement probability here would discard the first push
+        before the behavior model could learn from it.  Learned displacement
+        probability remains useful telemetry and ranking evidence, while the
+        exact destination, rarity, and phase-stability gates keep ordinary
+        movement, repeating textures, and sprite animation from multiplying
+        the exact-search beam.
         """
 
         direction = {
@@ -2927,7 +2928,6 @@ class VerifiedNeuralAgent:
         if (
             direction is None
             or interaction_cell is None
-            or displacement_probability < 0.05
             or not appearance_correspondence
             or not phase_stable_correspondence
         ):

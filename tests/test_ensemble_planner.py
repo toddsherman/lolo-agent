@@ -7985,9 +7985,9 @@ class EnsemblePlannerTests(unittest.TestCase):
                 Action.RIGHT,
                 (4, 4),
                 cells,
-                displacement_probability=0.04,
+                displacement_probability=0.0,
             ),
-            set(),
+            {(5, 4)},
         )
         self.assertEqual(
             VerifiedNeuralAgent._human_prior_directional_interaction_effect_cells(
