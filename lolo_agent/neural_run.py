@@ -455,7 +455,14 @@ def iter_episodic_decision_events(
                 int(resume["source_decision"]),
                 visited,
             )
+    exhausted_resumed_search = False
     for event in read_events(run_dir):
+        if (
+            event.get("event") == "human_prior_option_search_completed"
+            and int(event.get("decision", 0)) <= through_decision
+            and event.get("positive_goal_eligible_endpoints") == 0
+        ):
+            exhausted_resumed_search = True
         if (
             event.get("event")
             in {
@@ -478,6 +485,76 @@ def iter_episodic_decision_events(
             and int(event.get("decision", 0)) <= through_decision
         ):
             yield event
+    if not exhausted_resumed_search or not resume:
+        return
+    state_source_run = resume.get("state_source_run")
+    state_source_event_seq = resume.get(
+        "state_source_option_event_seq"
+    )
+    if not state_source_run or state_source_event_seq is None:
+        return
+    state_source_run = Path(state_source_run).expanduser().resolve()
+    expected_digest = resume.get("state_source_events_sha256")
+    if expected_digest is not None and sha256_file(
+        state_source_run / "events.jsonl"
+    ) != str(expected_digest):
+        raise RuntimeError(
+            "episodic state-source telemetry digest mismatch"
+        )
+    milestone_branch = next(
+        (
+            event
+            for event in read_events(state_source_run)
+            if int(event.get("seq", 0)) == int(state_source_event_seq)
+            and event.get("event")
+            == "human_prior_option_branch_verified"
+        ),
+        None,
+    )
+    if milestone_branch is None:
+        return
+    source_hearts = tuple(
+        sorted(
+            (int(slot[0]), int(slot[1]))
+            for slot in (
+                milestone_branch.get("human_prior_source_hearts") or ()
+            )
+        )
+    )
+    target_hearts = tuple(
+        sorted(
+            (int(slot[0]), int(slot[1]))
+            for slot in (
+                milestone_branch.get("human_prior_target_hearts") or ()
+            )
+        )
+    )
+    if (
+        not source_hearts
+        or len(target_hearts) >= len(source_hearts)
+        or not set(target_hearts).issubset(source_hearts)
+    ):
+        return
+    yield {
+        "event": "goal_milestone_exhaustion_learned",
+        "run_id": str(manifest.get("run_id") or run_dir.name),
+        "decision": through_decision,
+        "exhausted_milestone_transition": (
+            source_hearts,
+            target_hearts,
+            bool(
+                milestone_branch.get("human_prior_chest_obtained", False)
+            ),
+        ),
+        "resumed_milestone_exhaustion_inferred": True,
+        "state_source_run_id": str(
+            resume.get("state_source_run_id")
+            or state_source_run.name
+        ),
+        "state_source_option_event_seq": int(state_source_event_seq),
+        "policy_effect": "milestone_priority_only",
+        "hazard_evidence": False,
+    }
 
 
 def load_logged_decision_semantic_state(

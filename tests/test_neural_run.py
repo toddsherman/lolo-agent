@@ -12,7 +12,7 @@ from lolo_agent.neural_run import (
     iter_episodic_decision_events,
 )
 from lolo_agent.pixels import Frame
-from lolo_agent.run_logging import RunLogger
+from lolo_agent.run_logging import RunLogger, sha256_file
 
 
 class StableSceneChangeDetectorTests(unittest.TestCase):
@@ -204,6 +204,84 @@ class StableSceneChangeDetectorTests(unittest.TestCase):
             ],
         )
         self.assertEqual(streamed_events, events)
+
+    def test_infers_exhausted_transition_from_resumed_milestone_search(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            memory = root / "memory"
+            state = root / "state"
+            exhausted = root / "exhausted"
+            for run in (memory, state, exhausted):
+                run.mkdir()
+            (memory / "manifest.json").write_text(
+                json.dumps({"metadata": {}}), encoding="utf-8"
+            )
+            (memory / "events.jsonl").write_text(
+                "", encoding="utf-8"
+            )
+            (state / "manifest.json").write_text(
+                json.dumps({"metadata": {}}), encoding="utf-8"
+            )
+            (state / "events.jsonl").write_text(
+                json.dumps(
+                    {
+                        "seq": 17,
+                        "event": "human_prior_option_branch_verified",
+                        "decision": 1,
+                        "human_prior_source_hearts": [[16, 16], [32, 16]],
+                        "human_prior_target_hearts": [[32, 16]],
+                        "human_prior_chest_obtained": False,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            state_digest = sha256_file(state / "events.jsonl")
+            (exhausted / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "run_id": "exhausted-run",
+                        "metadata": {
+                            "episodic_resume": {
+                                "source_run": str(memory),
+                                "source_decision": 1,
+                                "state_source_run": str(state),
+                                "state_source_run_id": "state-run",
+                                "state_source_option_event_seq": 17,
+                                "state_source_events_sha256": state_digest,
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (exhausted / "events.jsonl").write_text(
+                json.dumps(
+                    {
+                        "event": "human_prior_option_search_completed",
+                        "decision": 1,
+                        "positive_goal_eligible_endpoints": 0,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            events = list(iter_episodic_decision_events(exhausted, 1))
+
+        inferred = [
+            event
+            for event in events
+            if event.get("resumed_milestone_exhaustion_inferred")
+        ]
+        self.assertEqual(len(inferred), 1)
+        self.assertEqual(
+            inferred[0]["exhausted_milestone_transition"],
+            (((16, 16), (32, 16)), ((32, 16),), False),
+        )
+        self.assertEqual(inferred[0]["state_source_option_event_seq"], 17)
 
     def test_loads_only_option_archives_active_at_decision_snapshot(
         self,
