@@ -9532,8 +9532,14 @@ class VerifiedNeuralAgent:
                             == neutral_analysis.target_player_slot
                         )
                         local_positive_milestone = bool(
-                            not self._human_prior_milestone_transition_exhausted(
-                                analysis
+                            (
+                                not self._human_prior_milestone_transition_exhausted(
+                                    analysis
+                                )
+                                or (
+                                    parent.tracked_world_effect_cells
+                                    and parent.tracked_world_state_signature
+                                )
                             )
                             and (
                                 len(analysis.target_present)
@@ -10577,8 +10583,8 @@ class VerifiedNeuralAgent:
                             and not self._human_prior_milestone_outcome_known(
                                 node.analysis
                             )
-                            and not self._human_prior_milestone_transition_exhausted(
-                                node.analysis
+                            and not self._human_prior_option_milestone_blocked(
+                                node
                             )
                         ),
                         (
@@ -10587,8 +10593,8 @@ class VerifiedNeuralAgent:
                                 not self._human_prior_milestone_outcome_known(
                                     node.analysis
                                 )
-                                and not self._human_prior_milestone_transition_exhausted(
-                                    node.analysis
+                                and not self._human_prior_option_milestone_blocked(
+                                    node
                                 )
                             )
                         ),
@@ -10616,9 +10622,7 @@ class VerifiedNeuralAgent:
                         self._human_prior_milestone_outcome_known(
                             node.analysis
                         )
-                        or self._human_prior_milestone_transition_exhausted(
-                            node.analysis
-                        )
+                        or self._human_prior_option_milestone_blocked(node)
                     )
                     for node in ranked_candidates
                 )
@@ -10637,9 +10641,7 @@ class VerifiedNeuralAgent:
                 expansion_candidates = [
                     node
                     for node in ranked_candidates
-                    if not self._human_prior_milestone_transition_exhausted(
-                        node.analysis
-                    )
+                    if not self._human_prior_option_milestone_blocked(node)
                     and (
                         extension_active
                         or not (
@@ -10666,8 +10668,8 @@ class VerifiedNeuralAgent:
                         (
                             node
                             for node in ranked_candidates
-                            if not self._human_prior_milestone_transition_exhausted(
-                                node.analysis
+                            if not self._human_prior_option_milestone_blocked(
+                                node
                             )
                         )
                         if self.config.human_prior_option_search_milestone_reserve
@@ -11123,9 +11125,7 @@ class VerifiedNeuralAgent:
                             self._human_prior_milestone_outcome_known(
                                 node.analysis
                             )
-                            or self._human_prior_milestone_transition_exhausted(
-                                node.analysis
-                            )
+                            or self._human_prior_option_milestone_blocked(node)
                         )
                         for node in parents
                     ),
@@ -11808,8 +11808,13 @@ class VerifiedNeuralAgent:
                 tuple, _HumanPriorOptionNode
             ] = {}
             for endpoint in pre_settlement_endpoints:
-                if self._human_prior_milestone_ordering_blocked(
-                    endpoint.analysis
+                if (
+                    self._human_prior_milestone_ordering_blocked(
+                        endpoint.analysis
+                    )
+                    and not self._human_prior_prepared_milestone_retry(
+                        endpoint
+                    )
                 ):
                     self._emit(
                         "human_prior_option_ordering_endpoint_rejected",
@@ -16840,6 +16845,33 @@ class VerifiedNeuralAgent:
         return bool(
             self._human_prior_milestone_transition_exhausted(analysis)
             or self._human_prior_milestone_preparation_precursor(analysis)
+        )
+
+    def _human_prior_prepared_milestone_retry(
+        self, node: _HumanPriorOptionNode
+    ) -> bool:
+        """Allow an exhausted goal transition after a verified world change.
+
+        Exhaustion applies to the observed puzzle configuration, not to the
+        visual goal forever.  A branch that carries an action-conditioned
+        anonymous world-state change may therefore retry the milestone; its
+        downstream outcome will provide fresh empirical evidence.  Requiring
+        both changed cells and their absolute appearance signature prevents
+        ordinary player movement from reopening the transition.
+        """
+
+        return bool(
+            self._human_prior_milestone_transition_exhausted(node.analysis)
+            and node.tracked_world_effect_cells
+            and node.tracked_world_state_signature
+        )
+
+    def _human_prior_option_milestone_blocked(
+        self, node: _HumanPriorOptionNode
+    ) -> bool:
+        return bool(
+            self._human_prior_milestone_transition_exhausted(node.analysis)
+            and not self._human_prior_prepared_milestone_retry(node)
         )
 
     def _human_prior_preparation_ordering_active(self) -> bool:

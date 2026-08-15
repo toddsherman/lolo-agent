@@ -3371,6 +3371,53 @@ class EnsemblePlannerTests(unittest.TestCase):
             )
         )
 
+    def test_verified_world_preparation_reopens_exhausted_milestone(
+        self,
+    ) -> None:
+        env = MovingMilestoneSettlesEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(actions=(Action.RIGHT, Action.A)),
+        )
+        source = agent.reset()
+        agent.goal_prior = MovingMilestoneGoalPrior()
+        env.step(Action.RIGHT)
+        target = env.step(Action.A)
+        milestone = agent.goal_prior.analyze(source, target)
+        agent.human_prior_exhausted_milestone_transitions.add(
+            (((7, 0),), (), False)
+        )
+        node = _HumanPriorOptionNode(
+            state=env.save_state(),
+            frame=target,
+            path=(Action.RIGHT, Action.A),
+            durations=(1, 1),
+            analysis=milestone,
+            source_signature="source",
+            target_signature="target",
+            score=0.0,
+            depth=2,
+            target_state_visits=0,
+            target_position_visits=0,
+        )
+
+        self.assertTrue(agent._human_prior_option_milestone_blocked(node))
+        prepared = replace(
+            node,
+            tracked_world_effect_cells=((3, 4),),
+            tracked_world_state_signature="prepared-state",
+        )
+        self.assertTrue(
+            agent._human_prior_prepared_milestone_retry(prepared)
+        )
+        self.assertFalse(
+            agent._human_prior_option_milestone_blocked(prepared)
+        )
+
     def test_reachable_failed_milestone_preserves_empirical_ordering_without_alternate_progress(
         self,
     ) -> None:
