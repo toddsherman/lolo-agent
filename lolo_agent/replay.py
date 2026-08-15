@@ -342,42 +342,19 @@ def restore_logged_option_branch(
         raise ValueError("verified option branch has no positive decision")
 
     if decision > 1:
-        root = restore_logged_decision(env, run_dir, decision - 1)
+        current = restore_logged_decision(env, run_dir, decision - 1).frame
     else:
         resume = manifest.get("metadata", {}).get("episodic_resume") or {}
-        state_source_run = resume.get("state_source_run")
-        state_source_archive_id = resume.get("state_source_archive_id")
-        state_source_decision = resume.get("state_source_decision")
-        if state_source_run and state_source_archive_id:
-            root = restore_logged_option_archive(
-                env,
-                Path(str(state_source_run)),
-                str(state_source_archive_id),
+        if not resume:
+            raise ValueError(
+                "first-decision option branch has no logged resume root"
             )
-        elif state_source_run and state_source_decision is not None:
-            root = restore_logged_decision(
-                env,
-                Path(str(state_source_run)),
-                int(state_source_decision),
-            )
-        else:
-            source_run = resume.get("source_run")
-            source_decision = resume.get("source_decision")
-            if not source_run or source_decision is None:
-                raise ValueError(
-                    "first-decision option branch has no logged resume root"
-                )
-            root = restore_logged_decision(
-                env,
-                Path(str(source_run)),
-                int(source_decision),
-            )
+        current = _restore_episodic_resume_root(env, resume)
 
     path = tuple(branch.get("path") or ())
     durations = tuple(branch.get("durations") or ())
     if not path or len(path) != len(durations):
         raise ValueError("verified option branch has an invalid control path")
-    current = root.frame
     for action_value, duration_value in zip(path, durations):
         current = env.step(
             Action(str(action_value)),
@@ -391,6 +368,70 @@ def restore_logged_option_branch(
         run_id=str(manifest.get("run_id", run_dir.name)),
         metadata=dict(branch),
     )
+
+
+def _verify_resume_events(
+    resume: Dict[str, Any],
+    run_field: str,
+    digest_field: str,
+) -> Optional[Path]:
+    value = resume.get(run_field)
+    if not value:
+        return None
+    run_dir = Path(str(value)).expanduser().resolve()
+    expected = resume.get(digest_field)
+    if expected is not None and sha256_file(run_dir / "events.jsonl") != expected:
+        raise RuntimeError("episodic resume source telemetry digest mismatch")
+    return run_dir
+
+
+def _restore_episodic_resume_root(
+    env: NativeLibretroEnv,
+    resume: Dict[str, Any],
+) -> Frame:
+    """Restore the exact state source selected for an episodic continuation."""
+
+    state_run = _verify_resume_events(
+        resume,
+        "state_source_run",
+        "state_source_events_sha256",
+    )
+    if state_run is not None:
+        option_event_seq = resume.get("state_source_option_event_seq")
+        archive_id = resume.get("state_source_archive_id")
+        decision = resume.get("state_source_decision")
+        if option_event_seq is not None:
+            return restore_logged_option_branch(
+                env,
+                state_run,
+                int(option_event_seq),
+            ).frame
+        if archive_id:
+            return restore_logged_option_archive(
+                env,
+                state_run,
+                str(archive_id),
+            ).frame
+        if decision is not None:
+            return restore_logged_decision(
+                env,
+                state_run,
+                int(decision),
+            ).frame
+
+    source_run = _verify_resume_events(
+        resume,
+        "source_run",
+        "source_events_sha256",
+    )
+    source_decision = resume.get("source_decision")
+    if source_run is None or source_decision is None:
+        raise ValueError("episodic resume has no logged state source")
+    return restore_logged_decision(
+        env,
+        source_run,
+        int(source_decision),
+    ).frame
 
 
 def capture_replay(
@@ -418,21 +459,7 @@ def capture_replay(
         try:
             resume = manifest.get("metadata", {}).get("episodic_resume")
             if resume:
-                source_run = Path(resume["source_run"]).expanduser().resolve()
-                source_events = source_run / "events.jsonl"
-                expected_source_events = resume.get("source_events_sha256")
-                if (
-                    expected_source_events is not None
-                    and sha256_file(source_events) != expected_source_events
-                ):
-                    raise RuntimeError(
-                        "episodic resume source telemetry digest mismatch"
-                    )
-                current = restore_logged_decision(
-                    env,
-                    source_run,
-                    int(resume["source_decision"]),
-                ).frame
+                current = _restore_episodic_resume_root(env, resume)
             for event in events:
                 kind = event["event"]
                 if kind == "env_reset":

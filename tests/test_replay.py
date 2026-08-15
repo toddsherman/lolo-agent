@@ -212,6 +212,95 @@ class ReplayTests(unittest.TestCase):
             self.assertEqual(env.imported, (root_state, root_frame))
             self.assertEqual(env.steps, [(Action.RIGHT, 4)])
 
+    def test_verified_option_branch_replays_through_nested_branch_resume(
+        self,
+    ) -> None:
+        class BranchEnvironment:
+            def __init__(self, targets) -> None:
+                self.targets = list(targets)
+                self.imported = None
+                self.steps = []
+
+            def import_state(self, state: bytes, frame: Frame) -> Frame:
+                self.imported = (state, frame)
+                return frame
+
+            def step(self, action: Action, frames: int) -> Frame:
+                self.steps.append((action, frames))
+                return self.targets.pop(0)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root_logger = RunLogger(Path(directory), run_id="nested-root")
+            root_frame = Frame(2, 2, 3, bytes(range(12)))
+            root_state = b"nested-root-state"
+            root_logger.store_option_archive_snapshot(
+                1,
+                "state-root",
+                root_state,
+                root_frame,
+            )
+            root_logger.log(
+                "human_prior_option_archive_added",
+                decision=1,
+                state_id="state-root",
+                **root_logger.frame_fields(root_frame),
+            )
+            root_logger.close()
+
+            first_frame = Frame(2, 2, 3, bytes(reversed(range(12))))
+            first_logger = RunLogger(
+                Path(directory),
+                run_id="nested-first",
+                metadata={
+                    "episodic_resume": {
+                        "state_source_run": str(root_logger.run_dir),
+                        "state_source_archive_id": "state-root",
+                    }
+                },
+            )
+            first_event = first_logger.log(
+                "human_prior_option_branch_verified",
+                decision=1,
+                path=["right"],
+                durations=[4],
+                **first_logger.frame_fields(first_frame),
+            )
+            first_logger.close()
+
+            final_frame = Frame(2, 2, 3, bytes([7] * 12))
+            final_logger = RunLogger(
+                Path(directory),
+                run_id="nested-final",
+                metadata={
+                    "episodic_resume": {
+                        "state_source_run": str(first_logger.run_dir),
+                        "state_source_option_event_seq": first_event["seq"],
+                    }
+                },
+            )
+            final_event = final_logger.log(
+                "human_prior_option_branch_verified",
+                decision=1,
+                path=["down"],
+                durations=[5],
+                **final_logger.frame_fields(final_frame),
+            )
+            final_logger.close()
+
+            env = BranchEnvironment([first_frame, final_frame])
+            restored = restore_logged_option_branch(
+                env,
+                final_logger.run_dir,
+                final_event["seq"],
+            )
+
+            self.assertEqual(restored.frame, final_frame)
+            self.assertEqual(env.imported, (root_state, root_frame))
+            self.assertEqual(
+                env.steps,
+                [(Action.RIGHT, 4), (Action.DOWN, 5)],
+            )
+
     def test_committed_timeline_excludes_rejected_branches(self) -> None:
         chosen = [{"frame": "chosen", "kind": "action_frame", "event_seq": 10}]
         rejected = [{"frame": "rejected", "kind": "action_frame", "event_seq": 11}]
