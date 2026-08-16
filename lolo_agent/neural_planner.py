@@ -34,6 +34,18 @@ from .environment import Action, PixelSaveStateEnv
 from .goal_prior import HeartGoalAnalysis, PixelHeartGoalPrior
 from .memory import VisualNovelty
 from .neural_world_model import ACTION_TO_INDEX, frame_tensor
+from .object_tracks import (
+    HumanPriorRootObjectState as _HumanPriorRootObjectState,
+    ObjectTrackSet,
+    anonymous_entity_context_factors,
+    anonymous_entity_controlled_displacement,
+    anonymous_entity_frame_features,
+    archived_track_fields,
+    causal_spatial_cells,
+    masked_cell_fingerprint,
+    player_masked_world_effect_signature,
+    world_effect_cells_state_signature,
+)
 from .pixels import Frame, signature_key
 from .spatial_shadow import SpatialShadowEvaluator
 from .unlabeled_entities import UnlabeledEntityMemory
@@ -244,6 +256,8 @@ class _ArchivedBranch:
     human_prior_unvisited_semantic_state: bool = False
     goal_exhaustion_recovery_root: bool = False
     goal_exhaustion_recovery_restores: int = 0
+    # WP2: migrate the track-state tail fields below to
+    # object_tracks.AnonymousObjectTrack/AnonymousObjectTransition.
     world_effect_state_signature: str = ""
     tracked_world_effect_cells: Tuple[Tuple[int, int], ...] = ()
     tracked_world_state_signature: str = ""
@@ -264,33 +278,9 @@ class _ArchivedBranch:
     entity_effect_persistence_steps: int = 0
 
 
-@dataclass(frozen=True)
-class _HumanPriorRootObjectState:
-    """Pixel-derived object state imported with an exact save-state restore."""
-
-    world_effect_signature: str = ""
-    world_effect_state_signature: str = ""
-    tracked_world_effect_cells: Tuple[Tuple[int, int], ...] = ()
-    tracked_world_state_signature: str = ""
-    world_effect_changed_pixels: int = 0
-    confirmed_world_effect_signature: str = ""
-    confirmed_world_context: str = ""
-    confirmed_action_indices: Tuple[int, ...] = ()
-    confirmed_effect_frontier_reason: str = ""
-    confirmed_entity_state_signature: str = ""
-    entity_interaction_signature: str = ""
-    entity_interaction_action: Optional[Action] = None
-    entity_interaction_action_index: Optional[int] = None
-    entity_interaction_direction: Optional[Action] = None
-    entity_interaction_cell: Optional[Tuple[int, int]] = None
-    entity_interaction_appearance_fingerprint: str = ""
-    entity_interaction_type_id: Optional[int] = None
-    entity_interaction_context_signature: str = ""
-    entity_interaction_phase_signature: str = ""
-    entity_interaction_neighborhood_signature: str = ""
-    entity_effect_target_distance: Optional[int] = None
-    entity_effect_persisted_in_search: bool = False
-    entity_effect_persistence_steps: int = 0
+# The single confirmed root object track is now the frozen
+# object_tracks.HumanPriorRootObjectState, imported above under its
+# historical private alias so every consumer keeps its spelling.
 
 
 @dataclass
@@ -317,6 +307,9 @@ class _HumanPriorOptionNode:
     world_state_reachability_span: int = 0
     stationary_action_history: Tuple[Tuple[Action, int], ...] = ()
     world_effect_changed_pixels: int = 0
+    # WP2: migrate the confirmed-vs-transient entity identity pairs below
+    # to object_tracks.AnonymousObjectTrack/AnonymousObjectTransition while
+    # preserving the confirmed/candidate split.
     confirmed_world_effect_signature: str = ""
     confirmed_world_context: str = ""
     confirmed_action_indices: Tuple[int, ...] = ()
@@ -1176,7 +1169,7 @@ class VerifiedNeuralAgent:
             "human-prior-world-root"
         )
         self.current_human_prior_root_object_state = (
-            _HumanPriorRootObjectState()
+            ObjectTrackSet.empty().to_root_object_state()
         )
         self.last_navigation_change_decision: Optional[int] = None
         self.human_prior_navigation_detour_origin_signature = ""
@@ -2281,83 +2274,17 @@ class VerifiedNeuralAgent:
         action: Optional[Action] = None,
         allow_nonlocal: bool = False,
     ) -> str:
-        """Remove assisted sprites from a matched causal pixel effect.
+        """Delegate to the extracted player-masked effect signature."""
 
-        The remaining cells are a rule-free, action-conditioned indication
-        that something in the room changed independently of the controlled
-        sprite.  Comparing against a duration-matched NOOP has already
-        removed autonomous animation; masking the source and target player
-        tiles prevents ordinary movement from creating path-dependent world
-        states.  Detected goals are masked for the same reason: their
-        disappearance remains reward evidence, but is not an anonymous
-        obstacle transformation. Multi-action matched-time probes may retain
-        non-local cells because their controlled path can legitimately affect
-        several parts of the screen before the endpoint is observed.
-        """
-
-        if not spatial_signature or analysis is None:
-            return ""
-        try:
-            occupied = bytearray.fromhex(spatial_signature)
-        except ValueError:
-            return ""
-        columns = min(self.config.causal_spatial_columns, frame.width)
-        rows = min(self.config.causal_spatial_rows, frame.height)
-        if len(occupied) != columns * rows:
-            return ""
-        player_cells = set()
-        for slot in {
-            analysis.source_player_slot,
-            analysis.target_player_slot,
-        }:
-            if slot is None:
-                continue
-            gx = min(columns - 1, max(0, slot[0] * columns // frame.width))
-            gy = min(rows - 1, max(0, slot[1] * rows // frame.height))
-            player_cells.add((gx, gy))
-            occupied[gy * columns + gx] = 0
-        goal_slots = set(analysis.collected)
-        if analysis.chest_completed or analysis.chest_obtained:
-            for slot in (
-                analysis.source_chest_slot,
-                analysis.target_chest_slot,
-            ):
-                if slot is not None:
-                    goal_slots.add(slot)
-        for x, y in goal_slots:
-            gx = min(columns - 1, max(0, x * columns // frame.width))
-            gy = min(rows - 1, max(0, y * rows // frame.height))
-            occupied[gy * columns + gx] = 0
-        if (
-            not allow_nonlocal
-            and action
-            in (Action.UP, Action.DOWN, Action.LEFT, Action.RIGHT)
-        ):
-            # The stable graph key already represents ordinary detected
-            # movement. Coarse cells beside the anchors are dominated by
-            # sprite outline/animation spill even when a blocked press leaves
-            # the snapped player tile unchanged, so toggling them into the
-            # world context invents a room state for every directional pose.
-            # Exact option search uses allow_nonlocal=True and retains its
-            # stricter persistence, phase, player-mask, and action-control
-            # audits for real transformations that accompany movement.
-            return ""
-        if (
-            not allow_nonlocal
-            and action not in (Action.A, Action.B)
-            and player_cells
-        ):
-            for index in range(len(occupied)):
-                gx = index % columns
-                gy = index // columns
-                if min(
-                    abs(gx - px) + abs(gy - py)
-                    for px, py in player_cells
-                ) > 1:
-                    occupied[index] = 0
-        if not any(occupied):
-            return ""
-        return occupied.hex()
+        return player_masked_world_effect_signature(
+            spatial_signature,
+            analysis,
+            frame,
+            action,
+            allow_nonlocal,
+            columns=self.config.causal_spatial_columns,
+            rows=self.config.causal_spatial_rows,
+        )
 
     def _human_prior_world_effect_state_signature(
         self, frame: Frame, world_effect_signature: str
@@ -2375,39 +2302,15 @@ class VerifiedNeuralAgent:
         cells: Sequence[Tuple[int, int]],
         player_slot: Optional[Tuple[int, int]] = None,
     ) -> str:
-        """Hash anonymous cell appearances without the controlled sprite.
+        """Delegate to the extracted player-masked cell-state signature."""
 
-        A genuinely manipulated cell can later be occupied by the player.
-        Leaving those pixels in the cumulative fingerprint makes one world
-        configuration look different for every player pose and wastes the
-        configuration reserve on locomotion.  The visual player detector is
-        used only to mask the controlled sprite; the remaining anonymous
-        appearance still determines the state identity.
-        """
-
-        memory = self.unlabeled_entity_memory
-        if memory is None or not cells:
-            return ""
-        ignored_pixels: Optional[set[Tuple[int, int]]] = None
-        player_pixel_mask = getattr(
-            self.goal_prior, "player_pixel_mask", None
+        return world_effect_cells_state_signature(
+            frame,
+            cells,
+            player_slot,
+            self.unlabeled_entity_memory,
+            getattr(self.goal_prior, "player_pixel_mask", None),
         )
-        if player_slot is not None and callable(player_pixel_mask):
-            ignored_pixels = player_pixel_mask(frame, player_slot)
-        payload = ";".join(
-            f"{column},{row}="
-            + ",".join(
-                str(value)
-                for value in memory.feature_at(
-                    frame,
-                    column,
-                    row,
-                    ignored_pixels,
-                )
-            )
-            for column, row in sorted(cells)
-        )
-        return hashlib.sha256(payload.encode("ascii")).hexdigest()[:16]
 
     def _human_prior_player_pixels(
         self,
@@ -2467,76 +2370,25 @@ class VerifiedNeuralAgent:
             Dict[Tuple[int, int], Tuple[int, ...]]
         ] = None,
     ) -> Dict[str, Any]:
-        """Build phase-conditioned relational context from pixels only."""
+        """Delegate to the extracted phase-conditioned context factors."""
 
-        memory = self.unlabeled_entity_memory
-        model = self.entity_behavior_model
-        if memory is None or model is None:
-            return {}
-        controlled = {
-            (int(column), int(row)) for column, row in controlled_cells
-        }
-        if features is None:
-            features = {
-                (column, row): memory.feature_at(frame, column, row)
-                for row in range(memory.rows)
-                for column in range(memory.columns)
-            }
-        relation = model.relational_context_signature(
-            anchor, controlled
-        )
-        neighborhood = model.neighborhood_signature(anchor, features)
-        # Local manipulation and the controlled sprite do not define the
-        # room-wide phase. Distant simultaneous changes—including HUD-like
-        # visual counters and newly active entities—remain observable.
-        stable_phase_cells = {
-            cell
-            for cell in features
-            if self.anonymous_phase_stable_observations[cell] >= 2
-            and self.anonymous_phase_stable_observations[cell]
-            > 2 * self.anonymous_phase_changed_observations[cell]
-        }
-        if stable_phase_cells:
-            phase_cells = stable_phase_cells - controlled
-            phase = model.phase_signature(
-                feature
-                for cell, feature in features.items()
-                if cell in phase_cells
-            )
-        else:
-            phase = "unresolved"
-        persistent_world_context = (
-            self.current_human_prior_world_context_signature
-        )
-        if persistent_world_context not in (
-            "",
-            "human-prior-world-root",
-        ):
-            # A compact persistent pixel effect can represent a consumable
-            # visual resource or another mode that is absent from the local
-            # entity patch.  Conditioning the anonymous phase on that learned
-            # context prevents an interaction observed while the resource was
-            # unavailable from suppressing a fresh probe when it is present.
-            # The value is itself learned from action-matched pixels; no HUD
-            # region or resource meaning is supplied.
-            phase = hashlib.sha256(
-                (
-                    f"{phase}|persistent-world="
-                    f"{persistent_world_context}"
-                ).encode("ascii")
-            ).hexdigest()[:16]
-        return {
-            "context_signature": model.factored_context_signature(
-                relation, neighborhood, phase
+        return anonymous_entity_context_factors(
+            frame,
+            anchor,
+            controlled_cells,
+            memory=self.unlabeled_entity_memory,
+            model=self.entity_behavior_model,
+            features=features,
+            phase_stable_observations=(
+                self.anonymous_phase_stable_observations
             ),
-            "relation_signature": relation,
-            "neighborhood_signature": neighborhood,
-            "phase_signature": phase,
-            "phase_stable_cells": len(stable_phase_cells),
-            "persistent_world_context_signature": (
-                persistent_world_context
+            phase_changed_observations=(
+                self.anonymous_phase_changed_observations
             ),
-        }
+            persistent_world_context=(
+                self.current_human_prior_world_context_signature
+            ),
+        )
 
     def _update_anonymous_phase_stability(
         self, source_frame: Frame, target_frame: Frame
@@ -2640,16 +2492,9 @@ class VerifiedNeuralAgent:
         frame: Frame,
         ignored_pixels: Optional[set[Tuple[int, int]]] = None,
     ) -> Dict[Tuple[int, int], Tuple[int, ...]]:
-        memory = self.unlabeled_entity_memory
-        if memory is None:
-            return {}
-        return {
-            (column, row): memory.feature_at(
-                frame, column, row, ignored_pixels
-            )
-            for row in range(memory.rows)
-            for column in range(memory.columns)
-        }
+        return anonymous_entity_frame_features(
+            frame, self.unlabeled_entity_memory, ignored_pixels
+        )
 
     def _anonymous_entity_controlled_displacement(
         self,
@@ -2659,48 +2504,17 @@ class VerifiedNeuralAgent:
         control_features: Dict[Tuple[int, int], Tuple[int, ...]],
         source_features: Dict[Tuple[int, int], Tuple[int, ...]],
     ) -> Optional[Tuple[int, int]]:
-        """Measure action-caused translation of a rare visual appearance."""
+        """Delegate to the extracted controlled-displacement measurement."""
 
-        memory = self.unlabeled_entity_memory
-        model = self.entity_behavior_model
-        if memory is None or model is None:
-            return None
-        source_fingerprint = model.appearance_fingerprint(source_feature)
-        source_count = sum(
-            model.appearance_fingerprint(feature) == source_fingerprint
-            for feature in source_features.values()
+        return anonymous_entity_controlled_displacement(
+            source_feature,
+            anchor,
+            factual_features,
+            control_features,
+            source_features,
+            memory=self.unlabeled_entity_memory,
+            model=self.entity_behavior_model,
         )
-        if source_count > 4:
-            return None
-
-        def matched_offset(
-            features: Dict[Tuple[int, int], Tuple[int, ...]]
-        ) -> Optional[Tuple[int, int]]:
-            candidates = []
-            for cell, feature in features.items():
-                offset = (cell[0] - anchor[0], cell[1] - anchor[1])
-                if abs(offset[0]) + abs(offset[1]) > 4:
-                    continue
-                distance = memory.feature_distance(source_feature, feature)
-                if distance <= memory.match_threshold:
-                    candidates.append(
-                        (
-                            distance,
-                            abs(offset[0]) + abs(offset[1]),
-                            offset,
-                        )
-                    )
-            return None if not candidates else min(candidates)[2]
-
-        factual_offset = matched_offset(factual_features)
-        control_offset = matched_offset(control_features)
-        if factual_offset is None or control_offset is None:
-            return None
-        displacement = (
-            factual_offset[0] - control_offset[0],
-            factual_offset[1] - control_offset[1],
-        )
-        return displacement if displacement != (0, 0) else None
 
     def _human_prior_option_entity_curiosity(
         self,
@@ -13821,7 +13635,7 @@ class VerifiedNeuralAgent:
             "human-prior-world-root"
         )
         self.current_human_prior_root_object_state = (
-            _HumanPriorRootObjectState()
+            ObjectTrackSet.empty().to_root_object_state()
         )
         self.last_causal_cell_progress_decision = None
         self.behavioral_edge_visits = Counter()
@@ -14172,18 +13986,9 @@ class VerifiedNeuralAgent:
     def _causal_spatial_cells(
         self, spatial_signature: Optional[str]
     ) -> set[Tuple[int, int]]:
-        if not spatial_signature:
-            return set()
-        try:
-            occupied = bytes.fromhex(spatial_signature)
-        except ValueError:
-            return set()
-        columns = self.config.causal_spatial_columns
-        return {
-            (index % columns, index // columns)
-            for index, value in enumerate(occupied)
-            if value
-        }
+        return causal_spatial_cells(
+            spatial_signature, self.config.causal_spatial_columns
+        )
 
     def _causal_cell_coverage(
         self, spatial_signature: Optional[str]
@@ -14352,7 +14157,7 @@ class VerifiedNeuralAgent:
             "human-prior-world-root"
         )
         self.current_human_prior_root_object_state = (
-            _HumanPriorRootObjectState()
+            ObjectTrackSet.empty().to_root_object_state()
         )
         self.last_causal_cell_progress_decision = None
         self.causal_spatial_cell_visits = Counter()
@@ -15896,240 +15701,93 @@ class VerifiedNeuralAgent:
 
         if not metadata:
             self.current_human_prior_root_object_state = (
-                _HumanPriorRootObjectState()
+                ObjectTrackSet.empty().to_root_object_state()
             )
             return
 
-        def optional_int(value: Any) -> Optional[int]:
-            return None if value is None else int(value)
-
-        def optional_action(value: Any) -> Optional[Action]:
-            if value is None or value == "":
-                return None
-            return value if isinstance(value, Action) else Action(str(value))
-
-        def optional_cell(value: Any) -> Optional[Tuple[int, int]]:
-            if value is None:
-                return None
-            return int(value[0]), int(value[1])
-
-        effect_signature = str(
-            metadata.get("human_prior_option_world_effect_signature") or ""
-        )
-        serialized_cells = metadata.get(
-            "human_prior_option_tracked_world_effect_cells"
-        )
-        tracked_cells = tuple(
-            sorted(
-                (int(value[0]), int(value[1]))
-                for value in (serialized_cells or ())
-            )
-        )
-        if not tracked_cells:
-            tracked_cells = tuple(
-                sorted(self._causal_spatial_cells(effect_signature))
-            )
-        interaction_signature = str(
-            metadata.get("human_prior_option_entity_interaction_signature")
-            or metadata.get("human_prior_option_entity_state_signature")
-            or ""
-        )
-        path = tuple(metadata.get("path") or ())
-        inferred_action = optional_action(path[-1]) if path else None
-        interaction_action = optional_action(
-            metadata.get("human_prior_option_entity_interaction_action")
-        ) or (inferred_action if interaction_signature else None)
-        interaction_direction = optional_action(
-            metadata.get("human_prior_option_entity_interaction_direction")
-        )
-        if interaction_direction is None and interaction_action in (
-            Action.UP,
-            Action.DOWN,
-            Action.LEFT,
-            Action.RIGHT,
-        ):
-            interaction_direction = interaction_action
-        interaction_cell = optional_cell(
-            metadata.get("human_prior_option_entity_interaction_cell")
-        )
-        direction_delta = {
-            Action.UP: (0, -1),
-            Action.DOWN: (0, 1),
-            Action.LEFT: (-1, 0),
-            Action.RIGHT: (1, 0),
-        }.get(interaction_direction)
-        if (
-            interaction_cell is None
-            and direction_delta is not None
-            and len(tracked_cells) == 1
-        ):
-            destination = tracked_cells[0]
-            interaction_cell = (
-                destination[0] - direction_delta[0],
-                destination[1] - direction_delta[1],
-            )
         player_slot = (
             None
             if self.goal_prior is None
             else self.goal_prior.current_player_slot
         )
-        tracked_state_signature = str(
-            metadata.get(
-                "human_prior_option_tracked_world_state_signature"
+        player_pixel_mask = getattr(
+            self.goal_prior, "player_pixel_mask", None
+        )
+
+        def tracked_state_resolver(
+            cells: Tuple[Tuple[int, int], ...]
+        ) -> str:
+            return world_effect_cells_state_signature(
+                self.frame,
+                cells,
+                player_slot,
+                self.unlabeled_entity_memory,
+                player_pixel_mask,
             )
-            or ""
-        )
-        if not tracked_state_signature and tracked_cells:
-            tracked_state_signature = (
-                self._human_prior_world_effect_cells_state_signature(
-                    self.frame, tracked_cells, player_slot
-                )
-            )
-        world_state_signature = str(
-            metadata.get("human_prior_option_world_effect_state_signature")
-            or tracked_state_signature
-        )
-        entity_state_signature = str(
-            metadata.get("human_prior_option_entity_state_signature") or ""
-        )
-        confirmed_effect = bool(
-            metadata.get("human_prior_option_effect_frontier")
-            or entity_state_signature
-        )
-        effect_distance = optional_int(
-            metadata.get(
-                "human_prior_option_entity_effect_target_distance"
-            )
-        )
-        if effect_distance is None and interaction_direction is not None:
-            effect_distance = 1
-        persistence_steps = int(
-            metadata.get("human_prior_option_entity_persistence_steps", 0)
-            or 0
-        )
-        persisted = bool(
-            metadata.get("human_prior_option_entity_persistence_observed")
-            or (confirmed_effect and interaction_signature)
-        )
-        if persisted and persistence_steps == 0:
-            persistence_steps = 1
-        appearance_fingerprint = str(
-            metadata.get("anonymous_entity_appearance_fingerprint") or ""
-        )
-        entity_type_id = optional_int(
-            metadata.get("anonymous_entity_type_id")
-        )
+
+        fingerprint_resolver = None
         if (
-            not appearance_fingerprint
-            and len(tracked_cells) == 1
-            and self.unlabeled_entity_memory is not None
+            self.unlabeled_entity_memory is not None
             and self.entity_behavior_model is not None
         ):
-            ignored_pixels = None
-            player_pixel_mask = getattr(
-                self.goal_prior, "player_pixel_mask", None
-            )
-            if player_slot is not None and callable(player_pixel_mask):
-                ignored_pixels = player_pixel_mask(self.frame, player_slot)
-            destination_feature = self.unlabeled_entity_memory.feature_at(
-                self.frame,
-                *tracked_cells[0],
-                ignored_pixels,
-            )
-            appearance_fingerprint = (
-                self.entity_behavior_model.appearance_fingerprint(
-                    destination_feature
+
+            def fingerprint_resolver(
+                cell: Tuple[int, int]
+            ) -> Tuple[str, Optional[int]]:
+                return masked_cell_fingerprint(
+                    self.frame,
+                    cell,
+                    player_slot,
+                    self.unlabeled_entity_memory,
+                    self.entity_behavior_model,
+                    player_pixel_mask,
                 )
-            )
-            entity_type_id, _distance = (
-                self.entity_behavior_model.classify(destination_feature)
-            )
-        self.current_human_prior_root_object_state = (
-            _HumanPriorRootObjectState(
-                world_effect_signature=effect_signature,
-                world_effect_state_signature=world_state_signature,
-                tracked_world_effect_cells=tracked_cells,
-                tracked_world_state_signature=tracked_state_signature,
-                world_effect_changed_pixels=int(
-                    metadata.get(
-                        "human_prior_option_world_effect_changed_pixels", 0
-                    )
-                    or 0
-                ),
-                confirmed_world_effect_signature=(
-                    effect_signature if confirmed_effect else ""
-                ),
-                confirmed_world_context=str(
-                    metadata.get("human_prior_world_target_context") or ""
-                ),
-                confirmed_action_indices=tuple(
-                    int(value)
-                    for value in (
-                        metadata.get(
-                            "human_prior_option_effect_confirmed_action_indices"
-                        )
-                        or ()
-                    )
-                ),
-                confirmed_effect_frontier_reason=str(
-                    metadata.get(
-                        "human_prior_option_effect_frontier_reason"
-                    )
-                    or ""
-                ),
-                confirmed_entity_state_signature=entity_state_signature,
-                entity_interaction_signature=interaction_signature,
-                entity_interaction_action=interaction_action,
-                entity_interaction_action_index=optional_int(
-                    metadata.get(
-                        "human_prior_option_entity_interaction_action_index"
-                    )
-                )
-                if metadata.get(
-                    "human_prior_option_entity_interaction_action_index"
-                )
-                is not None
-                else (len(path) - 1 if interaction_signature and path else None),
-                entity_interaction_direction=interaction_direction,
-                entity_interaction_cell=interaction_cell,
-                entity_interaction_appearance_fingerprint=str(
-                    appearance_fingerprint
-                ),
-                entity_interaction_type_id=entity_type_id,
-                entity_interaction_context_signature=str(
-                    metadata.get("anonymous_entity_context_signature") or ""
-                ),
-                entity_interaction_phase_signature=str(
-                    metadata.get("anonymous_entity_phase_signature") or ""
-                ),
-                entity_interaction_neighborhood_signature=str(
-                    metadata.get("anonymous_entity_neighborhood_signature")
-                    or ""
-                ),
-                entity_effect_target_distance=effect_distance,
-                entity_effect_persisted_in_search=persisted,
-                entity_effect_persistence_steps=persistence_steps,
-            )
-        )
+
+        state = ObjectTrackSet.from_archive_metadata(
+            metadata,
+            columns=self.config.causal_spatial_columns,
+            tracked_state_resolver=tracked_state_resolver,
+            fingerprint_resolver=fingerprint_resolver,
+        ).to_root_object_state()
+        self.current_human_prior_root_object_state = state
         self._emit(
             "human_prior_root_object_state_seeded",
             decision=self.decision_index,
-            world_effect_signature=effect_signature or None,
-            tracked_world_effect_cells=tracked_cells,
-            tracked_world_state_signature=tracked_state_signature or None,
-            entity_state_signature=entity_state_signature or None,
-            entity_interaction_signature=interaction_signature or None,
-            entity_interaction_action=interaction_action,
-            entity_interaction_direction=interaction_direction,
-            entity_interaction_cell=interaction_cell,
-            entity_interaction_appearance_fingerprint=(
-                appearance_fingerprint or None
+            world_effect_signature=state.world_effect_signature or None,
+            tracked_world_effect_cells=state.tracked_world_effect_cells,
+            tracked_world_state_signature=(
+                state.tracked_world_state_signature or None
             ),
-            entity_interaction_type_id=entity_type_id,
-            entity_effect_target_distance=effect_distance,
-            entity_effect_persisted_in_search=persisted,
-            entity_effect_persistence_steps=persistence_steps,
-            legacy_track_reconstructed=serialized_cells is None,
+            entity_state_signature=(
+                state.confirmed_entity_state_signature or None
+            ),
+            entity_interaction_signature=(
+                state.entity_interaction_signature or None
+            ),
+            entity_interaction_action=state.entity_interaction_action,
+            entity_interaction_direction=(
+                state.entity_interaction_direction
+            ),
+            entity_interaction_cell=state.entity_interaction_cell,
+            entity_interaction_appearance_fingerprint=(
+                state.entity_interaction_appearance_fingerprint or None
+            ),
+            entity_interaction_type_id=state.entity_interaction_type_id,
+            entity_effect_target_distance=(
+                state.entity_effect_target_distance
+            ),
+            entity_effect_persisted_in_search=(
+                state.entity_effect_persisted_in_search
+            ),
+            entity_effect_persistence_steps=(
+                state.entity_effect_persistence_steps
+            ),
+            legacy_track_reconstructed=(
+                metadata.get(
+                    "human_prior_option_tracked_world_effect_cells"
+                )
+                is None
+            ),
             agent_visible=True,
             **self._frame_fields(self.frame),
         )
@@ -16350,145 +16008,7 @@ class VerifiedNeuralAgent:
                             "goal_exhaustion_recovery_restores", 0
                         )
                     ),
-                    world_effect_state_signature=str(
-                        metadata.get(
-                            "human_prior_option_world_effect_state_signature"
-                        )
-                        or ""
-                    ),
-                    tracked_world_effect_cells=tuple(
-                        sorted(
-                            (int(value[0]), int(value[1]))
-                            for value in (
-                                metadata.get(
-                                    "human_prior_option_tracked_world_effect_cells"
-                                )
-                                or ()
-                            )
-                        )
-                    ),
-                    tracked_world_state_signature=str(
-                        metadata.get(
-                            "human_prior_option_tracked_world_state_signature"
-                        )
-                        or ""
-                    ),
-                    world_effect_changed_pixels=int(
-                        metadata.get(
-                            "human_prior_option_world_effect_changed_pixels",
-                            0,
-                        )
-                        or 0
-                    ),
-                    confirmed_action_indices=tuple(
-                        int(value)
-                        for value in (
-                            metadata.get(
-                                "human_prior_option_effect_confirmed_action_indices"
-                            )
-                            or ()
-                        )
-                    ),
-                    entity_interaction_signature=str(
-                        metadata.get(
-                            "human_prior_option_entity_interaction_signature"
-                        )
-                        or ""
-                    ),
-                    entity_interaction_action=(
-                        None
-                        if metadata.get(
-                            "human_prior_option_entity_interaction_action"
-                        )
-                        is None
-                        else Action(
-                            str(
-                                metadata[
-                                    "human_prior_option_entity_interaction_action"
-                                ]
-                            )
-                        )
-                    ),
-                    entity_interaction_action_index=(
-                        None
-                        if metadata.get(
-                            "human_prior_option_entity_interaction_action_index"
-                        )
-                        is None
-                        else int(
-                            metadata[
-                                "human_prior_option_entity_interaction_action_index"
-                            ]
-                        )
-                    ),
-                    entity_interaction_direction=(
-                        None
-                        if metadata.get(
-                            "human_prior_option_entity_interaction_direction"
-                        )
-                        is None
-                        else Action(
-                            str(
-                                metadata[
-                                    "human_prior_option_entity_interaction_direction"
-                                ]
-                            )
-                        )
-                    ),
-                    entity_interaction_cell=slot(
-                        metadata.get(
-                            "human_prior_option_entity_interaction_cell"
-                        )
-                    ),
-                    entity_interaction_appearance_fingerprint=str(
-                        metadata.get(
-                            "anonymous_entity_appearance_fingerprint"
-                        )
-                        or ""
-                    ),
-                    entity_interaction_type_id=(
-                        None
-                        if metadata.get("anonymous_entity_type_id") is None
-                        else int(metadata["anonymous_entity_type_id"])
-                    ),
-                    entity_interaction_context_signature=str(
-                        metadata.get("anonymous_entity_context_signature")
-                        or ""
-                    ),
-                    entity_interaction_phase_signature=str(
-                        metadata.get("anonymous_entity_phase_signature")
-                        or ""
-                    ),
-                    entity_interaction_neighborhood_signature=str(
-                        metadata.get(
-                            "anonymous_entity_neighborhood_signature"
-                        )
-                        or ""
-                    ),
-                    entity_effect_target_distance=(
-                        None
-                        if metadata.get(
-                            "human_prior_option_entity_effect_target_distance"
-                        )
-                        is None
-                        else int(
-                            metadata[
-                                "human_prior_option_entity_effect_target_distance"
-                            ]
-                        )
-                    ),
-                    entity_effect_persisted_in_search=bool(
-                        metadata.get(
-                            "human_prior_option_entity_persistence_observed",
-                            False,
-                        )
-                    ),
-                    entity_effect_persistence_steps=int(
-                        metadata.get(
-                            "human_prior_option_entity_persistence_steps", 0
-                        )
-                        or 0
-                    ),
+                    **archived_track_fields(metadata),
                 )
             except (KeyError, TypeError, ValueError) as error:
                 if release_state is not None:
@@ -27019,71 +26539,9 @@ class VerifiedNeuralAgent:
             branch.goal_target_world_context
         )
         self.current_human_prior_root_object_state = (
-            _HumanPriorRootObjectState(
-                world_effect_signature=(
-                    branch.human_prior_option_world_effect_signature
-                ),
-                world_effect_state_signature=(
-                    branch.world_effect_state_signature
-                ),
-                tracked_world_effect_cells=(
-                    branch.tracked_world_effect_cells
-                ),
-                tracked_world_state_signature=(
-                    branch.tracked_world_state_signature
-                ),
-                world_effect_changed_pixels=(
-                    branch.world_effect_changed_pixels
-                ),
-                confirmed_world_effect_signature=(
-                    branch.goal_world_effect_signature
-                ),
-                confirmed_world_context=branch.goal_target_world_context,
-                confirmed_action_indices=branch.confirmed_action_indices,
-                confirmed_effect_frontier_reason=(
-                    branch.human_prior_option_effect_frontier_reason
-                ),
-                confirmed_entity_state_signature=(
-                    branch.human_prior_option_entity_state_signature
-                ),
-                entity_interaction_signature=(
-                    branch.entity_interaction_signature
-                ),
-                entity_interaction_action=(
-                    branch.entity_interaction_action
-                ),
-                entity_interaction_action_index=(
-                    branch.entity_interaction_action_index
-                ),
-                entity_interaction_direction=(
-                    branch.entity_interaction_direction
-                ),
-                entity_interaction_cell=branch.entity_interaction_cell,
-                entity_interaction_appearance_fingerprint=(
-                    branch.entity_interaction_appearance_fingerprint
-                ),
-                entity_interaction_type_id=(
-                    branch.entity_interaction_type_id
-                ),
-                entity_interaction_context_signature=(
-                    branch.entity_interaction_context_signature
-                ),
-                entity_interaction_phase_signature=(
-                    branch.entity_interaction_phase_signature
-                ),
-                entity_interaction_neighborhood_signature=(
-                    branch.entity_interaction_neighborhood_signature
-                ),
-                entity_effect_target_distance=(
-                    branch.entity_effect_target_distance
-                ),
-                entity_effect_persisted_in_search=(
-                    branch.entity_effect_persisted_in_search
-                ),
-                entity_effect_persistence_steps=(
-                    branch.entity_effect_persistence_steps
-                ),
-            )
+            ObjectTrackSet.from_archived_branch(
+                branch
+            ).to_root_object_state()
         )
         if branch.causal_event_outcome:
             self.causal_outcome_contexts.add(
