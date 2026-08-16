@@ -30,6 +30,29 @@ Promotion beyond telemetry (the Amendment B substitution replay against
 v320/v321 archives, and the held-out comparison vs the assisted
 detector) are SEPARATE gates, not granted by this run.
 
-## Results
+## Results (appended 2026-08-16)
 
-(to be appended)
+**All four gates PASS — with one preregistration deviation disclosed.**
+
+Deviation: the training CLI's default caps limited the run to 4,000
+training / 1,000 validation arms (hash-stable run-held-out split), not the
+full 64,509-arm corpus as preregistered. Gates were scored on the capped
+run; an uncapped confirmation run follows (same gates, explicit caps
+lifted).
+
+Capped-run numbers (40 epochs, lr 1e-3, MPS):
+
+- Gate 1 (beat untrained baseline): PASS on every axis — AUC 0.6166 →
+  **0.9980**, IoU 0.0089 → **0.4324**, loss 0.7027 → 0.0248, Brier
+  0.2548 → 0.0076.
+- Gate 2 (AUC ≥ 0.95): PASS at 0.9980; IoU 0.4324 reported (up from the
+  spike's 0.269; backbone-resolution ceiling still expected).
+- Gate 3 (uncertainty–error correlation > 0): PASS at +0.4242.
+- Gate 4 (strict lineage): PASS — `assisted=False`, zero violations,
+  label-manifest digest `352b37f1…` and backbone digest pinned.
+- Bonus: Brier 0.0076 now beats the constant-prevalence baseline 0.0088
+  (the spike's noted weakness, resolved by scale).
+
+Precision 0.4401 / recall 0.9607 at 0.9% prevalence: the head finds
+nearly all controllable cells and over-covers by ~2x — consistent with
+the documented one-displacement-step label blur.
