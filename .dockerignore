@@ -1,0 +1,17 @@
+.git
+.venv
+*.egg-info
+__pycache__
+*.pyc
+*.nes
+*.unf
+*.unif
+*.sav
+*.srm
+*.state*
+artifacts
+build
+checkpoints
+experiments
+runs
+tmp

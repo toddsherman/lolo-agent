@@ -1,0 +1,11 @@
+{
+  "finding_summary": "State what changed in our understanding, including negative results.",
+  "evidence": [
+    "Quote concrete report metrics and artifact paths."
+  ],
+  "decision": "revise",
+  "plan_changes": [
+    "State the smallest change justified by the evidence."
+  ],
+  "next_hypothesis": "Write the exact falsifiable hypothesis for the next bounded cycle."
+}

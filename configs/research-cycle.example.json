@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "cycle_id": "runpod-benchmark-001",
+  "hypothesis": "The RunPod worker reduces cost per million deterministic branches versus the M5 baseline.",
+  "decision_question": "Is the measured throughput gain large enough to justify paid execution?",
+  "expected_evidence": [
+    "A deterministic platform benchmark report",
+    "Measured branches per second",
+    "Estimated dollars per million branches"
+  ],
+  "stop_conditions": [
+    "The benchmark command exits",
+    "Five minutes elapse",
+    "The campaign reaches its dollar ceiling"
+  ],
+  "command": [
+    "/opt/lolo/scripts/runpod-smoke.sh",
+    "/workspace/platform-benchmark-cycle-001.json"
+  ],
+  "working_directory": "/opt/lolo",
+  "telemetry_path": null,
+  "prior_cycle_id": null,
+  "budgets": {
+    "max_wall_seconds": 300,
+    "max_events": null,
+    "hourly_rate_usd": 0.69,
+    "max_cycle_cost_usd": 0.06,
+    "max_campaign_cost_usd": 1.0
+  }
+}

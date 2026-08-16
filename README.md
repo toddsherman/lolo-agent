@@ -18,6 +18,11 @@ It is infrastructure and a baseline, not yet a claim that all 50 rooms are
 solved. The model boundary is designed so a neural latent world model can
 replace the baseline without changing the information available to the agent.
 
+Paid or unattended experiments should use the mandatory evidence and cost
+gates in [docs/research-loop.md](docs/research-loop.md). See
+[docs/runpod.md](docs/runpod.md) for the Linux/CUDA image, deterministic
+Mac-versus-Pod benchmark, private-asset setup, and automatic Pod shutdown.
+
 ## Run
 
 The package has no third-party runtime dependencies:

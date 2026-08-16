@@ -1,0 +1,39 @@
+ARG CUDA_IMAGE=nvidia/cuda:13.0.2-cudnn-devel-ubuntu24.04
+FROM ${CUDA_IMAGE}
+
+ARG PYTORCH_INDEX_URL=https://download.pytorch.org/whl/cu130
+ARG PYTORCH_VERSION=2.13.0
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LOLO_ASSET_DIR=/workspace/lolo-assets \
+    LOLO_CAMPAIGN_DIR=/workspace/lolo-campaigns \
+    PATH=/opt/lolo-venv/bin:${PATH} \
+    PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        g++ \
+        git \
+        make \
+        python3 \
+        python3-pip \
+        python3-venv \
+        tini \
+        unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m venv /opt/lolo-venv \
+    && pip install --no-cache-dir --upgrade pip setuptools wheel \
+    && pip install --no-cache-dir \
+        "torch==${PYTORCH_VERSION}" --index-url "${PYTORCH_INDEX_URL}"
+
+WORKDIR /opt/lolo
+COPY . /opt/lolo
+RUN pip install --no-cache-dir -e . \
+    && make -C native CXX=g++ \
+    && python -c "import torch; assert torch.__version__.split('+')[0] == '${PYTORCH_VERSION}'; print(torch.__version__)" \
+    && ldd /opt/lolo/build/lolo-libretro-host
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/opt/lolo/scripts/runpod-entrypoint.sh"]
+CMD ["bash"]
