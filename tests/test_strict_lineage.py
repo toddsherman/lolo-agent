@@ -269,6 +269,26 @@ class CheckpointAuditTests(unittest.TestCase):
             ("reward_track", "persistent_inputs", "excluded_inputs"),
         )
 
+    def test_strict_from_assisted_state_track_is_allowed(self) -> None:
+        # Ratified 2026-08-16 (strict-collection recon): strict-policy
+        # collection branched from an assisted-era save state is a strict
+        # track, so checkpoint audits must accept it.
+        payload = _strict_metadata()
+        payload["reward_track"] = "strict_from_assisted_state"
+        audit = audit_checkpoint_metadata(
+            payload, label="assisted-state-track"
+        )
+        self.assertEqual(audit.violations, ())
+        self.assertFalse(audit.assisted)
+        # The retired resume track stays outside the allowlist.
+        payload["reward_track"] = "human_prior_resume_observational"
+        audit = audit_checkpoint_metadata(payload, label="legacy-track")
+        self.assertTrue(audit.assisted)
+        self.assertIn(
+            "reward_track",
+            [violation.location for violation in audit.violations],
+        )
+
     def test_forbidden_and_unknown_persistent_inputs(self) -> None:
         payload = _strict_metadata()
         payload["persistent_inputs"] = [

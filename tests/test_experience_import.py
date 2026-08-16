@@ -9,6 +9,7 @@ from lolo_agent.experience_import import (
     decode_logged_png,
     extract_experience,
 )
+from lolo_agent.neural_run import derive_reward_track
 from lolo_agent.pixels import Frame
 from lolo_agent.run_logging import encode_png
 
@@ -38,6 +39,103 @@ class ExperienceImportTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "unrecognized telemetry reward track"):
             classify_reward_track({"metadata": {"reward_track": "mystery"}})
+
+    def test_strict_from_assisted_state_is_strict_importable(self) -> None:
+        # Ratified 2026-08-16: strict-policy collection branched from an
+        # assisted-era save state enters the strict store under a distinct,
+        # disclosed track value.
+        self.assertEqual(
+            classify_reward_track(
+                {"metadata": {"reward_track": "strict_from_assisted_state"}}
+            ),
+            "strict",
+        )
+        # Legacy manifests are not reclassified: the retired value keeps
+        # its assisted classification.
+        self.assertEqual(
+            classify_reward_track(
+                {
+                    "metadata": {
+                        "reward_track": "human_prior_resume_observational"
+                    }
+                }
+            ),
+            "assisted",
+        )
+
+
+class RewardTrackDerivationTests(unittest.TestCase):
+    def test_strict_policy_with_strict_ancestry_is_rule_free(self) -> None:
+        self.assertEqual(
+            derive_reward_track(False, None, None), "strict_rule_free"
+        )
+        self.assertEqual(
+            derive_reward_track(False, "strict", None), "strict_rule_free"
+        )
+        self.assertEqual(
+            derive_reward_track(False, "strict", "strict"),
+            "strict_rule_free",
+        )
+
+    def test_strict_policy_with_assisted_memory_ancestry_is_disclosed(
+        self,
+    ) -> None:
+        self.assertEqual(
+            derive_reward_track(False, "assisted", None),
+            "strict_from_assisted_state",
+        )
+        self.assertEqual(
+            derive_reward_track(False, "assisted", "strict"),
+            "strict_from_assisted_state",
+        )
+
+    def test_assisted_state_source_ancestry_cannot_be_laundered(
+        self,
+    ) -> None:
+        # The --resume-state-run track is consulted even when the memory
+        # source is strict: the laundering loophole is closed.
+        self.assertEqual(
+            derive_reward_track(False, "strict", "assisted"),
+            "strict_from_assisted_state",
+        )
+        self.assertEqual(
+            derive_reward_track(False, None, "assisted"),
+            "strict_from_assisted_state",
+        )
+
+    def test_assisted_policy_is_human_prior_regardless_of_ancestry(
+        self,
+    ) -> None:
+        for memory_track in (None, "strict", "assisted"):
+            for state_track in (None, "strict", "assisted"):
+                self.assertEqual(
+                    derive_reward_track(True, memory_track, state_track),
+                    "human_prior_v2",
+                )
+
+    def test_derived_tracks_round_trip_through_classification(self) -> None:
+        for memory_track, state_track, expected in (
+            (None, None, "strict"),
+            ("assisted", None, "strict"),
+            ("strict", "assisted", "strict"),
+        ):
+            track = derive_reward_track(False, memory_track, state_track)
+            self.assertEqual(
+                classify_reward_track({"metadata": {"reward_track": track}}),
+                expected,
+            )
+        self.assertEqual(
+            classify_reward_track(
+                {
+                    "metadata": {
+                        "reward_track": derive_reward_track(
+                            True, "assisted", "assisted"
+                        )
+                    }
+                }
+            ),
+            "assisted",
+        )
 
     def test_logged_png_round_trip(self) -> None:
         frame = Frame(3, 2, 3, bytes(range(18)))

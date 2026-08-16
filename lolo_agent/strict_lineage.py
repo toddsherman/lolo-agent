@@ -70,7 +70,11 @@ DECISIVE_REFERENCE_KINDS = frozenset(
 # Checkpoint provenance allowlists. Inputs a strict-lineage artifact may
 # declare persistent; everything else — and explicitly every forbidden
 # input — is a violation.
-STRICT_REWARD_TRACKS = ("strict", "strict_rule_free")
+STRICT_REWARD_TRACKS = (
+    "strict",
+    "strict_from_assisted_state",
+    "strict_rule_free",
+)
 STRICT_INPUT_ALLOWLIST = (
     "action_durations",
     "actions",

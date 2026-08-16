@@ -599,6 +599,30 @@ def load_logged_decision_semantic_state(
     return None
 
 
+def derive_reward_track(
+    human_prior_hearts: bool,
+    resume_reward_track: Optional[str],
+    resume_state_reward_track: Optional[str],
+) -> str:
+    """Derive the manifest reward track from policy and resume ancestry.
+
+    An assisted policy (``--human-prior-hearts``) always records
+    ``human_prior_v2``.  A strict policy records
+    ``strict_from_assisted_state`` when either resume source — the memory
+    source (``--resume-run``) or the decoupled physical state source
+    (``--resume-state-run``) — classifies as assisted, so state-source
+    ancestry can never be laundered into ``strict_rule_free``; otherwise
+    it records ``strict_rule_free``
+    (docs/strict-collection-recon-2026-08-16.md, ratified 2026-08-16).
+    """
+
+    if human_prior_hearts:
+        return "human_prior_v2"
+    if "assisted" in (resume_reward_track, resume_state_reward_track):
+        return "strict_from_assisted_state"
+    return "strict_rule_free"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run a frozen neural rollout planner")
     parser.add_argument("--host", type=Path, required=True)
@@ -2082,6 +2106,7 @@ def main() -> None:
     rom_sha256 = sha256_file(args.rom)
     resume_metadata = None
     resume_reward_track = None
+    resume_state_reward_track = None
     if args.resume_run is not None:
         source_manifest = validate_replay_inputs(
             args.resume_run,
@@ -2127,6 +2152,9 @@ def main() -> None:
                 args.resume_state_run.expanduser().resolve()
                 / "events.jsonl"
             )
+            resume_state_reward_track = classify_reward_track(
+                state_manifest
+            )
             resume_metadata.update(
                 {
                     "state_source_run": str(
@@ -2144,6 +2172,7 @@ def main() -> None:
                         args.resume_state_checkpoint_event_seq
                     ),
                     "state_source_events_sha256": sha256_file(state_events),
+                    "state_source_reward_track": resume_state_reward_track,
                     "memory_state_decoupled": True,
                 }
             )
@@ -2245,15 +2274,13 @@ def main() -> None:
             if args.anonymous_entity_behavior_mode == "learn"
             else "frozen_neural_evaluation"
         ),
-        "reward_track": (
-            "human_prior_v2"
-            if args.human_prior_hearts
-            else (
-                "human_prior_resume_observational"
-                if resume_reward_track == "assisted"
-                else "strict_rule_free"
-            )
+        "reward_track": derive_reward_track(
+            args.human_prior_hearts,
+            resume_reward_track,
+            resume_state_reward_track,
         ),
+        "resume_reward_track": resume_reward_track,
+        "resume_state_reward_track": resume_state_reward_track,
         "requested_decisions": args.decisions,
         "device": str(device),
         "planning_config": asdict(config),

@@ -26,7 +26,16 @@ def classify_reward_track(manifest: Dict[str, Any]) -> str:
     """Classify policy provenance without exposing rewards to model training."""
 
     configured = manifest.get("metadata", {}).get("reward_track")
-    if configured is None or configured in ("strict", "strict_rule_free"):
+    # strict_from_assisted_state: strict-policy collection branched from an
+    # assisted-era save state, ancestry disclosed in the manifest (ratified
+    # docs/strict-collection-recon-2026-08-16.md). Legacy
+    # human_prior_resume_observational manifests keep their assisted
+    # classification via the human_prior prefix below.
+    if configured is None or configured in (
+        "strict",
+        "strict_rule_free",
+        "strict_from_assisted_state",
+    ):
         return "strict"
     if isinstance(configured, str) and configured.startswith("human_prior"):
         return "assisted"
