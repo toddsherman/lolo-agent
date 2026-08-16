@@ -1,0 +1,1380 @@
+# Lolo agent research learnings and negative-results log
+
+Status: living research record  
+Last updated: 2026-08-16  
+Companion plan: `docs/roadmap.md`
+
+## 1. Purpose
+
+This document records what the project has tried, what did not work well, what
+was falsified, what remains merely unproven, and how each result changed the
+plan. Its purpose is to prevent future coding agents from repeating expensive
+experiments or treating a previously rejected idea as established progress.
+
+The raw event logs and experiment-specific documents remain the source of
+truth. This file is the durable synthesis and decision history.
+
+## 2. How to interpret this file
+
+Conclusions use four evidence levels:
+
+- **Falsified at the measured gate**: the stated hypothesis failed under the
+  documented state and budget. It may be reconsidered only with a materially
+  different mechanism or falsifiable hypothesis.
+- **Negative result**: the mechanism ran correctly but did not improve the
+  target outcome.
+- **Engineering defect**: the experiment exposed an implementation or
+  telemetry error; conclusions drawn before the correction are invalid.
+- **Not yet demonstrated**: a component passed a narrower gate but has not
+  shown room completion or generalization.
+
+A finite search failure is never described as proof that a puzzle state is
+globally unsolvable. It is evidence scoped to its exact state, model, search
+budget, and controller-edge set.
+
+## 3. Executive summary
+
+The strongest conclusions so far are:
+
+1. The title and story sequence consumed large exploration budgets without
+   exercising puzzle mechanics. A deterministic, evaluator-owned bootstrap is
+   appropriate and separately logged.
+2. Raw visual novelty, screen change, and broader action coverage are useful
+   for exploration but are not reliable measures of puzzle progress.
+3. Sparse positive milestones were too weak for early navigation. Explicit
+   heart-aware shaping greatly accelerated the assisted development track, but
+   reward is no longer the primary Room 3 bottleneck.
+4. Straight-line distance to a visible goal cannot represent obstacle
+   preparation, block placement, delayed transformations, or post-milestone
+   behavior.
+5. Wider or deeper flat exact search does not compensate for a missing
+   representation. Several searches verified thousands or tens of thousands
+   of branches without discovering a useful preparation.
+6. Coarse persistent pixel changes frequently confused player animation,
+   enemy animation, remote displays, and nearby objects. Matched controls,
+   phase alignment, connected player masking, and object correspondence are
+   mandatory.
+7. A bounded search failure is not causal evidence that collecting a milestone
+   was wrong. Earlier goal-exhaustion logic learned false negative value from
+   insufficient search.
+8. Save-state restoration must preserve semantic and relational state as well
+   as pixels. Lost pose, world context, archive ownership, or object identity
+   produced incorrect conclusions and wasted repeated search.
+9. The anonymous behavior model can learn reusable outcome distributions, but
+   policy authority requires strict provenance, calibration, and fail-open
+   behavior. Broad hazard association produced a false positive.
+10. The current world-model and returnability sidecars have not passed all
+    native generalization gates and therefore remain selection-disabled or
+    telemetry-only where documented.
+11. RunPod is not cost-effective for the current sequential emulator-search or
+    small real-data training workloads. The M5 remains the default platform.
+12. The latest work proved that a confirmed anonymous displacement can survive
+    planning descendants and process restoration. It did not prove that the
+    agent can choose a useful placement. The next bottleneck is relational
+    object state and accessibility consequences.
+
+## 4. Chronological learning record
+
+### 4.1 Initial neural world-model training
+
+What was tried:
+
+- A convolutional visual encoder/decoder with action-conditioned ensemble
+  dynamics was trained on branched emulator transitions.
+- Held-out RGB prediction was measured over multiple horizons.
+- A frozen planner used model error, uncertainty, novelty, and verified
+  emulator outcomes.
+
+What worked:
+
+- The data path, neural checkpoint, training/freeze split, and multi-horizon
+  prediction pipeline were validated.
+- Held-out RGB error improved across modeled decisions in the first medium
+  experiment.
+
+What did not work well:
+
+- Better pixel prediction did not translate directly into entering or solving
+  the first puzzle.
+- Longer-horizon training later worsened horizon-three L1 from `0.1307` to
+  `0.1377` in one measured variant.
+- Frozen planning spent large budgets in title and story animation.
+
+Learning:
+
+- Pixel reconstruction quality is necessary infrastructure, not a sufficient
+  planning metric.
+- Native policy gates override narrow offline loss improvements.
+- Do not promote a model into action selection solely because held-out L1
+  improves.
+
+Plan change:
+
+- Keep exact emulator verification as the decision oracle.
+- Use learned models to propose, rank, and estimate uncertainty.
+- Require paired native planning gates before adding policy weight.
+
+Evidence:
+
+- `docs/medium-experiment-2026-08-08.md`
+- `docs/spatial-causal-model-2026-08-10.md`
+
+### 4.2 Raw novelty and delayed-return exploration
+
+What was tried:
+
+- Visual novelty, scene novelty, action coverage, delayed-return penalties,
+  archive restoration, and passive-sequence memory.
+- Neutral grace windows after autonomous motion.
+- Persistent-frontier values and behavioral abstraction.
+
+What worked:
+
+- Loops and returns became auditable.
+- The planner preserved and restored more diverse visual and behavioral
+  frontiers.
+- Autonomous transitions and timer-driven sequences were distinguished more
+  clearly.
+
+What did not work well:
+
+- The agent continued spending most of its budget in intro animation.
+- Improved scene coverage did not produce puzzle entry.
+- Fixed and active probe variants reached story tableaus but not Floor 1.
+- Broader visual exploration was not equivalent to controllable progress.
+
+Learning:
+
+- Novelty is a useful exploration ingredient but an unreliable objective.
+- Autonomous animation must not receive controller credit.
+- Exploration metrics must be tied to controllability, persistent causal
+  effects, or later verified outcomes.
+
+Plan change:
+
+- Add matched neutral controls.
+- Add action-dependent causal signatures.
+- Separate autonomous grace from intervention selection.
+- Treat raw novelty as bounded secondary value.
+
+Evidence:
+
+- `docs/medium-experiment-2026-08-08.md`
+
+### 4.3 Temporal-option credit assigned to timer-driven events
+
+What was tried:
+
+- Long passive sequences credited the initiating action when a later visual
+  transition occurred.
+
+Failure:
+
+- A preliminary run assigned positive value to `START@4` before a 51-decision,
+  28-scene timer-driven transition.
+- Reusing that value caused repeated `START` selection on the same static
+  pixels.
+- The initiating action preceded the transition but did not demonstrably
+  cause it.
+
+Classification:
+
+- **Falsified at the measured gate**: temporal precedence alone is not adequate
+  causal credit.
+
+Learning:
+
+- Long-delay value must compare a factual trajectory with a matched-duration
+  or delayed counterfactual from the same root.
+- Correlated passive transitions cannot establish controller authority.
+
+Plan change:
+
+- Reserve and advance delayed counterfactual states.
+- Credit an initiating choice only when the factual/counterfactual contrast
+  persists.
+- Keep negative samples scoped to exact state/action/duration unless broader
+  causal evidence exists.
+
+Evidence:
+
+- `docs/medium-experiment-2026-08-08.md`, temporal-option and
+  delayed-counterfactual sections
+
+### 4.4 Learning from the title and story sequence
+
+What was tried:
+
+- Let the agent discover how to leave the start screen and traverse the story
+  sequence through ordinary exploration.
+
+Failure:
+
+- Multiple frozen runs exhausted hundreds of decisions before reaching puzzle
+  mechanics.
+- The sequence primarily exercised timers, fades, and menus rather than the
+  research target.
+
+Classification:
+
+- **Negative result** for research efficiency, not a claim that autonomous
+  menu discovery is impossible.
+
+Learning:
+
+- Spending the dominant budget on deterministic initialization produces little
+  evidence about puzzle learning.
+
+Plan change:
+
+- Introduce an opt-in evaluator-owned `lolo1-first-room` bootstrap.
+- Bind it to the legal local ROM digest and an expected pixel endpoint.
+- Log all bootstrap actions under attempt zero and exclude them from agent
+  statistics.
+
+Boundary:
+
+- The bootstrap is infrastructure, not learned game knowledge, and it must not
+  expand into room-specific solution macros.
+
+Evidence:
+
+- `docs/medium-experiment-2026-08-08.md`, evaluator bootstrap section
+
+### 4.5 `SELECT` and broad hazard generalization
+
+What was tried:
+
+- Learn negative temporal value after `SELECT` caused a delayed fade/reset.
+- Generalize harmful action evidence more broadly.
+
+What worked:
+
+- Exact delayed evidence identified the causal `SELECT@1` initiation.
+- Pair-scoped temporal values reduced repetition of the known failure.
+
+What did not work well:
+
+- Broad action-level hazard generalization risked suppressing legitimate
+  actions in unrelated contexts.
+- A locally returning rightward move acquired negative exact-choice evidence
+  but did not justify disabling `RIGHT` globally.
+
+Learning:
+
+- Hazard evidence must retain state, action, duration, context, and causal
+  lineage.
+- Global action hazards require much stronger evidence than local failure.
+
+Plan change:
+
+- Use exact-choice and context-specific values first.
+- Generalize only causally matched terminal evidence.
+- Fail open when all actions would otherwise be filtered.
+
+Evidence:
+
+- `docs/medium-experiment-2026-08-08.md`
+- `docs/anonymous-entity-policy-gate-2026-08-13.md`
+
+### 4.6 Sparse reward and early heart discovery
+
+What was tried:
+
+- Strict novelty and causal exploration without explicitly weighting hearts.
+- Later, an assisted pixel-heart reward with distance shaping and life loss.
+
+What worked:
+
+- The strict agent eventually collected its first heart through causal
+  frontier restoration.
+- Assisted navigation shaping dramatically accelerated early Room 2 heart
+  collection. A sequence that previously required hundreds of decisions was
+  reproduced in tens of decisions.
+- Explicit life-loss evidence provided a useful negative milestone.
+
+What did not work well:
+
+- Sparse milestones alone were too slow for repeated development.
+- After all Room 2 hearts were collected, the agent did not reliably navigate
+  back to treasure or clear the room.
+- Larger or longer heart-aware runs continued exploring without learning the
+  required preparation relationship.
+
+Learning:
+
+- Explicit positive milestones are effective assisted debugging tools.
+- Reward can expose planning failures, but cannot substitute for object state,
+  obstacle reasoning, timing, or delayed consequences.
+- “Hearts are good” helped early movement but did not solve configuration
+  planning.
+
+Plan change:
+
+- Retain the heart-aware track as assisted development scaffolding.
+- Keep strict and assisted data separate.
+- Stop treating reward weight as the leading Room 3 intervention.
+- Move next to relational object and accessibility representations.
+
+Evidence:
+
+- `docs/human-prior-reward-experiment-2026-08-10.md`
+- `docs/control-preserving-search-2026-08-10.md`
+- `docs/roadmap.md`, strict versus assisted boundary
+
+### 4.7 Straight-line goal distance
+
+What was tried:
+
+- Reward movement that reduced Manhattan-like pixel distance to a visible
+  heart.
+- Add a short detour grace window so temporary regression was allowed.
+
+What worked:
+
+- It accelerated uncomplicated routes and allowed short paths around simple
+  obstacles.
+
+What did not work well:
+
+- It stalled at obstacles requiring preparation.
+- It could not value moving an object away from the goal, arranging a safe
+  path, triggering a transformation, or preparing for post-heart behavior.
+- Hundreds of preparation decisions could leave the relevant blocker
+  unchanged even when the player repeatedly approached the goal.
+
+Classification:
+
+- **Negative result** as the principal long-horizon planning representation.
+
+Learning:
+
+- Goal proximity must be coupled to world configuration and verified
+  accessibility.
+- Temporary distance regression can be necessary and should not be treated as
+  failure by itself.
+
+Plan change:
+
+- Add phase-conditioned player-position novelty.
+- Preserve world configurations alongside goal state.
+- Plan over accessibility deltas and object-level hypotheses rather than only
+  distance.
+
+Evidence:
+
+- `docs/human-prior-reward-experiment-2026-08-10.md`
+- `docs/control-preserving-search-2026-08-10.md`
+
+### 4.8 Causal cell coverage and persistent disappearance
+
+What was tried:
+
+- Reward globally under-visited action-caused coarse cells.
+- Preserve stable changes from a learned modal baseline, especially persistent
+  disappearance.
+
+What worked:
+
+- Lower Room 2 hearts were collected and their disappearance was preserved
+  much longer.
+- Persistent-change filtering prevented immediate rollback to some
+  pre-collection states.
+
+What did not work well:
+
+- Coverage alone eventually restored pre-collection states.
+- Persistence preserved milestones but did not collect upper hearts, open
+  treasure, or clear the room.
+- A transient player overlay could retire a persistent marker even though the
+  underlying game state remained changed.
+- A current-context causal-outcome preference over-fragmented movement and was
+  stopped as invalid.
+
+Learning:
+
+- Preservation and acquisition are separate problems.
+- Coarse pixel persistence is valuable evidence but not an object model.
+- Player occlusion and animation can corrupt modal cell evidence.
+
+Plan change:
+
+- Use player-masked object tracks rather than only persistent coarse cells.
+- Preserve configurations by relational state.
+- Treat coverage as exploration telemetry or bounded secondary value.
+
+Evidence:
+
+- `docs/spatial-coverage-persistence-2026-08-10.md`
+
+### 4.9 Save-state lifecycle and archive ownership
+
+Engineering defects discovered:
+
+- A full archive could add and immediately evict a branch, release its state
+  during pruning, then release it again during decision cleanup.
+- Short-lived archive handles disappeared when a process ended.
+- Resuming a decision by replaying earlier rejected branches was costly and
+  could diverge from the intended exact physical state.
+- Semantic memory and restored pixels could become decoupled without explicit
+  provenance.
+
+Learning:
+
+- Save-state capabilities require explicit ownership, cloning, release, and
+  persistence semantics.
+- Cross-process continuation needs content-addressed snapshots for selected
+  decisions and promoted alternatives.
+- Pixels remain authoritative when later semantic memory is paired with an
+  older physical state.
+
+Plan change:
+
+- Track same-decision pruned handles.
+- Persist decision snapshots and promoted option archives.
+- Verify state and frame digests during restoration.
+- Record memory-source and state-source runs separately.
+- Skip incompatible live archive imports when state and memory sources are
+  deliberately decoupled.
+
+Evidence:
+
+- `docs/medium-experiment-2026-08-08.md`
+- `docs/control-preserving-search-2026-08-10.md`
+- `docs/object-state-gate-2026-08-16.md`
+
+### 4.10 Reversible world context and semantic state
+
+What was tried:
+
+- Extend the heart/player graph with reversible anonymous world-effect
+  signatures.
+- Preserve action-confirmed visual changes across archive restores.
+
+What worked:
+
+- The assisted graph distinguished more states than position-only memory.
+- It reduced some animation-sensitive restoration and retained persistent
+  transformations.
+
+What did not work well:
+
+- More semantic graph states did not produce more reachable player positions
+  in some long runs.
+- A longer continuation added no position beyond a plateau.
+- Coarse world effects still confused animation and local sprite residue.
+
+Learning:
+
+- A different pixel signature is not necessarily a strategically different
+  puzzle configuration.
+- World context needs object correspondence, persistence, and relational
+  consequences.
+
+Plan change:
+
+- Require matched controls and phase alignment.
+- Separate transient interaction identity from confirmed manipulation.
+- Move from one cumulative effect signature to multi-object track sets.
+
+Evidence:
+
+- `docs/human-prior-reward-experiment-2026-08-10.md`
+- `docs/control-preserving-search-2026-08-10.md`
+
+### 4.11 Physical frontiers and modest exact-search expansion
+
+What was tried:
+
+- Prefer unvisited player positions and verified action-sequence frontiers.
+- Expand depth-five and later deeper exact option searches with larger beams.
+
+What worked:
+
+- More distinct player positions and controller edges became reachable.
+- Verified intermediate prefixes improved graph coverage and archive recovery.
+- Some topology objectives and previously unchosen forks were reached.
+
+What did not work well:
+
+- A depth-five/beam-16 search verified 1,656 paths at one plateau without
+  opening treasure or changing rooms.
+- Later Room 3 searches verified tens of thousands of branches without finding
+  a simple route to the remaining heart.
+- A deeper search could repeat states or pursue tracker artifacts.
+
+Classification:
+
+- **Falsified at the measured gates**: modestly increasing movement horizon is
+  not enough at those bottlenecks.
+
+Learning:
+
+- Search organization improved, but the missing information was not simply an
+  untried short controller sequence.
+- A flat tree cannot efficiently reason about preparations whose value appears
+  only after object and phase changes.
+
+Plan change:
+
+- Do not automatically increase depth or beam after failure.
+- Add object-level hypotheses and learned options.
+- Couple search diversity to relational configurations and accessibility.
+
+Evidence:
+
+- `docs/control-preserving-search-2026-08-10.md`
+- `docs/object-state-gate-2026-08-16.md`
+
+### 4.12 Coarse persistent-effect false positives
+
+What was tried:
+
+- Treat stable, localized, non-player pixel changes as manipulation frontiers.
+
+Failures:
+
+- Apparent effects failed stricter action-control checks.
+- Enemy animation, player pose, blocked presses, and a remote display could
+  look like persistent local transformations.
+- An apparent push hypothesis from repeated directional actions was falsified.
+- One preserved `[7,6]` state did not open the hypothesized lower-right route.
+- Delaying a heart did not reveal a simple preparation within a depth-20,
+  22,759-branch search.
+
+Learning:
+
+- Persistence alone does not establish causality or object correspondence.
+- A changed cell near the controlled sprite is especially vulnerable to mask
+  and animation errors.
+- A verified visual state change may be real but strategically irrelevant.
+
+Plan change:
+
+- Compare action endpoints with equal-duration root and local `NOOP` controls.
+- Search nearby neutral phase offsets.
+- Mask the controlled sprite in both source and target independently.
+- Require appearance correspondence at the predicted destination for
+  directional displacement.
+- Measure downstream accessibility before assigning strategic value.
+
+Evidence:
+
+- `docs/control-preserving-search-2026-08-10.md`
+- `docs/object-state-gate-2026-08-16.md`
+
+### 4.13 Player tracking and pose artifacts
+
+Engineering defects discovered:
+
+- Episodic reconstruction did not initially restore action-derived facing.
+- Blocked movement animation could be interpreted as spatial progress.
+- Half-tile snapping around negative offsets created false topology and
+  waypoint conclusions.
+- A player mask based on nearby blue and white pixels absorbed an adjacent
+  disconnected white object.
+
+Invalid conclusions caused by defects:
+
+- Some apparent unreachable pockets were tracker artifacts.
+- Some push correspondence failed because the object was erased with the
+  player.
+
+Learning:
+
+- Player localization, facing, and masking are foundational dependencies for
+  causal object learning.
+- Tracker uncertainty must be visible in telemetry and must not silently become
+  graph truth.
+
+Plan change:
+
+- Persist target pose through commits and resumes.
+- Use non-negative half-up tile snapping.
+- Anchor the assisted player mask on a connected blue/white component and keep
+  disconnected adjacent objects.
+- Build a learned action-correlated controllable-region tracker for the final
+  strict track.
+
+Evidence:
+
+- `docs/control-preserving-search-2026-08-10.md`
+- `docs/object-state-gate-2026-08-16.md`
+
+### 4.14 Goal-exhaustion rollback learned false negative value
+
+What was tried:
+
+- If a post-heart search found no new endpoint, assign negative value to that
+  collection ordering and restore the pre-milestone state.
+
+Failure:
+
+- In Room 3, bounded search exhaustion after too few evidence steps was treated
+  as if the milestone caused an unrecoverable failure.
+- The learned negative then filtered the same legitimate collection.
+- A corrected replay found a new endpoint, directly falsifying the earlier
+  “frontier exhausted” conclusion.
+
+Classification:
+
+- **Engineering and inference defect**: finite search failure was promoted to
+  causal negative value.
+
+Learning:
+
+- Failure to find progress is not evidence that the preceding milestone caused
+  failure.
+- Exhaustion needs minimum post-milestone evidence, no intervening progress,
+  known transitions, scoped context, and explicit non-hazard provenance.
+
+Plan change:
+
+- Require at least 16 consecutive committed post-milestone decisions by
+  default.
+- Reset exhaustion evidence on graph or player-position progress.
+- Defer rather than learn negative value when the evidence threshold is not
+  met.
+- Mark ordering hints separately from hazard evidence.
+- Fail open when filtering would remove every alternative.
+
+Evidence:
+
+- `docs/room3-milestone-credit-correction-2026-08-13.md`
+
+### 4.15 Treasure detector missed an actual success
+
+What happened:
+
+- An audit initially concluded that Room 2 preparation had failed.
+- Frame-by-frame inspection showed that Lolo had already contacted the open
+  treasure.
+- The semantic detector failed to persist and credit the acquired-treasure
+  phase.
+
+Classification:
+
+- **Engineering defect** that invalidated the earlier negative conclusion.
+
+Learning:
+
+- Evaluator and semantic detectors can undercount success even when emulator
+  behavior is correct.
+- Negative policy conclusions must be checked against stored frames and scene
+  transitions.
+
+Plan change:
+
+- Persist acquired-treasure state across restores and resumes.
+- Use stable novel-scene transition detection as evaluator confirmation.
+- Keep raw frames and replay sufficient for independent audit.
+
+Evidence:
+
+- `docs/human-prior-reward-experiment-2026-08-10.md`
+- `docs/control-preserving-search-2026-08-10.md`
+
+### 4.16 Spatial causal world model promotion
+
+What was tried:
+
+- Several changed-region renderers: redraw, directly supervised flow,
+  recursive flow, and anchored flow.
+- Offline held-out evaluation and native shadow comparisons.
+- Optional counterfactual usefulness in planner ranking.
+
+What worked:
+
+- The anchored local flow/residual renderer passed a trajectory-balanced
+  offline gate and improved many native branches.
+- Uncertainty/error correlation became positive in a measured configuration.
+
+What did not work well:
+
+- Several renderer variants beat persistence at one step but failed later
+  horizons.
+- One offline-passing renderer still lost the native mean comparison.
+- Paired planner ablations produced mixed exploration results.
+
+Classification:
+
+- **Not yet demonstrated** for policy authority.
+
+Learning:
+
+- Persistence is a strong baseline for sparse-change video.
+- Offline averages can hide native failure on decision-relevant branches.
+- A predictor can be useful for telemetry before it is reliable enough for
+  selection.
+
+Plan change:
+
+- Keep spatial selection weight zero by default.
+- Continue native shadow evaluation.
+- Promote only after run-held-out and native branch gates both pass.
+
+Evidence:
+
+- `docs/spatial-causal-model-2026-08-10.md`
+
+### 4.17 Observed-returnability sidecar
+
+What was tried:
+
+- Learn whether an endpoint had an observed return path using frozen spatial
+  tokens.
+- Train from observed transition graphs and later explicit bidirectional
+  probes.
+
+Failures:
+
+- Graph-derived negative labels were policy-dependent and sparse.
+- Native positive and negative probabilities were poorly separated.
+- A source-disjoint aggregate gate produced AUC `0.510`, worse than a useful
+  discriminator, and a negative mean probability above the positive mean.
+- The model fit a tiny training set but did not generalize.
+
+Classification:
+
+- **Failed promotion gate**; remains telemetry-only.
+
+Learning:
+
+- Returnability needs explicit, balanced, source-disjoint probes and censored
+  unknowns.
+- Tiny negative sets encourage memorization.
+- Native integration success does not establish model generalization.
+
+Plan change:
+
+- Use explicit bidirectional branch collectors.
+- Label observed returns positively, budget-scoped non-returns negatively, and
+  censor unresolved cases.
+- Expand source-diverse data before retraining.
+- Do not use the sidecar as reward, hazard, or policy authority.
+
+Evidence:
+
+- `docs/spatial-causal-model-2026-08-10.md`
+
+### 4.18 Anonymous entity behavior and curiosity
+
+What was tried:
+
+- Cluster anonymous patch appearances.
+- Learn context-, action-, duration-, and phase-conditioned outcome
+  distributions.
+- Reserve curiosity probes for rare or uncertain interactions.
+- Learn inert/no-effect probabilities.
+
+What worked:
+
+- Matched controls rejected animation false positives.
+- The model learned reusable no-effect and measured-change descriptors without
+  supplied object names.
+- Frozen guarded planning converted some evidence into a bounded advantage
+  while retaining exact verification.
+
+What remains unproven:
+
+- Early native gates did not demonstrate a successful push or transformation.
+- Curiosity runs mainly provided evidence about exploration coverage and
+  false-positive control.
+- Appearance types and local behavior do not yet form a persistent multi-object
+  relational state.
+
+Learning:
+
+- Distributions with uncertainty and provenance are preferable to one
+  unconditional rule per appearance.
+- No-effect outcomes are valuable learned mechanics.
+- Curiosity should distinguish an unseen context from a globally familiar
+  appearance.
+
+Plan change:
+
+- Add explicit displacement and transformation descriptors.
+- Preserve object identity across interactions and restores.
+- Condition behavior on stable phase and local geometry.
+- Keep unfamiliar or weakly supported cases experimental rather than
+  authoritative.
+
+Evidence:
+
+- `docs/anonymous-entity-behavior.md`
+- `docs/relational-manipulation-milestone-2026-08-13.md`
+- `docs/anonymous-entity-semantics-gate-2026-08-13.md`
+
+### 4.19 Anonymous hazard veto false positive
+
+What was tried:
+
+- Simulate vetoing branches using predicted anonymous-entity hazards.
+
+Failure:
+
+- A broad terminal association marked one genuinely dangerous result but also
+  marked safe `DOWN` as a simulated veto.
+- The false positive came from insufficient causal provenance.
+
+Classification:
+
+- **Failed broad-authority hypothesis**.
+
+Learning:
+
+- Passive terminal correlation cannot grant policy authority to every rare
+  patch visible before a reset.
+- Hazard transfer needs locally attributed intervention/control evidence.
+
+Plan change:
+
+- Separate empirical terminal correlation from causal hazard posterior.
+- Require context-matched causal support and sufficient samples.
+- Keep veto disabled by default.
+- Fail open if all verified endpoints would be rejected.
+
+Evidence:
+
+- `docs/anonymous-entity-policy-gate-2026-08-13.md`
+
+### 4.20 Pose-only and changed-cell preparation
+
+What was tried:
+
+- Give delayed preparation credit to player poses near a learned future goal.
+- Couple preparation to cumulative anonymous changed cells.
+
+Failures:
+
+- `entity-v311-room3-previsited-future-goal-d36x18` visited the later chest
+  location before the final heart but still stalled afterward.
+- `entity-v312-room3-layout-aware-preparation-d24x18` produced apparent layout
+  variants that mapped to an animated blue entity rather than useful object
+  arrangements.
+
+Classification:
+
+- **Falsified at the measured gates**: pose-only preparation and unqualified
+  cumulative changed cells are insufficient.
+
+Learning:
+
+- Preparation value requires persistent causal object state and future
+  consequences.
+- Spatial coincidence with a later goal does not establish a useful setup.
+
+Plan change:
+
+- Require confirmed causal manipulation or learned future-goal evidence.
+- Introduce object correspondence and player-masked state signatures.
+- Plan next around verified accessibility changes.
+
+Evidence:
+
+- `docs/object-state-gate-2026-08-16.md`
+
+### 4.21 Broad pristine-room search before reliable detection
+
+What was tried:
+
+- Search broadly from a pristine Room 3 state for preparation configurations.
+
+Failures:
+
+- `v313` produced 1,756 raw changed-layout branches and accepted zero reliable
+  manipulations through 3,202 verified branches.
+- `v314` completed 3,333 exact branches and 139 causal probes without a
+  confirmed directional displacement.
+
+Classification:
+
+- **Negative result** that isolated a detector/contact bottleneck.
+
+Learning:
+
+- More search was generating candidates faster than the representation could
+  validate them.
+- A targeted historical pre-interaction state was a better scientific gate
+  than another larger pristine search.
+
+Plan change:
+
+- Use targeted save states to test one primitive at a time.
+- Audit each detector gate quantitatively.
+- Increase broad search only after the primitive passes.
+
+Evidence:
+
+- `docs/object-state-gate-2026-08-16.md`
+
+### 4.22 Directional displacement detector failures
+
+What was tried:
+
+- Detect a known Room 3 displacement at a historical pre-interaction state.
+
+Defects found:
+
+- Directional action effects were not allowed the same persistence treatment
+  as button actions.
+- Repeated appearances were excluded by a rarity gate.
+- The nonlocal effect mask discarded the adjacent destination cell.
+- Source/destination appearance distance exceeded threshold because player
+  pixels contaminated the source patch.
+- The player mask erased the adjacent disconnected white object.
+
+Learning:
+
+- Repeated appearance is exactly the reusable class evidence the model needs.
+- Directional manipulation destinations are often adjacent to the player and
+  cannot be filtered as ordinary local sprite spill without correspondence.
+- Source and target features need independent player masking.
+
+Plan change:
+
+- Allow phase-stable one-cell directional displacement to bootstrap a mechanic.
+- Use raw player-masked matched-counterfactual effects at the expected
+  destination.
+- Remove rarity as a prerequisite for correspondence.
+- Keep only the connected player-color component in the assisted mask.
+
+Result after correction:
+
+- `v318` found six tracked push branches, two persistent `RIGHT -> NOOP`
+  branches, independent causal displacement evidence, and replayable archives.
+
+Evidence:
+
+- `docs/object-state-gate-2026-08-16.md`
+
+### 4.23 Object state lost across planning cycles
+
+What was tried:
+
+- Resume from the confirmed pushed-object archive and continue deeper search.
+
+Failure:
+
+- `v319` restored correct pixels but not tracked source, destination,
+  interaction, appearance, or persistence metadata at the new search root.
+- It explored 869 branches through depth nine without another displacement or
+  heart.
+
+Classification:
+
+- **Engineering representation defect**.
+
+Learning:
+
+- Pixel restoration is not enough for long-term reasoning when learned latent
+  relational state is omitted.
+- Archive telemetry is part of the persistent planning contract.
+
+Plan change:
+
+- Serialize tracked cells, object appearance, interaction direction, effect
+  distance, phase/context, and persistence.
+- Seed restored exact-search roots with that state.
+- Reconstruct legacy metadata conservatively from verified effect signatures
+  and destination pixels.
+
+Result after correction:
+
+- `v320`: 2,497 of 2,497 verified descendants retained the manipulated cell.
+- `v321`: 132 of 132 descendants retained the confirmed `RIGHT`, source
+  `(7,6)`, destination `(8,6)`, distance, and persistence evidence.
+
+Evidence:
+
+- `docs/object-state-gate-2026-08-16.md`
+
+### 4.24 Confirmed identity overwritten by a later interaction
+
+Defect:
+
+- A descendant archive retained the confirmed pushed-world signature but
+  paired it with a later unrelated `UP` interaction near another patch.
+
+Learning:
+
+- “Current interaction candidate” and “interaction that causally produced the
+  confirmed world state” are different concepts.
+
+Plan change:
+
+- Store confirmed manipulation identity separately from transient interaction
+  probes.
+- Propagate confirmed fields through descendants.
+- Serialize the confirmed source when archiving the corresponding world state.
+
+Validation:
+
+- `v321` retained the original `RIGHT` identity after a later two-action
+  continuation.
+
+Evidence:
+
+- `docs/object-state-gate-2026-08-16.md`
+
+### 4.25 Retaining a push did not solve the next objective
+
+What happened:
+
+- After cross-cycle track restoration, `v320` preserved the changed
+  configuration across all verified descendants and archived a five-action
+  continuation.
+- It did not collect another heart.
+
+Classification:
+
+- **Not yet demonstrated**: persistent single-object state is necessary but
+  does not establish strategic usefulness.
+
+Learning:
+
+- The planner needs multiple simultaneous tracks, explicit transformations,
+  and a model of how configurations affect reachable space.
+- Reward and search depth should not be changed before those representations
+  exist.
+
+Plan change:
+
+- Adopt the object-centric and accessibility roadmap in `docs/roadmap.md`.
+- The next decisive gate is deliberate preparation with verified downstream
+  access, not merely detecting another changed cell.
+
+## 5. Platform and cost learnings
+
+### 5.1 RunPod for emulator branching
+
+Hypothesis:
+
+> A paid RunPod GPU worker would reduce cost or time for the current search
+> loop.
+
+Result:
+
+- The dominant emulator path is sequential and CPU-bound.
+- The GPU did not accelerate it.
+
+Decision:
+
+- **Do not migrate current emulator branching to RunPod.**
+- Keep the M5 as the default execution platform.
+
+### 5.2 Synthetic GPU training benchmark
+
+What happened:
+
+- A small synthetic workload showed almost no useful advantage.
+- Model-level final loss differed by only about `0.15%` in one comparison.
+
+Learning:
+
+- Synthetic throughput alone does not justify routine paid launches.
+
+### 5.3 Real-data GPU training
+
+What happened:
+
+- The paid real-data gate failed by a wide margin.
+- The synthetic pass did not transfer because it preallocated random one-step
+  batches and did not represent the real storage/decode/training pipeline.
+
+Decision:
+
+- Use RunPod only after a representative local benchmark identifies a
+  compute-bound model workload.
+- Every paid cycle needs explicit dollar and wall-clock ceilings plus automatic
+  Pod shutdown.
+
+Evidence:
+
+- `docs/runpod-platform-gate-2026-08-15.md`
+- `docs/runpod.md`
+- `docs/research-loop.md`
+
+## 6. Directions discussed and deliberately rejected
+
+### 6.1 Training from YouTube solutions
+
+Proposal:
+
+- Train a winning policy by watching people solve the game on YouTube.
+
+Why it was rejected for this project:
+
+- It changes the central research question from autonomous rule discovery to
+  demonstration-assisted imitation.
+- It contaminates held-out Room 1 evaluation if solutions are shown.
+- It risks room-specific trajectory memorization.
+- Raw video omits synchronized controller actions and introduces compression,
+  cuts, overlays, timing differences, and uncertain emulator alignment.
+- It would make a later *Lolo 2* generalization claim harder to interpret.
+
+Decision:
+
+- No YouTube or solution demonstrations in the plan of record.
+- If demonstration learning is ever studied, it must be a separately labeled
+  baseline with independent data and claims, preferably using synchronized
+  emulator action telemetry.
+
+### 6.2 Hard-coding complete game mechanics
+
+Discussion:
+
+- Hard-code known object behaviors, safe paths, or room solutions.
+
+Decision:
+
+- Rejected. The final model must discover reusable behavior from pixels and
+  interaction.
+- The deterministic start bootstrap is a narrow evaluator fixture, not
+  authority to add room-specific macros.
+
+### 6.3 Treating hearts and lives as the final strict solution
+
+Discussion:
+
+- Explicitly weight hearts positively and life loss negatively.
+
+Learning:
+
+- This was valuable for the assisted development track and isolated planning
+  failures.
+- It violates the strict final claim if supplied semantic detectors remain in
+  the final agent.
+
+Decision:
+
+- Keep the assisted track for debugging and ablation.
+- Replace supplied player/heart/life semantics with learned visual milestones,
+  controllability, and terminal evidence before strict evaluation.
+
+## 7. Plans formulated from the accumulated evidence
+
+### 7.1 Evidence-gated research cycles
+
+Formulated because:
+
+- Long unattended runs repeatedly spent thousands of branches after the
+  decisive failure mode was already visible.
+- Paid-compute uncertainty needed hard ceilings.
+
+Plan:
+
+1. State one falsifiable hypothesis.
+2. Declare wall-clock, telemetry, cycle-cost, and campaign-cost limits.
+3. Run one bounded gate.
+4. Audit raw telemetry.
+5. Record an immutable reflection.
+6. Continue only with the exact next hypothesis justified by evidence.
+
+### 7.2 Strict and assisted separation
+
+Formulated because:
+
+- Heart-aware development produced useful progress but does not satisfy the
+  original no-object-definition claim.
+- Mixing transitions would make evaluation uninterpretable.
+
+Plan:
+
+- Explicit reward-track and partition manifests.
+- Dataset loaders reject incompatible provenance.
+- Freeze every persistent artifact during withheld and sequel evaluation.
+
+### 7.3 Object-centric relational representation
+
+Formulated because:
+
+- Pose, changed cells, and cumulative world hashes could not represent
+  preparation.
+- Single-object persistence succeeded but did not establish utility.
+
+Plan:
+
+- Multiple anonymous tracks.
+- Explicit displacement and appearance transitions.
+- Phase and local-context conditioning.
+- Track-set signatures in planner nodes and archives.
+
+### 7.4 Accessibility and reversibility model
+
+Formulated because:
+
+- Raw object movement is not inherently good.
+- Goal distance cannot express opened or closed routes.
+- Bounded non-return must remain censored evidence.
+
+Plan:
+
+- Measure player reachability before and after verified manipulations.
+- Track newly reachable cells and interaction frontiers.
+- Use explicit bidirectional probes.
+- Value verified accessibility changes, not generic pixel change.
+
+### 7.5 Phase-conditioned mechanics
+
+Formulated because:
+
+- The same appearance may behave differently after a global visual milestone.
+- Final-heart and treasure phases change room dynamics.
+
+Plan:
+
+- Learn stable global phase embeddings from pixels.
+- Condition anonymous outcome distributions on phase.
+- Compare matched branches before and after phase transitions.
+
+### 7.6 Hierarchical object-level planning
+
+Formulated because:
+
+- Flat exact search verified many paths without capturing delayed preparation.
+
+Plan:
+
+- Generate anonymous hypotheses such as testing or reproducing a displacement,
+  approaching an interaction frontier, preserving a configuration, or
+  investigating a phase contradiction.
+- Use exact emulator search to realize and verify each hypothesis.
+- Learn reusable options from relational initiation and termination states,
+  not room-specific action strings.
+
+### 7.7 Learned controllable-region tracker
+
+Formulated because:
+
+- Assisted color and shape masks caused false object conclusions.
+- The final strict system cannot depend on supplied player identity.
+
+Plan:
+
+- Learn the action-correlated controllable visual region from matched branches.
+- Produce masks and position distributions with uncertainty.
+- Keep the assisted detector only as a development comparator.
+
+### 7.8 Immutable evaluation split
+
+Formulated because:
+
+- Repeated targeted Room 3 work makes it a development room, not a legitimate
+  withheld room.
+- Generalization claims require untouched states and rooms.
+
+Plan:
+
+- Pre-register training, development, withheld *Lolo 1*, and sequel
+  partitions.
+- Reject persistent updates from frozen partitions.
+- Audit all artifact digests before and after evaluation.
+
+## 8. Do-not-repeat checklist
+
+Before proposing a new experiment, confirm it does not repeat one of these
+mistakes:
+
+- Do not increase beam or depth merely because a run failed.
+- Do not treat better pixel L1 as evidence of better planning.
+- Do not treat raw novelty or screen change as puzzle progress.
+- Do not credit an action for a later timer-driven transition without a matched
+  counterfactual.
+- Do not generalize one local action failure into a global action hazard.
+- Do not treat a bounded search failure as causal proof that a milestone was
+  bad or a state unrecoverable.
+- Do not infer an object transformation from persistence without action
+  controls and phase matching.
+- Do not require visual rarity for reusable object identity.
+- Do not remove adjacent same-colored objects with the player mask.
+- Do not let a transient interaction overwrite the interaction that produced a
+  confirmed world state.
+- Do not restore pixels without the associated pose, phase, track, and archive
+  metadata needed by planning.
+- Do not promote passive terminal correlation to hazard authority.
+- Do not train a returnability classifier on tiny policy-dependent negatives
+  and report integration as generalization.
+- Do not run paid GPU infrastructure for sequential CPU-bound emulator search.
+- Do not use assisted heart/player/life labels in the final strict claim.
+- Do not use YouTube solutions or demonstrations in the interaction-only
+  project.
+- Do not run another expensive experiment before recording what result would
+  change the plan.
+
+## 9. Current open hypotheses
+
+These are not yet established facts:
+
+1. Multiple anonymous tracks can remain stable through repeated identical
+   appearances, occlusion, transformations, and several manipulations.
+2. The behavior model can transfer displacement or transformation predictions
+   across rooms without memorizing absolute locations.
+3. A verified accessibility delta is a better preparation signal than goal
+   distance or raw object movement.
+4. Object-level hypothesis planning can find useful preparations within lower
+   branch budgets than flat search.
+5. Stable visual phase embeddings can predict post-milestone behavior changes.
+6. A learned action-correlated controllable tracker can replace assisted
+   player masks on native held-out rooms.
+7. Learned visual milestones and controllability can replace the assisted
+   heart/life reward while retaining useful exploration.
+8. The persistent learned mechanics will transfer to withheld *Lolo 1* rooms.
+9. The frozen persistent system will make meaningful progress in *Lolo 2*.
+
+Each hypothesis requires its own bounded gate. None should be reported as
+achieved merely because the required code exists.
+
+## 10. Current decision and next experiment
+
+Decision:
+
+- Continue the interaction-only approach.
+- Do not pivot to demonstrations.
+- Do not change heart reward or launch a larger flat search now.
+- Build the object-centric and accessibility architecture in
+  `docs/roadmap.md`.
+
+Next implementation sequence:
+
+1. Freeze the experimental partition and persistent artifact inventory.
+2. Extract object tracking from `neural_planner.py` into a tested module.
+3. Support multiple simultaneous anonymous tracks.
+4. Encode explicit displacement and transformation transitions.
+5. Propagate track sets through search nodes, archives, resume, and telemetry.
+6. Run the bounded two-manipulation native gate.
+7. Reflect before granting any new policy authority.
+8. Prototype accessibility deltas in mock environments and then at a targeted
+   native state.
+
+The next decisive evidence is:
+
+> The agent preserves multiple anonymous object changes, measures that one
+> verified manipulation changes future accessibility, deliberately chooses the
+> useful configuration, and reaches a later milestone because of it.
+
+## 11. Evidence index
+
+- `docs/medium-experiment-2026-08-08.md`
+- `docs/human-prior-reward-experiment-2026-08-10.md`
+- `docs/spatial-causal-model-2026-08-10.md`
+- `docs/spatial-coverage-persistence-2026-08-10.md`
+- `docs/control-preserving-search-2026-08-10.md`
+- `docs/room3-milestone-credit-correction-2026-08-13.md`
+- `docs/relational-manipulation-milestone-2026-08-13.md`
+- `docs/anonymous-entity-semantics-gate-2026-08-13.md`
+- `docs/anonymous-entity-policy-gate-2026-08-13.md`
+- `docs/anonymous-entity-behavior.md`
+- `docs/runpod-platform-gate-2026-08-15.md`
+- `docs/research-loop.md`
+- `docs/object-state-gate-2026-08-16.md`
+- `docs/roadmap.md`
+
+When a new gate changes the plan, update this file with:
+
+1. the hypothesis;
+2. the exact measured evidence;
+3. whether the result was falsified, negative, defective, or unproven;
+4. the plan change;
+5. the run IDs and source document; and
+6. the condition under which the rejected direction may be reconsidered.

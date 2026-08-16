@@ -20,7 +20,9 @@ replace the baseline without changing the information available to the agent.
 
 The active research plan, ordered implementation work packages, acceptance
 gates, and coding-agent handoffs are maintained in
-[docs/roadmap.md](docs/roadmap.md).
+[docs/roadmap.md](docs/roadmap.md). Prior experiments, negative results, and
+the plan changes they caused are synthesized in
+[docs/learnings.md](docs/learnings.md).
 
 Paid or unattended experiments should use the mandatory evidence and cost
 gates in [docs/research-loop.md](docs/research-loop.md). See

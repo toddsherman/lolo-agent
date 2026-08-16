@@ -5,6 +5,8 @@ Last updated: 2026-08-16
 Primary execution platform: Apple Silicon MacBook Pro (M5)  
 Repository: private `toddsherman/lolo-agent`
 
+Companion evidence and negative-results record: `docs/learnings.md`
+
 ## 1. Purpose
 
 Build an agent that learns to play and beat the original NES *Adventures of
