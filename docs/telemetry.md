@@ -234,7 +234,16 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   per branch whether the tracked object configuration held, without pixel
   forensics. Rows without track state carry the same keys as null/empty
   rather than omitting them; commit and restore events report the planner's
-  current root track state at that decision. The values are additive
+  current root track state at that decision. The same five keys also appear
+  on every causal-archive `archive_branch_added` and
+  `archive_branch_restored` event: causal-archive branches carry the root
+  track state they fork from, both rows restate the branch's carried track
+  block, and restoring a causal-archive branch reseeds the planner's root
+  track from those carried fields instead of resetting it to empty (the
+  `learnings.md` §4.29 instrument gap, observed as a silent evidence reset
+  at v324 decision 8). Branches archived without track state — including
+  archives recorded before this fix — keep emitting the keys as null/empty
+  and reseed the empty track exactly as before. The values are additive
   restatements — nothing is recomputed and no existing key changes;
 - `--skip-resume-option-archives` is a diagnostic matched-resume control. It
   restores the exact committed emulator state and learned episodic graph but
