@@ -226,3 +226,45 @@ anonymous-track block. Rerun:
 - Arm A is not rerun: its result (positively closed frontier, clean hold,
   zero footprint occupancy) is already certified by its world-hash
   uniformity and stands as the comparison.
+
+### 8. Rerun results (appended 2026-08-16 after v324 completed)
+
+Run `entity-v324-room3-paired-probe-arm-b-rerun-certified-d12`: complete,
+no errors, 1,801 s (ceiling 10,800), 79,476 events, 12,232 verified
+branches with endpoints — scale reproduces v323. The new track telemetry
+was live on every branch; root track state `[]` (pre-push, no accumulated
+effects), so certification = `anonymous_object_track_cells == []`.
+
+**The preregistered bit scores 0.** Zero certified configuration-held
+branches reached column ≥8, rows 5–7. Of 12,232 branches, 1,756 were
+certified held; their coverage —
+`(6,6),(6,7),(6,8),(6,9),(6,10),(7,10),(8,10)` — is **identical, element
+for element, to Arm A's beyond-footprint envelope**. Cells reached only by
+configuration-departed branches: `(7,6),(8,6),(8,7),(8,8),(9,8)`.
+
+Supplementary (non-preregistered, descriptive): all 54 branches reaching
+the `(8,7)/(8,8)/(9,8)` band carry `(7,6)` in their effect-cell set —
+disturbing the object is a necessary condition for band entry in this
+dataset. Band-reaching branches are deep multi-effect branches (effect
+cells also at `(2,6),(3,7),(11,6),(12,6),(14,5)` and others accumulated
+along the way).
+
+**Outcome per §7:** censored-negative at completed depth — the
+accessibility difference between the pushed and pre-push configurations
+collapses to footprint-only. With the object undisturbed, the two
+configurations reach exactly the same space. The v318 eastward push is
+accessibility-neutral at these budgets in both directions of comparison,
+and the Room 3 *single-push-as-preparation* Gate 4 vehicle is downweighted
+per learnings §2/§4.14.
+
+**Redirected vehicle (the constructive finding):** the column-8 band is
+reachable — but only through object manipulation, and `(7,6)` disturbance
+is necessary in 54/54 observed entries. The object is the door. The v318
+push moved it the wrong way (east, into the corridor's far cell, where it
+still blocks); the westward displacement discovered spontaneously by
+v323/v324 is the candidate *useful* preparation. Next experiment
+(Gate-3-shaped, the roadmap's own WP6 Room 3 gate): commit and archive the
+westward push, then run a certified paired probe of the
+westward-displaced configuration vs pre-push, scoring certified-hold
+band entry from the displaced root. That measurement would be the
+project's first verified accessibility-*improving* manipulation.

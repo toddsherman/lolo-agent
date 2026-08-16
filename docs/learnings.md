@@ -1171,6 +1171,60 @@ Evidence:
 - runs `entity-v322-room3-paired-probe-arm-a-pushed-d12`,
   `entity-v323-room3-paired-probe-arm-b-prepush-d12`
 
+### 4.28 Certified rerun: the confirmed push is accessibility-neutral; the object is the door
+
+What was tried:
+
+- After the 4.27 instrument fix (tracked object cells on every branch
+  event, commit `ddae223`), the pre-push arm was rerun once at identical
+  settings (`entity-v324-room3-paired-probe-arm-b-rerun-certified-d12`,
+  12,232 branches, 30 min, within all ceilings), scoring one preregistered
+  bit: does ≥1 certified configuration-held branch reach column ≥8,
+  rows 5–7?
+
+Result:
+
+- **Bit = 0.** Certified-held coverage (1,756 branches, object undisturbed
+  at `(7,6)`) is identical, element for element, to the pushed arm's
+  envelope: `(6,6),(6,7),(6,8),(6,9),(6,10),(7,10),(8,10)`.
+- All 54 branches that entered the `(8,7)/(8,8)/(9,8)` band carry `(7,6)`
+  in their effect set — object disturbance is a necessary condition for
+  band entry across the entire dataset.
+
+Classification:
+
+- **Negative result (certified, budget-scoped)** for the v318 eastward
+  push as preparation: with the object undisturbed, pushed and pre-push
+  configurations reach exactly the same space. The 4.27 directional
+  evidence favoring a delta is resolved: it was configuration-departure,
+  not configuration difference.
+
+Learning:
+
+- The first fully certified accessibility conclusion of the project: a
+  confirmed, persistent, causally verified manipulation can be
+  strategically neutral. Object persistence (4.25) and now even verified
+  displacement are insufficient without measured accessibility
+  consequences — the roadmap's WP6/WP8 thesis, demonstrated natively.
+- The constructive inversion: the object itself is the door to the
+  column-8 band. The useful preparation is displacing it out of the
+  corridor (westward, discovered spontaneously in both pre-push runs),
+  not eastward into the corridor's far cell.
+
+Plan change:
+
+- Room 3 Gate 4 vehicle redirected from "preserve the v318 push" to
+  "westward displacement opens the column-8 band": commit and archive the
+  westward push, then run a certified paired probe of displaced vs
+  pre-push scoring certified-hold band entry — the roadmap's own WP6
+  native gate with the correct manipulation. Preregistration to follow in
+  the experiment note before execution.
+
+Evidence:
+
+- `docs/paired-accessibility-probe-2026-08-16.md` §7–§8
+- run `entity-v324-room3-paired-probe-arm-b-rerun-certified-d12`
+
 ## 5. Platform and cost learnings
 
 ### 5.1 RunPod for emulator branching
