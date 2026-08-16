@@ -138,6 +138,18 @@ Ephemeral — copy anything durable into `docs/` before relying on it:
 - Persistent cross-session memory (Claude sessions only):
   `~/.claude/projects/-Users-toddsherman-Projects-lolo/memory/`
 
+### 3.4 Native probe cycle — COMPLETE (see learnings §4.27–4.28)
+
+Three native runs (v322/v323/v324) + instrument fix (`ddae223`). Certified
+conclusion: the v318 push is accessibility-neutral; object displacement is
+necessary for column-8 band entry; Gate 4 vehicle redirected to the
+westward displacement. Next experiment preregistration goes in
+`docs/paired-accessibility-probe-2026-08-16.md`'s successor note before
+execution: certified paired probe of westward-displaced vs pre-push,
+scoring certified-hold band entry (candidate roots: the westward-push
+commits near d7–d8 of v323/v324, which have content-addressed decision
+snapshots).
+
 ## 6. Next-cycle queue (after WP0/WP1 land)
 
 Per roadmap §16 and `learnings.md` §10, unchanged unless the direction
