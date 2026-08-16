@@ -95,3 +95,48 @@ warm-up count, and update count. It passes only if all of these are true:
 Failure keeps GPU training unpromoted. Passing permits a larger real-data
 training comparison; it does not authorize moving emulator branching to the
 cloud.
+
+## RTX A4000 neural-training result
+
+The fixed paid comparison used PyTorch 2.13.0 with CUDA 13.0 and the exact M5
+seed, model, batch size, warm-up count, and update count:
+
+| Measurement | M5 MPS | RunPod RTX A4000 |
+|---|---:|---:|
+| Measured examples | 4,000 | 4,000 |
+| Elapsed seconds | 12.508 | 6.244 |
+| Examples/second | 319.80 | 640.57 |
+| Optimizer updates/second | 39.97 | 80.07 |
+| Relative throughput | 1.000× | 2.003× |
+| Validation loss, before | 0.312614 | 0.312614 |
+| Validation loss, after | 0.312086 | 0.312086 |
+| Estimated cost/million examples | local | $0.1084 |
+
+The GPU passed every predeclared gate, although throughput cleared the 2× gate
+by only 0.15%. The result is repeatable at the model level: final training loss
+and validation loss match the M5 run to displayed precision. The paid balance
+changed by approximately $0.01 during the comparison, and the Pod was stopped
+immediately after its result was downloaded.
+
+The ignored machine-readable GPU artifact is
+`experiments/platform-benchmarks/runpod-a4000-training.json`. This comparison
+did not upload or require the ROM.
+
+## Revised platform policy
+
+- Keep emulator interaction, save-state branching, replay, and telemetry on
+  the M5.
+- Permit RunPod for bounded offline training when the workload is large enough
+  to amortize Pod startup and package installation. A 6-second microbenchmark
+  alone does not justify routine Pod launches.
+- Before promoting cloud training, run one real-data end-to-end cycle that
+  includes dataset loading, checkpoint output, held-out evaluation, and local
+  artifact recovery. Compare validated improvement per wall-clock minute and
+  per dollar, not raw accelerator throughput alone.
+- Keep the standing campaign ceiling at $1.00. Individual cycles remain
+  predeclared, automatically stopped, and materially smaller than that ceiling;
+  no cycle may silently raise or remove it.
+
+Decision: **revise and continue**. GPU training is provisionally viable;
+sequential emulator search on RunPod is not. The next paid experiment is a
+single real-data training gate, not an open-ended training campaign.
