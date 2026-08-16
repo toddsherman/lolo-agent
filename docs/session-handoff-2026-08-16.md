@@ -59,7 +59,21 @@ inside tracked-state signatures; strict track DID clear Floor 1
 (medium-experiment-2026-08-08.md) — correct any contrary narrative;
 lolo1-medium dataset is strict-bound; v313 archived zero save states.
 
-### 3.2 WP0 + WP1 build
+### 3.2 WP0 + WP1 build — COMPLETE, COMMITTED
+
+Landed as commits `236ea65` (WP1: object_tracks.py extraction, zero behavior
+change, telemetry verified byte-identical, 18 new tests) and `b95b68f`
+(WP0: evaluation-partitions manifest, partitions.py loader/audit,
+research-cycle wiring, 32 new tests). Full suite: 452 tests, OK. Task A's
+original builder died on an API error; the verifier caught the gap and a
+fix round delivered WP0 in full — second verification round green.
+Direction review + offline diff docs committed as `8d8eb45`.
+
+Withheld allocation shipped as default (rooms 25/30/35/40/45/50 — final
+room of floors 5–10): **pending Todd's ratification** before broad room
+training.
+
+Original build plan (for audit):
 
 Implements roadmap §16 steps 1–2 / backlog Tasks A and B. Structure:
 2 recon agents (read-only extraction map of `neural_planner.py`; WP0
