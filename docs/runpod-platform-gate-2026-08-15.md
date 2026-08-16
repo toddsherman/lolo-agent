@@ -63,3 +63,35 @@ The next cycle begins locally by defining and measuring that fixed training
 benchmark on the M5. A paid GPU comparison is permitted only after the local
 measurement, artifact schema, validation metric, wall-time limit, and dollar
 ceiling are all fixed in advance.
+
+The fixed workload is exposed as `lolo-training-benchmark`. It trains the
+current convolutional `VisualDynamicsModel` on deterministic 128×128 visual
+transitions, includes host-to-device transfer and optimizer updates in the
+timed interval, synchronizes accelerator work, and reports examples/second,
+validation loss, and estimated cost per million examples.
+
+## M5 neural-training baseline
+
+The local fixed benchmark used PyTorch 2.13.0 on MPS, a 3,458,691-parameter
+model, batch size 8, 10 warm-up updates, and 500 measured updates:
+
+- 4,000 measured examples in 12.508 seconds
+- 319.80 examples/second
+- 39.97 optimizer updates/second
+- validation loss decreased from 0.312614 to 0.312086
+
+The ignored machine-readable artifact is
+`experiments/platform-benchmarks/m5-training.json`.
+
+A paid GPU comparison must use the same PyTorch version, seed, model, batch,
+warm-up count, and update count. It passes only if all of these are true:
+
+- CUDA is active and the post-training validation loss is no worse than the
+  pre-training loss;
+- throughput is at least 639.60 examples/second (2× the M5 baseline);
+- estimated cost is no more than $0.15 per million examples;
+- the comparison cycle is capped at $0.05 and automatically stops its Pod.
+
+Failure keeps GPU training unpromoted. Passing permits a larger real-data
+training comparison; it does not authorize moving emulator branching to the
+cloud.
