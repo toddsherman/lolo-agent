@@ -13,6 +13,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional, Sequence
 
+from .partitions import (
+    CyclePartitionBinding,
+    CyclePartitionContext,
+    PartitionUpdateError,
+    audit_persistent_artifacts,
+    digest_audit_event,
+    prepare_cycle_partition,
+    verify_frozen_digests,
+)
 from .run_logging import utc_now
 
 
@@ -121,6 +130,7 @@ class ResearchPlan:
     telemetry_path: Optional[Path]
     prior_cycle_id: Optional[str]
     budgets: CycleBudget
+    evaluation_partition: Optional[CyclePartitionBinding] = None
 
     @classmethod
     def load(cls, path: Path) -> "ResearchPlan":
@@ -155,6 +165,14 @@ class ResearchPlan:
         prior_cycle_id = None if prior is None else _required_text(
             prior, "prior_cycle_id"
         )
+        partition_value = value.get("evaluation_partition")
+        evaluation_partition = (
+            None
+            if partition_value is None
+            else CyclePartitionBinding.from_dict(
+                partition_value, source.parent
+            )
+        )
         return cls(
             cycle_id=cycle_id,
             hypothesis=_required_text(value.get("hypothesis"), "hypothesis"),
@@ -172,6 +190,7 @@ class ResearchPlan:
             telemetry_path=telemetry_path,
             prior_cycle_id=prior_cycle_id,
             budgets=CycleBudget.from_dict(value.get("budgets")),
+            evaluation_partition=evaluation_partition,
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -199,6 +218,11 @@ class ResearchPlan:
                     self.budgets.max_campaign_cost_usd
                 ),
             },
+            "evaluation_partition": (
+                None
+                if self.evaluation_partition is None
+                else self.evaluation_partition.to_dict()
+            ),
         }
 
 
@@ -473,6 +497,11 @@ def run_cycle(plan_path: Path, campaign_dir: Path) -> Dict[str, Any]:
         raise FileExistsError(f"cycle already exists: {cycle_dir}")
     if not plan.working_directory.is_dir():
         raise FileNotFoundError(plan.working_directory)
+    partition_context: Optional[CyclePartitionContext] = None
+    if plan.evaluation_partition is not None:
+        partition_context = prepare_cycle_partition(
+            plan.evaluation_partition
+        )
     projected_cost = (
         plan.budgets.max_wall_seconds
         * plan.budgets.hourly_rate_usd
@@ -538,6 +567,35 @@ def run_cycle(plan_path: Path, campaign_dir: Path) -> Dict[str, Any]:
     )
     outcome = "success" if success else "awaiting_reflection"
     campaign_spend = spent + actual_cost
+    partition_report: Optional[Dict[str, Any]] = None
+    partition_violation: Optional[PartitionUpdateError] = None
+    if partition_context is not None:
+        binding = partition_context.binding
+        closing_audit = audit_persistent_artifacts(
+            binding.artifact_inventory()
+        )
+        partition_report = {
+            "loaded": partition_context.loaded_event,
+            "intent": binding.intent,
+            "opening_audit": digest_audit_event(
+                partition_context.opening_audit, phase="cycle_start"
+            ),
+            "closing_audit": digest_audit_event(
+                closing_audit, phase="cycle_end"
+            ),
+        }
+        if binding.intent == "frozen_evaluation":
+            try:
+                verify_frozen_digests(
+                    partition_context.opening_audit,
+                    closing_audit,
+                    partition_context.partition.category,
+                )
+                partition_report["frozen_digests_verified"] = True
+            except PartitionUpdateError as error:
+                partition_violation = error
+                partition_report["frozen_digests_verified"] = False
+                partition_report["violation"] = error.event
     report = {
         "version": 1,
         "cycle_id": plan.cycle_id,
@@ -569,6 +627,8 @@ def run_cycle(plan_path: Path, campaign_dir: Path) -> Dict[str, Any]:
         ),
         "telemetry": telemetry,
     }
+    if partition_report is not None:
+        report["evaluation_partition"] = partition_report
     _atomic_json(cycle_dir / "report.json", report)
     (cycle_dir / "report.md").write_text(
         _report_markdown(report), encoding="utf-8"
@@ -594,6 +654,8 @@ def run_cycle(plan_path: Path, campaign_dir: Path) -> Dict[str, Any]:
         }
     )
     _atomic_json(campaign_dir / "campaign.json", campaign)
+    if partition_violation is not None:
+        raise partition_violation
     return report
 
 
