@@ -206,3 +206,23 @@ rows 5–7? Yes → beyond-footprint delta confirmed against Arm A's positively
 closed frontier, vehicle promoted. No, at completed depth → the
 accessibility difference collapses to footprint-only; record as
 censored-negative and downweight the vehicle per learnings §2/§4.14.
+
+### 7. Rerun preregistration (added 2026-08-16, before execution)
+
+Instrument fix landed as commit `ddae223`: every
+`human_prior_option_branch_verified` event now carries a self-contained
+anonymous-track block. Rerun:
+
+- Run ID: `entity-v324-room3-paired-probe-arm-b-rerun-certified-d12`,
+  identical to Arm B in every setting (seq-2026 checkpoint root, depth 12,
+  beam 128, same reserves/probes/decisions, ceiling 10,800 s, ≤200k
+  events, no escalation), on the telemetry-extended code.
+- Certification predicate (fixed now): a branch is configuration-held iff
+  `anonymous_object_track_cells` equals the root's tracked cells and the
+  tracked state signature matches the root's — i.e. the object remained at
+  `(7,6)` throughout the branch.
+- Single scored bit: does ≥1 certified configuration-held branch reach
+  column ≥8, rows 5–7 (pixel x ≥ 128, y 80–112)?
+- Arm A is not rerun: its result (positively closed frontier, clean hold,
+  zero footprint occupancy) is already certified by its world-hash
+  uniformity and stands as the comparison.
