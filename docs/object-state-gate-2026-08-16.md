@@ -31,6 +31,16 @@ persistent object displacement?
   two matched `RIGHT -> NOOP` branches preserved that state for one persistence
   step, independent probing confirmed the displacement, and three replayable
   archive states were stored.
+- `entity-v319-room3-pushed-object-continuation-d12` resumed the confirmed
+  push but lost the object track at the new search root. It explored 869
+  branches through depth nine without another displacement or a heart,
+  isolating cross-cycle state continuity as the next representation gap.
+- `entity-v320-room3-restored-object-track-d6` reconstructed the older
+  archive's anonymous track from its verified pixel-effect signature. All
+  2,497 exact-search descendants retained destination cell `(8, 6)`, and the
+  planner archived a safe continuation five actions beyond the push. It did
+  not collect a heart, so this is a representation result rather than a room
+  solution.
 
 ## Implemented changes
 
@@ -54,6 +64,14 @@ persistent object displacement?
 - A phase-stable one-cell displacement can bootstrap a new mechanic before an
   empirical behavior probability is already known, then gains stronger
   evidence through matched neutral persistence and causal probing.
+- Promoted option archives now serialize tracked cells, anonymous appearance
+  and context, interaction direction, effect distance, and persistence.
+  Exact archive resumes seed these fields into the new search root; legacy
+  archives conservatively reconstruct the track from their learned spatial
+  effect signature.
+- Confirmed manipulation identity is stored separately from later transient
+  interactions, preventing navigation near another anonymous patch from
+  relabeling the manipulation that produced the retained world state.
 
 ## Roadmap consequence
 
@@ -61,8 +79,8 @@ The immediate priority is no longer a larger beam or a different heart reward.
 The validated primitive should be extended into persistent anonymous object
 tracks and relational state:
 
-1. retain source identity, destination identity, displacement vector, action,
-   phase context, and persistence horizon;
+1. derive explicit source-to-destination displacement vectors from the now
+   persistent track and maintain multiple simultaneous anonymous tracks;
 2. aggregate the same learned displacement across recurring appearances and
    rooms without assigning supplied object names;
 3. represent transformations as appearance-state transitions on an existing

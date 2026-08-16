@@ -2457,6 +2457,9 @@ def main() -> None:
                         )
                     ),
                 )
+                agent.seed_human_prior_root_object_state(
+                    restored_semantic_state
+                )
                 persisted_archives = load_active_option_archives(
                     args.resume_run, args.resume_decision
                 )

@@ -244,6 +244,53 @@ class _ArchivedBranch:
     human_prior_unvisited_semantic_state: bool = False
     goal_exhaustion_recovery_root: bool = False
     goal_exhaustion_recovery_restores: int = 0
+    world_effect_state_signature: str = ""
+    tracked_world_effect_cells: Tuple[Tuple[int, int], ...] = ()
+    tracked_world_state_signature: str = ""
+    world_effect_changed_pixels: int = 0
+    confirmed_action_indices: Tuple[int, ...] = ()
+    entity_interaction_signature: str = ""
+    entity_interaction_action: Optional[Action] = None
+    entity_interaction_action_index: Optional[int] = None
+    entity_interaction_direction: Optional[Action] = None
+    entity_interaction_cell: Optional[Tuple[int, int]] = None
+    entity_interaction_appearance_fingerprint: str = ""
+    entity_interaction_type_id: Optional[int] = None
+    entity_interaction_context_signature: str = ""
+    entity_interaction_phase_signature: str = ""
+    entity_interaction_neighborhood_signature: str = ""
+    entity_effect_target_distance: Optional[int] = None
+    entity_effect_persisted_in_search: bool = False
+    entity_effect_persistence_steps: int = 0
+
+
+@dataclass(frozen=True)
+class _HumanPriorRootObjectState:
+    """Pixel-derived object state imported with an exact save-state restore."""
+
+    world_effect_signature: str = ""
+    world_effect_state_signature: str = ""
+    tracked_world_effect_cells: Tuple[Tuple[int, int], ...] = ()
+    tracked_world_state_signature: str = ""
+    world_effect_changed_pixels: int = 0
+    confirmed_world_effect_signature: str = ""
+    confirmed_world_context: str = ""
+    confirmed_action_indices: Tuple[int, ...] = ()
+    confirmed_effect_frontier_reason: str = ""
+    confirmed_entity_state_signature: str = ""
+    entity_interaction_signature: str = ""
+    entity_interaction_action: Optional[Action] = None
+    entity_interaction_action_index: Optional[int] = None
+    entity_interaction_direction: Optional[Action] = None
+    entity_interaction_cell: Optional[Tuple[int, int]] = None
+    entity_interaction_appearance_fingerprint: str = ""
+    entity_interaction_type_id: Optional[int] = None
+    entity_interaction_context_signature: str = ""
+    entity_interaction_phase_signature: str = ""
+    entity_interaction_neighborhood_signature: str = ""
+    entity_effect_target_distance: Optional[int] = None
+    entity_effect_persisted_in_search: bool = False
+    entity_effect_persistence_steps: int = 0
 
 
 @dataclass
@@ -275,6 +322,18 @@ class _HumanPriorOptionNode:
     confirmed_action_indices: Tuple[int, ...] = ()
     confirmed_effect_frontier_reason: str = ""
     confirmed_entity_state_signature: str = ""
+    confirmed_entity_interaction_signature: str = ""
+    confirmed_entity_interaction_action: Optional[Action] = None
+    confirmed_entity_interaction_action_index: Optional[int] = None
+    confirmed_entity_interaction_direction: Optional[Action] = None
+    confirmed_entity_interaction_cell: Optional[Tuple[int, int]] = None
+    confirmed_entity_interaction_appearance_fingerprint: str = ""
+    confirmed_entity_interaction_type_id: Optional[int] = None
+    confirmed_entity_interaction_context_signature: str = ""
+    confirmed_entity_interaction_phase_signature: str = ""
+    confirmed_entity_interaction_neighborhood_signature: str = ""
+    confirmed_entity_effect_target_distance: Optional[int] = None
+    confirmed_entity_effect_persistence_steps: int = 0
     settling_steps: int = 0
     settling_frames: int = 0
     immediate_frame_digest: str = ""
@@ -1115,6 +1174,9 @@ class VerifiedNeuralAgent:
         self.human_prior_graph_recovery_pending = False
         self.current_human_prior_world_context_signature = (
             "human-prior-world-root"
+        )
+        self.current_human_prior_root_object_state = (
+            _HumanPriorRootObjectState()
         )
         self.last_navigation_change_decision: Optional[int] = None
         self.human_prior_navigation_detour_origin_signature = ""
@@ -7865,6 +7927,40 @@ class VerifiedNeuralAgent:
         node.confirmed_entity_state_signature = ":".join(
             entity_state_signatures
         )
+        node.confirmed_entity_interaction_signature = (
+            node.entity_interaction_signature
+        )
+        node.confirmed_entity_interaction_action = (
+            node.entity_interaction_action
+        )
+        node.confirmed_entity_interaction_action_index = (
+            node.entity_interaction_action_index
+        )
+        node.confirmed_entity_interaction_direction = (
+            node.entity_interaction_direction
+        )
+        node.confirmed_entity_interaction_cell = node.entity_interaction_cell
+        node.confirmed_entity_interaction_appearance_fingerprint = (
+            node.entity_interaction_appearance_fingerprint
+        )
+        node.confirmed_entity_interaction_type_id = (
+            node.entity_interaction_type_id
+        )
+        node.confirmed_entity_interaction_context_signature = (
+            node.entity_interaction_context_signature
+        )
+        node.confirmed_entity_interaction_phase_signature = (
+            node.entity_interaction_phase_signature
+        )
+        node.confirmed_entity_interaction_neighborhood_signature = (
+            node.entity_interaction_neighborhood_signature
+        )
+        node.confirmed_entity_effect_target_distance = (
+            node.entity_effect_target_distance
+        )
+        node.confirmed_entity_effect_persistence_steps = (
+            node.entity_effect_persistence_steps
+        )
         node.target_signature = target_signature
         node.target_state_visits = target_state_visits
         node.target_position_visits = (
@@ -8591,6 +8687,56 @@ class VerifiedNeuralAgent:
                 human_prior_unvisited_semantic_state=(
                     endpoint.target_state_visits == 0
                 ),
+                world_effect_state_signature=(
+                    endpoint.world_effect_state_signature
+                ),
+                tracked_world_effect_cells=(
+                    endpoint.tracked_world_effect_cells
+                ),
+                tracked_world_state_signature=(
+                    endpoint.tracked_world_state_signature
+                ),
+                world_effect_changed_pixels=(
+                    endpoint.world_effect_changed_pixels
+                ),
+                confirmed_action_indices=endpoint.confirmed_action_indices,
+                entity_interaction_signature=(
+                    endpoint.confirmed_entity_interaction_signature
+                ),
+                entity_interaction_action=(
+                    endpoint.confirmed_entity_interaction_action
+                ),
+                entity_interaction_action_index=(
+                    endpoint.confirmed_entity_interaction_action_index
+                ),
+                entity_interaction_direction=(
+                    endpoint.confirmed_entity_interaction_direction
+                ),
+                entity_interaction_cell=(
+                    endpoint.confirmed_entity_interaction_cell
+                ),
+                entity_interaction_appearance_fingerprint=(
+                    endpoint.confirmed_entity_interaction_appearance_fingerprint
+                ),
+                entity_interaction_type_id=(
+                    endpoint.confirmed_entity_interaction_type_id
+                ),
+                entity_interaction_context_signature=(
+                    endpoint.confirmed_entity_interaction_context_signature
+                ),
+                entity_interaction_phase_signature=(
+                    endpoint.confirmed_entity_interaction_phase_signature
+                ),
+                entity_interaction_neighborhood_signature=(
+                    endpoint.confirmed_entity_interaction_neighborhood_signature
+                ),
+                entity_effect_target_distance=(
+                    endpoint.confirmed_entity_effect_target_distance
+                ),
+                entity_effect_persisted_in_search=True,
+                entity_effect_persistence_steps=(
+                    endpoint.confirmed_entity_effect_persistence_steps
+                ),
             )
             self.archive.append(branch)
             retained_state_ids.add(id(endpoint.state))
@@ -8655,6 +8801,53 @@ class VerifiedNeuralAgent:
                 human_prior_option_settling_frames=endpoint.settling_frames,
                 human_prior_option_immediate_frame=(
                     endpoint.immediate_frame_digest or None
+                ),
+                human_prior_option_world_effect_state_signature=(
+                    branch.world_effect_state_signature or None
+                ),
+                human_prior_option_world_effect_changed_pixels=(
+                    branch.world_effect_changed_pixels
+                ),
+                human_prior_option_tracked_world_effect_cells=(
+                    branch.tracked_world_effect_cells
+                ),
+                human_prior_option_tracked_world_state_signature=(
+                    branch.tracked_world_state_signature or None
+                ),
+                human_prior_option_entity_interaction_signature=(
+                    branch.entity_interaction_signature or None
+                ),
+                human_prior_option_entity_interaction_action=(
+                    branch.entity_interaction_action
+                ),
+                human_prior_option_entity_interaction_action_index=(
+                    branch.entity_interaction_action_index
+                ),
+                human_prior_option_entity_interaction_direction=(
+                    branch.entity_interaction_direction
+                ),
+                human_prior_option_entity_interaction_cell=(
+                    branch.entity_interaction_cell
+                ),
+                anonymous_entity_appearance_fingerprint=(
+                    branch.entity_interaction_appearance_fingerprint or None
+                ),
+                anonymous_entity_type_id=branch.entity_interaction_type_id,
+                anonymous_entity_context_signature=(
+                    branch.entity_interaction_context_signature or None
+                ),
+                anonymous_entity_phase_signature=(
+                    branch.entity_interaction_phase_signature or None
+                ),
+                anonymous_entity_neighborhood_signature=(
+                    branch.entity_interaction_neighborhood_signature or None
+                ),
+                human_prior_option_entity_effect_target_distance=(
+                    branch.entity_effect_target_distance
+                ),
+                human_prior_option_entity_persistence_observed=True,
+                human_prior_option_entity_persistence_steps=(
+                    branch.entity_effect_persistence_steps
                 ),
                 human_prior_world_source_context=(
                     self.current_human_prior_world_context_signature
@@ -9174,6 +9367,7 @@ class VerifiedNeuralAgent:
         saved_states = [root]
         retained_state_ids: set[int] = set()
         release_state = getattr(self.env, "release_state", None)
+        root_object_state = self.current_human_prior_root_object_state
         root_node = _HumanPriorOptionNode(
             state=root,
             frame=source_frame,
@@ -9196,6 +9390,101 @@ class VerifiedNeuralAgent:
                 )
             ),
             pose_action=self.current_pose_action,
+            world_effect_signature=root_object_state.world_effect_signature,
+            world_effect_state_signature=(
+                root_object_state.world_effect_state_signature
+            ),
+            tracked_world_effect_cells=(
+                root_object_state.tracked_world_effect_cells
+            ),
+            tracked_world_state_signature=(
+                root_object_state.tracked_world_state_signature
+            ),
+            world_effect_changed_pixels=(
+                root_object_state.world_effect_changed_pixels
+            ),
+            confirmed_world_effect_signature=(
+                root_object_state.confirmed_world_effect_signature
+            ),
+            confirmed_world_context=root_object_state.confirmed_world_context,
+            confirmed_action_indices=root_object_state.confirmed_action_indices,
+            confirmed_effect_frontier_reason=(
+                root_object_state.confirmed_effect_frontier_reason
+            ),
+            confirmed_entity_state_signature=(
+                root_object_state.confirmed_entity_state_signature
+            ),
+            confirmed_entity_interaction_signature=(
+                root_object_state.entity_interaction_signature
+            ),
+            confirmed_entity_interaction_action=(
+                root_object_state.entity_interaction_action
+            ),
+            confirmed_entity_interaction_action_index=(
+                root_object_state.entity_interaction_action_index
+            ),
+            confirmed_entity_interaction_direction=(
+                root_object_state.entity_interaction_direction
+            ),
+            confirmed_entity_interaction_cell=(
+                root_object_state.entity_interaction_cell
+            ),
+            confirmed_entity_interaction_appearance_fingerprint=(
+                root_object_state.entity_interaction_appearance_fingerprint
+            ),
+            confirmed_entity_interaction_type_id=(
+                root_object_state.entity_interaction_type_id
+            ),
+            confirmed_entity_interaction_context_signature=(
+                root_object_state.entity_interaction_context_signature
+            ),
+            confirmed_entity_interaction_phase_signature=(
+                root_object_state.entity_interaction_phase_signature
+            ),
+            confirmed_entity_interaction_neighborhood_signature=(
+                root_object_state.entity_interaction_neighborhood_signature
+            ),
+            confirmed_entity_effect_target_distance=(
+                root_object_state.entity_effect_target_distance
+            ),
+            confirmed_entity_effect_persistence_steps=(
+                root_object_state.entity_effect_persistence_steps
+            ),
+            entity_interaction_signature=(
+                root_object_state.entity_interaction_signature
+            ),
+            entity_interaction_action=root_object_state.entity_interaction_action,
+            entity_interaction_action_index=(
+                root_object_state.entity_interaction_action_index
+            ),
+            entity_interaction_direction=(
+                root_object_state.entity_interaction_direction
+            ),
+            entity_interaction_cell=root_object_state.entity_interaction_cell,
+            entity_interaction_appearance_fingerprint=(
+                root_object_state.entity_interaction_appearance_fingerprint
+            ),
+            entity_interaction_type_id=(
+                root_object_state.entity_interaction_type_id
+            ),
+            entity_interaction_context_signature=(
+                root_object_state.entity_interaction_context_signature
+            ),
+            entity_interaction_phase_signature=(
+                root_object_state.entity_interaction_phase_signature
+            ),
+            entity_interaction_neighborhood_signature=(
+                root_object_state.entity_interaction_neighborhood_signature
+            ),
+            entity_effect_target_distance=(
+                root_object_state.entity_effect_target_distance
+            ),
+            entity_effect_persisted_in_search=(
+                root_object_state.entity_effect_persisted_in_search
+            ),
+            entity_effect_persistence_steps=(
+                root_object_state.entity_effect_persistence_steps
+            ),
         )
         parents = [root_node]
         endpoints: List[_HumanPriorOptionNode] = []
@@ -9988,6 +10277,57 @@ class VerifiedNeuralAgent:
                             ),
                             world_effect_changed_pixels=(
                                 option_changed_pixels
+                            ),
+                            confirmed_world_effect_signature=(
+                                parent.confirmed_world_effect_signature
+                            ),
+                            confirmed_world_context=(
+                                parent.confirmed_world_context
+                            ),
+                            confirmed_action_indices=(
+                                parent.confirmed_action_indices
+                            ),
+                            confirmed_effect_frontier_reason=(
+                                parent.confirmed_effect_frontier_reason
+                            ),
+                            confirmed_entity_state_signature=(
+                                parent.confirmed_entity_state_signature
+                            ),
+                            confirmed_entity_interaction_signature=(
+                                parent.confirmed_entity_interaction_signature
+                            ),
+                            confirmed_entity_interaction_action=(
+                                parent.confirmed_entity_interaction_action
+                            ),
+                            confirmed_entity_interaction_action_index=(
+                                parent.confirmed_entity_interaction_action_index
+                            ),
+                            confirmed_entity_interaction_direction=(
+                                parent.confirmed_entity_interaction_direction
+                            ),
+                            confirmed_entity_interaction_cell=(
+                                parent.confirmed_entity_interaction_cell
+                            ),
+                            confirmed_entity_interaction_appearance_fingerprint=(
+                                parent.confirmed_entity_interaction_appearance_fingerprint
+                            ),
+                            confirmed_entity_interaction_type_id=(
+                                parent.confirmed_entity_interaction_type_id
+                            ),
+                            confirmed_entity_interaction_context_signature=(
+                                parent.confirmed_entity_interaction_context_signature
+                            ),
+                            confirmed_entity_interaction_phase_signature=(
+                                parent.confirmed_entity_interaction_phase_signature
+                            ),
+                            confirmed_entity_interaction_neighborhood_signature=(
+                                parent.confirmed_entity_interaction_neighborhood_signature
+                            ),
+                            confirmed_entity_effect_target_distance=(
+                                parent.confirmed_entity_effect_target_distance
+                            ),
+                            confirmed_entity_effect_persistence_steps=(
+                                parent.confirmed_entity_effect_persistence_steps
                             ),
                             entity_interaction_signature=str(
                                 interaction_source.entity_interaction_signature
@@ -12564,6 +12904,10 @@ class VerifiedNeuralAgent:
                     archived.confirmed_world_effect_signature
                     or archived.world_effect_signature
                 )
+                confirmed_entity_interaction = bool(
+                    archived.confirmed_entity_state_signature
+                    and archived.confirmed_entity_interaction_signature
+                )
                 archived_milestone_checkpoint = None
                 if (
                     archived.analysis.milestone_reward > 0.0
@@ -12691,6 +13035,86 @@ class VerifiedNeuralAgent:
                     human_prior_unvisited_semantic_state=(
                         archived.target_state_visits == 0
                     ),
+                    world_effect_state_signature=(
+                        archived.world_effect_state_signature
+                    ),
+                    tracked_world_effect_cells=(
+                        archived.tracked_world_effect_cells
+                    ),
+                    tracked_world_state_signature=(
+                        archived.tracked_world_state_signature
+                    ),
+                    world_effect_changed_pixels=(
+                        archived.world_effect_changed_pixels
+                    ),
+                    confirmed_action_indices=(
+                        archived.confirmed_action_indices
+                    ),
+                    entity_interaction_signature=(
+                        archived.confirmed_entity_interaction_signature
+                        if confirmed_entity_interaction
+                        else archived.entity_interaction_signature
+                    ),
+                    entity_interaction_action=(
+                        archived.confirmed_entity_interaction_action
+                        if confirmed_entity_interaction
+                        else archived.entity_interaction_action
+                    ),
+                    entity_interaction_action_index=(
+                        archived.confirmed_entity_interaction_action_index
+                        if confirmed_entity_interaction
+                        else archived.entity_interaction_action_index
+                    ),
+                    entity_interaction_direction=(
+                        archived.confirmed_entity_interaction_direction
+                        if confirmed_entity_interaction
+                        else archived.entity_interaction_direction
+                    ),
+                    entity_interaction_cell=(
+                        archived.confirmed_entity_interaction_cell
+                        if confirmed_entity_interaction
+                        else archived.entity_interaction_cell
+                    ),
+                    entity_interaction_appearance_fingerprint=(
+                        archived.confirmed_entity_interaction_appearance_fingerprint
+                        if confirmed_entity_interaction
+                        else archived.entity_interaction_appearance_fingerprint
+                    ),
+                    entity_interaction_type_id=(
+                        archived.confirmed_entity_interaction_type_id
+                        if confirmed_entity_interaction
+                        else archived.entity_interaction_type_id
+                    ),
+                    entity_interaction_context_signature=(
+                        archived.confirmed_entity_interaction_context_signature
+                        if confirmed_entity_interaction
+                        else archived.entity_interaction_context_signature
+                    ),
+                    entity_interaction_phase_signature=(
+                        archived.confirmed_entity_interaction_phase_signature
+                        if confirmed_entity_interaction
+                        else archived.entity_interaction_phase_signature
+                    ),
+                    entity_interaction_neighborhood_signature=(
+                        archived.confirmed_entity_interaction_neighborhood_signature
+                        if confirmed_entity_interaction
+                        else archived.entity_interaction_neighborhood_signature
+                    ),
+                    entity_effect_target_distance=(
+                        archived.confirmed_entity_effect_target_distance
+                        if confirmed_entity_interaction
+                        else archived.entity_effect_target_distance
+                    ),
+                    entity_effect_persisted_in_search=(
+                        True
+                        if confirmed_entity_interaction
+                        else archived.entity_effect_persisted_in_search
+                    ),
+                    entity_effect_persistence_steps=(
+                        archived.confirmed_entity_effect_persistence_steps
+                        if confirmed_entity_interaction
+                        else archived.entity_effect_persistence_steps
+                    ),
                 )
                 self.archive.append(branch)
                 retained_state_ids.add(id(archived.state))
@@ -12806,11 +13230,55 @@ class VerifiedNeuralAgent:
                     human_prior_option_world_effect_changed_pixels=(
                         archived.world_effect_changed_pixels
                     ),
+                    human_prior_option_world_effect_state_signature=(
+                        archived.world_effect_state_signature or None
+                    ),
                     human_prior_option_tracked_world_effect_cells=(
                         archived.tracked_world_effect_cells
                     ),
                     human_prior_option_tracked_world_state_signature=(
                         archived.tracked_world_state_signature or None
+                    ),
+                    human_prior_option_entity_interaction_signature=(
+                        branch.entity_interaction_signature or None
+                    ),
+                    human_prior_option_entity_interaction_action=(
+                        branch.entity_interaction_action
+                    ),
+                    human_prior_option_entity_interaction_action_index=(
+                        branch.entity_interaction_action_index
+                    ),
+                    human_prior_option_entity_interaction_direction=(
+                        branch.entity_interaction_direction
+                    ),
+                    human_prior_option_entity_interaction_cell=(
+                        branch.entity_interaction_cell
+                    ),
+                    anonymous_entity_appearance_fingerprint=(
+                        branch.entity_interaction_appearance_fingerprint
+                        or None
+                    ),
+                    anonymous_entity_type_id=(
+                        branch.entity_interaction_type_id
+                    ),
+                    anonymous_entity_context_signature=(
+                        branch.entity_interaction_context_signature or None
+                    ),
+                    anonymous_entity_phase_signature=(
+                        branch.entity_interaction_phase_signature or None
+                    ),
+                    anonymous_entity_neighborhood_signature=(
+                        branch.entity_interaction_neighborhood_signature
+                        or None
+                    ),
+                    human_prior_option_entity_effect_target_distance=(
+                        branch.entity_effect_target_distance
+                    ),
+                    human_prior_option_entity_persistence_observed=(
+                        branch.entity_effect_persisted_in_search
+                    ),
+                    human_prior_option_entity_persistence_steps=(
+                        branch.entity_effect_persistence_steps
                     ),
                     human_prior_option_world_state_reachability_count=(
                         archived.world_state_reachability_count
@@ -13352,6 +13820,9 @@ class VerifiedNeuralAgent:
         self.current_human_prior_world_context_signature = (
             "human-prior-world-root"
         )
+        self.current_human_prior_root_object_state = (
+            _HumanPriorRootObjectState()
+        )
         self.last_causal_cell_progress_decision = None
         self.behavioral_edge_visits = Counter()
         self.causal_spatial_cell_visits: CounterType[Tuple[int, int]] = Counter()
@@ -13879,6 +14350,9 @@ class VerifiedNeuralAgent:
         self.human_prior_graph_recovery_pending = False
         self.current_human_prior_world_context_signature = (
             "human-prior-world-root"
+        )
+        self.current_human_prior_root_object_state = (
+            _HumanPriorRootObjectState()
         )
         self.last_causal_cell_progress_decision = None
         self.causal_spatial_cell_visits = Counter()
@@ -15408,6 +15882,226 @@ class VerifiedNeuralAgent:
             ),
         )
 
+    def seed_human_prior_root_object_state(
+        self, metadata: Optional[Dict[str, Any]]
+    ) -> None:
+        """Attach learned anonymous-object state to an exact restored frame.
+
+        The metadata is accepted only by the run harness after it has
+        content-verified that the archive event and restored frame match.
+        Older archives did not serialize the detailed track, so the changed
+        cells and directional source cell are conservatively reconstructed
+        from their already learned pixel-effect signature.
+        """
+
+        if not metadata:
+            self.current_human_prior_root_object_state = (
+                _HumanPriorRootObjectState()
+            )
+            return
+
+        def optional_int(value: Any) -> Optional[int]:
+            return None if value is None else int(value)
+
+        def optional_action(value: Any) -> Optional[Action]:
+            if value is None or value == "":
+                return None
+            return value if isinstance(value, Action) else Action(str(value))
+
+        def optional_cell(value: Any) -> Optional[Tuple[int, int]]:
+            if value is None:
+                return None
+            return int(value[0]), int(value[1])
+
+        effect_signature = str(
+            metadata.get("human_prior_option_world_effect_signature") or ""
+        )
+        serialized_cells = metadata.get(
+            "human_prior_option_tracked_world_effect_cells"
+        )
+        tracked_cells = tuple(
+            sorted(
+                (int(value[0]), int(value[1]))
+                for value in (serialized_cells or ())
+            )
+        )
+        if not tracked_cells:
+            tracked_cells = tuple(
+                sorted(self._causal_spatial_cells(effect_signature))
+            )
+        interaction_signature = str(
+            metadata.get("human_prior_option_entity_interaction_signature")
+            or metadata.get("human_prior_option_entity_state_signature")
+            or ""
+        )
+        path = tuple(metadata.get("path") or ())
+        inferred_action = optional_action(path[-1]) if path else None
+        interaction_action = optional_action(
+            metadata.get("human_prior_option_entity_interaction_action")
+        ) or (inferred_action if interaction_signature else None)
+        interaction_direction = optional_action(
+            metadata.get("human_prior_option_entity_interaction_direction")
+        )
+        if interaction_direction is None and interaction_action in (
+            Action.UP,
+            Action.DOWN,
+            Action.LEFT,
+            Action.RIGHT,
+        ):
+            interaction_direction = interaction_action
+        interaction_cell = optional_cell(
+            metadata.get("human_prior_option_entity_interaction_cell")
+        )
+        direction_delta = {
+            Action.UP: (0, -1),
+            Action.DOWN: (0, 1),
+            Action.LEFT: (-1, 0),
+            Action.RIGHT: (1, 0),
+        }.get(interaction_direction)
+        if (
+            interaction_cell is None
+            and direction_delta is not None
+            and len(tracked_cells) == 1
+        ):
+            destination = tracked_cells[0]
+            interaction_cell = (
+                destination[0] - direction_delta[0],
+                destination[1] - direction_delta[1],
+            )
+        player_slot = (
+            None
+            if self.goal_prior is None
+            else self.goal_prior.current_player_slot
+        )
+        tracked_state_signature = str(
+            metadata.get(
+                "human_prior_option_tracked_world_state_signature"
+            )
+            or ""
+        )
+        if not tracked_state_signature and tracked_cells:
+            tracked_state_signature = (
+                self._human_prior_world_effect_cells_state_signature(
+                    self.frame, tracked_cells, player_slot
+                )
+            )
+        world_state_signature = str(
+            metadata.get("human_prior_option_world_effect_state_signature")
+            or tracked_state_signature
+        )
+        entity_state_signature = str(
+            metadata.get("human_prior_option_entity_state_signature") or ""
+        )
+        confirmed_effect = bool(
+            metadata.get("human_prior_option_effect_frontier")
+            or entity_state_signature
+        )
+        effect_distance = optional_int(
+            metadata.get(
+                "human_prior_option_entity_effect_target_distance"
+            )
+        )
+        if effect_distance is None and interaction_direction is not None:
+            effect_distance = 1
+        persistence_steps = int(
+            metadata.get("human_prior_option_entity_persistence_steps", 0)
+            or 0
+        )
+        persisted = bool(
+            metadata.get("human_prior_option_entity_persistence_observed")
+            or (confirmed_effect and interaction_signature)
+        )
+        if persisted and persistence_steps == 0:
+            persistence_steps = 1
+        self.current_human_prior_root_object_state = (
+            _HumanPriorRootObjectState(
+                world_effect_signature=effect_signature,
+                world_effect_state_signature=world_state_signature,
+                tracked_world_effect_cells=tracked_cells,
+                tracked_world_state_signature=tracked_state_signature,
+                world_effect_changed_pixels=int(
+                    metadata.get(
+                        "human_prior_option_world_effect_changed_pixels", 0
+                    )
+                    or 0
+                ),
+                confirmed_world_effect_signature=(
+                    effect_signature if confirmed_effect else ""
+                ),
+                confirmed_world_context=str(
+                    metadata.get("human_prior_world_target_context") or ""
+                ),
+                confirmed_action_indices=tuple(
+                    int(value)
+                    for value in (
+                        metadata.get(
+                            "human_prior_option_effect_confirmed_action_indices"
+                        )
+                        or ()
+                    )
+                ),
+                confirmed_effect_frontier_reason=str(
+                    metadata.get(
+                        "human_prior_option_effect_frontier_reason"
+                    )
+                    or ""
+                ),
+                confirmed_entity_state_signature=entity_state_signature,
+                entity_interaction_signature=interaction_signature,
+                entity_interaction_action=interaction_action,
+                entity_interaction_action_index=optional_int(
+                    metadata.get(
+                        "human_prior_option_entity_interaction_action_index"
+                    )
+                )
+                if metadata.get(
+                    "human_prior_option_entity_interaction_action_index"
+                )
+                is not None
+                else (len(path) - 1 if interaction_signature and path else None),
+                entity_interaction_direction=interaction_direction,
+                entity_interaction_cell=interaction_cell,
+                entity_interaction_appearance_fingerprint=str(
+                    metadata.get("anonymous_entity_appearance_fingerprint")
+                    or ""
+                ),
+                entity_interaction_type_id=optional_int(
+                    metadata.get("anonymous_entity_type_id")
+                ),
+                entity_interaction_context_signature=str(
+                    metadata.get("anonymous_entity_context_signature") or ""
+                ),
+                entity_interaction_phase_signature=str(
+                    metadata.get("anonymous_entity_phase_signature") or ""
+                ),
+                entity_interaction_neighborhood_signature=str(
+                    metadata.get("anonymous_entity_neighborhood_signature")
+                    or ""
+                ),
+                entity_effect_target_distance=effect_distance,
+                entity_effect_persisted_in_search=persisted,
+                entity_effect_persistence_steps=persistence_steps,
+            )
+        )
+        self._emit(
+            "human_prior_root_object_state_seeded",
+            decision=self.decision_index,
+            world_effect_signature=effect_signature or None,
+            tracked_world_effect_cells=tracked_cells,
+            tracked_world_state_signature=tracked_state_signature or None,
+            entity_state_signature=entity_state_signature or None,
+            entity_interaction_signature=interaction_signature or None,
+            entity_interaction_action=interaction_action,
+            entity_interaction_direction=interaction_direction,
+            entity_interaction_cell=interaction_cell,
+            entity_effect_target_distance=effect_distance,
+            entity_effect_persisted_in_search=persisted,
+            entity_effect_persistence_steps=persistence_steps,
+            legacy_track_reconstructed=serialized_cells is None,
+            agent_visible=True,
+            **self._frame_fields(self.frame),
+        )
+
     def seed_human_prior_option_archives(
         self,
         archives: Sequence[
@@ -15623,6 +16317,145 @@ class VerifiedNeuralAgent:
                         metadata.get(
                             "goal_exhaustion_recovery_restores", 0
                         )
+                    ),
+                    world_effect_state_signature=str(
+                        metadata.get(
+                            "human_prior_option_world_effect_state_signature"
+                        )
+                        or ""
+                    ),
+                    tracked_world_effect_cells=tuple(
+                        sorted(
+                            (int(value[0]), int(value[1]))
+                            for value in (
+                                metadata.get(
+                                    "human_prior_option_tracked_world_effect_cells"
+                                )
+                                or ()
+                            )
+                        )
+                    ),
+                    tracked_world_state_signature=str(
+                        metadata.get(
+                            "human_prior_option_tracked_world_state_signature"
+                        )
+                        or ""
+                    ),
+                    world_effect_changed_pixels=int(
+                        metadata.get(
+                            "human_prior_option_world_effect_changed_pixels",
+                            0,
+                        )
+                        or 0
+                    ),
+                    confirmed_action_indices=tuple(
+                        int(value)
+                        for value in (
+                            metadata.get(
+                                "human_prior_option_effect_confirmed_action_indices"
+                            )
+                            or ()
+                        )
+                    ),
+                    entity_interaction_signature=str(
+                        metadata.get(
+                            "human_prior_option_entity_interaction_signature"
+                        )
+                        or ""
+                    ),
+                    entity_interaction_action=(
+                        None
+                        if metadata.get(
+                            "human_prior_option_entity_interaction_action"
+                        )
+                        is None
+                        else Action(
+                            str(
+                                metadata[
+                                    "human_prior_option_entity_interaction_action"
+                                ]
+                            )
+                        )
+                    ),
+                    entity_interaction_action_index=(
+                        None
+                        if metadata.get(
+                            "human_prior_option_entity_interaction_action_index"
+                        )
+                        is None
+                        else int(
+                            metadata[
+                                "human_prior_option_entity_interaction_action_index"
+                            ]
+                        )
+                    ),
+                    entity_interaction_direction=(
+                        None
+                        if metadata.get(
+                            "human_prior_option_entity_interaction_direction"
+                        )
+                        is None
+                        else Action(
+                            str(
+                                metadata[
+                                    "human_prior_option_entity_interaction_direction"
+                                ]
+                            )
+                        )
+                    ),
+                    entity_interaction_cell=slot(
+                        metadata.get(
+                            "human_prior_option_entity_interaction_cell"
+                        )
+                    ),
+                    entity_interaction_appearance_fingerprint=str(
+                        metadata.get(
+                            "anonymous_entity_appearance_fingerprint"
+                        )
+                        or ""
+                    ),
+                    entity_interaction_type_id=(
+                        None
+                        if metadata.get("anonymous_entity_type_id") is None
+                        else int(metadata["anonymous_entity_type_id"])
+                    ),
+                    entity_interaction_context_signature=str(
+                        metadata.get("anonymous_entity_context_signature")
+                        or ""
+                    ),
+                    entity_interaction_phase_signature=str(
+                        metadata.get("anonymous_entity_phase_signature")
+                        or ""
+                    ),
+                    entity_interaction_neighborhood_signature=str(
+                        metadata.get(
+                            "anonymous_entity_neighborhood_signature"
+                        )
+                        or ""
+                    ),
+                    entity_effect_target_distance=(
+                        None
+                        if metadata.get(
+                            "human_prior_option_entity_effect_target_distance"
+                        )
+                        is None
+                        else int(
+                            metadata[
+                                "human_prior_option_entity_effect_target_distance"
+                            ]
+                        )
+                    ),
+                    entity_effect_persisted_in_search=bool(
+                        metadata.get(
+                            "human_prior_option_entity_persistence_observed",
+                            False,
+                        )
+                    ),
+                    entity_effect_persistence_steps=int(
+                        metadata.get(
+                            "human_prior_option_entity_persistence_steps", 0
+                        )
+                        or 0
                     ),
                 )
             except (KeyError, TypeError, ValueError) as error:
@@ -26152,6 +26985,73 @@ class VerifiedNeuralAgent:
         )
         self.current_human_prior_world_context_signature = (
             branch.goal_target_world_context
+        )
+        self.current_human_prior_root_object_state = (
+            _HumanPriorRootObjectState(
+                world_effect_signature=(
+                    branch.human_prior_option_world_effect_signature
+                ),
+                world_effect_state_signature=(
+                    branch.world_effect_state_signature
+                ),
+                tracked_world_effect_cells=(
+                    branch.tracked_world_effect_cells
+                ),
+                tracked_world_state_signature=(
+                    branch.tracked_world_state_signature
+                ),
+                world_effect_changed_pixels=(
+                    branch.world_effect_changed_pixels
+                ),
+                confirmed_world_effect_signature=(
+                    branch.goal_world_effect_signature
+                ),
+                confirmed_world_context=branch.goal_target_world_context,
+                confirmed_action_indices=branch.confirmed_action_indices,
+                confirmed_effect_frontier_reason=(
+                    branch.human_prior_option_effect_frontier_reason
+                ),
+                confirmed_entity_state_signature=(
+                    branch.human_prior_option_entity_state_signature
+                ),
+                entity_interaction_signature=(
+                    branch.entity_interaction_signature
+                ),
+                entity_interaction_action=(
+                    branch.entity_interaction_action
+                ),
+                entity_interaction_action_index=(
+                    branch.entity_interaction_action_index
+                ),
+                entity_interaction_direction=(
+                    branch.entity_interaction_direction
+                ),
+                entity_interaction_cell=branch.entity_interaction_cell,
+                entity_interaction_appearance_fingerprint=(
+                    branch.entity_interaction_appearance_fingerprint
+                ),
+                entity_interaction_type_id=(
+                    branch.entity_interaction_type_id
+                ),
+                entity_interaction_context_signature=(
+                    branch.entity_interaction_context_signature
+                ),
+                entity_interaction_phase_signature=(
+                    branch.entity_interaction_phase_signature
+                ),
+                entity_interaction_neighborhood_signature=(
+                    branch.entity_interaction_neighborhood_signature
+                ),
+                entity_effect_target_distance=(
+                    branch.entity_effect_target_distance
+                ),
+                entity_effect_persisted_in_search=(
+                    branch.entity_effect_persisted_in_search
+                ),
+                entity_effect_persistence_steps=(
+                    branch.entity_effect_persistence_steps
+                ),
+            )
         )
         if branch.causal_event_outcome:
             self.causal_outcome_contexts.add(

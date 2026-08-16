@@ -12456,6 +12456,19 @@ class EnsemblePlannerTests(unittest.TestCase):
             "human_prior_option_effect_frontier_reason": (
                 "delayed_causal_effect"
             ),
+            "human_prior_option_tracked_world_effect_cells": [[8, 6]],
+            "human_prior_option_tracked_world_state_signature": "layout-a",
+            "human_prior_option_world_effect_state_signature": "effect-a",
+            "human_prior_option_entity_interaction_signature": "entity-a",
+            "human_prior_option_entity_interaction_action": "right",
+            "human_prior_option_entity_interaction_action_index": 0,
+            "human_prior_option_entity_interaction_direction": "right",
+            "human_prior_option_entity_interaction_cell": [7, 6],
+            "anonymous_entity_appearance_fingerprint": "appearance-a",
+            "anonymous_entity_type_id": 3,
+            "human_prior_option_entity_effect_target_distance": 1,
+            "human_prior_option_entity_persistence_observed": True,
+            "human_prior_option_entity_persistence_steps": 2,
         }
 
         agent.seed_human_prior_option_archives(
@@ -12473,6 +12486,12 @@ class EnsemblePlannerTests(unittest.TestCase):
             branch.human_prior_option_effect_frontier_reason,
             "delayed_causal_effect",
         )
+        self.assertEqual(branch.tracked_world_effect_cells, ((8, 6),))
+        self.assertEqual(branch.tracked_world_state_signature, "layout-a")
+        self.assertEqual(branch.entity_interaction_action, Action.RIGHT)
+        self.assertEqual(branch.entity_interaction_cell, (7, 6))
+        self.assertEqual(branch.entity_interaction_type_id, 3)
+        self.assertEqual(branch.entity_effect_persistence_steps, 2)
         seeded = next(
             event
             for event in logger.events
@@ -12512,6 +12531,149 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(
             skipped["reason"],
             "milestone_parent_checkpoint_not_persisted",
+        )
+
+    def test_seed_root_object_state_reconstructs_legacy_push_archive(
+        self,
+    ) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            UniqueStateEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.NOOP),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        occupied = bytearray(
+            agent.config.causal_spatial_columns
+            * agent.config.causal_spatial_rows
+        )
+        occupied[
+            6 * agent.config.causal_spatial_columns + 8
+        ] = 1
+
+        agent.seed_human_prior_root_object_state(
+            {
+                "path": ["right"],
+                "human_prior_option_world_effect_signature": (
+                    bytes(occupied).hex()
+                ),
+                "human_prior_option_entity_state_signature": "entity-state",
+                "human_prior_option_effect_frontier": True,
+                "human_prior_option_effect_frontier_reason": (
+                    "anonymous_entity_state_change"
+                ),
+                "human_prior_world_target_context": "world-after-push",
+            }
+        )
+
+        root = agent.current_human_prior_root_object_state
+        self.assertEqual(root.tracked_world_effect_cells, ((8, 6),))
+        self.assertEqual(root.entity_interaction_action, Action.RIGHT)
+        self.assertEqual(root.entity_interaction_direction, Action.RIGHT)
+        self.assertEqual(root.entity_interaction_cell, (7, 6))
+        self.assertEqual(root.entity_effect_target_distance, 1)
+        self.assertTrue(root.entity_effect_persisted_in_search)
+        self.assertEqual(root.entity_effect_persistence_steps, 1)
+        self.assertEqual(
+            root.confirmed_entity_state_signature, "entity-state"
+        )
+        seeded = next(
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_root_object_state_seeded"
+        )
+        self.assertTrue(seeded["legacy_track_reconstructed"])
+
+    def test_confirmed_entity_identity_survives_later_interaction(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env = UniqueStateEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT,),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_option_archive_representatives=1,
+            ),
+            event_logger=logger,
+        )
+        frame = agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        analysis = agent.goal_prior.analyze(frame, frame)
+        root = env.save_state()
+        endpoint = _HumanPriorOptionNode(
+            state=env.save_state(),
+            frame=frame,
+            path=(Action.LEFT, Action.UP),
+            durations=(1, 1),
+            analysis=analysis,
+            source_signature="source",
+            target_signature="confirmed-target",
+            score=1.0,
+            depth=2,
+            target_state_visits=0,
+            target_position_visits=0,
+            confirmed_world_effect_signature="effect",
+            confirmed_world_context="confirmed-world",
+            confirmed_entity_state_signature="confirmed-state",
+            confirmed_entity_interaction_signature="confirmed-interaction",
+            confirmed_entity_interaction_action=Action.RIGHT,
+            confirmed_entity_interaction_action_index=0,
+            confirmed_entity_interaction_direction=Action.RIGHT,
+            confirmed_entity_interaction_cell=(7, 6),
+            confirmed_entity_interaction_appearance_fingerprint=(
+                "confirmed-appearance"
+            ),
+            confirmed_entity_effect_target_distance=1,
+            confirmed_entity_effect_persistence_steps=1,
+            entity_interaction_signature="later-interaction",
+            entity_interaction_action=Action.UP,
+            entity_interaction_action_index=1,
+            entity_interaction_direction=Action.UP,
+            entity_interaction_cell=(6, 8),
+        )
+
+        added, _retained = agent._archive_proactive_entity_frontiers(
+            root, frame, (endpoint,)
+        )
+
+        self.assertEqual(added, 1)
+        branch = agent.archive[0]
+        self.assertEqual(
+            branch.entity_interaction_signature,
+            "confirmed-interaction",
+        )
+        self.assertEqual(branch.entity_interaction_action, Action.RIGHT)
+        self.assertEqual(branch.entity_interaction_cell, (7, 6))
+        event = next(
+            value
+            for value in logger.events
+            if value["event"] == "human_prior_option_archive_added"
+        )
+        self.assertEqual(
+            event["human_prior_option_entity_interaction_signature"],
+            "confirmed-interaction",
+        )
+        self.assertEqual(
+            event["human_prior_option_entity_interaction_action"],
+            Action.RIGHT,
         )
 
     def test_seed_milestone_outcomes_scopes_decisions_by_run(self) -> None:
