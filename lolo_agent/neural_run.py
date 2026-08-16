@@ -546,6 +546,9 @@ def iter_episodic_decision_events(
                 milestone_branch.get("human_prior_chest_obtained", False)
             ),
         ),
+        "exhausted_goal_slot": milestone_branch.get(
+            "human_prior_target_chest_slot"
+        ),
         "resumed_milestone_exhaustion_inferred": True,
         "state_source_run_id": str(
             resume.get("state_source_run_id")

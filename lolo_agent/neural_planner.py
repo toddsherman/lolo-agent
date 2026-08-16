@@ -1093,6 +1093,9 @@ class VerifiedNeuralAgent:
         self.human_prior_exhausted_milestone_contexts: Dict[
             tuple, set[str]
         ] = {}
+        self.human_prior_exhausted_milestone_goal_slots: Dict[
+            tuple, Tuple[int, int]
+        ] = {}
         self.human_prior_ordering_progress_hypotheses: set[tuple] = set()
         self.human_prior_disproved_ordering_hypotheses: set[tuple] = set()
         self.human_prior_exhausted_option_frontiers: Dict[str, int] = {}
@@ -9688,6 +9691,11 @@ class VerifiedNeuralAgent:
                         direct_effect_cells = self._causal_spatial_cells(
                             option_world_effect_signature
                         )
+                        directional_candidate_effect_cells = (
+                            self._causal_spatial_cells(
+                                option_spatial_signature
+                            )
+                        )
                         direct_effect_target_distance = (
                             None
                             if not direct_effect_cells
@@ -9741,28 +9749,66 @@ class VerifiedNeuralAgent:
                                         destination,
                                     )
                                 )
-                                source_features, source_fingerprints = (
+                                source_features, _source_fingerprints = (
                                     entity_feature_index(parent.frame)
                                 )
                                 source_feature = source_features.get(
                                     direct_interaction_cell
                                 )
                                 if source_feature is not None:
-                                    source_fingerprint = (
-                                        behavior_model.appearance_fingerprint(
-                                            source_feature
+                                    source_correspondence_feature = (
+                                        source_feature
+                                    )
+                                    target_correspondence_feature = (
+                                        memory.feature_at(
+                                            target, *destination
                                         )
                                     )
+                                    player_pixel_mask = getattr(
+                                        self.goal_prior,
+                                        "player_pixel_mask",
+                                        None,
+                                    )
+                                    if callable(player_pixel_mask):
+                                        source_player = (
+                                            parent.analysis.target_player_slot
+                                        )
+                                        target_player = (
+                                            analysis.target_player_slot
+                                        )
+                                        if source_player is not None:
+                                            source_correspondence_feature = (
+                                                memory.feature_at(
+                                                    parent.frame,
+                                                    *direct_interaction_cell,
+                                                    player_pixel_mask(
+                                                        parent.frame,
+                                                        source_player,
+                                                    ),
+                                                )
+                                            )
+                                        if target_player is not None:
+                                            target_correspondence_feature = (
+                                                memory.feature_at(
+                                                    target,
+                                                    *destination,
+                                                    player_pixel_mask(
+                                                        target,
+                                                        target_player,
+                                                    ),
+                                                )
+                                            )
+                                    # Repeated appearances are precisely the
+                                    # reusable object classes this detector is
+                                    # meant to learn (for example, several
+                                    # visually identical movable objects).
+                                    # Ordinary repeated substrate still fails
+                                    # the exact destination-change and neutral
+                                    # persistence gates below.
                                     directional_appearance_correspondence = bool(
-                                        source_fingerprints[
-                                            source_fingerprint
-                                        ]
-                                        <= 4
-                                        and memory.feature_distance(
-                                            source_feature,
-                                            memory.feature_at(
-                                                target, *destination
-                                            ),
+                                        memory.feature_distance(
+                                            source_correspondence_feature,
+                                            target_correspondence_feature,
                                         )
                                         <= memory.match_threshold
                                     )
@@ -9770,7 +9816,7 @@ class VerifiedNeuralAgent:
                             self._human_prior_directional_interaction_effect_cells(
                                 action,
                                 direct_interaction_cell,
-                                direct_effect_cells,
+                                directional_candidate_effect_cells,
                                 float(
                                     entity_curiosity.get(
                                         "entity_displacement_probability",
@@ -9781,11 +9827,34 @@ class VerifiedNeuralAgent:
                                 directional_phase_stable_correspondence,
                             )
                         )
+                        if directional_interaction_effect_cells:
+                            direct_effect_target_distance = min(
+                                abs(cell[0] - direct_interaction_cell[0])
+                                + abs(cell[1] - direct_interaction_cell[1])
+                                for cell in directional_interaction_effect_cells
+                            )
+                            if not option_world_effect_signature:
+                                option_world_effect_signature = (
+                                    option_spatial_signature
+                                )
+                                option_world_effect_state_signature = (
+                                    self._human_prior_world_effect_state_signature(
+                                        target,
+                                        option_world_effect_signature,
+                                    )
+                                )
                         parent_effect_target_aligned = bool(
                             parent.entity_effect_target_distance == 0
                             or (
                                 parent.entity_interaction_action
-                                in (Action.A, Action.B)
+                                in (
+                                    Action.UP,
+                                    Action.DOWN,
+                                    Action.LEFT,
+                                    Action.RIGHT,
+                                    Action.A,
+                                    Action.B,
+                                )
                                 and parent.entity_effect_target_distance
                                 is not None
                                 and parent.entity_effect_target_distance <= 1
@@ -10688,14 +10757,29 @@ class VerifiedNeuralAgent:
                         observed_candidates
                     )
                 )
+                preparation_goal_slot = (
+                    self._human_prior_active_preparation_goal_slot()
+                )
+                goal_reserve_distance: Callable[
+                    [_HumanPriorOptionNode], Optional[float]
+                ] = (
+                    self._human_prior_preparation_goal_distance
+                    if preparation_goal_slot is not None
+                    else self._human_prior_visible_goal_distance
+                )
                 goal_proximity_candidates = list(
-                    self._human_prior_goal_proximity_reserve_candidates(
+                    self._human_prior_preparation_proximity_reserve_candidates(
+                        observed_candidates
+                    )
+                    if preparation_goal_slot is not None
+                    else self._human_prior_goal_proximity_reserve_candidates(
                         observed_candidates
                     )
                 )
                 goal_world_state_candidates = list(
                     self._human_prior_goal_world_state_reserve_candidates(
-                        observed_candidates
+                        observed_candidates,
+                        goal_distance=goal_reserve_distance,
                     )
                 )
                 all_missing_player_candidates = [
@@ -11035,7 +11119,7 @@ class VerifiedNeuralAgent:
                         goal_proximity_parents
                     ),
                     human_prior_option_goal_proximity_distances_retained=tuple(
-                        self._human_prior_visible_goal_distance(node)
+                        goal_reserve_distance(node)
                         for node in goal_proximity_parents
                     ),
                     human_prior_option_goal_proximity_slots_retained=tuple(
@@ -11052,8 +11136,13 @@ class VerifiedNeuralAgent:
                         goal_world_state_parents
                     ),
                     human_prior_option_goal_world_state_distances_retained=tuple(
-                        self._human_prior_visible_goal_distance(node)
+                        goal_reserve_distance(node)
                         for node in goal_world_state_parents
+                    ),
+                    human_prior_option_goal_world_state_target_kind=(
+                        "learned_future_goal"
+                        if preparation_goal_slot is not None
+                        else "visible_goal"
                     ),
                     human_prior_option_goal_world_state_cells_retained=tuple(
                         node.tracked_world_effect_cells
@@ -12286,7 +12375,11 @@ class VerifiedNeuralAgent:
                 - len(additional_goal_world_state_endpoints),
             )
             goal_proximity_archive_candidates = list(
-                self._human_prior_goal_proximity_reserve_candidates(
+                self._human_prior_preparation_proximity_reserve_candidates(
+                    ordinary_endpoints
+                )
+                if self._human_prior_active_preparation_goal_slot() is not None
+                else self._human_prior_goal_proximity_reserve_candidates(
                     ordinary_endpoints
                 )
             )
@@ -13245,6 +13338,7 @@ class VerifiedNeuralAgent:
         self.human_prior_milestone_outcomes = set()
         self.human_prior_exhausted_milestone_transitions = set()
         self.human_prior_exhausted_milestone_contexts = {}
+        self.human_prior_exhausted_milestone_goal_slots = {}
         self.human_prior_ordering_progress_hypotheses = set()
         self.human_prior_disproved_ordering_hypotheses = set()
         self.human_prior_option_exhausted_sources: set[tuple] = set()
@@ -13772,6 +13866,7 @@ class VerifiedNeuralAgent:
         self.human_prior_milestone_outcomes = set()
         self.human_prior_exhausted_milestone_transitions = set()
         self.human_prior_exhausted_milestone_contexts = {}
+        self.human_prior_exhausted_milestone_goal_slots = {}
         self.human_prior_ordering_progress_hypotheses = set()
         self.human_prior_disproved_ordering_hypotheses = set()
         self.human_prior_option_exhausted_sources = set()
@@ -13931,6 +14026,9 @@ class VerifiedNeuralAgent:
         ] = Counter()
         exhausted_milestone_transitions: set[tuple] = set()
         exhausted_milestone_contexts: Dict[tuple, set[str]] = {}
+        exhausted_milestone_goal_slots: Dict[
+            tuple, Tuple[int, int]
+        ] = {}
         ordering_progress_hypotheses: set[tuple] = set()
         disproved_ordering_hypotheses: set[tuple] = set()
         budget_invalidated_ordering_disproofs = 0
@@ -14161,6 +14259,7 @@ class VerifiedNeuralAgent:
                 milestone_outcomes_by_decision.clear()
                 ordering_progress_hypotheses.clear()
                 disproved_ordering_hypotheses.clear()
+                exhausted_milestone_goal_slots.clear()
                 exhausted_option_frontiers.clear()
                 episodic_graph_edges.clear()
                 episodic_graph_reverse_edges.clear()
@@ -14730,6 +14829,16 @@ class VerifiedNeuralAgent:
                         exhausted_milestone_transitions.add(
                             parsed_transition
                         )
+                        exhausted_goal_slot = event.get(
+                            "exhausted_goal_slot"
+                        )
+                        if exhausted_goal_slot is not None:
+                            exhausted_milestone_goal_slots[
+                                parsed_transition
+                            ] = (
+                                int(exhausted_goal_slot[0]),
+                                int(exhausted_goal_slot[1]),
+                            )
                         exhausted_world_context = str(
                             event.get("exhausted_world_context")
                             or self._human_prior_graph_world_context(
@@ -15093,6 +15202,9 @@ class VerifiedNeuralAgent:
         self.human_prior_exhausted_milestone_contexts = (
             exhausted_milestone_contexts
         )
+        self.human_prior_exhausted_milestone_goal_slots = (
+            exhausted_milestone_goal_slots
+        )
         self.human_prior_ordering_progress_hypotheses = (
             ordering_progress_hypotheses
             - disproved_ordering_hypotheses
@@ -15213,6 +15325,9 @@ class VerifiedNeuralAgent:
                 for contexts in (
                     self.human_prior_exhausted_milestone_contexts.values()
                 )
+            ),
+            exhausted_milestone_goal_slots=len(
+                self.human_prior_exhausted_milestone_goal_slots
             ),
             exhausted_navigation_detours=len(
                 self.human_prior_exhausted_navigation_detours
@@ -16850,20 +16965,25 @@ class VerifiedNeuralAgent:
     def _human_prior_prepared_milestone_retry(
         self, node: _HumanPriorOptionNode
     ) -> bool:
-        """Allow an exhausted goal transition after a verified world change.
+        """Allow an exhausted goal transition after verified preparation.
 
         Exhaustion applies to the observed puzzle configuration, not to the
-        visual goal forever.  A branch that carries an action-conditioned
-        anonymous world-state change may therefore retry the milestone; its
-        downstream outcome will provide fresh empirical evidence.  Requiring
-        both changed cells and their absolute appearance signature prevents
-        ordinary player movement from reopening the transition.
+        visual goal forever.  A branch with a persistent effect confirmed by
+        action ablation may therefore retry the milestone; its downstream
+        outcome will provide fresh empirical evidence.  Reaching a goal
+        region learned only after the failed milestone is also a falsifiable
+        preparation hypothesis.  Raw tracked cells and appearance signatures
+        remain insufficient because sprite animation can manufacture both
+        without changing puzzle configuration.
         """
 
         return bool(
             self._human_prior_milestone_transition_exhausted(node.analysis)
-            and node.tracked_world_effect_cells
-            and node.tracked_world_state_signature
+            and (
+                node.confirmed_world_effect_signature
+                or node.confirmed_entity_state_signature
+                or self._human_prior_preparation_goal_reached()
+            )
         )
 
     def _human_prior_option_milestone_blocked(
@@ -17342,6 +17462,103 @@ class VerifiedNeuralAgent:
         ]
         return min(available) if available else None
 
+    def _human_prior_active_preparation_goal_slot(
+        self,
+    ) -> Optional[Tuple[int, int]]:
+        """Return a pixel goal revealed only after a failed milestone.
+
+        The slot is learned from the post-milestone screen and is used only
+        while the matching pre-milestone heart configuration is visible.
+        It supplies spatial credit assignment across save-state rollback
+        without assigning an object type or encoding a room solution.
+        """
+
+        if self.goal_prior is None:
+            return None
+        current_hearts = tuple(sorted(self.goal_prior.current_slots()))
+        chest_obtained = bool(self.goal_prior.chest_obtained)
+        candidates = []
+        for transition, goal_slot in (
+            self.human_prior_exhausted_milestone_goal_slots.items()
+        ):
+            source_hearts, target_hearts, transition_chest = transition
+            if (
+                not set(source_hearts).issubset(current_hearts)
+                or bool(transition_chest) != chest_obtained
+                or not set(target_hearts).issubset(source_hearts)
+                or len(target_hearts) >= len(source_hearts)
+                or not self._human_prior_exhaustion_context_matches(
+                    transition
+                )
+            ):
+                continue
+            ordering_key = (
+                tuple(sorted(source_hearts)),
+                tuple(sorted(set(source_hearts) - set(target_hearts))),
+                bool(transition_chest),
+            )
+            if ordering_key in self.human_prior_disproved_ordering_hypotheses:
+                continue
+            candidates.append(goal_slot)
+        return min(candidates) if candidates else None
+
+    def _human_prior_preparation_goal_distance(
+        self, node: _HumanPriorOptionNode
+    ) -> Optional[float]:
+        target = self._human_prior_active_preparation_goal_slot()
+        player = node.analysis.target_player_slot
+        if target is None or player is None:
+            return None
+        return (
+            abs(player[0] - target[0]) + abs(player[1] - target[1])
+        ) / 16.0
+
+    def _human_prior_preparation_goal_reached(self) -> bool:
+        target = self._human_prior_active_preparation_goal_slot()
+        player = (
+            None
+            if self.goal_prior is None
+            else self.goal_prior.current_player_slot
+        )
+        return bool(target is not None and player == target)
+
+    def _human_prior_preparation_proximity_reserve_candidates(
+        self,
+        nodes: Sequence[_HumanPriorOptionNode],
+    ) -> Tuple[_HumanPriorOptionNode, ...]:
+        """Preserve distinct poses nearest a learned future-goal region."""
+
+        if self._human_prior_active_preparation_goal_slot() is None:
+            return ()
+
+        def rank(node: _HumanPriorOptionNode) -> tuple:
+            distance = self._human_prior_preparation_goal_distance(node)
+            return (
+                distance is not None,
+                -(distance if distance is not None else math.inf),
+                node.target_position_visits == 0,
+                node.action_dependent_endpoint,
+                node.target_state_visits == 0,
+                node.score,
+                -node.depth,
+            )
+
+        representatives: Dict[Tuple[int, int], _HumanPriorOptionNode] = {}
+        for node in nodes:
+            player = node.analysis.target_player_slot
+            if (
+                player is None
+                or node.analysis.life_counter_changed
+                or node.analysis.dark_transition_started
+            ):
+                continue
+            previous = representatives.get(player)
+            if previous is None or rank(node) > rank(previous):
+                representatives[player] = node
+        return tuple(
+            sorted(representatives.values(), key=rank, reverse=True)
+        )
+
     @classmethod
     def _human_prior_goal_proximity_reserve_candidates(
         cls,
@@ -17392,6 +17609,10 @@ class VerifiedNeuralAgent:
     def _human_prior_goal_world_state_reserve_candidates(
         cls,
         nodes: Sequence[_HumanPriorOptionNode],
+        *,
+        goal_distance: Optional[
+            Callable[[_HumanPriorOptionNode], Optional[float]]
+        ] = None,
     ) -> Tuple[_HumanPriorOptionNode, ...]:
         """Keep goal-near poses coupled to anonymous world configurations.
 
@@ -17402,15 +17623,53 @@ class VerifiedNeuralAgent:
         it does not assign object identities or encode game mechanics.
         """
 
+        distance_to_goal = goal_distance or cls._human_prior_visible_goal_distance
+        preparation_layout_required = goal_distance is not None
+
+        def reliable_preparation_layout(
+            node: _HumanPriorOptionNode,
+        ) -> bool:
+            if not preparation_layout_required:
+                return True
+            learned_manipulation_evidence = bool(
+                node.action_dependent_endpoint
+                and node.entity_effect_persisted_in_search
+                and (
+                    node.entity_manipulation_probability > 0.0
+                    or node.entity_displacement_probability > 0.0
+                )
+            )
+            bootstrapped_directional_displacement = bool(
+                node.action_dependent_endpoint
+                and node.entity_effect_persisted_in_search
+                and node.entity_effect_persistence_steps >= 1
+                and node.entity_interaction_action
+                in (
+                    Action.UP,
+                    Action.DOWN,
+                    Action.LEFT,
+                    Action.RIGHT,
+                )
+                and node.entity_effect_target_distance is not None
+                and node.entity_effect_target_distance <= 1
+            )
+            return bool(
+                node.confirmed_world_effect_signature
+                or node.confirmed_entity_state_signature
+                or learned_manipulation_evidence
+                or bootstrapped_directional_displacement
+            )
+
         exact_representatives: Dict[tuple, _HumanPriorOptionNode] = {}
         exact_positions: Dict[tuple, set[Tuple[int, int]]] = defaultdict(set)
 
         def safe_goal_node(node: _HumanPriorOptionNode) -> bool:
             return bool(
                 node.analysis.target_player_slot is not None
-                and cls._human_prior_visible_goal_distance(node) is not None
+                and distance_to_goal(node) is not None
                 and node.tracked_world_effect_cells
                 and node.tracked_world_state_signature
+                and reliable_preparation_layout(node)
                 and not node.analysis.life_counter_changed
                 and not node.analysis.dark_transition_started
             )
@@ -17433,10 +17692,8 @@ class VerifiedNeuralAgent:
             if previous is None:
                 exact_representatives[exact_key] = node
                 continue
-            node_distance = cls._human_prior_visible_goal_distance(node)
-            previous_distance = cls._human_prior_visible_goal_distance(
-                previous
-            )
+            node_distance = distance_to_goal(node)
+            previous_distance = distance_to_goal(previous)
             if (
                 -(node_distance if node_distance is not None else math.inf),
                 node.action_dependent_endpoint,
@@ -17480,7 +17737,7 @@ class VerifiedNeuralAgent:
             return (axes, len(positions), span)
 
         def rank(node: _HumanPriorOptionNode) -> tuple:
-            distance = cls._human_prior_visible_goal_distance(node)
+            distance = distance_to_goal(node)
             return (
                 distance is not None,
                 -(distance if distance is not None else math.inf),
@@ -17863,6 +18120,9 @@ class VerifiedNeuralAgent:
             and not node.confirmed_world_effect_signature
             and not node.confirmed_entity_state_signature
         )
+        preparation_distance = self._human_prior_preparation_goal_distance(
+            node
+        )
         return (
             (
                 0.0
@@ -17870,6 +18130,12 @@ class VerifiedNeuralAgent:
                 else base[0]
             ),
             not repeated_navigation_regression,
+            preparation_distance is not None,
+            -(
+                preparation_distance
+                if preparation_distance is not None
+                else math.inf
+            ),
             base[1],
             base[2],
             adjusted_reward,
@@ -23750,6 +24016,23 @@ class VerifiedNeuralAgent:
             self.human_prior_exhausted_milestone_contexts.setdefault(
                 exhausted_transition, set()
             ).add(exhausted_world_context)
+        exhausted_goal_analysis = (
+            None
+            if self.goal_prior is None
+            else self.goal_prior.analyze(self.frame, self.frame)
+        )
+        exhausted_goal_slot = (
+            None
+            if exhausted_goal_analysis is None
+            else (
+                exhausted_goal_analysis.target_chest_slot
+                or exhausted_goal_analysis.source_chest_slot
+            )
+        )
+        if exhausted_goal_slot is not None:
+            self.human_prior_exhausted_milestone_goal_slots[
+                exhausted_transition
+            ] = exhausted_goal_slot
         ordering_key = self._human_prior_ordering_hypothesis_key(
             exhausted_transition[0],
             exhausted_transition[2],
@@ -23803,6 +24086,7 @@ class VerifiedNeuralAgent:
             ),
             exhausted_milestone_transition=exhausted_transition,
             exhausted_world_context=exhausted_world_context,
+            exhausted_goal_slot=exhausted_goal_slot,
             recovery_state_id=checkpoint.state_id,
             agent_visible=True,
             **self._frame_fields(self.frame),

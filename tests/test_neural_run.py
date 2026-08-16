@@ -233,6 +233,7 @@ class StableSceneChangeDetectorTests(unittest.TestCase):
                         "human_prior_source_hearts": [[16, 16], [32, 16]],
                         "human_prior_target_hearts": [[32, 16]],
                         "human_prior_chest_obtained": False,
+                        "human_prior_target_chest_slot": [48, 16],
                     }
                 )
                 + "\n",
@@ -282,6 +283,7 @@ class StableSceneChangeDetectorTests(unittest.TestCase):
             (((16, 16), (32, 16)), ((32, 16),), False),
         )
         self.assertEqual(inferred[0]["state_source_option_event_seq"], 17)
+        self.assertEqual(inferred[0]["exhausted_goal_slot"], [48, 16])
         self.assertTrue(inferred[0]["ordering_hypothesis_reactivated"])
         self.assertTrue(inferred[0]["exhaustion_context_unscoped"])
 

@@ -332,6 +332,27 @@ class PixelHeartGoalPriorTests(unittest.TestCase):
         self.assertIn((80, 70), masked)
         self.assertNotIn((40, 40), masked)
 
+    def test_player_pixel_mask_excludes_disconnected_white_object(self) -> None:
+        source = room_frame(player=(80, 64))
+        pixels = bytearray(source.pixels)
+        for y in range(64, 72):
+            for x in range(100, 108):
+                offset = (y * source.width + x) * source.channels
+                pixels[offset : offset + 3] = bytes((255, 255, 255))
+        frame = Frame(
+            source.width,
+            source.height,
+            source.channels,
+            bytes(pixels),
+        )
+
+        masked = PixelHeartGoalPrior().player_pixel_mask(
+            frame, (80, 64)
+        )
+
+        self.assertIn((80, 64), masked)
+        self.assertNotIn((103, 68), masked)
+
     def test_open_chest_becomes_the_goal_after_the_last_heart(self) -> None:
         initial = room_frame(((48, 48),), life_glyph=LIFE_FIVE)
         opened = room_frame(

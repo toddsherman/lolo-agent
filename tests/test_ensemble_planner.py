@@ -627,6 +627,18 @@ class MovingAdjacentMaskGoalPrior(PositionGoalPrior):
         }
 
 
+class ExactPlayerPixelGoalPrior(PositionGoalPrior):
+    @staticmethod
+    def player_pixel_mask(
+        frame: Frame,
+        slot: tuple[int, int],
+        search_padding: int = 12,
+        dilation: int = 3,
+    ) -> set[tuple[int, int]]:
+        del frame, search_padding, dilation
+        return {slot}
+
+
 class FootprintPositionGoalPrior(PositionGoalPrior):
     @staticmethod
     def player_pixel_mask(
@@ -1001,9 +1013,10 @@ class AdjacentButtonTransformEnv(UnlabeledEntityTransformEnv):
 
 
 class PushableEntityEnv:
-    def __init__(self) -> None:
+    def __init__(self, repeated_entities: int = 0) -> None:
         self.player_column = 0
         self.entity_column = 1
+        self.repeated_entities = repeated_entities
 
     def reset(self) -> Frame:
         self.player_column = 0
@@ -1032,6 +1045,10 @@ class PushableEntityEnv:
 
     def _frame(self) -> Frame:
         pixels = bytearray(32 * 32)
+        for column in range(min(8, self.repeated_entities)):
+            for y in range(4, 8):
+                for x in range(column * 4, column * 4 + 4):
+                    pixels[y * 32 + x] = 96
         for y in range(4):
             for x in range(
                 self.entity_column * 4,
@@ -3371,7 +3388,7 @@ class EnsemblePlannerTests(unittest.TestCase):
             )
         )
 
-    def test_verified_world_preparation_reopens_exhausted_milestone(
+    def test_only_causal_world_preparation_reopens_exhausted_milestone(
         self,
     ) -> None:
         env = MovingMilestoneSettlesEnv()
@@ -3406,16 +3423,122 @@ class EnsemblePlannerTests(unittest.TestCase):
         )
 
         self.assertTrue(agent._human_prior_option_milestone_blocked(node))
-        prepared = replace(
+        tracked_only = replace(
             node,
             tracked_world_effect_cells=((3, 4),),
             tracked_world_state_signature="prepared-state",
+        )
+        self.assertFalse(
+            agent._human_prior_prepared_milestone_retry(tracked_only)
+        )
+        self.assertTrue(
+            agent._human_prior_option_milestone_blocked(tracked_only)
+        )
+        prepared = replace(
+            tracked_only,
+            confirmed_world_effect_signature="causal-preparation",
         )
         self.assertTrue(
             agent._human_prior_prepared_milestone_retry(prepared)
         )
         self.assertFalse(
             agent._human_prior_option_milestone_blocked(prepared)
+        )
+
+    def test_failed_milestone_future_goal_guides_preparation_proximity(
+        self,
+    ) -> None:
+        env = MovingMilestoneSettlesEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(),
+        )
+        agent.reset()
+        agent.goal_prior = MovingMilestoneGoalPrior()
+        transition = (((7, 0),), (), False)
+        agent.human_prior_exhausted_milestone_transitions.add(transition)
+        agent.human_prior_exhausted_milestone_goal_slots[transition] = (0, 0)
+
+        def candidate(player: tuple[int, int], score: float):
+            return SimpleNamespace(
+                tracked_world_effect_cells=((3, 4),),
+                tracked_world_state_signature=str(player),
+                analysis=SimpleNamespace(
+                    target_player_slot=player,
+                    target_present=((7, 0),),
+                    target_heart_distance=(
+                        0.0 if player == (96, 0) else 100.0
+                    ),
+                    target_chest_distance=None,
+                    life_counter_changed=False,
+                    dark_transition_started=False,
+                ),
+                target_position_visits=0,
+                action_dependent_endpoint=True,
+                entity_effect_persisted_in_search=True,
+                entity_effect_persistence_steps=1,
+                entity_interaction_action=Action.A,
+                entity_effect_target_distance=1,
+                entity_manipulation_probability=0.8,
+                entity_displacement_probability=0.0,
+                confirmed_world_effect_signature="",
+                confirmed_entity_state_signature="",
+                target_state_visits=0,
+                score=score,
+                depth=2,
+            )
+
+        near = candidate((16, 0), 1.0)
+        far = candidate((96, 0), 100.0)
+
+        self.assertEqual(
+            agent._human_prior_active_preparation_goal_slot(), (0, 0)
+        )
+        self.assertTrue(agent._human_prior_preparation_goal_reached())
+        self.assertEqual(
+            agent._human_prior_preparation_proximity_reserve_candidates(
+                (far, near)
+            ),
+            (near, far),
+        )
+        agent.goal_prior = SimpleNamespace(
+            current_slots=lambda: ((7, 0), (9, 0)),
+            chest_obtained=False,
+            current_player_slot=(16, 0),
+        )
+        self.assertEqual(
+            agent._human_prior_active_preparation_goal_slot(), (0, 0)
+        )
+        self.assertEqual(
+            agent._human_prior_goal_world_state_reserve_candidates(
+                (far, near),
+                goal_distance=agent._human_prior_preparation_goal_distance,
+            ),
+            (near, far),
+        )
+        animation_only = candidate((16, 0), 2.0)
+        animation_only.entity_manipulation_probability = 0.0
+        animation_only.entity_displacement_probability = 0.0
+        self.assertEqual(
+            agent._human_prior_goal_world_state_reserve_candidates(
+                (animation_only,),
+                goal_distance=agent._human_prior_preparation_goal_distance,
+            ),
+            (),
+        )
+        directional_displacement = candidate((32, 0), 1.0)
+        directional_displacement.entity_manipulation_probability = 0.0
+        directional_displacement.entity_interaction_action = Action.RIGHT
+        self.assertEqual(
+            agent._human_prior_goal_world_state_reserve_candidates(
+                (directional_displacement,),
+                goal_distance=agent._human_prior_preparation_goal_distance,
+            ),
+            (directional_displacement,),
         )
 
     def test_reachable_failed_milestone_preserves_empirical_ordering_without_alternate_progress(
@@ -8018,6 +8141,74 @@ class EnsemblePlannerTests(unittest.TestCase):
                 appearance_correspondence=False,
             ),
             set(),
+        )
+
+    def test_repeated_directional_entity_push_persists_in_search(
+        self,
+    ) -> None:
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            PushableEntityEnv(repeated_entities=5),
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.NOOP),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=2,
+                human_prior_option_search_beam_width=8,
+                human_prior_option_search_action_frames=1,
+                human_prior_option_effect_stability_steps=1,
+                human_prior_option_effect_probe_limit=2,
+                human_prior_option_effect_phase_offsets=1,
+                human_prior_option_effect_local_controls=True,
+                human_prior_option_entity_frontier=True,
+                human_prior_option_entity_curiosity_reserve=2,
+                causal_spatial_columns=8,
+                causal_spatial_rows=8,
+            ),
+            event_logger=logger,
+            entity_behavior_model=AnonymousEntityBehaviorModel(
+                minimum_prediction_samples=1
+            ),
+        )
+        agent.reset()
+        agent.goal_prior = ExactPlayerPixelGoalPrior()
+        source_signature = agent._current_human_prior_graph_signature()
+        agent.human_prior_graph_state_visits[source_signature] = 1
+        agent.human_prior_player_position_visits[(0, 0)] = 1
+
+        agent._search_human_prior_options()
+
+        pushed = next(
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_branch_verified"
+            and event["path"] == (Action.RIGHT,)
+        )
+        persisted = next(
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_branch_verified"
+            and event["path"] == (Action.RIGHT, Action.NOOP)
+        )
+        self.assertTrue(
+            pushed["human_prior_option_directional_appearance_correspondence"]
+        )
+        self.assertEqual(
+            pushed["human_prior_option_directional_interaction_effect_cells"],
+            [(2, 0)],
+        )
+        self.assertTrue(
+            persisted["human_prior_option_entity_persistence_observed"]
+        )
+        self.assertEqual(
+            persisted["human_prior_option_entity_effect_target_distance"],
+            1,
         )
 
     def test_world_state_reserve_deduplicates_cumulative_configuration(

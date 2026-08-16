@@ -387,19 +387,42 @@ class PixelHeartGoalPrior:
             raise ValueError("player mask search padding must be non-negative")
         if dilation < 0:
             raise ValueError("player mask dilation must be non-negative")
-        player_colours = {(21, 95, 217), (255, 255, 255)}
+        blue = (21, 95, 217)
+        player_colours = {blue, (255, 255, 255)}
         x_start = max(0, slot[0] - search_padding)
         y_start = max(0, slot[1] - search_padding)
         x_stop = min(frame.width, slot[0] + 16 + search_padding)
         y_stop = min(frame.height, slot[1] + 16 + search_padding)
-        anchors = {
+        candidates = {
             (x, y)
             for y in range(y_start, y_stop)
             for x in range(x_start, x_stop)
             if self._pixel(frame, x, y) in player_colours
         }
+        # White is shared by several anonymous game objects.  Starting from
+        # Lolo's distinctive blue pixels and retaining only the connected
+        # blue/white component prevents an adjacent white object from being
+        # erased as part of the controlled sprite.
+        anchors = {
+            point
+            for point in candidates
+            if self._pixel(frame, *point) == blue
+        }
+        connected = set(anchors)
+        frontier = list(anchors)
+        while frontier:
+            x, y = frontier.pop()
+            for y_offset in (-1, 0, 1):
+                for x_offset in (-1, 0, 1):
+                    neighbor = (x + x_offset, y + y_offset)
+                    if (
+                        neighbor in candidates
+                        and neighbor not in connected
+                    ):
+                        connected.add(neighbor)
+                        frontier.append(neighbor)
         masked: set[Tuple[int, int]] = set()
-        for x, y in anchors:
+        for x, y in connected:
             for y_offset in range(-dilation, dilation + 1):
                 for x_offset in range(-dilation, dilation + 1):
                     masked_x = x + x_offset
