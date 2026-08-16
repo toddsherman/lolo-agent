@@ -1225,6 +1225,68 @@ Evidence:
 - `docs/paired-accessibility-probe-2026-08-16.md` §7–§8
 - run `entity-v324-room3-paired-probe-arm-b-rerun-certified-d12`
 
+### 4.29 Track decomposition of the band-opening configuration
+
+What was tried:
+
+- An offline recon over v324's new track telemetry (358 distinct track-set
+  signatures, per-cell button correlation over 12,232 branches,
+  decision-boundary frame diffs) to locate the displaced object and design
+  the next probe root.
+
+Result — three corrections to the record:
+
+- **The "westward push" inference in 4.27/4.28 is falsified.** The
+  manipulation that opens the column-8 band is *removal*: the `(7,6)`
+  entity was transformed in place by a button press, pushed one cell east
+  in transformed state, then expelled east off along row 6. A westward-
+  displaced state exists only in 71 released, unrestorable branch
+  endpoints.
+- **`anonymous_object_track_cells` is accumulated history, not endpoint
+  configuration.** Five of the committed six cells had physically relaxed
+  to baseline by v324 d7 while the set still listed them. Decomposition:
+  `(7,6)` real vacated home (action-caused); `(8,6)/(11,6)/(12,6)`
+  transient transit cells; `(2,6)/(3,7)` autonomous patroller leak that
+  registers only in button branches; `(14,5)` the HUD shot counter —
+  outside the room entirely.
+- **Second instrument gap:** causal-archive `archive_branch_restored`
+  events carry no track fields, so a mid-run causal-archive restore
+  silently resets accumulated hold evidence (v324 d8). Option-archive
+  restores are covered (WP1 `archived_track_fields`); the causal archive
+  is not.
+
+Classification:
+
+- **Engineering defect** (4.27/4.28's westward inference — drawn from
+  branch-level evidence without track telemetry; conclusions corrected) —
+  plus a **validated decomposition method**: accumulated-set + button
+  correlation + frame-diff separates real manipulation, transit,
+  autonomous leak, and HUD echo without any supplied labels.
+
+Learning:
+
+- Carried track state must distinguish "changed at some point" from
+  "still changed"; endpoint-relative track state is the WP2/WP3 contract
+  this confirms as necessary.
+- HUD regions and autonomous patrol must be excluded from manipulation
+  credit by measurement (matched controls catch them in movement-only
+  branches; they leak only after a real anomaly exists in the branch).
+- Every archive class that can reseed a search root must carry the track
+  block — instrument fix queued.
+
+Plan change:
+
+- The next probe is re-titled the **object-removed configuration probe**,
+  preregistered in `docs/object-removed-probe-2026-08-16.md` with root =
+  v324 d7 snapshot (player at `(7,6)`, entity removed, world relaxed),
+  certification `cells == []`, and a new analysis rule voiding
+  certification after any causal-archive restore.
+
+Evidence:
+
+- `docs/object-removed-probe-2026-08-16.md` (premise correction section)
+- v324 telemetry; recon preserved in session transcripts
+
 ## 5. Platform and cost learnings
 
 ### 5.1 RunPod for emulator branching
