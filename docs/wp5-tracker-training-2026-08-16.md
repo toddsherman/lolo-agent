@@ -56,3 +56,31 @@ Capped-run numbers (40 epochs, lr 1e-3, MPS):
 Precision 0.4401 / recall 0.9607 at 0.9% prevalence: the head finds
 nearly all controllable cells and over-covers by ~2x — consistent with
 the documented one-displacement-step label blur.
+
+### Uncapped confirmation (appended 2026-08-16)
+
+Full corpus (70,000/12,000 arm caps, i.e. uncapped in practice; 40
+epochs): **all gates pass with large margins over the capped run** —
+held-out AUC **0.9997**, IoU **0.7464** (the capped run's 0.43 was a
+data-scale artifact, not a backbone ceiling), precision 0.7587 / recall
+0.9789, Brier 0.0022 vs constant 0.0090, uncertainty–error correlation
++0.4734, lineage `assisted=False` with zero violations. Checkpoint:
+`experiments/lolo1-wp5/controllable-tracker-v2-uncapped.pt`.
+
+### Substitution-replay preregistration (promotion gate; added before execution)
+
+Per direction-review Amendment B: an offline replay recomputes the
+v318/v320/v321 tracked-state reconstruction with the LEARNED mask
+substituted for the assisted player mask. The `object_tracks` pure
+functions take `player_pixel_mask` as a parameter, so the replay calls
+them with tracker-v2 masks over the recorded frames — no planner edits.
+Scored bits, fixed now: (1) the confirmed manipulation identity
+(source `(7,6)`, destination `(8,6)`, direction, effect signature)
+reconstructs equivalently from v318/v321 archive metadata under the
+learned mask; (2) the appearance fingerprint recovered at the destination
+matches the recorded one within the established L1 threshold; (3) mask
+divergence between learned and assisted masks over the replayed frames is
+reported per frame (divergence telemetry per the salvaged Amendment B).
+Pass = bits 1 and 2 hold on all replayed archives. Fail = recorded
+conclusion per Amendment B: assisted masking remains load-bearing at
+current data scale, and the strict claim must disclose it.
