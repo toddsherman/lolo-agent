@@ -142,3 +142,18 @@ the band — must repeat; (2) the certified coverage set is compared to
 v325's 24-cell set — substantial agreement (≥80% Jaccard) closes Gate 3's
 "repeatable from an archived state" criterion; divergence is reported and
 scoped, not hidden.
+
+### Repetition results — GATE 3 CLOSED (appended 2026-08-16)
+
+`entity-v326-room3-object-removed-repetition-d12`: complete, 1,470 s,
+9,691 branches. **Bit 1: 135 certified band branches — repeats. Bit 2:
+identical 24-cell certified envelope, Jaccard 1.0 — closes.** The heart at
+`(12,11)` was collected again at decision 4. Honest caveat: on a
+deterministic emulator an identical-settings repetition primarily
+certifies the restore/serialization path (fresh process, digest-verified
+inputs) rather than sampling variability; the informative contrast remains
+cross-configuration (24 vs 7 certified cells against v322/v324). Gate 3's
+roadmap criteria — before/after delta, reproduced from an archived state,
+matched baselines lacking the delta, budget-scoped uncertainty — are all
+met on the assisted development track. Strict-track Gate 3 still requires
+a WP5-clean re-measurement (linter now enforces the boundary).

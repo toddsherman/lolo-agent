@@ -1577,6 +1577,9 @@ carries its evidence.
    §6.5 `AccessibilityDelta` contract are built around certified holds.
    Gate 3 is substantially met on Room 3 (7 → 24 certified cells);
    formal closure requires one repetition from a fresh restore.
+   [GATE 3 CLOSED 2026-08-16 on the assisted track: v326 reproduced the
+   24-cell envelope at Jaccard 1.0; strict-track re-measurement still
+   gated on WP5.]
 5. **Risk register addition:** a confirmed manipulation is not progress —
    the v318 push was preserved across four generations and is certified
    accessibility-neutral. Preservation priority must be coupled to
