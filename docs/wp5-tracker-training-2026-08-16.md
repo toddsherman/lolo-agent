@@ -84,3 +84,13 @@ reported per frame (divergence telemetry per the salvaged Amendment B).
 Pass = bits 1 and 2 hold on all replayed archives. Fail = recorded
 conclusion per Amendment B: assisted masking remains load-bearing at
 current data scale, and the strict claim must disclose it.
+
+### Substitution-replay outcome (appended 2026-08-16)
+
+Formal letter-PASS, substantive NO-PROMOTE — full analysis in
+`docs/learnings.md` §4.31. Bits 1–2 proved mask-irrelevant for these
+archive shapes; divergence telemetry shows the tracker does not localize
+on Room 3 frames (out-of-distribution for the training corpus). Tracker
+stays telemetry-only. Redesigned mask-sensitive gate required before any
+promotion; OOD evaluation against counterfactual ground truth from
+v322–v326 telemetry queued.

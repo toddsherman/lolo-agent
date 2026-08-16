@@ -1340,6 +1340,68 @@ Evidence:
 - `docs/object-removed-probe-2026-08-16.md`
 - run `entity-v325-room3-object-removed-probe-d12`
 
+### 4.31 Substitution replay: letter-pass, substantive no-promote
+
+What was tried:
+
+- The preregistered WP5 substitution replay
+  (`docs/wp5-tracker-training-2026-08-16.md`): reconstruct v318/v321
+  tracked state with the learned mask (tracker v2, held-out AUC 0.9997 on
+  its training distribution) substituted for the assisted mask, scoring
+  fixed bits; report at
+  `experiments/lolo1-wp5/substitution-replay-report.json` (digest
+  `6061b45e…`, reproducible).
+
+Result:
+
+- Bits 1–2 PASS on both archives — but analysis shows those computations
+  are mask-irrelevant for these archive shapes (identity fields derive
+  from metadata/bitmask; the recorded destination signature was computed
+  unclipped), so the pass does not demonstrate learned≈assisted
+  equivalence.
+- Bit 3 divergence telemetry: endpoint IoU 0.0 / 0.0217; full-sweep mean
+  IoU ≈ 0.0002–0.0009 over 178 frames; the player's cell receives
+  probability 0.25 and ~3e-10. **The tracker does not localize on Room 3
+  frames** — its training corpus (`lolo1-medium`, early-room legacy
+  segments) does not cover Room 3's visual distribution.
+- Genuine replay finding: the v318 assisted replay itself deviates from
+  the recorded signature (L1 0.1347 > 0.08) — the original run computed
+  the destination signature with different slot/clipping than a fresh
+  replay produces.
+
+Classification:
+
+- **Failed promotion in substance** (formal letter-pass recorded and
+  disqualified); plus an **instrument-design lesson**: preregistered bits
+  must be sensitive to the mechanism they claim to test — the informative
+  channel here was the report-only divergence, not the gated bits.
+
+Learning:
+
+- Offline gate metrics on the training distribution (AUC 0.9997) say
+  nothing about out-of-room generalization; this repeats the project's
+  recorded offline-pass/native-fail pattern (spatial v2/v9,
+  returnability) at the perception layer.
+- Assisted-era telemetry may be used as EVALUATION ground truth without
+  contaminating strict corpora; the counterfactual displacement
+  components in the v322–v326 probe events are detector-free localization
+  ground truth for exactly this measurement.
+
+Plan change:
+
+- Tracker remains telemetry-only. Next: (a) quantify the OOD gap by
+  evaluating tracker v2 against counterfactual localization ground truth
+  from v322–v326 telemetry (evaluation-only use of assisted-collected
+  data); (b) broaden the strict corpus with strict-track counterfactual
+  collection beyond `lolo1-medium` coverage, retrain, and (c) redesign
+  the substitution gate with mask-sensitive bits before any promotion
+  claim.
+
+Evidence:
+
+- `docs/wp5-tracker-training-2026-08-16.md`
+- `experiments/lolo1-wp5/substitution-replay-report.json`
+
 ## 5. Platform and cost learnings
 
 ### 5.1 RunPod for emulator branching
