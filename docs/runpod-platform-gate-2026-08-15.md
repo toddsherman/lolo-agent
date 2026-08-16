@@ -140,3 +140,44 @@ did not upload or require the ROM.
 Decision: **revise and continue**. GPU training is provisionally viable;
 sequential emulator search on RunPod is not. The next paid experiment is a
 single real-data training gate, not an open-ended training campaign.
+
+## Real-data gate preparation
+
+The first local trial against the cycle-16 ensemble checkpoint found a quality
+failure that the synthetic benchmark could not reveal. With the historical
+`3e-4` learning rate, training loss fell while held-out three-step pixel error
+increased from approximately `0.00564` to `0.00781`. Faster execution of that
+update would accelerate overfitting rather than improve the planner.
+
+A local learning-rate sweep on the same deterministic 64-group sample found:
+
+| Learning rate | Held-out result after one epoch |
+|---:|---|
+| `3e-4` | degraded every horizon |
+| `1e-4` | degraded every horizon |
+| `3e-5` | improved every horizon |
+| `1e-5` | best result; improved every horizon |
+
+The `1e-5` result also improved every horizon on two additional independently
+sampled run-held-out splits. This becomes the candidate update rule for the
+paid comparison.
+
+The reproducible seed-17 cloud input contains 601 sequences from 64 causal
+groups and eight source runs, with one entire source run held out. It is 3.6 MB
+on disk and contains only compressed screen pixels, controller actions,
+durations, and anonymous run provenance. It contains no ROM, emulator state,
+solution, object label, or reward annotation. On the M5, the packaged input
+completed end to end in 3.296 seconds at 144.43 training examples per total
+second; its held-out pixel error improved from `0.005624/0.005646/0.005651` to
+`0.004970/0.004994/0.004999` across horizons one through three.
+
+The paid real-data gate may cost at most $0.05 and must automatically stop. It
+passes only if:
+
+- every held-out horizon improves by at least 5% from its own pre-training
+  value;
+- the recovered checkpoint and metrics files pass their recorded hashes;
+- end-to-end throughput is at least 288.86 training examples per total second
+  (2× the packaged M5 baseline); and
+- the measured cycle stays within both its $0.05 cycle cap and the immutable
+  $1.00 campaign cap.

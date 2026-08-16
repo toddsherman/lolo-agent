@@ -31,6 +31,8 @@ lolo-entity-causal-backfill = "lolo_agent.entity_behavior_backfill:main"
 lolo-research-cycle = "lolo_agent.research_cycle:main"
 lolo-platform-benchmark = "lolo_agent.platform_benchmark:main"
 lolo-training-benchmark = "lolo_agent.training_benchmark:main"
+lolo-real-data-training = "lolo_agent.real_data_training:main"
+lolo-dataset-sample = "lolo_agent.dataset_sample:main"
 
 [tool.setuptools.packages.find]
 include = ["lolo_agent*"]
