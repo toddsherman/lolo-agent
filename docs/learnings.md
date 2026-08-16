@@ -1044,6 +1044,61 @@ Plan change:
 - The next decisive gate is deliberate preparation with verified downstream
   access, not merely detecting another changed cell.
 
+### 4.26 Offline accessibility diff of the confirmed push
+
+What was tried:
+
+- A preregistered, read-only telemetry diff (no emulator cost) comparing
+  player-cell coverage of the pushed-configuration searches (v319/v320/v321,
+  3,498 verified branches) against pre-push 4-heart-era Room 3 searches
+  (v313/v314/v316/v317/v318, 6,899 branches), excluding the pushed object's
+  own footprint cells, with pose-level distinctions not counted (v56 lesson).
+
+Result:
+
+- The beyond-footprint coverage envelopes are identical, element for element
+  (8 cells each). Every apparent per-run difference reduced to a
+  budget/reserve artifact, not a configuration effect.
+- v319 self-exhausted at depth 9 / beam 128 with zero novel endpoints at
+  depth 10, so the pushed configuration's exhausted search found nothing
+  outside the pre-push envelope.
+- No player in either era ever occupied the pushed destination `(8,6)` or
+  any cell right of column x=128 above the bottom row — the room's right
+  side is unexplored in both eras. Pre-push probe telemetry is absent, so
+  interaction-frontier comparison is censored.
+
+Classification:
+
+- **Negative result**, scoped to offline telemetry at explored budgets
+  (depth ≤9, beam ≤128). Censored evidence that the single push is
+  accessibility-neutral at those depths; not proof of neutrality.
+
+Learning:
+
+- The confirmed push's strategic value, if any, is not visible in existing
+  search coverage; it can only live in unexplored territory (right side of
+  the room, the untested `(8,11)` A-interaction, or walkability of `(8,6)`
+  itself). This further supports 4.25: object persistence alone does not
+  establish usefulness.
+- Offline telemetry diffs are cheap and sharpen native experiments, but
+  probe-level questions need probe telemetry in both arms — record probe
+  events in every future paired experiment.
+
+Plan change:
+
+- The native paired accessibility probe (direction-review Amendment A) is
+  now the decisive instrument, with three directed targets and a clean
+  matched-lineage arm design recorded in
+  `docs/offline-accessibility-diff-2026-08-16.md`.
+- The Room 3 single-push Gate 4 vehicle is downweighted pending the probe's
+  outcome; representation work (WP1/WP2) continues regardless.
+
+Evidence:
+
+- `docs/offline-accessibility-diff-2026-08-16.md`
+- `docs/direction-review-2026-08-16.md`
+- runs under `experiments/lolo1-entity-v10/evaluations/`
+
 ## 5. Platform and cost learnings
 
 ### 5.1 RunPod for emulator branching
