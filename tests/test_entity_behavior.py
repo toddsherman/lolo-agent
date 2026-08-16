@@ -519,13 +519,239 @@ class AnonymousEntityBehaviorModelTests(unittest.TestCase):
         restored = AnonymousEntityBehaviorModel.from_dict(payload)
         prediction = restored.predict(appearance, Action.A, 4)
 
-        self.assertEqual(restored.to_dict()["schema_version"], 8)
+        self.assertEqual(restored.to_dict()["schema_version"], 9)
         self.assertEqual(prediction.samples, 1)
         self.assertIsNotNone(prediction.outcome_descriptor)
         self.assertFalse(prediction.outcome_descriptor.global_phase_change)
         self.assertEqual(prediction.global_phase_change_probability, 0.0)
         self.assertTrue(prediction.outcome_descriptor.intervention_inert)
         self.assertNotEqual(prediction.outcome_signature, legacy.signature)
+
+    def test_removal_requires_persistence_horizon_verification(self) -> None:
+        appearance = (10, 10, 10)
+        removed_patch = (90, 90, 90)
+
+        with self.assertRaisesRegex(ValueError, "persistence-horizon"):
+            AnonymousEntityBehaviorModel.effect_descriptor(
+                appearance,
+                removed_patch,
+                appearance,
+                entity_removed=True,
+            )
+
+        verified = AnonymousEntityBehaviorModel.effect_descriptor(
+            appearance,
+            removed_patch,
+            appearance,
+            entity_removed=True,
+            removal_persistence_verified=True,
+        )
+        self.assertTrue(verified.controlled_entity_removal)
+        self.assertFalse(verified.controlled_appearance_transition)
+        self.assertTrue(verified.manipulation_effect)
+        self.assertEqual(verified.transition_kind, "removal")
+
+    def test_removal_descriptor_rejects_contradictory_measurements(
+        self,
+    ) -> None:
+        from lolo_agent.entity_behavior import BehaviorOutcomeDescriptor
+
+        with self.assertRaisesRegex(ValueError, "transit evidence"):
+            BehaviorOutcomeDescriptor(
+                factual_source_relation="different",
+                control_source_relation="same",
+                factual_control_relation="different",
+                removal_transit_cells=((1, 0),),
+            )
+        with self.assertRaisesRegex(ValueError, "keep a displacement"):
+            BehaviorOutcomeDescriptor(
+                factual_source_relation="different",
+                control_source_relation="same",
+                factual_control_relation="different",
+                entity_removed=True,
+                entity_displacement=(1, 0),
+            )
+        with self.assertRaisesRegex(ValueError, "still match its source"):
+            BehaviorOutcomeDescriptor(
+                factual_source_relation="same",
+                control_source_relation="same",
+                factual_control_relation="same",
+                entity_removed=True,
+            )
+        with self.assertRaisesRegex(ValueError, "anonymous fingerprint"):
+            BehaviorOutcomeDescriptor(
+                factual_source_relation="different",
+                control_source_relation="same",
+                factual_control_relation="different",
+                target_appearance="a-supplied-name",
+            )
+
+    def test_autonomous_removal_is_denied_controller_credit(self) -> None:
+        appearance = (10, 10, 10)
+        removed_patch = (90, 90, 90)
+        reproduced = AnonymousEntityBehaviorModel.effect_descriptor(
+            appearance,
+            removed_patch,
+            removed_patch,
+            entity_removed=True,
+            removal_persistence_verified=True,
+        )
+
+        self.assertTrue(reproduced.entity_removed)
+        self.assertFalse(reproduced.controlled_entity_removal)
+        self.assertFalse(reproduced.manipulation_effect)
+        self.assertEqual(reproduced.transition_kind, "other")
+        self.assertIsNone(reproduced.transition.source_cell)
+
+    def test_descriptor_represents_removal_chain_families(self) -> None:
+        model = AnonymousEntityBehaviorModel(minimum_prediction_samples=1)
+        appearance = (1, 1, 1, 1)
+        transformed_patch = (60, 60, 60, 60)
+        background = (200, 200, 200, 200)
+
+        transformed = model.effect_descriptor(
+            appearance,
+            transformed_patch,
+            appearance,
+            transformation_target_feature=transformed_patch,
+        )
+        displaced = model.effect_descriptor(
+            appearance,
+            appearance,
+            appearance,
+            entity_displacement=(1, 0),
+        )
+        expelled = model.effect_descriptor(
+            appearance,
+            background,
+            appearance,
+            entity_removed=True,
+            removal_persistence_verified=True,
+            removal_transit_cells=((1, 0), (2, 0)),
+        )
+        for action, descriptor in (
+            (Action.A, transformed),
+            (Action.RIGHT, displaced),
+            (Action.B, expelled),
+        ):
+            model.observe(
+                appearance,
+                action,
+                16,
+                descriptor.signature,
+                outcome_descriptor=descriptor,
+            )
+
+        self.assertEqual(transformed.transition_kind, "transformation")
+        self.assertEqual(displaced.transition_kind, "displacement")
+        self.assertEqual(expelled.transition_kind, "expulsion")
+        self.assertTrue(expelled.controlled_entity_expulsion)
+        self.assertEqual(
+            len({transformed.signature, displaced.signature, expelled.signature}),
+            3,
+        )
+
+        transform_prediction = model.predict(appearance, Action.A, 16)
+        displace_prediction = model.predict(appearance, Action.RIGHT, 16)
+        expel_prediction = model.predict(appearance, Action.B, 16)
+
+        self.assertEqual(
+            transform_prediction.appearance_transition_probability, 1.0
+        )
+        self.assertEqual(transform_prediction.entity_removal_probability, 0.0)
+        self.assertEqual(
+            displace_prediction.entity_displacement_probability, 1.0
+        )
+        self.assertEqual(expel_prediction.entity_removal_probability, 1.0)
+        self.assertEqual(expel_prediction.entity_expulsion_probability, 1.0)
+        self.assertEqual(expel_prediction.appearance_transition_probability, 0.0)
+        self.assertEqual(expel_prediction.manipulation_probability, 1.0)
+
+    def test_transition_exposes_explicit_displacement_vectors(self) -> None:
+        appearance = (1, 1, 1, 1)
+        displaced = AnonymousEntityBehaviorModel.effect_descriptor(
+            appearance,
+            appearance,
+            appearance,
+            entity_displacement=(0, -1),
+        )
+        blocked = AnonymousEntityBehaviorModel.effect_descriptor(
+            appearance,
+            appearance,
+            appearance,
+            player_displacement=(0, 0),
+        )
+        removed = AnonymousEntityBehaviorModel.effect_descriptor(
+            appearance,
+            (90, 90, 90, 90),
+            appearance,
+            entity_removed=True,
+            removal_persistence_verified=True,
+            removal_transit_cells=((2, 0), (1, 0)),
+        )
+
+        displacement = displaced.transition
+        self.assertEqual(displacement.kind, "displacement")
+        self.assertEqual(displacement.source_cell, (0, 0))
+        self.assertEqual(displacement.destination_cell, (0, -1))
+        self.assertEqual(displacement.displacement, (0, -1))
+        self.assertEqual(displacement.outcome_signature, displaced.signature)
+
+        no_effect = blocked.transition
+        self.assertEqual(no_effect.kind, "no_effect")
+        self.assertEqual(no_effect.destination_cell, (0, 0))
+        self.assertEqual(no_effect.displacement, (0, 0))
+
+        expulsion = removed.transition
+        self.assertEqual(expulsion.kind, "expulsion")
+        self.assertEqual(expulsion.source_cell, (0, 0))
+        self.assertIsNone(expulsion.destination_cell)
+        self.assertIsNone(expulsion.displacement)
+        self.assertEqual(expulsion.transit_cells, ((1, 0), (2, 0)))
+
+    def test_transformation_target_ignores_animation_variants(self) -> None:
+        appearance = (100, 100, 100, 100)
+        animated = (104, 100, 100, 100)
+        with_target = AnonymousEntityBehaviorModel.effect_descriptor(
+            appearance,
+            animated,
+            appearance,
+            transformation_target_feature=animated,
+        )
+        without_target = AnonymousEntityBehaviorModel.effect_descriptor(
+            appearance,
+            animated,
+            appearance,
+        )
+
+        self.assertEqual(with_target.target_appearance, "")
+        self.assertEqual(with_target.signature, without_target.signature)
+
+        transformed_patch = (60, 60, 60, 60)
+        first = AnonymousEntityBehaviorModel.effect_descriptor(
+            appearance,
+            transformed_patch,
+            appearance,
+            transformation_target_feature=transformed_patch,
+        )
+        # A small animation delta inside the coarse quantization bin keeps
+        # the same target fingerprint and outcome signature.
+        second = AnonymousEntityBehaviorModel.effect_descriptor(
+            appearance,
+            (61, 60, 60, 60),
+            appearance,
+            transformation_target_feature=(61, 60, 60, 60),
+        )
+        other_target = AnonymousEntityBehaviorModel.effect_descriptor(
+            appearance,
+            (240, 240, 240, 240),
+            appearance,
+            transformation_target_feature=(240, 240, 240, 240),
+        )
+
+        self.assertNotEqual(first.target_appearance, "")
+        self.assertEqual(first.signature, second.signature)
+        self.assertNotEqual(first.signature, other_target.signature)
 
     def test_passive_stationarity_is_not_an_intervention_effect(self) -> None:
         model = AnonymousEntityBehaviorModel(minimum_prediction_samples=1)
@@ -798,6 +1024,155 @@ class AnonymousEntityBehaviorModelTests(unittest.TestCase):
         self.assertTrue(prediction.known)
         self.assertFalse(prediction.context_matched)
         self.assertEqual(prediction.outcome_signature, "stationary")
+
+    def test_schema_eight_checkpoint_loads_with_preserved_signatures(
+        self,
+    ) -> None:
+        model = AnonymousEntityBehaviorModel(minimum_prediction_samples=1)
+        appearance = (1, 1, 1, 1)
+        displaced = model.effect_descriptor(
+            appearance,
+            appearance,
+            appearance,
+            entity_displacement=(1, 0),
+        )
+        inert = model.effect_descriptor(
+            appearance,
+            appearance,
+            appearance,
+            player_displacement=(0, 0),
+        )
+        # A schema-8 writer never emitted the explicit transition fields, so
+        # descriptors built without them must serialize identically.
+        for key in ("target_appearance", "entity_removed", "removal_transit_cells"):
+            self.assertNotIn(key, displaced.to_dict())
+            self.assertNotIn(key, inert.to_dict())
+        model.observe(
+            appearance,
+            Action.RIGHT,
+            16,
+            displaced.signature,
+            outcome_descriptor=displaced,
+            evidence_id="legacy-displacement",
+        )
+        model.observe(
+            appearance,
+            Action.LEFT,
+            16,
+            inert.signature,
+            outcome_descriptor=inert,
+            evidence_id="legacy-blocked",
+        )
+        payload = model.to_dict()
+        payload["schema_version"] = 8
+
+        restored = AnonymousEntityBehaviorModel.from_dict(payload)
+
+        self.assertEqual(restored.to_dict()["schema_version"], 9)
+        self.assertEqual(restored.outcome_descriptor_count, 2)
+        prediction = restored.predict(appearance, Action.RIGHT, 16)
+        # No remap: schema-8 signatures and evidence provenance survive.
+        self.assertEqual(prediction.outcome_signature, displaced.signature)
+        self.assertEqual(prediction.entity_displacement_probability, 1.0)
+        self.assertFalse(
+            restored.observe(
+                appearance,
+                Action.RIGHT,
+                16,
+                displaced.signature,
+                outcome_descriptor=displaced,
+                evidence_id="legacy-displacement",
+            ).accepted
+        )
+        # A legacy descriptor that already implies a displacement surfaces
+        # it as an explicit transition after migration.
+        explicit = restored.transition_for(displaced.signature)
+        self.assertIsNotNone(explicit)
+        self.assertEqual(explicit.kind, "displacement")
+        self.assertEqual(explicit.source_cell, (0, 0))
+        self.assertEqual(explicit.destination_cell, (1, 0))
+        self.assertEqual(explicit.displacement, (1, 0))
+        kinds = {
+            transition.outcome_signature: transition.kind
+            for transition in restored.transitions()
+        }
+        self.assertEqual(kinds[inert.signature], "no_effect")
+
+    def test_removal_round_trip_preserves_digest_and_provenance(self) -> None:
+        model = AnonymousEntityBehaviorModel(minimum_prediction_samples=1)
+        appearance = (1, 1, 1, 1)
+        expelled = model.effect_descriptor(
+            appearance,
+            (200, 200, 200, 200),
+            appearance,
+            entity_removed=True,
+            removal_persistence_verified=True,
+            removal_transit_cells=((1, 0), (2, 0)),
+        )
+        model.observe(
+            appearance,
+            Action.B,
+            16,
+            expelled.signature,
+            outcome_descriptor=expelled,
+            evidence_id="expulsion-branch",
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "anonymous-behavior.json"
+            model.save(path)
+            restored = AnonymousEntityBehaviorModel.load(path)
+
+        self.assertEqual(restored.digest, model.digest)
+        self.assertEqual(
+            restored.predict(appearance, Action.B, 16),
+            model.predict(appearance, Action.B, 16),
+        )
+        restored_descriptor = restored.predict(
+            appearance, Action.B, 16
+        ).outcome_descriptor
+        self.assertEqual(restored_descriptor, expelled)
+        self.assertEqual(restored_descriptor.transition_kind, "expulsion")
+        replay = restored.observe(
+            appearance,
+            Action.B,
+            16,
+            expelled.signature,
+            outcome_descriptor=expelled,
+            evidence_id="expulsion-branch",
+        )
+        self.assertFalse(replay.accepted)
+        self.assertEqual(restored.observation_count, 1)
+
+    def test_frozen_style_queries_do_not_mutate_checkpoint(self) -> None:
+        model = AnonymousEntityBehaviorModel(minimum_prediction_samples=1)
+        appearance = (1, 1, 1, 1)
+        expelled = model.effect_descriptor(
+            appearance,
+            (200, 200, 200, 200),
+            appearance,
+            entity_removed=True,
+            removal_persistence_verified=True,
+            removal_transit_cells=((1, 0),),
+        )
+        model.observe(
+            appearance,
+            Action.B,
+            16,
+            expelled.signature,
+            outcome_descriptor=expelled,
+        )
+        restored = AnonymousEntityBehaviorModel.from_dict(model.to_dict())
+        digest = restored.digest
+
+        restored.predict((9, 9, 9, 9), Action.B, 16)
+        restored.predict(appearance, Action.B, 16)
+        restored.transitions()
+        restored.transition_for(expelled.signature)
+
+        self.assertEqual(restored.digest, digest)
+        self.assertEqual(restored.type_count, 1)
+        self.assertEqual(restored.outcome_descriptor_count, 1)
 
     def test_exact_replayed_evidence_does_not_inflate_confidence(self) -> None:
         model = AnonymousEntityBehaviorModel(minimum_prediction_samples=2)

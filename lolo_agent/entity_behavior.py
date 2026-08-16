@@ -34,12 +34,59 @@ class AnonymousTypeStats:
 
 
 @dataclass(frozen=True)
+class BehaviorTransition:
+    """Explicit, label-free transition implied by one outcome descriptor.
+
+    Every field is derived from measured pixel facts already present in the
+    content-addressed outcome descriptor.  ``kind`` names only the measured
+    outcome category (displacement, transformation, removal, expulsion,
+    blocked/no-effect), never what an appearance is.  Cells are relative to
+    the observed appearance's anchor, so a transition transfers under
+    translation; the object-track layer is responsible for anchoring a
+    transition to absolute room cells.  A removal or expulsion has no
+    destination: the tracked appearance ceased to exist locally after the
+    persistence-horizon machinery ruled out occlusion, with expulsion
+    additionally carrying anchor-relative transit evidence.
+    """
+
+    kind: str
+    outcome_signature: str
+    source_cell: Optional[RelativeCell]
+    destination_cell: Optional[RelativeCell]
+    displacement: Optional[RelativeCell]
+    target_appearance: str
+    transit_cells: Tuple[RelativeCell, ...]
+
+    KINDS = (
+        "displacement",
+        "transformation",
+        "removal",
+        "expulsion",
+        "no_effect",
+        "other",
+    )
+
+    def __post_init__(self) -> None:
+        if self.kind not in self.KINDS:
+            raise ValueError("invalid behavior transition kind")
+
+
+@dataclass(frozen=True)
 class BehaviorOutcomeDescriptor:
     """Auditable, label-free semantics for one pixel outcome signature.
 
     Every field is measured from factual and equal-duration control images.
     The descriptor deliberately says nothing about what an appearance *is*;
     it only preserves how the two pixel outcomes related to one another.
+
+    Schema 9 adds explicit transition facts.  ``target_appearance`` is the
+    requantized anonymous fingerprint of the appearance holding the same
+    locus or continuing track after a transformation.  ``entity_removed``
+    records that the tracked appearance ceased to exist locally after the
+    persistence-horizon machinery ruled out occlusion, and
+    ``removal_transit_cells`` preserves anchor-relative transit evidence
+    for an expulsion.  All remain measured pixel outcomes, never object
+    names or supplied mechanics.
     """
 
     factual_source_relation: str
@@ -50,8 +97,12 @@ class BehaviorOutcomeDescriptor:
     terminal_visual_change: bool = False
     entity_displacement: Optional[RelativeCell] = None
     global_phase_change: bool = False
+    target_appearance: str = ""
+    entity_removed: bool = False
+    removal_transit_cells: Tuple[RelativeCell, ...] = ()
 
     _APPEARANCE_RELATIONS = frozenset(("same", "near", "different"))
+    _FINGERPRINT_ALPHABET = frozenset("0123456789abcdef")
 
     def __post_init__(self) -> None:
         for relation in (
@@ -61,6 +112,41 @@ class BehaviorOutcomeDescriptor:
         ):
             if relation not in self._APPEARANCE_RELATIONS:
                 raise ValueError("invalid behavior appearance relation")
+        if self.target_appearance and (
+            len(self.target_appearance) != 16
+            or not self._FINGERPRINT_ALPHABET.issuperset(
+                self.target_appearance
+            )
+        ):
+            # Enforcing the content-addressed fingerprint format keeps the
+            # field anonymous: a supplied object name cannot fit here.
+            raise ValueError(
+                "transformation target must be an anonymous fingerprint"
+            )
+        if (
+            self.target_appearance
+            and self.factual_source_relation != "different"
+        ):
+            raise ValueError(
+                "a transformation target requires a changed appearance"
+            )
+        if self.removal_transit_cells and not self.entity_removed:
+            raise ValueError(
+                "transit evidence requires an entity removal outcome"
+            )
+        if self.entity_removed:
+            if self.factual_source_relation != "different":
+                raise ValueError(
+                    "a removed appearance cannot still match its source"
+                )
+            if self.entity_displacement is not None:
+                raise ValueError(
+                    "a removed appearance cannot keep a displacement"
+                )
+            if self.target_appearance:
+                raise ValueError(
+                    "a removed appearance cannot record a transformation"
+                )
 
     def to_dict(self) -> Dict[str, Any]:
         payload = {
@@ -90,6 +176,18 @@ class BehaviorOutcomeDescriptor:
             ]
         if self.global_phase_change:
             payload["global_phase_change"] = True
+        # Schema 9 transition fields are likewise omitted at their defaults
+        # so descriptors created by schema 8 retain their content-addressed
+        # signatures during migration.
+        if self.target_appearance:
+            payload["target_appearance"] = self.target_appearance
+        if self.entity_removed:
+            payload["entity_removed"] = True
+        if self.removal_transit_cells:
+            payload["removal_transit_cells"] = [
+                [int(column), int(row)]
+                for column, row in self.removal_transit_cells
+            ]
         return payload
 
     @classmethod
@@ -133,6 +231,16 @@ class BehaviorOutcomeDescriptor:
             global_phase_change=bool(
                 payload.get("global_phase_change", False)
             ),
+            target_appearance=str(
+                payload.get("target_appearance") or ""
+            ),
+            entity_removed=bool(payload.get("entity_removed", False)),
+            removal_transit_cells=tuple(
+                sorted(
+                    (int(cell[0]), int(cell[1]))
+                    for cell in payload.get("removal_transit_cells") or ()
+                )
+            ),
         )
 
     @property
@@ -171,10 +279,16 @@ class BehaviorOutcomeDescriptor:
 
     @property
     def controlled_appearance_transition(self) -> bool:
-        """Whether the factual patch changed beyond its matched control."""
+        """Whether the factual patch changed beyond its matched control.
+
+        A persistence-verified removal also changes the factual patch, but
+        it leaves no appearance at the locus, so it is excluded here and
+        reported through :attr:`controlled_entity_removal` instead.
+        """
 
         return bool(
-            self.factual_control_relation != "same"
+            not self.entity_removed
+            and self.factual_control_relation != "same"
             and self.control_source_relation in ("same", "near")
             and self.factual_source_relation == "different"
         )
@@ -187,12 +301,37 @@ class BehaviorOutcomeDescriptor:
         )
 
     @property
+    def controlled_entity_removal(self) -> bool:
+        """Whether a persistence-verified local removal beat its control.
+
+        The tracked appearance ceased to exist around its anchor for the
+        verified neutral horizon while the matched control retained it, so
+        the disappearance is attributable to the intervention rather than
+        to occlusion or an autonomous departure.
+        """
+
+        return bool(
+            self.entity_removed
+            and self.control_source_relation in ("same", "near")
+            and self.factual_control_relation != "same"
+        )
+
+    @property
+    def controlled_entity_expulsion(self) -> bool:
+        """A controlled removal with measured transit evidence."""
+
+        return bool(
+            self.controlled_entity_removal and self.removal_transit_cells
+        )
+
+    @property
     def manipulation_effect(self) -> bool:
         """A label-free state change useful to manipulation planning."""
 
         return bool(
             self.controlled_appearance_transition
             or self.controlled_entity_displacement
+            or self.controlled_entity_removal
             or self.global_phase_change
         )
 
@@ -208,6 +347,69 @@ class BehaviorOutcomeDescriptor:
             self.entity_displacement,
             self.global_phase_change,
             self.terminal_visual_change,
+            self.entity_removed,
+            bool(self.removal_transit_cells),
+            self.target_appearance,
+        )
+
+    @property
+    def transition_kind(self) -> str:
+        """Name the measured outcome category, never a game concept.
+
+        The named kinds cover control-attributed outcomes plus the inert
+        no-effect contrast.  Outcomes reproduced by the matched control,
+        such as an autonomous transition denied controller credit, report
+        ``other`` so they cannot masquerade as manipulations.
+        """
+
+        if self.controlled_entity_expulsion:
+            return "expulsion"
+        if self.controlled_entity_removal:
+            return "removal"
+        if self.controlled_appearance_transition:
+            return "transformation"
+        if self.controlled_entity_displacement:
+            return "displacement"
+        if self.entity_removed:
+            # An autonomous departure reproduced by the matched control is
+            # still a removal of the appearance, so it must not be filed as
+            # a blocked or no-effect intervention.
+            return "other"
+        if self.intervention_inert:
+            return "no_effect"
+        return "other"
+
+    @property
+    def transition(self) -> BehaviorTransition:
+        """Explicit anchor-relative transition implied by this outcome.
+
+        Cells are relative to the observed appearance's anchor, so the
+        transition transfers under translation.  A removal or expulsion has
+        no destination cell or displacement because the appearance ceased
+        to exist locally.
+        """
+
+        kind = self.transition_kind
+        source_cell: Optional[RelativeCell] = (0, 0)
+        destination_cell: Optional[RelativeCell] = None
+        displacement: Optional[RelativeCell] = None
+        if kind in ("displacement", "transformation", "no_effect"):
+            displacement = (
+                (0, 0)
+                if self.entity_displacement is None
+                else self.entity_displacement
+            )
+            destination_cell = displacement
+        elif kind == "other":
+            source_cell = None
+        return BehaviorTransition(
+            kind=kind,
+            outcome_signature=self.signature,
+            source_cell=source_cell,
+            destination_cell=destination_cell,
+            displacement=displacement,
+            target_appearance=self.target_appearance,
+            transit_cells=self.removal_transit_cells,
         )
 
     @property
@@ -277,6 +479,8 @@ class BehaviorPrediction:
     terminal_visual_change_probability: float
     entity_displacement_probability: float = 0.0
     appearance_transition_probability: float = 0.0
+    entity_removal_probability: float = 0.0
+    entity_expulsion_probability: float = 0.0
     global_phase_change_probability: float = 0.0
     manipulation_probability: float = 0.0
     predictive_family_id: Optional[int] = None
@@ -325,7 +529,7 @@ class AnonymousEntityBehaviorModel:
     and contradictory evidence reduces confidence instead of being discarded.
     """
 
-    SCHEMA_VERSION = 8
+    SCHEMA_VERSION = 9
     _UNCONDITIONAL_CONTEXT = "*"
 
     def __init__(
@@ -408,6 +612,29 @@ class AnonymousEntityBehaviorModel:
         self._predictive_profile_cache.clear()
         self._predictive_family_cache.clear()
         return True
+
+    def transition_for(
+        self, outcome_signature: str
+    ) -> Optional[BehaviorTransition]:
+        """Explicit transition for one outcome, or None when undescribed."""
+
+        descriptor = self._outcome_descriptors.get(outcome_signature)
+        return None if descriptor is None else descriptor.transition
+
+    def transitions(self) -> Tuple[BehaviorTransition, ...]:
+        """Deterministically ordered transitions for every known outcome.
+
+        Purely derived from registered descriptors: enumerating transitions
+        never creates a type, descriptor, or rule, so frozen evaluations can
+        query explicit transitions without perturbing the checkpoint digest.
+        Legacy descriptors that already imply a displacement or
+        transformation surface it here explicitly after migration.
+        """
+
+        return tuple(
+            self._outcome_descriptors[signature].transition
+            for signature in sorted(self._outcome_descriptors)
+        )
 
     @staticmethod
     def _feature_distance(
@@ -624,8 +851,18 @@ class AnonymousEntityBehaviorModel:
         terminal_visual_change: bool = False,
         entity_displacement: Optional[RelativeCell] = None,
         global_phase_change: bool = False,
+        transformation_target_feature: Optional[Sequence[int]] = None,
+        entity_removed: bool = False,
+        removal_persistence_verified: bool = False,
+        removal_transit_cells: Sequence[RelativeCell] = (),
     ) -> BehaviorOutcomeDescriptor:
-        """Describe a position-invariant outcome from pixel-derived facts."""
+        """Describe a position-invariant outcome from pixel-derived facts.
+
+        ``entity_removed`` may only be asserted after the persistence-horizon
+        machinery confirmed the disappearance outlasted its neutral horizon;
+        an unverified absence is indistinguishable from occlusion and is
+        rejected here rather than stored as a removal outcome.
+        """
 
         def appearance_relation(
             first: Sequence[int], second: Sequence[int]
@@ -637,13 +874,34 @@ class AnonymousEntityBehaviorModel:
                 return "near"
             return "different"
 
+        if entity_removed and not removal_persistence_verified:
+            raise ValueError(
+                "entity removal requires persistence-horizon verification"
+            )
+        factual_source_relation = appearance_relation(
+            factual_feature, source_feature
+        )
+        target_appearance = ""
+        if (
+            transformation_target_feature is not None
+            and factual_source_relation == "different"
+        ):
+            # Requantize the post-transition appearance so animation phases
+            # of the same target do not fragment the outcome signature.  The
+            # fingerprint stays anonymous: it identifies pixels, not a named
+            # object.  Animation-tolerant relations drop the target instead
+            # of recording a false transformation.
+            target_appearance = cls.appearance_fingerprint(
+                tuple(
+                    int(value) // 4
+                    for value in transformation_target_feature
+                )
+            )
         return BehaviorOutcomeDescriptor(
             # The source appearance identifies the anonymous type and does not
             # belong in the outcome.  Storing its exact fingerprint here made
             # harmless animation phases look like different mechanics.
-            factual_source_relation=appearance_relation(
-                factual_feature, source_feature
-            ),
+            factual_source_relation=factual_source_relation,
             control_source_relation=appearance_relation(
                 control_feature, source_feature
             ),
@@ -674,6 +932,14 @@ class AnonymousEntityBehaviorModel:
                 )
             ),
             global_phase_change=bool(global_phase_change),
+            target_appearance=target_appearance,
+            entity_removed=bool(entity_removed),
+            removal_transit_cells=tuple(
+                sorted(
+                    (int(column), int(row))
+                    for column, row in removal_transit_cells
+                )
+            ),
         )
 
     @classmethod
@@ -687,6 +953,10 @@ class AnonymousEntityBehaviorModel:
         terminal_visual_change: bool = False,
         entity_displacement: Optional[RelativeCell] = None,
         global_phase_change: bool = False,
+        transformation_target_feature: Optional[Sequence[int]] = None,
+        entity_removed: bool = False,
+        removal_persistence_verified: bool = False,
+        removal_transit_cells: Sequence[RelativeCell] = (),
     ) -> str:
         """Create a stable key for a pixel-derived outcome descriptor."""
 
@@ -699,6 +969,10 @@ class AnonymousEntityBehaviorModel:
             terminal_visual_change=terminal_visual_change,
             entity_displacement=entity_displacement,
             global_phase_change=global_phase_change,
+            transformation_target_feature=transformation_target_feature,
+            entity_removed=entity_removed,
+            removal_persistence_verified=removal_persistence_verified,
+            removal_transit_cells=removal_transit_cells,
         ).signature
 
     def _nearest_type(
@@ -1050,6 +1324,18 @@ class AnonymousEntityBehaviorModel:
                     and descriptor.controlled_appearance_transition
                 )
             ),
+            entity_removal_probability=semantic_probability(
+                lambda descriptor: (
+                    not autonomous
+                    and descriptor.controlled_entity_removal
+                )
+            ),
+            entity_expulsion_probability=semantic_probability(
+                lambda descriptor: (
+                    not autonomous
+                    and descriptor.controlled_entity_expulsion
+                )
+            ),
             global_phase_change_probability=semantic_probability(
                 lambda descriptor: descriptor.global_phase_change
             ),
@@ -1397,7 +1683,7 @@ class AnonymousEntityBehaviorModel:
     @classmethod
     def from_dict(cls, payload: Dict[str, Any]) -> "AnonymousEntityBehaviorModel":
         schema_version = int(payload.get("schema_version", 0))
-        if schema_version not in (3, 4, 5, 6, 7, cls.SCHEMA_VERSION):
+        if schema_version not in (3, 4, 5, 6, 7, 8, cls.SCHEMA_VERSION):
             raise ValueError("unsupported anonymous behavior schema")
         model = cls(
             appearance_match_threshold=float(
@@ -1431,6 +1717,10 @@ class AnonymousEntityBehaviorModel:
             # which cannot be reconstructed from the aggregate checkpoint.
             # Preserve every other measured semantic and empirical count, but
             # remove that unsupported flag and remap its content hash.
+            # Schema 8 -> 9 needs no remap: the explicit transition fields
+            # are omitted at their defaults, so every schema-8 descriptor
+            # keeps its content-addressed signature and its evidence
+            # provenance unchanged.
             if schema_version == 7 and descriptor.global_phase_change:
                 descriptor = replace(
                     descriptor, global_phase_change=False
