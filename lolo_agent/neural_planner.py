@@ -43,6 +43,7 @@ from .object_tracks import (
     archived_track_fields,
     causal_spatial_cells,
     masked_cell_fingerprint,
+    object_track_telemetry,
     player_masked_world_effect_signature,
     world_effect_cells_state_signature,
 )
@@ -1332,6 +1333,14 @@ class VerifiedNeuralAgent:
             ),
             goal_exhaustion_recovery_restore_budget=(
                 self._goal_exhaustion_recovery_restore_budget()
+            ),
+            **object_track_telemetry(
+                branch.tracked_world_effect_cells,
+                source_cell=branch.entity_interaction_cell,
+                direction=branch.entity_interaction_direction,
+                world_effect_signature=(
+                    branch.goal_world_effect_signature
+                ),
             ),
             selected_primary=False,
             score=branch.score,
@@ -8628,6 +8637,18 @@ class VerifiedNeuralAgent:
                 human_prior_option_tracked_world_state_signature=(
                     branch.tracked_world_state_signature or None
                 ),
+                **object_track_telemetry(
+                    endpoint.tracked_world_effect_cells,
+                    source_cell=(
+                        endpoint.confirmed_entity_interaction_cell
+                    ),
+                    direction=(
+                        endpoint.confirmed_entity_interaction_direction
+                    ),
+                    world_effect_signature=(
+                        endpoint.confirmed_world_effect_signature
+                    ),
+                ),
                 human_prior_option_entity_interaction_signature=(
                     branch.entity_interaction_signature or None
                 ),
@@ -10620,6 +10641,18 @@ class VerifiedNeuralAgent:
                             ),
                             human_prior_option_tracked_world_state_signature=(
                                 tracked_world_state_signature or None
+                            ),
+                            **object_track_telemetry(
+                                tracked_world_effect_cells_tuple,
+                                source_cell=(
+                                    node.confirmed_entity_interaction_cell
+                                ),
+                                direction=(
+                                    node.confirmed_entity_interaction_direction
+                                ),
+                                world_effect_signature=(
+                                    node.confirmed_world_effect_signature
+                                ),
                             ),
                             human_prior_option_stationary_action_history=(
                                 stationary_action_history
@@ -13053,6 +13086,18 @@ class VerifiedNeuralAgent:
                     human_prior_option_tracked_world_state_signature=(
                         archived.tracked_world_state_signature or None
                     ),
+                    **object_track_telemetry(
+                        archived.tracked_world_effect_cells,
+                        source_cell=(
+                            archived.confirmed_entity_interaction_cell
+                        ),
+                        direction=(
+                            archived.confirmed_entity_interaction_direction
+                        ),
+                        world_effect_signature=(
+                            archived.confirmed_world_effect_signature
+                        ),
+                    ),
                     human_prior_option_entity_interaction_signature=(
                         branch.entity_interaction_signature or None
                     ),
@@ -13543,6 +13588,19 @@ class VerifiedNeuralAgent:
         if self.event_logger is not None and hasattr(self.event_logger, "frame_fields"):
             return self.event_logger.frame_fields(frame)
         return {"frame": frame.digest}
+
+    def _root_object_track_fields(self) -> Dict[str, Any]:
+        """Anonymous object-track payload for the current root track state."""
+
+        root_object_state = self.current_human_prior_root_object_state
+        return object_track_telemetry(
+            root_object_state.tracked_world_effect_cells,
+            source_cell=root_object_state.entity_interaction_cell,
+            direction=root_object_state.entity_interaction_direction,
+            world_effect_signature=(
+                root_object_state.confirmed_world_effect_signature
+            ),
+        )
 
     def _state_id(self, state: object) -> Optional[str]:
         state_id = getattr(self.env, "state_id", None)
@@ -16118,6 +16176,14 @@ class VerifiedNeuralAgent:
                 ),
                 goal_exhaustion_recovery_restores=(
                     branch.goal_exhaustion_recovery_restores
+                ),
+                **object_track_telemetry(
+                    branch.tracked_world_effect_cells,
+                    source_cell=branch.entity_interaction_cell,
+                    direction=branch.entity_interaction_direction,
+                    world_effect_signature=(
+                        branch.goal_world_effect_signature
+                    ),
                 ),
                 selected_primary=bool(metadata.get("selected_primary", False)),
                 score=branch.score,
@@ -24236,6 +24302,7 @@ class VerifiedNeuralAgent:
                 human_prior_exhausted_navigation_detours=(
                     len(self.human_prior_exhausted_navigation_detours)
                 ),
+                **self._root_object_track_fields(),
                 **self._human_prior_fields(committed_goal_analysis),
                 action_counts=self.action_counts,
                 duration_counts=self.duration_counts,
@@ -24731,6 +24798,7 @@ class VerifiedNeuralAgent:
             action_duration_counts=self._action_duration_count_rows(),
             scene_streak=self.scene_streak,
             visual_stagnation_streak=self.visual_stagnation_streak,
+            **self._root_object_track_fields(),
             **self._human_prior_fields(goal_analysis),
             **self._frame_fields(checkpoint.frame),
         )
@@ -24835,6 +24903,7 @@ class VerifiedNeuralAgent:
             action_duration_counts=self._action_duration_count_rows(),
             scene_streak=self.scene_streak,
             visual_stagnation_streak=self.visual_stagnation_streak,
+            **self._root_object_track_fields(),
             **self._persistent_change_fields(),
             **self._frame_fields(checkpoint.frame),
         )
@@ -27045,6 +27114,7 @@ class VerifiedNeuralAgent:
             action_duration_counts=self._action_duration_count_rows(),
             scene_streak=self.scene_streak,
             visual_stagnation_streak=self.visual_stagnation_streak,
+            **self._root_object_track_fields(),
             **self._persistent_change_fields(),
             **self._frame_fields(branch.frame),
         )

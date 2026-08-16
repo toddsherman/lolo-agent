@@ -10165,6 +10165,53 @@ class EnsemblePlannerTests(unittest.TestCase):
                 for event in transformed
             )
         )
+        verified = [
+            event
+            for event in logger.events
+            if event["event"] == "human_prior_option_branch_verified"
+        ]
+        for event in verified + archived:
+            self.assertEqual(
+                event["anonymous_object_track_cells"],
+                [
+                    [int(column), int(row)]
+                    for column, row in sorted(
+                        event[
+                            "human_prior_option_tracked_world_effect_cells"
+                        ]
+                    )
+                ],
+            )
+        for event in transformed:
+            cells = event["anonymous_object_track_cells"]
+            self.assertEqual(
+                event["anonymous_object_track_current_cell"],
+                cells[0] if len(cells) == 1 else None,
+            )
+        untracked = [
+            event
+            for event in verified
+            if not event["human_prior_option_tracked_world_effect_cells"]
+        ]
+        self.assertTrue(untracked)
+        for event in untracked:
+            self.assertEqual(event["anonymous_object_track_cells"], [])
+            self.assertIsNone(
+                event["anonymous_object_track_current_cell"]
+            )
+            self.assertIsNone(
+                event["anonymous_object_track_confirmed_source_cell"]
+            )
+            self.assertIsNone(
+                event[
+                    "anonymous_object_track_confirmed_destination_cell"
+                ]
+            )
+            self.assertIsNone(
+                event[
+                    "anonymous_object_track_confirmed_world_effect_signature"
+                ]
+            )
 
     def test_goal_milestone_exhaustion_rolls_back_exact_choice(self) -> None:
         model = EnsembleVisualDynamicsModel(

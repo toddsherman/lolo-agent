@@ -21,6 +21,7 @@ from lolo_agent.object_tracks import (
     legacy_interaction_from_effect_bitmask,
     masked_cell_fingerprint,
     match,
+    object_track_telemetry,
     observe_frame,
     player_masked_world_effect_signature,
     world_effect_cells_state_signature,
@@ -775,6 +776,131 @@ class PureHelperTests(unittest.TestCase):
         changed = observe_frame(tracks, changed_frame, memory=memory)
         self.assertFalse(match(tracks, changed))
         self.assertFalse(match(ObjectTrackSet(), ""))
+
+
+class ObjectTrackTelemetryTests(unittest.TestCase):
+    def test_present_track_state_serializes_cells_and_confirmed_pair(
+        self,
+    ) -> None:
+        payload = object_track_telemetry(
+            ((8, 6),),
+            source_cell=(7, 6),
+            direction=Action.RIGHT,
+            world_effect_signature=_EFFECT_BITMASK,
+        )
+        self.assertEqual(
+            payload,
+            {
+                "anonymous_object_track_cells": [[8, 6]],
+                "anonymous_object_track_current_cell": [8, 6],
+                "anonymous_object_track_confirmed_source_cell": [7, 6],
+                "anonymous_object_track_confirmed_destination_cell": [
+                    8,
+                    6,
+                ],
+                "anonymous_object_track_confirmed_world_effect_signature": (
+                    _EFFECT_BITMASK
+                ),
+            },
+        )
+
+    def test_absent_track_state_emits_null_and_empty_keys(self) -> None:
+        payload = object_track_telemetry(())
+        self.assertEqual(
+            payload,
+            {
+                "anonymous_object_track_cells": [],
+                "anonymous_object_track_current_cell": None,
+                "anonymous_object_track_confirmed_source_cell": None,
+                "anonymous_object_track_confirmed_destination_cell": None,
+                "anonymous_object_track_confirmed_world_effect_signature": (
+                    None
+                ),
+            },
+        )
+
+    def test_multiple_tracked_cells_leave_current_cell_unresolved(
+        self,
+    ) -> None:
+        payload = object_track_telemetry(
+            ((8, 6), (6, 6)),
+            source_cell=(7, 6),
+            direction=Action.LEFT,
+            world_effect_signature="",
+        )
+        self.assertEqual(
+            payload["anonymous_object_track_cells"], [[6, 6], [8, 6]]
+        )
+        self.assertIsNone(payload["anonymous_object_track_current_cell"])
+        self.assertEqual(
+            payload["anonymous_object_track_confirmed_source_cell"],
+            [7, 6],
+        )
+        self.assertEqual(
+            payload["anonymous_object_track_confirmed_destination_cell"],
+            [6, 6],
+        )
+        self.assertIsNone(
+            payload[
+                "anonymous_object_track_confirmed_world_effect_signature"
+            ]
+        )
+
+    def test_nondirectional_confirmation_omits_destination_only(
+        self,
+    ) -> None:
+        payload = object_track_telemetry(
+            ((8, 6),),
+            source_cell=(8, 7),
+            direction=None,
+            world_effect_signature=_EFFECT_BITMASK,
+        )
+        self.assertEqual(
+            payload["anonymous_object_track_confirmed_source_cell"],
+            [8, 7],
+        )
+        self.assertIsNone(
+            payload["anonymous_object_track_confirmed_destination_cell"]
+        )
+        self.assertEqual(
+            payload["anonymous_object_track_current_cell"], [8, 6]
+        )
+
+    def test_matches_root_object_state_track_view(self) -> None:
+        state = HumanPriorRootObjectState(
+            world_effect_signature=_EFFECT_BITMASK,
+            tracked_world_effect_cells=((8, 6),),
+            tracked_world_state_signature="fbed5d3a014aa50c",
+            confirmed_world_effect_signature=_EFFECT_BITMASK,
+            entity_interaction_signature="fbed5d3a014aa50c",
+            entity_interaction_action=Action.RIGHT,
+            entity_interaction_direction=Action.RIGHT,
+            entity_interaction_cell=(7, 6),
+        )
+        track = ObjectTrackSet.from_root_object_state(state).tracks[0]
+        payload = object_track_telemetry(
+            state.tracked_world_effect_cells,
+            source_cell=state.entity_interaction_cell,
+            direction=state.entity_interaction_direction,
+            world_effect_signature=(
+                state.confirmed_world_effect_signature
+            ),
+        )
+        self.assertEqual(
+            payload["anonymous_object_track_current_cell"],
+            [track.current_cell[0], track.current_cell[1]],
+        )
+        self.assertEqual(
+            payload["anonymous_object_track_confirmed_source_cell"],
+            [track.source_cell[0], track.source_cell[1]],
+        )
+        self.assertEqual(
+            payload["anonymous_object_track_confirmed_destination_cell"],
+            [
+                track.source_cell[0] + track.displacement[0],
+                track.source_cell[1] + track.displacement[1],
+            ],
+        )
 
 
 if __name__ == "__main__":

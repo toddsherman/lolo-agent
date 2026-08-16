@@ -219,6 +219,23 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   tested. Resume reconstruction applies the same rule to new telemetry and
   infers it from matching neutral frame digests where older logs contain the
   required counterfactual rollouts;
+- `anonymous_object_track_cells`, `anonymous_object_track_current_cell`,
+  `anonymous_object_track_confirmed_source_cell`,
+  `anonymous_object_track_confirmed_destination_cell`, and
+  `anonymous_object_track_confirmed_world_effect_signature` on every
+  `human_prior_option_branch_verified`, `human_prior_option_archive_added`,
+  and `decision_committed` event. The coarse player-masked world signature
+  is insensitive to displacement of a tracked anonymous object, so these
+  keys restate the object-track state already carried through the search:
+  the branch's accumulated tracked cells, the same conservative single-cell
+  current derivation the track set uses, the confirmed manipulation's
+  source cell with its direction-displaced destination, and the confirmed
+  player-masked effect signature. A paired analysis can therefore certify
+  per branch whether the tracked object configuration held, without pixel
+  forensics. Rows without track state carry the same keys as null/empty
+  rather than omitting them; commit and restore events report the planner's
+  current root track state at that decision. The values are additive
+  restatements — nothing is recomputed and no existing key changes;
 - `--skip-resume-option-archives` is a diagnostic matched-resume control. It
   restores the exact committed emulator state and learned episodic graph but
   deliberately omits uncommitted save-state frontier snapshots, allowing a

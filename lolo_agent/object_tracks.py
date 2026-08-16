@@ -687,6 +687,62 @@ def archived_track_fields(metadata: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
+def object_track_telemetry(
+    tracked_cells: Sequence[Cell],
+    source_cell: Optional[Cell] = None,
+    direction: Optional[Action] = None,
+    world_effect_signature: str = "",
+) -> Dict[str, Any]:
+    """Anonymous object-track payload certifying per-branch configuration hold.
+
+    The coarse player-masked world signature is insensitive to displacement
+    of a tracked anonymous object, so branch rows must carry the track state
+    itself before a paired analysis can certify that a branch left the
+    tracked configuration unchanged.  Every value restates state the caller
+    already carries; nothing is recomputed from pixels.  ``tracked_cells``
+    are the accumulated anonymous object cells, the confirmed
+    source/destination pair restates the confirmed manipulation (the
+    destination is the source displaced by the confirmed direction), and the
+    current cell uses the same conservative single-cell derivation as
+    ``ObjectTrackSet.from_root_object_state``.  Callers without track state
+    emit the same keys as null/empty so every row stays comparable.
+    """
+
+    cells = tuple(
+        sorted((int(cell[0]), int(cell[1])) for cell in tracked_cells)
+    )
+    current_cell = cells[0] if len(cells) == 1 else None
+    confirmed_source = _optional_cell(source_cell)
+    delta = direction_displacement(direction)
+    confirmed_destination = (
+        None
+        if confirmed_source is None or delta is None
+        else (
+            confirmed_source[0] + delta[0],
+            confirmed_source[1] + delta[1],
+        )
+    )
+
+    def serialized(cell: Optional[Cell]) -> Optional[List[int]]:
+        return None if cell is None else [int(cell[0]), int(cell[1])]
+
+    return {
+        "anonymous_object_track_cells": [
+            [column, row] for column, row in cells
+        ],
+        "anonymous_object_track_current_cell": serialized(current_cell),
+        "anonymous_object_track_confirmed_source_cell": serialized(
+            confirmed_source
+        ),
+        "anonymous_object_track_confirmed_destination_cell": serialized(
+            confirmed_destination
+        ),
+        "anonymous_object_track_confirmed_world_effect_signature": (
+            world_effect_signature or None
+        ),
+    }
+
+
 @dataclass(frozen=True)
 class ObjectTrackSet:
     """The complete anonymous-object memory attached to one exact state.
