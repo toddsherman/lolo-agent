@@ -79,6 +79,49 @@ open the band either.
   re-close the corridor mid-run; the predicate catches it as `(7,6)`
   departure (conservative). v324 saw no return within its horizon.
 
-## Results
+## Results (appended 2026-08-16)
 
-(to be appended after the run completes)
+Run complete, no errors, 1,462 s (ceiling 10,800), 9,691 verified branches
+with endpoints, zero life-loss confirmations. First causal-archive restore
+at seq 15,054; per the preregistered rule, certification uses only
+pre-restore branches (the decision-1 root search).
+
+**The preregistered bit scores YES: 135 certified configuration-held
+branches reached the band** (`(8,7)` from seq 248 onward, `(8,8)`,
+`(9,8)`).
+
+Certified configuration-held coverage (cells == `[]`, pre-restore):
+
+```text
+(6,6) (6,7) (6,8) (6,9) (6,10) (7,6) (7,10) (8,6) (8,7) (8,8) (8,10)
+(9,8) (10,6) (10,7) (10,8) (11,6) (11,7) (11,8) (12,6) (12,7) (12,8)
+(12,9) (12,10) (12,11)
+```
+
+24 cells — versus the two certified baselines' identical 7-cell envelopes
+(pushed Arm A v322; pre-push v324). Removing the `(7,6)` entity opened the
+former footprint cells `(7,6)/(8,6)`, the scored band, and the entire
+eastern region through column 12 — including `(12,11)`, a known remaining
+heart cell. Every cell reached by non-certified branches was also reached
+certified (non-certified-only set: empty).
+
+**Conclusion: this is the project's first verified
+accessibility-improving manipulation.** The removal of the `(7,6)` entity
+(two shots + one transformed-object push, discovered by ordinary search)
+changes bounded certified accessibility from 7 to 24 cells including a
+milestone-bearing cell. Gate 3's success criteria are substantially met:
+before/after delta (7 → 24 certified cells), measured against two matched
+baseline configurations that both lack the delta, from an archived
+restorable state, with uncertainty scoped to the declared budgets. Formal
+Gate 3 closure wants one clean repetition of the delta from a fresh
+restore, and the neutral-control comparison is currently cross-run
+(v322/v324 baselines) rather than same-run — both noted for the
+repetition run.
+
+Next (per roadmap §12 Gate 3 → Gate 4): repeat the delta from a fresh
+restore to close Gate 3 formally; then the Gate 4 question becomes
+concrete — can the planner *choose* the removal because of its measured
+accessibility consequence, rather than stumbling into it: wire the
+verified delta into hypothesis preference (direction-review Amendment A's
+restore-selection ablation, WP8 seams) and test whether preparation →
+`(12,11)` heart follows within budget.

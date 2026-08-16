@@ -1287,6 +1287,59 @@ Evidence:
 - `docs/object-removed-probe-2026-08-16.md` (premise correction section)
 - v324 telemetry; recon preserved in session transcripts
 
+### 4.30 First verified accessibility-improving manipulation
+
+What was tried:
+
+- The preregistered object-removed probe
+  (`docs/object-removed-probe-2026-08-16.md`): one bounded run
+  (`entity-v325-room3-object-removed-probe-d12`, 9,691 branches, 24 min)
+  from v324's decision-7 snapshot — player at `(7,6)`, the resident entity
+  removed — scoring certified configuration-held band entry against the
+  two certified 7-cell baselines (pushed v322, pre-push v324).
+
+Result:
+
+- **Bit = YES: 135 certified configuration-held branches reached the
+  column-8 band.** Certified coverage totaled 24 cells vs 7 in both
+  baselines — the former footprint, the band, and the whole eastern
+  region through column 12, including known-heart cell `(12,11)`. Zero
+  life losses; every claimed cell was reached with the configuration
+  certifiably intact (pre-causal-restore window per the preregistered
+  rule).
+
+Classification:
+
+- **Milestone result.** The project's first verified
+  accessibility-improving manipulation: removal of the `(7,6)` entity
+  (two button transformations + one transformed-object push) more than
+  triples certified reachable space and exposes a milestone-bearing cell.
+
+Learning:
+
+- The arrangement→accessibility thesis (roadmap §3) is now demonstrated
+  natively in both directions: the v318 push was certified neutral
+  (4.28), the removal is certified enabling. Manipulation value is a
+  measurable property of configurations, not of manipulations per se.
+- The full causal chain — detect manipulation, preserve configuration,
+  measure accessibility consequence — now runs end-to-end on real
+  emulator state with anonymous instruments only.
+
+Plan change:
+
+- Repeat the delta from a fresh restore to close Gate 3 formally
+  (same-run neutral control included).
+- Gate 4 becomes the active target: make the planner *prefer* the removal
+  because of its measured consequence (verified-delta term in
+  restore-selection/hypothesis preference per the direction-review
+  Amendment A ablation design), then test preparation → `(12,11)` heart
+  within budget.
+
+Evidence:
+
+- `docs/object-removed-probe-2026-08-16.md`
+- run `entity-v325-room3-object-removed-probe-d12`
+
 ## 5. Platform and cost learnings
 
 ### 5.1 RunPod for emulator branching
