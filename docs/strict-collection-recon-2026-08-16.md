@@ -1,6 +1,6 @@
 # Strict Room 3 collection recon — provenance verdict (2026-08-16)
 
-Status: recon complete; collection BLOCKED on a claim-boundary decision
+Status: recon complete; RATIFIED by Todd 2026-08-16 — option (a), strict_from_assisted_state with disclosure
 Context: closes the tracker coverage gap quantified in
 `docs/tracker-ood-eval-2026-08-16.md` / learnings §4.32.
 
@@ -59,3 +59,13 @@ Options:
 
 Full command lines and citations are preserved in the session recon
 transcript; this note is the durable summary.
+
+## Ratification (2026-08-16)
+
+Todd ratified option (a): strict-policy collection branched from
+assisted-era states enters the strict store under a distinct
+`strict_from_assisted_state` reward track, ancestry visible in
+`episodic_resume`, and the headline claim discloses that collection roots
+include states reached by assisted play during development. Old runs keep
+their recorded labels; the new value applies to newly emitted manifests
+only. The laundering loophole fix remains filed and mandatory.
