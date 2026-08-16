@@ -1402,6 +1402,44 @@ Evidence:
 - `docs/wp5-tracker-training-2026-08-16.md`
 - `experiments/lolo1-wp5/substitution-replay-report.json`
 
+### 4.32 Tracker OOD gap quantified: state-dependent, not uniform
+
+What was tried:
+
+- The §4.31(a) evaluation (`docs/tracker-ood-eval-2026-08-16.md`,
+  report digest `ecc5336b…`, byte-identical on rerun): tracker v2 scored
+  against dense detector-free counterfactual ground truth from v322–v326
+  telemetry (24,538 arms, 16 censored, 100% validity cross-check against
+  the assisted detector's cell), with a 400-arm held-in reference.
+
+Result:
+
+- Held-in: hit 1.000, AUC 0.9997, IoU 0.775 — the instrument reproduces
+  training-time numbers exactly.
+- Room 3 pooled: hit 0.478, AUC 0.679, IoU 0.022. **State-dependent
+  failure:** object-present states fail totally (AUC < 0.5 — mass ranked
+  away from the player); object-removed states partially transfer (hit
+  0.833, but ~28-cell blobs vs ~2 true cells).
+
+Classification:
+
+- **Measurement result** completing the §4.31 diagnosis: the gap is
+  corpus coverage (Room 3 palette, object-present configurations,
+  duration diversity), not architecture.
+
+Plan change:
+
+- Broaden the strict corpus with a bounded strict-track counterfactual
+  collection run in Room 3 (development partition; both object-present
+  and object-removed states; duration diversity; hard negatives at
+  movable-object tiles), import via the provenance-checked path,
+  regenerate labels, retrain, then the §4.31(c) mask-sensitive gate.
+
+Evidence:
+
+- `docs/tracker-ood-eval-2026-08-16.md`
+- `experiments/lolo1-wp5/tracker-ood-report.json`
+
 ## 5. Platform and cost learnings
 
 ### 5.1 RunPod for emulator branching
