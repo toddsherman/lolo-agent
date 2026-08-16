@@ -75,6 +75,19 @@ class DurableExperimentTests(unittest.TestCase):
                 bootstrap_fixture=fixture,
                 initial_checkpoint=checkpoint,
             )
+
+            legacy_manifest = json.loads((experiment_dir / "experiment.json").read_text())
+            legacy_manifest["config"].pop("learning_rate")
+            (experiment_dir / "experiment.json").write_text(json.dumps(legacy_manifest))
+            DurableExperiment(
+                experiment_dir,
+                host,
+                core,
+                rom,
+                config,
+                bootstrap_fixture=fixture,
+                initial_checkpoint=checkpoint,
+            )
             with self.assertRaisesRegex(ValueError, "resume configuration"):
                 DurableExperiment(
                     experiment_dir,

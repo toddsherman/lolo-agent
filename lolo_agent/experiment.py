@@ -44,6 +44,7 @@ class ExperimentConfig:
     action_durations: Tuple[int, ...] = (1, 2, 4, 8, 16)
     epochs_per_cycle: int = 1
     batch_size: int = 8
+    learning_rate: float = 3e-4
     evaluation_decisions: int = 20
     verify_actions: int = 6
     validation_modulus: int = 5
@@ -67,6 +68,8 @@ class ExperimentConfig:
         )
         if any(value <= 0 for value in positive):
             raise ValueError("experiment sizes must be positive")
+        if self.learning_rate <= 0:
+            raise ValueError("learning rate must be positive")
         if len(set(self.action_durations)) != len(self.action_durations):
             raise ValueError("action durations must be unique")
         if not self.action_durations or any(value <= 0 for value in self.action_durations):
@@ -149,9 +152,13 @@ class DurableExperiment:
         }
         if self.manifest_path.exists():
             existing = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+            existing_config = dict(existing["config"])
+            # Version-1 manifests created before learning-rate configuration
+            # implicitly used train_ensemble_model's 3e-4 default.
+            existing_config.setdefault("learning_rate", 3e-4)
             comparable = {
                 "version": existing["version"],
-                "config": existing["config"],
+                "config": existing_config,
                 "inputs": existing["inputs"],
                 "bootstrap": existing.get("bootstrap"),
                 "initial_checkpoint": existing.get("initial_checkpoint"),
@@ -237,6 +244,7 @@ class DurableExperiment:
             device,
             epochs=self.config.epochs_per_cycle,
             batch_size=self.config.batch_size,
+            learning_rate=self.config.learning_rate,
             seed=self.config.seed + cycle,
         )
         after = validate_ensemble_model(
@@ -254,6 +262,7 @@ class DurableExperiment:
             "training_sequences": len(training),
             "validation_sequences": len(validation),
             "updates": len(history),
+            "learning_rate": self.config.learning_rate,
             "first_loss": history[0].loss,
             "final_loss": history[-1].loss,
             "duration_seconds": time.monotonic() - started,
@@ -486,6 +495,7 @@ def main() -> None:
     parser.add_argument("--durations", type=_durations, default=(1, 2, 4, 8, 16))
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--eval-decisions", type=int, default=20)
     parser.add_argument("--verify-actions", type=int, default=6)
     parser.add_argument("--validation-modulus", type=int, default=5)
@@ -513,6 +523,7 @@ def main() -> None:
         action_durations=args.durations,
         epochs_per_cycle=args.epochs,
         batch_size=args.batch_size,
+        learning_rate=args.learning_rate,
         evaluation_decisions=args.eval_decisions,
         verify_actions=args.verify_actions,
         validation_modulus=args.validation_modulus,

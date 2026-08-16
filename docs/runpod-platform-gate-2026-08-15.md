@@ -181,3 +181,36 @@ passes only if:
   (2× the packaged M5 baseline); and
 - the measured cycle stays within both its $0.05 cycle cap and the immutable
   $1.00 campaign cap.
+
+## Real-data GPU result
+
+The RTX A4000 reproduced the quality improvement: held-out error moved from
+`0.005624/0.005646/0.005651` to `0.004971/0.004994/0.005000`. The recovered
+checkpoint hash matches its metrics record. The platform gate nevertheless
+failed by a wide margin:
+
+| Measurement | M5 MPS | RunPod RTX A4000 |
+|---|---:|---:|
+| Training examples/second | 173.93 | 55.32 |
+| End-to-end examples/second | 144.43 | 28.23 |
+| End-to-end seconds | 3.30 | 16.86 |
+| Relative end-to-end speed | 1.000× | 0.196× |
+
+The M5 was 3.14× faster during training and 5.12× faster end to end. The earlier
+synthetic pass did not transfer because it preallocated random one-step batches
+for a smaller model. The real workload decodes compressed frames, assembles
+variable-horizon sequences, trains three dynamics heads, validates rollouts,
+and writes a checkpoint. At this scale, host-side preparation and many small
+GPU operations dominate.
+
+The Pod balance changed by approximately $0.02 during the complete launch,
+upload, runtime restoration, retry, benchmark, recovery, and stop workflow.
+Compute was stopped after the artifacts were recovered. The benchmark's own
+timed section estimated $0.0012, illustrating why whole-cycle cost and time are
+the relevant measures.
+
+Decision: **keep current training on the M5**. Do not run another paid training
+comparison unless the data pipeline is redesigned around predecoded tensor
+batches and substantially larger accelerator work. The useful research result
+is the lower `1e-5` learning rate, which is now an explicit durable-experiment
+setting; the GPU is not part of the active path.
