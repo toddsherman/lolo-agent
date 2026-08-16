@@ -16013,6 +16013,37 @@ class VerifiedNeuralAgent:
         )
         if persisted and persistence_steps == 0:
             persistence_steps = 1
+        appearance_fingerprint = str(
+            metadata.get("anonymous_entity_appearance_fingerprint") or ""
+        )
+        entity_type_id = optional_int(
+            metadata.get("anonymous_entity_type_id")
+        )
+        if (
+            not appearance_fingerprint
+            and len(tracked_cells) == 1
+            and self.unlabeled_entity_memory is not None
+            and self.entity_behavior_model is not None
+        ):
+            ignored_pixels = None
+            player_pixel_mask = getattr(
+                self.goal_prior, "player_pixel_mask", None
+            )
+            if player_slot is not None and callable(player_pixel_mask):
+                ignored_pixels = player_pixel_mask(self.frame, player_slot)
+            destination_feature = self.unlabeled_entity_memory.feature_at(
+                self.frame,
+                *tracked_cells[0],
+                ignored_pixels,
+            )
+            appearance_fingerprint = (
+                self.entity_behavior_model.appearance_fingerprint(
+                    destination_feature
+                )
+            )
+            entity_type_id, _distance = (
+                self.entity_behavior_model.classify(destination_feature)
+            )
         self.current_human_prior_root_object_state = (
             _HumanPriorRootObjectState(
                 world_effect_signature=effect_signature,
@@ -16062,12 +16093,9 @@ class VerifiedNeuralAgent:
                 entity_interaction_direction=interaction_direction,
                 entity_interaction_cell=interaction_cell,
                 entity_interaction_appearance_fingerprint=str(
-                    metadata.get("anonymous_entity_appearance_fingerprint")
-                    or ""
+                    appearance_fingerprint
                 ),
-                entity_interaction_type_id=optional_int(
-                    metadata.get("anonymous_entity_type_id")
-                ),
+                entity_interaction_type_id=entity_type_id,
                 entity_interaction_context_signature=str(
                     metadata.get("anonymous_entity_context_signature") or ""
                 ),
@@ -16094,6 +16122,10 @@ class VerifiedNeuralAgent:
             entity_interaction_action=interaction_action,
             entity_interaction_direction=interaction_direction,
             entity_interaction_cell=interaction_cell,
+            entity_interaction_appearance_fingerprint=(
+                appearance_fingerprint or None
+            ),
+            entity_interaction_type_id=entity_type_id,
             entity_effect_target_distance=effect_distance,
             entity_effect_persisted_in_search=persisted,
             entity_effect_persistence_steps=persistence_steps,

@@ -12549,8 +12549,13 @@ class EnsemblePlannerTests(unittest.TestCase):
                 planning_depth=1,
                 action_frames=1,
                 human_prior_heart_reward=1.0,
+                human_prior_option_entity_frontier=True,
+                human_prior_option_effect_local_controls=True,
+                human_prior_option_effect_stability_steps=1,
+                human_prior_option_effect_phase_offsets=1,
             ),
             event_logger=logger,
+            entity_behavior_model=AnonymousEntityBehaviorModel(),
         )
         agent.reset()
         agent.goal_prior = PositionGoalPrior()
@@ -12585,6 +12590,7 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertEqual(root.entity_effect_target_distance, 1)
         self.assertTrue(root.entity_effect_persisted_in_search)
         self.assertEqual(root.entity_effect_persistence_steps, 1)
+        self.assertTrue(root.entity_interaction_appearance_fingerprint)
         self.assertEqual(
             root.confirmed_entity_state_signature, "entity-state"
         )

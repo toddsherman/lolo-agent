@@ -41,6 +41,10 @@ persistent object displacement?
   planner archived a safe continuation five actions beyond the push. It did
   not collect a heart, so this is a representation result rather than a room
   solution.
+- `entity-v321-room3-confirmed-identity-d2` verified corrected serialization:
+  all 132 descendants retained the track, and its archive kept the confirmed
+  `RIGHT`, source `(7, 6)`, destination `(8, 6)`, and one-step persistence
+  instead of pairing the push state with a later unrelated interaction.
 
 ## Implemented changes
 
@@ -68,7 +72,8 @@ persistent object displacement?
   and context, interaction direction, effect distance, and persistence.
   Exact archive resumes seed these fields into the new search root; legacy
   archives conservatively reconstruct the track from their learned spatial
-  effect signature.
+  effect signature and recover a reusable appearance fingerprint from the
+  player-masked destination pixels.
 - Confirmed manipulation identity is stored separately from later transient
   interactions, preventing navigation near another anonymous patch from
   relabeling the manipulation that produced the retained world state.
