@@ -80,6 +80,129 @@ recon transcript and reproduced by the two run manifests at launch.
   extraction was verified byte-identical on telemetry, so any divergence
   from v319-era behavior observed here would itself be a finding.
 
-## Results
+## Results (appended 2026-08-16; paired analysis per preregistered rules 1–6)
 
-(to be appended after both arms complete)
+### 1. Coverage deltas
+
+**SEARCH-REACH (verified branch endpoints).** Arm A: 4,061 endpoints (4,026
+option + 35 generic), 8 coarse cells. Arm B: 12,267 endpoints (12,232 option
++ 35 top-level), 12 coarse cells. After excluding footprint cells
+(7,6)/(8,6) (rule 1; v57 pose collapse changed nothing in either arm —
+rule 2):
+
+- Shared beyond-footprint coverage: (6,6),(6,7),(6,8),(6,9),(6,10),(7,10),(8,10).
+- **B-only: (8,7) n=30, (8,8) n=22, (9,8) n=2.** A-only: none.
+
+Budget-honesty caveats: the arms differ ~3x in branch count (4,061 vs
+12,267) and in root cell (A rooted at (7,6), B at (6,9) — a consequence of
+the one-push-apart physical states). Both arms completed 12/12 search depths
+with zero budget truncation (A: 776 s of 7,200 s, 2 completed option
+searches; B: 1,902 s of 10,800 s, 1 completed search, beam-saturated at
+1,408 candidates/depth from depth 5). A's smaller branch yield is endogenous
+to its root's reachable graph, not a budget cut — but per the censoring
+discipline A's absences are treated as censored, not absent.
+
+**WALK-REACH (committed trajectories).** Beyond-footprint committed cells —
+A: {(6,6),(7,10),(8,10)}; B: {(6,8),(8,7),(8,8),(9,8)} (start cells
+excluded). The sets are disjoint. B's decisions d6–d8 additionally committed
+occupancy of (8,6) then (7,6) (footprint; see §2, §4).
+
+### 2. Directed targets (scored post-hoc per rule 3)
+
+- **(a) Column ≥8, rows 5–7:** Arm A **NO** — no endpoint, commit, or probe
+  endpoint at x≥128 in y 80–112 despite 2,269 endpoints at adjacent (7,6);
+  searches completed, non-reach censored. Arm B **YES** — (8,7) reached in
+  search (n=30) and committed at d5; beyond-footprint-admissible evidence is
+  (8,7) only ((8,6) is excluded). Row 5 was reached in neither arm (B
+  probes: up→(8,5) blocked).
+- **(b) (8,10) and the (8,11) A-interaction:** Arm A reached (8,10) by
+  search (195) and walk (d3–d4) and executed the A-interaction toward (8,11)
+  repeatedly (curiosity a at depth 9; facing-button down+a/b at d4,d5; 7 WEC
+  audits): **all null**. Arm B reached (8,10) by search only (109 endpoints,
+  no commit) — and **every one of those 109 branches carries an
+  endpoint-persistent (7,6) change**, i.e., all of B's (8,10) coverage is
+  configuration-departed (rule 5). B's sole down-facing 'a' branch at
+  (8,10): null; no probes at (8,11). Outcome concordant (null/null); access
+  asymmetric (A clean-config, B departed-config only).
+- **(c) Occupancy of (8,6) — the direct walkability signal: confirmed in
+  the predicted directions.** Arm A: zero occupancy across 4,061 endpoints
+  + 8 commits, with the tile positively probed blocked (8 adjacent probes,
+  2 facing-button, 5 curiosity, 16 WEC audits directed in — no movement, no
+  effect). Arm B: 188 search endpoints, committed occupancy d6→d7,
+  pre-commit adjacent probe up→(8,6) movement confirmed. The object
+  demonstrably blocks the tile it occupies. Within-footprint, so excluded
+  from the delta claim per rule 1.
+
+### 3. Probe / frontier comparison
+
+Interaction outcomes are null-concordant everywhere probed in both arms (0
+entity effects confirmed, 0 evidence accepted run-wide in each). Arm A's
+frontier toward the column-8 rows 5–8 band is **positively closed at every
+edge its reachable set touches**: (7,6)→(8,6) blocked (object), (7,6)→(7,7)
+blocked, (8,10)→(8,9) blocked, (9,10) blocked. B's blocked probes agree on
+the shared edges ((9,6),(9,7),(8,5),(7,7) blocked) — the sole edge that
+differs is (8,6) itself. B-only interactable frontier: confirmed 'a'-button
+world-effect controls at (5,8),(7,8),(6,7),(7,7),(6,8) — cells/actions A
+never audited (censored on A's side, root-position artifact). A-only: the
+(8,11)-directed interaction battery (B's absence censored). Nothing
+interactable-with-effect exists in one arm's tested set and not the
+other's.
+
+### 4. Configuration-hold and new confirmed manipulations
+
+**Arm A: clean hold.** World hash dd9de862 on all 4,061 endpoints and 8
+commits; zero partitioned branches. Reported separately: 10 stability
+probes with a persistent within-footprint (8,6) delta. **New confirmed
+manipulations: 2** — d4/d5 (7,10)-left, moving_directional_ray, entity
+effect at (6,10).
+
+**Arm B: hold certification failed at instrument level.** The player-masked
+signature is identical across all 12,232 branches and 8 commits — yet the
+run demonstrably displaced the object (committed d7–d8 occupancy of (7,6),
+d8 left-probe movement at (6,6), consistent with a new westward push
+(7,6)→(6,6)) while `world_effects_accepted=0`. The coarse signature is
+insensitive to object displacement. Partition by tracked/pixel evidence:
+endpoint-persistent (7,6) effects in 140 branches — including **all**
+(8,10)×109, (8,8)×22, (9,8)×2 — plus (6,6)×20, (8,6)×6; in-branch tracked
+footprint disturbance in the majority of branches ((7,6): 6,659; (8,6):
+3,748). Consequently the "clean" status of B's (8,7) n=30 endpoints cannot
+be certified: routes into column 8 plausibly transit the footprint. **New
+confirmed manipulations: 9**, including d3 up@(8,7),
+moving_directional_ray, effect cell (8,6), displacement [0,-1]
+(footprint-touching).
+
+### 5. VERDICT
+
+**No beyond-footprint delta at budget (censored).** The falsification
+condition does not fire — coverage sets are not identical (B-only
+(8,7),(8,8),(9,8); disjoint walk sets) — but the confirmatory claim fails
+on both legs: (i) A's absences are censored per the discipline (~3x branch
+disparity, different roots); (ii) B's beyond-footprint column-8 coverage
+cannot be certified configuration-held, because the signature instrument
+was shown blind to object displacement and (8,8)/(9,8)/(8,10) coverage is
+affirmatively configuration-departed. The only fully certified paired
+contrast — (8,6) blocked in A, walkable in B — is the preregistered direct
+walkability signal but is footprint-excluded from the delta. Directional
+evidence favors the hypothesis (target (a) B-yes/A-no; A's measured closed
+frontier; endogenous branch-count contraction) and is recorded as such, not
+as confirmation.
+
+### 6. Implications and next experiment
+
+The Room 3 single-push Gate 4 vehicle is neither confirmed nor
+downweighted-for-neutrality: coverage differed, so the scoped falsification
+clause does not apply, but the confirmatory read is blocked by one
+identified instrument defect, not by the world. The candidate mechanism is
+now sharp: (8,6) is the sole open edge into the (8,7)+ band from the
+object's neighborhood; every alternative tested edge is blocked in both
+arms. **Next experiment (bounded, falsifiable):** fix hold certification —
+extend branch telemetry so each `human_prior_option_branch_verified`
+carries the tracked object cell (or fold tracked object cells into the
+player-masked signature) — then rerun Arm B alone at identical settings
+(depth 12, beam 128, seq-2026 checkpoint, ≤10,800 s, ≤200k events, no
+escalation). Score one preregistered bit: does ≥1 certified
+configuration-held branch (object at (7,6) throughout) reach column ≥8,
+rows 5–7? Yes → beyond-footprint delta confirmed against Arm A's positively
+closed frontier, vehicle promoted. No, at completed depth → the
+accessibility difference collapses to footprint-only; record as
+censored-negative and downweight the vehicle per learnings §2/§4.14.

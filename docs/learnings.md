@@ -1099,6 +1099,78 @@ Evidence:
 - `docs/direction-review-2026-08-16.md`
 - runs under `experiments/lolo1-entity-v10/evaluations/`
 
+### 4.27 Paired native accessibility probe of the confirmed push
+
+What was tried:
+
+- The preregistered paired probe (`docs/paired-accessibility-probe-2026-08-16.md`):
+  two arms from the same v318 lineage one push apart, byte-identical
+  planning flags (depth 12, beam 128, v320 reserve profile, probes enabled,
+  8 decisions), Arm A from the pushed archive `state-00000117`, Arm B from
+  the `33addc6c` pre-push rollback checkpoint. Runs
+  `entity-v322-…-arm-a-pushed-d12` (4,061 endpoints, 776 s) and
+  `entity-v323-…-arm-b-prepush-d12` (12,267 endpoints, 1,903 s), both
+  complete within ceilings.
+
+What worked:
+
+- First causally paired accessibility fact in the project: the object
+  demonstrably blocks the tile it occupies — `(8,6)` positively probed
+  blocked in Arm A (object present) and committed-walkable in Arm B
+  (empty). Footprint-scoped, but verified in both directions.
+- The corrected v318-generation detector now confirms manipulations during
+  ordinary search: 11 new confirmed manipulations across the two arms
+  (2 in A, 9 in B, including a spontaneous new westward push
+  `(7,6)→(6,6)` in B). Contrast v313's 0/1,756.
+- Arm B reached column-8 cells `(8,7)`,`(8,8)`,`(9,8)` that Arm A never
+  touched; Arm A's frontier into that band is positively closed at every
+  tested edge, with `(8,6)` the sole differing edge — a sharp candidate
+  mechanism: the confirmed push parked the object in the only doorway.
+
+Failure:
+
+- Configuration-hold certification failed at the instrument level: the
+  player-masked world signature was identical across all 12,232 Arm B
+  branches even though the run demonstrably displaced the object
+  (`world_effects_accepted=0` while tracked/pixel evidence shows footprint
+  disturbance in most branches). The coarse signature is blind to object
+  displacement, so Arm B's beyond-footprint coverage cannot be certified
+  configuration-held.
+
+Classification:
+
+- **Engineering defect** (hold-certification instrument) plus **censored
+  evidence** on the preregistered delta: verdict "no beyond-footprint delta
+  at budget (censored)", with directional evidence favoring the hypothesis
+  recorded as directional only.
+
+Learning:
+
+- A paired design is only as strong as its configuration-hold instrument;
+  world signatures must incorporate tracked object cells before
+  accessibility claims can be certified.
+- Walkability of the object's own tile is now a verified mechanic, and the
+  candidate strategic reading of the confirmed push is inverted: it may
+  have *closed* the sole entrance to the column-8 band rather than opened
+  anything — preparation value can be negative.
+
+Plan change:
+
+- Extend `human_prior_option_branch_verified` telemetry (or the
+  player-masked signature) to carry tracked object cells — a small change
+  now feasible cleanly via `object_tracks.py` (WP1).
+- Rerun Arm B alone at identical settings scoring one preregistered bit:
+  ≥1 certified configuration-held branch reaching column ≥8, rows 5–7.
+  Yes → beyond-footprint delta confirmed, Gate 4 vehicle promoted; no →
+  censored-negative, vehicle downweighted.
+
+Evidence:
+
+- `docs/paired-accessibility-probe-2026-08-16.md` (full preregistration and
+  results)
+- runs `entity-v322-room3-paired-probe-arm-a-pushed-d12`,
+  `entity-v323-room3-paired-probe-arm-b-prepush-d12`
+
 ## 5. Platform and cost learnings
 
 ### 5.1 RunPod for emulator branching
