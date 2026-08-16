@@ -1528,10 +1528,11 @@ The next architecture milestone is complete when the agent:
 
 ## 16. Next action
 
-The next implementation sequence is:
+Superseded in part by the 2026-08-16 amendment (§17). WP0 and WP1 are
+landed (commits `b95b68f`, `236ea65`). The original sequence for reference:
 
-1. Land WP0's immutable evaluation partition and artifact inventory.
-2. Land WP1's `object_tracks.py` extraction without behavior changes.
+1. Land WP0's immutable evaluation partition and artifact inventory. [DONE]
+2. Land WP1's `object_tracks.py` extraction without behavior changes. [DONE]
 3. Implement WP2 multi-track correspondence.
 4. Extend WP3 displacement/transformation descriptors.
 5. Integrate relational track sets into planner nodes, archives, and telemetry.
@@ -1539,6 +1540,61 @@ The next implementation sequence is:
 7. Reflect on the evidence before building policy authority.
 8. Implement the WP6 accessibility prototype using mock environments while
    native tracking work proceeds.
+
+## 17. Amendment — 2026-08-16 (evidence: learnings §4.26–§4.30)
+
+Basis: the certified paired-probe series v322–v325
+(`docs/paired-accessibility-probe-2026-08-16.md`,
+`docs/object-removed-probe-2026-08-16.md`) and the adversarial direction
+review (`docs/direction-review-2026-08-16.md`). Adopted under Todd's
+delegated authority of 2026-08-16; every change is reversible and each
+carries its evidence.
+
+1. **Bottleneck reframed: valuation, not discovery.** Ordinary search
+   discovers useful manipulations spontaneously (11+ confirmed across
+   v322–v325, including the band-opening removal chain), while the planner
+   preserved a certified-neutral configuration for four run-generations.
+   **WP8-lite precedes WP8:** a verified-accessibility preference term in
+   the existing archive/restore-selection seams, promoted only through a
+   preregistered matched-budget paired ablation (mixed result = FAIL).
+   `relational_planner.py` follows the ablation's outcome. The concrete
+   Gate 4 chain is named: entity removal → east region → `(12,11)`-class
+   hearts (the chain completed non-deliberately in v325).
+2. **WP3 priority shift: transformation/removal chains.** The Room 3
+   door-opener is transform-in-place → displaced-transformed-object →
+   expulsion. WP3 gains a removal-chain native gate alongside the
+   displacement gate; button-conditioned transformation posteriors are the
+   highest-value rule family (the type-7 result shows the behavior model
+   supports them).
+3. **WP2 contract hardened:** track state must be endpoint-relative, never
+   accumulated history (five of six accumulated cells were stale at v324
+   d7 — learnings §4.29). HUD regions and autonomous patrol must be
+   excluded from manipulation credit by measurement. Every archive class
+   that can reseed a search root must carry the track block (causal-archive
+   fix in progress).
+4. **WP6 reframed as productization.** Certified-hold paired configuration
+   probes are a proven ~25-minute instrument; `accessibility.py` and the
+   §6.5 `AccessibilityDelta` contract are built around certified holds.
+   Gate 3 is substantially met on Room 3 (7 → 24 certified cells);
+   formal closure requires one repetition from a fresh restore.
+5. **Risk register addition:** a confirmed manipulation is not progress —
+   the v318 push was preserved across four generations and is certified
+   accessibility-neutral. Preservation priority must be coupled to
+   measured consequence.
+6. **§13 economics update:** preregistered native paired probes cost
+   ~25–30 minutes on the M5. Prefer smaller, more frequent certified
+   measurements over large campaigns.
+7. **Direction-review amendments A–E adopted** as the operating plan
+   (measure-early, WP5 mechanized in parallel, strict-lineage linter +
+   preregistration addendum, WP9a offline spike, WP7 off Gate 4's critical
+   path). WP5 remains required for the strict headline claim — all
+   v322–v325 evidence is assisted-track. The `configs/`
+   evaluation-partition allocation stands as shipped.
+
+Amended next sequence: (a) Gate 3 repetition run; (b) WP8-lite preference
+ablation; (c) WP2 multi-track correspondence with the endpoint-relative
+contract; (d) WP3 including the removal-chain gate; (e) WP5 spike and
+strict-lineage linter in parallel; (f) reflect and amend again.
 
 Do not begin with a larger beam, a new reward weight, or a long room-clearing
 run. The next decisive result must demonstrate that the agent can represent

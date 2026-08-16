@@ -125,3 +125,20 @@ accessibility consequence, rather than stumbling into it: wire the
 verified delta into hypothesis preference (direction-review Amendment A's
 restore-selection ablation, WP8 seams) and test whether preparation →
 `(12,11)` heart follows within budget.
+
+Post-run note: v325's committed trajectory itself collected the heart at
+`(12,11)` (decisions 2–4; `human_prior_collected_heart_slots` gained
+`[192,176]` at d4) — the first Room 3 heart since v311-era stalls. The
+manipulation → accessibility → milestone chain has now occurred end-to-end
+in one run; Gate 4 requires making the preparation step deliberate.
+
+### Repetition preregistration (Gate 3 closure; added before execution)
+
+Run `entity-v326-room3-object-removed-repetition-d12`: identical to v325
+in every setting and root (v324 d7 snapshot `bdb5bbde…`), fresh process,
+same ceilings, same certification predicate and causal-restore rule.
+Scored bits, fixed now: (1) ≥1 certified configuration-held branch reaches
+the band — must repeat; (2) the certified coverage set is compared to
+v325's 24-cell set — substantial agreement (≥80% Jaccard) closes Gate 3's
+"repeatable from an archived state" criterion; divergence is reported and
+scoped, not hidden.
