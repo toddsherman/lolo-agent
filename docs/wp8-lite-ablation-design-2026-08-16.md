@@ -536,3 +536,327 @@ The preference term earns planning authority only by passing §3.4 in full.
 Any mixed result is a FAIL. On FAIL, the recorded next step is the
 Amendment E fallback (`relational_planner.py` extraction), not weight
 tuning, not budget escalation, not a rerun on the same dataset.
+
+## 6. Preregistration addendum — resume root, commands, record store, window (appended 2026-08-17, BEFORE either arm runs)
+
+Fixed now per §3.2 ("The exact resume run/decision/state digests are fixed
+in a short preregistration addendum appended to this doc before launch").
+The §4 seam patch is applied in the working tree as of commit `fa62287`
+("Wire verified accessibility preference into restore selection"); no
+scored quantity below was chosen after seeing either arm's output —
+neither arm has run.
+
+### 6.1 Exact resume root (both arms, identical)
+
+- Memory: v318 decision-1 memory —
+  `--resume-run experiments/lolo1-entity-v10/evaluations/entity-v318-room3-known-push-connected-mask-d2
+  --resume-decision 1 --resume-option-search` (decoupled memory/state, as
+  in every probe arm v322–v326).
+- Physical state: the v318 **seq-2026 pre-push checkpoint** —
+  `--resume-state-run <same v318 run dir>
+  --resume-state-checkpoint-event-seq 2026`. Verified in v318's
+  `events.jsonl`: seq 2026 is `goal_milestone_checkpoint_snapshot_stored`,
+  decision 1, `state_id state-00000002`, state sha256
+  `33addc6c7c6828bf13d35ed0666ce7712647a8b614a12e343e96ff87ddcbfb92` —
+  byte-identical to the pre-push rollback checkpoint v323/v324 resumed
+  from (their manifests record `state_source_checkpoint_event_seq: 2026`,
+  source events sha `0bbe1d1571d2d9d02b03e51816acc07a7945ba97256ec6e710ff88c7179b6f83`;
+  re-verified against the file on 2026-08-17).
+- Why this root: it is the lineage where removal-class discovery and
+  restore-choice stagnation demonstrably occur. In both pre-push-rooted
+  searches from this exact root (v323 and v324, deterministic replays of
+  one another), the decision-1 search discovered the removal and archived
+  it — four `human_prior_option_archive_added` events carrying tracked
+  world-state signature `85fd9014d58deb42` at seqs 62943/62948/62983/63003
+  in each run — and goal-exhaustion stagnation then forced restore
+  selection (`archive_branch_restored` at decisions 2/5/8 in v324). The
+  §3.2 "seeded archive" requirement is therefore satisfied by the
+  deterministic decision-1 search itself; no external archive injection is
+  used. If the removal-class archived branch nevertheless fails to appear
+  within the window in either arm, the §3.4 VOID rule applies as written.
+- Input digests (re-verified 2026-08-17, all equal to the v322–v326
+  manifests): host `c03694c5dd2245bc7d7e0702b1f57b2ef51adc5de4d7c5abb0261408b3e891f3`,
+  core `a3450a09262109534a46098abbb00d2b016168da4b4351027b2eae5a40024886`,
+  ROM `914c676959612fc6738a297b6b799dff848e43de4e9bd3c9f3c6783efd059e01`,
+  neural checkpoint `bb7a7a37aaba2c4c37efe8f521e69fb428cd962c8c2831c20782305284f678b9`,
+  entity-behavior checkpoint `984b83c340489b333799972082f94fe75399ba656a34fc8c9dc942f125c7c6aa`.
+
+### 6.2 Full command lines (both arms)
+
+One command, two arms; the arms differ ONLY in the
+`--human-prior-accessibility-preference-weight` value (0.0 control, 1.0
+treatment) and the `--run-id`. `--human-prior-accessibility-records` is
+passed in BOTH arms (§3.2: records loaded identically; the weight alone
+gates scoring). All other flags are the v323/v324 profile (reconstructed
+from v324's manifest `planning_config`, which records every non-default
+field; the 1-decision smoke below confirmed the reconstruction reproduces
+that config and lineage):
+
+```
+.venv/bin/python -m lolo_agent.neural_run \
+  --host build/lolo-libretro-host \
+  --core "/Users/toddsherman/Library/Application Support/RetroArch/cores/nestopia_libretro.dylib" \
+  --rom "Adventures of Lolo.nes" \
+  --checkpoint experiments/platform-benchmarks/m5-real-data-training-sample.pt \
+  --log-root experiments/lolo1-entity-v10/evaluations \
+  --run-id <ARM RUN ID> \
+  --decisions 8 \
+  --action-durations 1,2,4,8,16 \
+  --verify-actions 7 \
+  --archive-capacity 1024 \
+  --archive-max-age 2048 \
+  --behavioral-best-first-archive \
+  --behavioral-edge-coverage-weight 4.0 \
+  --human-prior-hearts \
+  --human-prior-heart-reward 25.0 \
+  --human-prior-all-hearts-reward 75.0 \
+  --human-prior-chest-reward 100.0 \
+  --human-prior-life-loss-penalty 100.0 \
+  --human-prior-best-first-archive \
+  --human-prior-episodic-graph-guidance \
+  --human-prior-goal-exhaustion-frontier-budget 32 \
+  --human-prior-goal-exhaustion-rollback \
+  --human-prior-graph-stagnation-visits 1 \
+  --human-prior-navigation-recovery-grace 2 \
+  --human-prior-option-archive-representatives 80 \
+  --human-prior-option-causal-effect-frontier \
+  --human-prior-option-effect-controllability-depth 2 \
+  --human-prior-option-effect-frontier \
+  --human-prior-option-effect-local-controls \
+  --human-prior-option-effect-phase-offsets 3 \
+  --human-prior-option-effect-probe-limit 16 \
+  --human-prior-option-effect-stability-steps 3 \
+  --human-prior-option-entity-curiosity-reserve 32 \
+  --human-prior-option-entity-curiosity-weight 8.0 \
+  --human-prior-option-entity-frontier \
+  --human-prior-option-entity-inert-penalty-weight 1.0 \
+  --human-prior-option-search-action-frames 16 \
+  --human-prior-option-search-beam-width 128 \
+  --human-prior-option-search-depth 12 \
+  --human-prior-option-search-goal-proximity-reserve 12 \
+  --human-prior-option-search-goal-world-state-reserve 12 \
+  --human-prior-option-search-long-direction-frames 8 \
+  --human-prior-option-search-milestone-reserve 32 \
+  --human-prior-option-search-missing-player-reserve 4 \
+  --human-prior-option-search-position-reserve 16 \
+  --human-prior-option-search-stationary-history 2 \
+  --human-prior-option-search-world-state-reserve 32 \
+  --human-prior-phase-position-novelty \
+  --human-prior-proactive-entity-probe-limit 16 \
+  --anonymous-entity-behavior-checkpoint experiments/lolo1-entity-v10/anonymous-behavior-relational-v2-clean.json \
+  --anonymous-entity-behavior-mode frozen \
+  --resume-run experiments/lolo1-entity-v10/evaluations/entity-v318-room3-known-push-connected-mask-d2 \
+  --resume-decision 1 \
+  --resume-option-search \
+  --resume-state-run experiments/lolo1-entity-v10/evaluations/entity-v318-room3-known-push-connected-mask-d2 \
+  --resume-state-checkpoint-event-seq 2026 \
+  --human-prior-accessibility-records experiments/lolo1-wp5/wp8lite-accessibility-records.json \
+  --human-prior-accessibility-preference-weight <0.0 | 1.0>
+```
+
+- Control arm: `--run-id entity-v327-room3-wp8lite-ablation-control-w0-d12`
+  with weight `0.0`.
+- Treatment arm: `--run-id entity-v328-room3-wp8lite-ablation-treatment-w1-d12`
+  with weight `1.0`.
+- Pre-launch check (mandatory, automatable): each arm's manifest
+  `planning_config` must equal v324's manifest `planning_config` in every
+  field except `verified_accessibility_weight`, and the
+  `verified_accessibility_records_loaded` event must report
+  `record_count: 3` with the §6.4 content signatures. Abort the launch on
+  any mismatch.
+- Budgets (restating §3.3): decisions 8; wall-clock ceiling **10,800 s per
+  arm** via external watchdog; event expectation ≤ 200k per arm, overrun
+  reported; one native run at a time; no depth/beam escalation; no rerun
+  on an identical negative result.
+
+### 6.3 Scoring window and bits (restated verbatim; fixed)
+
+Scoring window: every scored bit is evaluated over each arm's **first
+10,000 `human_prior_option_branch_verified` events** (the run proceeds to
+its decision count; the analysis window is hard-truncated at branch 10,000
+in both arms). The demonstrated per-run envelope from this root is
+9,691–12,267 branches.
+
+The three preregistered bits, verbatim from §3.4 (ALL must pass; ANY mixed
+outcome = FAIL):
+
+1. **Deliberate selection.** Within the window, the treatment arm emits an
+   `archive_branch_restored` event whose restored branch carries the
+   removal-class configuration signature AND whose logged
+   `verified_accessibility_total_bonus` is positive with the component
+   decomposition showing certified new cells or a certified new
+   milestone-bearing cell (i.e., the preference term ranked it, and for the
+   hardened reason — not churn).
+2. **Matched-budget consequence advantage.** Within the window, the
+   treatment arm's committed trajectory reaches at least one
+   previously-unreachable cell (outside the certified 7-cell baseline
+   envelope) or collects the milestone at the previously-unreachable
+   milestone-bearing cell, at a strictly earlier decision index than the
+   control arm does (control never doing so within the window also
+   satisfies this bit). Metric is cells/milestones only — never
+   affordance counts.
+3. **No safety regression.** The treatment arm records no more life-loss
+   confirmations than the control arm within the window.
+
+VOID rule, verbatim from §3.4: **VOID (disclosed defect, not evidence):**
+if the treatment arm never faces the choice — no archived branch with the
+removal-class signature exists within the window in either arm — the
+seeding is defective; fix the seeding, disclose, and rerun both arms once.
+A void is not a FAIL and not a PASS. Budget-exhausted non-reach is
+censored, never "unreachable" (learnings §2, §4.14).
+
+### 6.4 Certified record store and signature mapping rule
+
+Records file: `experiments/lolo1-wp5/wp8lite-accessibility-records.json`
+(gitignored artifact), sha256
+`cb8449031d7ae5a2eeac5a4aad5652c6320371f1ffec8fd7978623faf3fd9aa9`,
+loaded in both arms via `load_verified_accessibility_records` (the §4.7
+provenance-checked path; `certified_hold` only). Three records; loader
+content signatures `85fd9014d58deb42 → 15604cb5…`,
+`596a1c8a3c0fc8be → 37ea410d…`,
+`prepush-root-empty-track-unmatchable → 47975c94…`.
+
+**Mapping rule (fixed now).** `_archive_verified_accessibility_bonus`
+looks records up by the branch's accumulated tracked world-state
+signature, so each record is keyed by a signature extracted from real
+branch events, never by an invented digest:
+
+1. **Removed-configuration record** (24 certified cells incl. milestone
+   cell `(12,11)`; provenance v325+v326, 1,530 certified held branches of
+   9,691 in the pre-restore window `seq < 15054`, 24-cell envelope
+   re-derived from raw v325 telemetry on 2026-08-17 and identical to the
+   preregistered doc's list) — keyed `85fd9014d58deb42`, the signature
+   removal-class archived branches actually carry in a pre-push-rooted
+   search: in each of v323 and v324 it is carried by 23
+   `human_prior_option_branch_verified` events and 4
+   `human_prior_option_archive_added` events, with accumulated track set
+   `[[2,6],[3,7],[7,6],[11,6],[12,6],[14,5]]` — the same set the v324
+   committed removal trajectory carried at d2–d7 (§4.29 decomposition).
+   **Variant threshold rule:** accumulated-set variants of the removal
+   class appearing in ≥10 branches would each be included mapping to this
+   same record; in the evidence the sub-threshold variants are
+   `7f20180008c6ecea` (3 branches, archived once, same set),
+   `3cd210810b0a4038` (2 branches, archived once, same set), and superset
+   `ab54160b953311bd` (2 branches, archived once, set adds
+   `(2,5),(4,7),(8,6)`), all excluded by the rule; `85fd9014d58deb42` is
+   the only qualifying key. Shot-in-place classes
+   (`e0cb9a5836911f22`/`5ee64de9bf2c8579`, set `[[7,6],[14,5]]`) are not
+   removal-class (no expulsion transit evidence) and are unmapped.
+2. **Pushed-configuration record** (certified-neutral 7-cell envelope;
+   provenance v322, 4,061/4,061 endpoints held by world-hash uniformity)
+   — keyed `596a1c8a3c0fc8be`, the tracked world-state signature the v322
+   root object state actually carried
+   (`human_prior_root_object_state_seeded` seq 14, WP1 legacy
+   reconstruction, cells `[[8,6]]`). Disclosed: no v322 *branch* event
+   repeats this signature (the accumulated-track signature re-hashes
+   appearances per endpoint frame and fragments into per-frame variants),
+   and in a pre-push-rooted search pushed-class branches carry
+   `[[7,6],[8,6],[14,5]]`-set signatures that fragment into 42 variants
+   (max 25 branches, none archived, none qualifying under the ≥10 rule for
+   any record). This record is therefore **expected to be inert in
+   ranking** in both arms; it is loaded to keep the store honest per §3.2
+   (the neutral configuration present with its certified envelope, so the
+   treatment never scores against an artificially impoverished store).
+3. **Pre-push record** (7-cell envelope; provenance v324, 1,756/12,232
+   certified held) — carried under the deliberately non-matching sentinel
+   key `prepush-root-empty-track-unmatchable`. See §6.5.
+
+Module sanity checks on the loaded store (run 2026-08-17): removed vs
+pre-push scores +25.0 (17 new cells + 1 milestone × 8.0), pushed vs
+pre-push scores 0.0 (honest neutral), removed vs removed scores 0.0.
+
+### 6.5 Disclosed staging gap: the empty current-side signature
+
+The pre-push (root/current) configuration's actually-carried in-run
+signature is the **empty string**: `world_effect_cells_state_signature`
+returns `""` for an empty track, v323/v324/v325/v326 all seeded their
+roots with `tracked_world_state_signature = None/""`, and v324's 1,756
+certified held branches all log the signature as null.
+`AccessibilityRecordProvenance` structurally refuses an empty
+`configuration_signature`, so no record can be keyed by the value the
+pre-push root actually carries, and the applied §4.2 helper's current-side
+lookup (`self.current_human_prior_root_object_state
+.tracked_world_state_signature`) will miss at the pre-push root. The §4.2
+note reads this as "the correct refusal for an uncertified current
+configuration", but at this root the current configuration IS certified
+(the v324 record) — it merely carries the one signature the store cannot
+represent.
+
+Consequence, stated before launch: while the current root object state
+carries the empty signature, `_archive_verified_accessibility_bonus`
+returns 0.0 for every candidate — including removal-class archived
+branches — in the treatment arm, and the term can begin scoring only if
+the current root object state acquires a store-mapped signature mid-run
+(e.g. a restore installing the removal-class configuration, after which
+candidate == current and the bonus is still 0.0). Under that reading, bit
+1 cannot fire for the mapping reason rather than a valuation reason. If
+the treatment arm's window ends with every
+`verified_accessibility_refusal_reason`/unscored restore attributable to
+the unresolvable current-side record — verifiable from the §3.5 logging —
+the outcome is declared a **VOID-class staging defect** (disclosed here,
+before execution): fix the current-side mapping (owner seam lane; e.g.
+resolve the current record through a designated root-record key rather
+than the raw signature, or seed the root state with a certified
+signature), disclose, and rerun both arms once, per the §3.4 VOID
+sentence. It is not a FAIL of the preference term and not evidence about
+valuation. No other reinterpretation of the bits is licensed.
+
+### 6.6 One-decision control-arm smoke (staging verification; not an arm)
+
+One 1-decision smoke of the control command (weight 0.0, records loaded,
+`--log-root` outside the repo, run-id
+`wp8lite-smoke-control-records-d1`) is the only execution performed at
+staging time. Verified: `verified_accessibility_records_loaded` fires at
+seq 3 with `record_count: 3`, the three §6.4 content signatures, and
+`verified_accessibility_weight: 0.0`; results of the completed smoke
+(resume lineage, frozen audit, config equality against v324's manifest)
+are recorded below.
+
+- Smoke result: RECORDED AFTER COMPLETION — see §6.7.
+
+### 6.7 Smoke results (appended 2026-08-17 after the smoke completed)
+
+Run `wp8lite-smoke-control-records-d1` (control command of §6.2, decisions
+1, log-root outside the repo): **complete, exit 0**, 75,813 events,
+`run_finished` emitted, manifest status `complete`.
+
+- **Records loaded:** `verified_accessibility_records_loaded` at seq 3 —
+  `record_count: 3`, `verified_accessibility_weight: 0.0`, content
+  signatures exactly the §6.4 values
+  (`85fd9014d58deb42 → 15604cb504868b33…`,
+  `596a1c8a3c0fc8be → 37ea410d76472a12…`,
+  `prepush-root-empty-track-unmatchable → 47975c94dea2b0fe…`).
+- **Lineage:** manifest `episodic_resume` block equals v324's in every
+  field (source run/decision/seqs, both events sha `0bbe1d15…`,
+  decoupled memory/state, option-archive import skipped) except the new
+  informational `state_source_reward_track: "assisted"` field added to
+  the manifest schema after v324. `planning_config` equals v324's in all
+  117 shared fields; the only difference is the new
+  `verified_accessibility_weight: 0.0`.
+- **Root seeding:** `human_prior_root_object_state_seeded` reports
+  `tracked_world_effect_cells: []`,
+  `tracked_world_state_signature: null`,
+  `legacy_track_reconstructed: true` — confirming the §6.5 disclosed gap
+  under the patched build.
+- **Deterministic reproduction of the seeded choice:** the decision-1
+  search verified 12,232 branches (v323/v324 scale exactly) and emitted
+  the same 13 `human_prior_option_archive_added` events with the same
+  signatures and accumulated track sets as v323/v324, including **four
+  removal-class archives carrying `85fd9014d58deb42`** (seqs
+  62944/62949/62984/63004; +1 vs v323/v324's seqs, accounted for by the
+  extra records-loaded event). The §3.2 seeding premise and the §4.6
+  control-arm invariance argument are both corroborated on the patched
+  build with records loaded.
+- **Safety/lineage audits:** zero `human_prior_life_loss_confirmed`
+  branches; decision 1 committed (seq 75,742); `frozen_parameter_audit`
+  **pass** (parameter sha `0622f3c8…` unchanged before/after, matching
+  the v324 checkpoint parameter sha) and
+  `anonymous_entity_behavior_parameter_audit` **pass** (sha `1f5b5a13…`
+  unchanged) — the frozen build mutated nothing.
+- No `archive_branch_restored` occurred within one decision, as expected
+  from v324 (first restore at decision 2); the restore-time
+  `verified_accessibility_*` logging is therefore exercised by the arms,
+  not the smoke, and remains covered by the §6.2 pre-launch check plus
+  §3.5.
+
+Staging is complete. Neither ablation arm has been run.
