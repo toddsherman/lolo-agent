@@ -101,9 +101,29 @@ One preregistered run writes a deterministic content-digested report;
 verdict PROMOTE-to-shadow (with mask-divergence telemetry) or NO-PROMOTE
 with every failing mechanism named.
 
+Detection quantity v2 (section 4.38 plan-change; additive)
+----------------------------------------------------------
+
+Section 4.38 records that the v1 detection quantity is structurally
+blind to IN-PLACE effects: for blocked/contact arms the world outside a
+correct controllable mask does not differ between endpoints, so no
+silhouette refinement can expose the change.  The v2 quantity keeps the
+signature channel unchanged and adds the MASKED-REGION DIFFERENTIAL: the
+byte content of the pixels a convention hides in BOTH endpoints,
+anchored to the ground-truth component cell blocks, compared across the
+factual/duration-matched-NOOP pair.  Bit (a) then gates on signature OR
+differential for both conventions (the incumbent gets the identical
+upgrade), with both channels logged per measurement, and the new bit (d)
+prices the differential's false-positive risk on ground-truth-certified
+no-effect pairs (the v312/v313 raw-change-pathology guard).  The v1
+scorer, report builder, and driver are byte-identical to before; the v2
+path is ``score_detection_v2`` / ``score_corpus_v2`` /
+``build_report_v2`` / ``run_gate_v2``.
+
 Usage::
 
     python -m lolo_agent.functional_mask_gate
+    python -m lolo_agent.functional_mask_gate --detection-quantity v2
 """
 
 from __future__ import annotations
@@ -151,6 +171,7 @@ from .tracker_substitution_replay import (
     APPEARANCE_L1_THRESHOLD,
     DEFAULT_BACKBONE,
     LEARNED_MASK_PROBABILITY_THRESHOLD,
+    grid_cell_pixel_block,
     learned_pixel_mask,
     learned_reference_slot,
     load_replay_tracker,
@@ -191,6 +212,69 @@ DEFAULT_CORPORA = (
 )
 DEFAULT_HEAD_CHECKPOINT = "experiments/lolo1-wp5/pixel-mask-head-v1.pt"
 DEFAULT_REPORT = "experiments/lolo1-wp5/functional-gate-report.json"
+
+# --- Detection quantity v2 (learnings section 4.38 plan-change) -----------
+#
+# Section 4.38 records that the v1 detection quantity -- "does the world
+# OUTSIDE the mask differ between the factual and control endpoints?" --
+# is structurally blind to IN-PLACE effects: blocked/contact arms change
+# the world only inside the region a correct controllable mask must
+# cover, so no silhouette refinement can expose them.  Quantity v2 adds a
+# second, separately-logged channel: the MASKED-REGION DIFFERENTIAL
+# compares the byte content of the pixels a convention hides in BOTH
+# endpoints (restricted to the ground-truth component cell blocks) across
+# the factual/duration-matched-NOOP pair.  A convention detects under v2
+# iff the v1 signature channel fires OR the differential channel fires.
+# Both conventions are scored under the same two-channel quantity -- the
+# incumbent gets the identical upgrade -- and both channels are reported
+# per measurement so the contribution of the new channel is auditable.
+GATE_VERSION_V2 = 2
+_DIGEST_PREFIX_V2 = f"{GATE_KIND}:v{GATE_VERSION_V2}:"
+
+DETECTION_QUANTITY_V1 = "outside-mask-signature"
+DETECTION_QUANTITY_V2 = "outside-mask-signature-or-masked-region-differential"
+
+# The differential fires on any byte-level pixel difference inside the
+# dually-hidden region: endpoint frames come from the deterministic
+# emulator and controls are duration-matched, so byte equality is the
+# neutral expectation and a tolerance would add a free parameter without
+# evidence (the ``cell_difference`` rationale, mirrored).
+DIFFERENTIAL_MIN_CHANGED_PIXELS = 1
+_DIFFERENTIAL_DIGEST_PREFIX = b"wp5-masked-region-differential:v1:"
+
+# Preregistered false-positive discipline of the differential channel
+# (the v312/v313 raw-change-pathology guard), measured over the FULL
+# dually-hidden region on ground-truth-certified no-effect pairs.  The
+# design-phase training-corpus measurement (recorded in the
+# preregistration; the gate corpora were never touched) showed the rate
+# is a property of the CLASS, not of one convention: byte-identical
+# pairs can never fire (0/1,018 for both conventions), while pairs with
+# uncorroborated ambient change fire whenever the change intersects the
+# mask (35/45 = 0.778 for BOTH conventions -- parity, because the
+# uncorroborated change is usually the player's own motion under the
+# mask).  A single combined-rate bound would therefore be class-mix
+# sensitive; the preregistered discipline is per class, plus a
+# no-regression condition against the incumbent under the identical
+# upgrade (bit (c)'s form):
+#
+# - identical-endpoints class: the learned differential must fire on
+#   exactly 0 pairs (the duration-matched phase discipline holds
+#   byte-exactly; any fire is an instrument defect).
+# - uncorroborated-change class: the learned rate may not exceed the
+#   published 0.95 operating point, reused by import as a ceiling -- a
+#   channel firing on >0.95 of certified-null changed pairs is
+#   indistinguishable from raw frame differencing, the v312/v313
+#   signature; the training-distribution expectation is ~0.78.
+# - no regression: the learned convention may not fire on more no-effect
+#   pairs than the assisted convention over the same paired population.
+DIFFERENTIAL_FP_IDENTICAL_RATE_BOUND = 0.0
+DIFFERENTIAL_FP_UNCORROBORATED_RATE_BOUND = AGREEMENT_RATE_THRESHOLD
+
+NO_EFFECT_CLASS_IDENTICAL = "identical_endpoints"
+NO_EFFECT_CLASS_UNCORROBORATED = "uncorroborated_change"
+
+DEFAULT_HEAD_CHECKPOINT_V2 = "experiments/lolo1-wp5/pixel-mask-head-v2.pt"
+DEFAULT_REPORT_V3 = "experiments/lolo1-wp5/functional-gate-v3-report.json"
 
 MASK_SOURCE = (
     "reconstructed-pixel-silhouette: frozen tracker v4 cell anchor "
@@ -448,6 +532,140 @@ def preservation_l1(
 
 
 # ---------------------------------------------------------------------------
+# Detection quantity v2: the masked-region differential channel
+# ---------------------------------------------------------------------------
+
+
+def component_pixel_region(
+    component_cells: Sequence[Cell],
+    width: int,
+    height: int,
+    columns: int,
+    rows: int,
+) -> FrozenSet[Pixel]:
+    """Pixels of the ground-truth component cells (``feature_at`` grid)."""
+
+    region: Set[Pixel] = set()
+    for cell in component_cells:
+        region |= grid_cell_pixel_block(cell, width, height, columns, rows)
+    return frozenset(region)
+
+
+def hidden_pixels(
+    slot: Optional[Pixel], pixels: FrozenSet[Pixel]
+) -> FrozenSet[Pixel]:
+    """Pixels one convention actually hides on one frame.
+
+    Mirrors ``convention_feature``: the mask participates only when the
+    convention produced an anchor slot; an explicitly unmasked frame
+    hides nothing.
+    """
+
+    return pixels if slot is not None else frozenset()
+
+
+def region_content_digest(frame: Frame, region: FrozenSet[Pixel]) -> str:
+    """Deterministic digest of one frame's byte content over a pixel set."""
+
+    digest = hashlib.sha256(_DIFFERENTIAL_DIGEST_PREFIX)
+    for x, y in sorted(region):
+        offset = (y * frame.width + x) * frame.channels
+        digest.update(frame.pixels[offset : offset + frame.channels])
+    return digest.hexdigest()
+
+
+def masked_region_differential(
+    factual: Frame,
+    control: Frame,
+    slot_f: Optional[Pixel],
+    pixels_f: FrozenSet[Pixel],
+    slot_c: Optional[Pixel],
+    pixels_c: FrozenSet[Pixel],
+    region_limit: Optional[FrozenSet[Pixel]] = None,
+) -> Dict[str, Any]:
+    """The masked-region differential channel on one endpoint pair.
+
+    The examined region is exactly the set of pixels the convention hides
+    in BOTH endpoints -- the evidence the outside-mask signature quantity
+    is structurally unable to see (a pixel hidden in only one endpoint
+    already perturbs that endpoint's pooled features).  ``region_limit``
+    anchors the region to the ground-truth component cell blocks for
+    detection scoring; the false-positive discipline passes no limit, so
+    its measured rate upper-bounds the anchored channel's.  The channel
+    fires iff at least ``DIFFERENTIAL_MIN_CHANGED_PIXELS`` region pixels
+    differ byte-exactly between the two frames (equivalently: the region
+    content digests differ), with no tolerance parameter.
+    """
+
+    if (factual.width, factual.height, factual.channels) != (
+        control.width,
+        control.height,
+        control.channels,
+    ):
+        raise ValueError("cannot difference frames with mismatched geometry")
+    region = hidden_pixels(slot_f, pixels_f) & hidden_pixels(slot_c, pixels_c)
+    if region_limit is not None:
+        region &= region_limit
+    changed = 0
+    for x, y in region:
+        offset = (y * factual.width + x) * factual.channels
+        if (
+            factual.pixels[offset : offset + factual.channels]
+            != control.pixels[offset : offset + control.channels]
+        ):
+            changed += 1
+    return {
+        "region_pixels": len(region),
+        "changed_pixels": changed,
+        "fired": bool(changed >= DIFFERENTIAL_MIN_CHANGED_PIXELS),
+    }
+
+
+def score_detection_v2(
+    factual: Frame,
+    control: Frame,
+    component_cells: Sequence[Cell],
+    convention: Any,
+    memory: UnlabeledEntityMemory,
+) -> Dict[str, Any]:
+    """Detection quantity v2 on one ground-truth factual/control pair.
+
+    The signature channel is the unchanged v1 quantity (``score_detection``
+    verbatim, correspondence lift included); the differential channel is
+    the masked-region differential anchored to the component cell blocks.
+    The convention detects under v2 iff either channel fires; both are
+    returned separately so the new channel's contribution stays auditable.
+    """
+
+    signature_view = score_detection(
+        factual, control, component_cells, convention, memory
+    )
+    slot_f, pixels_f = convention.mask(factual)
+    slot_c, pixels_c = convention.mask(control)
+    region = component_pixel_region(
+        component_cells,
+        factual.width,
+        factual.height,
+        memory.columns,
+        memory.rows,
+    )
+    differential = masked_region_differential(
+        factual,
+        control,
+        slot_f,
+        pixels_f,
+        slot_c,
+        pixels_c,
+        region_limit=region,
+    )
+    return {
+        "signature": signature_view,
+        "differential": differential,
+        "detected": bool(signature_view["detected"] or differential["fired"]),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Ground-truth measurement enumeration from label records
 # ---------------------------------------------------------------------------
 
@@ -591,6 +809,59 @@ def preservation_measurements(
     )
 
 
+NoEffectKey = Tuple[str, str]
+
+
+def no_effect_measurements(
+    records: Sequence[Mapping[str, Any]]
+) -> Tuple["OrderedDict[NoEffectKey, Dict[str, Any]]", int]:
+    """Deduplicated GT-certified no-effect endpoint pairs, classed.
+
+    Population: labeled arms whose corroborated controllable set is
+    empty.  Two classes, both certified by the label rule itself:
+    ``identical_endpoints`` (empty changed set -- the factual and
+    duration-matched NOOP endpoints are byte-identical, so the phase
+    discipline held exactly) and ``uncorroborated_change`` (changed cells
+    exist but every one failed leave-one-action-out corroboration --
+    ambient/uncorroborated change, the animation class on which a raw
+    differential must stay quiet).  Pairs that any scored arm certifies
+    as carrying a controllable effect are excluded so the population is
+    unambiguously no-effect; the count of such conflicts is returned.
+    """
+
+    classes: Dict[NoEffectKey, str] = {}
+    counts: Dict[NoEffectKey, int] = {}
+    scored_pairs: Set[NoEffectKey] = set()
+    for record in records:
+        for arm in labeled_arms_from_record(record):
+            key = (arm.factual_digest, arm.control_digest)
+            if arm.scored:
+                scored_pairs.add(key)
+                continue
+            cls = (
+                NO_EFFECT_CLASS_UNCORROBORATED
+                if arm.changed_cells
+                else NO_EFFECT_CLASS_IDENTICAL
+            )
+            previous = classes.get(key)
+            if previous is not None and previous != cls:
+                raise ValueError(
+                    "inconsistent no-effect class for endpoint pair "
+                    f"{key} -- the changed set is a function of the frames"
+                )
+            classes[key] = cls
+            counts[key] = counts.get(key, 0) + 1
+    conflicting = sorted(set(classes) & scored_pairs)
+    for key in conflicting:
+        del classes[key]
+        del counts[key]
+    measurements = OrderedDict(
+        (key, {"class": classes[key], "arms": counts[key]})
+        for key in sorted(classes)
+    )
+    return measurements, len(conflicting)
+
+
 # ---------------------------------------------------------------------------
 # Rates, per-corpus gate bits
 # ---------------------------------------------------------------------------
@@ -731,6 +1002,168 @@ def preservation_bit(
         "learned_preservation_rate": learned_rate,
         "assisted_preservation_rate": assisted_rate,
         "passed": bool(sufficient and no_regression),
+    }
+
+
+def detection_bit_v2(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    agreement_rate_threshold: float = AGREEMENT_RATE_THRESHOLD,
+    minimum_measurements: int = MINIMUM_MEASUREMENTS,
+) -> Dict[str, Any]:
+    """Bit (a) under detection quantity v2, per-channel accounting kept.
+
+    The gated conditions are the v1 conditions verbatim, evaluated on the
+    v2 (signature OR differential) detections of BOTH conventions -- the
+    incumbent gets the identical two-channel upgrade so the comparison is
+    not rigged in either direction.  The per-channel counts expose the
+    new channel's exact contribution (``differential_only_detected`` are
+    detections the v1 quantity misses).
+    """
+
+    total = len(rows)
+    channel_flags: Dict[str, Dict[str, List[bool]]] = {}
+    for name in (LEARNED_CONVENTION, ASSISTED_CONVENTION):
+        channel_flags[name] = {
+            "signature": [row[name]["signature"]["detected"] for row in rows],
+            "differential": [
+                row[name]["differential"]["fired"] for row in rows
+            ],
+            "detected": [row[name]["detected"] for row in rows],
+        }
+    learned = channel_flags[LEARNED_CONVENTION]["detected"]
+    assisted = channel_flags[ASSISTED_CONVENTION]["detected"]
+    learned_count = sum(learned)
+    assisted_count = sum(assisted)
+    learned_given_assisted = _rate(
+        sum(l for l, a in zip(learned, assisted) if a), assisted_count
+    )
+    assisted_given_learned = _rate(
+        sum(a for l, a in zip(learned, assisted) if l), learned_count
+    )
+    learned_gt_rate = _rate(learned_count, total)
+    sufficient = total >= minimum_measurements
+    gt_condition = bool(
+        learned_gt_rate is not None
+        and learned_gt_rate >= agreement_rate_threshold
+    )
+    assisted_condition = bool(
+        assisted_count == 0
+        or (
+            learned_given_assisted is not None
+            and learned_given_assisted >= agreement_rate_threshold
+        )
+    )
+    channels = {}
+    for name in (LEARNED_CONVENTION, ASSISTED_CONVENTION):
+        signature = channel_flags[name]["signature"]
+        differential = channel_flags[name]["differential"]
+        channels[name] = {
+            "signature_detected": sum(signature),
+            "differential_fired": sum(differential),
+            "differential_only_detected": sum(
+                d and not s for s, d in zip(signature, differential)
+            ),
+            "signature_rate_vs_ground_truth": _rate(sum(signature), total),
+        }
+    return {
+        "detection_quantity": DETECTION_QUANTITY_V2,
+        "measurements": total,
+        "measurements_sufficient": sufficient,
+        "minimum_measurements": minimum_measurements,
+        "agreement_rate_threshold": agreement_rate_threshold,
+        "learned_detected": learned_count,
+        "assisted_detected": assisted_count,
+        "learned_rate_vs_ground_truth": learned_gt_rate,
+        "assisted_rate_vs_ground_truth": _rate(assisted_count, total),
+        "learned_rate_given_assisted": learned_given_assisted,
+        "assisted_rate_given_learned": assisted_given_learned,
+        "assisted_condition_vacuous": bool(assisted_count == 0),
+        "gt_condition": gt_condition,
+        "assisted_condition": assisted_condition,
+        "channels": channels,
+        "passed": bool(sufficient and gt_condition and assisted_condition),
+    }
+
+
+def differential_false_positive_bit(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    identical_rate_bound: float = DIFFERENTIAL_FP_IDENTICAL_RATE_BOUND,
+    uncorroborated_rate_bound: float = (
+        DIFFERENTIAL_FP_UNCORROBORATED_RATE_BOUND
+    ),
+    minimum_measurements: int = MINIMUM_MEASUREMENTS,
+) -> Dict[str, Any]:
+    """Bit (d): the differential must stay disciplined on certified-null pairs.
+
+    A detection channel that fires on animation inside the mask would
+    repeat the v312/v313 raw-change pathology; this bit prices that risk
+    on the ground-truth-certified no-effect pairs, measured over the FULL
+    dually-hidden region (a strict superset of the component-anchored
+    detection region, so every rate is a conservative upper bound).
+    Three gated conditions, fixed from the design-phase training-corpus
+    distribution (see the constant block): zero fires on the
+    byte-identical class, the uncorroborated-class rate at or under the
+    0.95 ceiling, and no regression against the assisted convention over
+    the same paired population.  An empty class makes its condition
+    vacuous (flagged); the assisted rates are reported throughout
+    because the incumbent received the identical upgrade.
+    """
+
+    total = len(rows)
+    learned_fired = sum(row[LEARNED_CONVENTION]["fired"] for row in rows)
+    assisted_fired = sum(row[ASSISTED_CONVENTION]["fired"] for row in rows)
+    by_class: Dict[str, Dict[str, Any]] = {}
+    for cls in (NO_EFFECT_CLASS_IDENTICAL, NO_EFFECT_CLASS_UNCORROBORATED):
+        class_rows = [row for row in rows if row["class"] == cls]
+        class_learned = sum(
+            row[LEARNED_CONVENTION]["fired"] for row in class_rows
+        )
+        by_class[cls] = {
+            "measurements": len(class_rows),
+            "learned_fired": class_learned,
+            "assisted_fired": sum(
+                row[ASSISTED_CONVENTION]["fired"] for row in class_rows
+            ),
+            "learned_rate": _rate(class_learned, len(class_rows)),
+        }
+    identical = by_class[NO_EFFECT_CLASS_IDENTICAL]
+    uncorroborated = by_class[NO_EFFECT_CLASS_UNCORROBORATED]
+    sufficient = total >= minimum_measurements
+    identical_condition = bool(
+        identical["measurements"] == 0
+        or identical["learned_rate"] <= identical_rate_bound
+    )
+    uncorroborated_condition = bool(
+        uncorroborated["measurements"] == 0
+        or uncorroborated["learned_rate"] <= uncorroborated_rate_bound
+    )
+    no_regression = bool(learned_fired <= assisted_fired)
+    return {
+        "measurements": total,
+        "measurements_sufficient": sufficient,
+        "minimum_measurements": minimum_measurements,
+        "identical_rate_bound": identical_rate_bound,
+        "uncorroborated_rate_bound": uncorroborated_rate_bound,
+        "learned_fired": learned_fired,
+        "assisted_fired": assisted_fired,
+        "learned_false_positive_rate": _rate(learned_fired, total),
+        "assisted_false_positive_rate": _rate(assisted_fired, total),
+        "by_class": by_class,
+        "identical_condition": identical_condition,
+        "identical_condition_vacuous": bool(identical["measurements"] == 0),
+        "uncorroborated_condition": uncorroborated_condition,
+        "uncorroborated_condition_vacuous": bool(
+            uncorroborated["measurements"] == 0
+        ),
+        "no_regression_condition": no_regression,
+        "passed": bool(
+            sufficient
+            and identical_condition
+            and uncorroborated_condition
+            and no_regression
+        ),
     }
 
 
@@ -997,6 +1430,335 @@ def score_corpus(
     }
 
 
+def score_corpus_v2(
+    run_dir: Path,
+    learned_convention: Any,
+    assisted_convention: Any,
+    *,
+    appearance_threshold: float = APPEARANCE_L1_THRESHOLD,
+    frame_cache_capacity: int = 1024,
+) -> Dict[str, Any]:
+    """Score one probe corpus under detection quantity v2 (section 4.38).
+
+    Ground truth, enumeration order, bits (b) and (c), and the divergence
+    telemetry are byte-identical to ``score_corpus``; only bit (a) uses
+    the two-channel v2 quantity (both channels logged per measurement for
+    both conventions) and the new bit (d) prices the differential
+    channel's false-positive risk on the certified no-effect pairs.
+    """
+
+    if learned_convention.name != LEARNED_CONVENTION:
+        raise ValueError("the learned convention must be named 'learned'")
+    if assisted_convention.name != ASSISTED_CONVENTION:
+        raise ValueError("the assisted convention must be named 'assisted'")
+    run_dir = Path(run_dir)
+    events = _read_events(run_dir / "events.jsonl")
+    edges = probe_first_step_edges(events)
+    state_frames = state_frame_index(events)
+    roots = collect_probe_roots(run_dir.name, edges, state_frames)
+    cache = RunFrameCache(run_dir / "frames", capacity=frame_cache_capacity)
+    records, root_stats = label_probe_roots(roots, cache.get)
+    memory = UnlabeledEntityMemory()
+    for record in records:
+        if (int(record["columns"]), int(record["rows"])) != (
+            memory.columns,
+            memory.rows,
+        ):
+            raise ValueError("label grid does not match the entity grid")
+    labeled_arms = sum(
+        len(labeled_arms_from_record(record)) for record in records
+    )
+    scored_arms = sum(
+        sum(arm.scored for arm in labeled_arms_from_record(record))
+        for record in records
+    )
+    conventions = (
+        (LEARNED_CONVENTION, learned_convention),
+        (ASSISTED_CONVENTION, assisted_convention),
+    )
+
+    # Bit (a): v2 detection on every deduplicated ground-truth pair.
+    detection_keys = detection_measurements(records)
+    detection_rows: List[Dict[str, Any]] = []
+    for (factual_digest, control_digest, component), count in detection_keys.items():
+        factual = cache.get(factual_digest)
+        control = cache.get(control_digest)
+        row: Dict[str, Any] = {
+            "factual": factual_digest,
+            "control": control_digest,
+            "component_cells": len(component),
+            "arms": count,
+        }
+        for name, convention in conventions:
+            row[name] = score_detection_v2(
+                factual, control, component, convention, memory
+            )
+        detection_rows.append(row)
+
+    # Bit (d): the differential channel on certified no-effect pairs,
+    # measured over the FULL dually-hidden region (no component exists to
+    # anchor to; the unanchored rate upper-bounds the anchored channel).
+    no_effect_keys, conflicting_pairs = no_effect_measurements(records)
+    no_effect_rows: List[Dict[str, Any]] = []
+    for (factual_digest, control_digest), info in no_effect_keys.items():
+        factual = cache.get(factual_digest)
+        control = cache.get(control_digest)
+        row = {
+            "factual": factual_digest,
+            "control": control_digest,
+            "class": info["class"],
+            "arms": info["arms"],
+        }
+        for name, convention in conventions:
+            slot_f, pixels_f = convention.mask(factual)
+            slot_c, pixels_c = convention.mask(control)
+            row[name] = masked_region_differential(
+                factual, control, slot_f, pixels_f, slot_c, pixels_c
+            )
+        no_effect_rows.append(row)
+
+    # Feature memo for the cell-level bits (pure lookup, no result change).
+    feature_memo: Dict[Tuple[str, Cell, str], Tuple[int, ...]] = {}
+
+    def cached_feature(
+        frame: Frame, cell: Cell, convention: Any
+    ) -> Tuple[int, ...]:
+        key = (frame.digest, cell, convention.name)
+        cached = feature_memo.get(key)
+        if cached is None:
+            slot, pixels = convention.mask(frame)
+            cached = convention_feature(frame, cell, slot, pixels, memory)
+            feature_memo[key] = cached
+        return cached
+
+    def cached_unmasked(frame: Frame, cell: Cell) -> Tuple[int, ...]:
+        key = (frame.digest, cell, "unmasked")
+        cached = feature_memo.get(key)
+        if cached is None:
+            cached = tuple(memory.feature_at(frame, *cell, None))
+            feature_memo[key] = cached
+        return cached
+
+    # Bit (b): stability across byte-certified identical cells.
+    stability_keys = stability_measurements(records)
+    stability_values: Dict[str, List[float]] = {
+        name: [] for name, _convention in conventions
+    }
+    for (factual_digest, control_digest, cell), _count in stability_keys.items():
+        factual = cache.get(factual_digest)
+        control = cache.get(control_digest)
+        for name, convention in conventions:
+            stability_values[name].append(
+                UnlabeledEntityMemory.feature_distance(
+                    cached_feature(factual, cell, convention),
+                    cached_feature(control, cell, convention),
+                )
+            )
+    stability_within = {
+        name: [value <= appearance_threshold for value in values]
+        for name, values in stability_values.items()
+    }
+
+    # Bit (c): preservation at player-free adjacent cells.
+    preservation_keys = preservation_measurements(records)
+    preservation_values: Dict[str, List[float]] = {
+        name: [] for name, _convention in conventions
+    }
+    for (factual_digest, cell), _count in preservation_keys.items():
+        factual = cache.get(factual_digest)
+        unmasked = cached_unmasked(factual, cell)
+        for name, convention in conventions:
+            preservation_values[name].append(
+                UnlabeledEntityMemory.feature_distance(
+                    cached_feature(factual, cell, convention), unmasked
+                )
+            )
+    preservation_within = {
+        name: [value <= appearance_threshold for value in values]
+        for name, values in preservation_values.items()
+    }
+
+    # Divergence telemetry over the unique factual endpoint frames.
+    factual_digests = sorted(
+        {key[0] for key in detection_keys}
+    )
+    divergence_rows: List[Dict[str, Any]] = []
+    for digest in factual_digests:
+        frame = cache.get(digest)
+        _slot_l, learned_pixels = learned_convention.mask(frame)
+        _slot_a, assisted_pixels = assisted_convention.mask(frame)
+        divergence_rows.append(
+            mask_divergence(learned_pixels, assisted_pixels)
+        )
+    divergence_ious = [
+        row["iou"] for row in divergence_rows if row["iou"] is not None
+    ]
+
+    gate = {
+        "bit_a_detection": detection_bit_v2(detection_rows),
+        "bit_b_stability": stability_bit(
+            stability_within[LEARNED_CONVENTION],
+            stability_within[ASSISTED_CONVENTION],
+        ),
+        "bit_c_preservation": preservation_bit(
+            preservation_within[LEARNED_CONVENTION],
+            preservation_within[ASSISTED_CONVENTION],
+        ),
+        "bit_d_differential_false_positive": differential_false_positive_bit(
+            no_effect_rows
+        ),
+    }
+    gate["passed"] = bool(all(bit["passed"] for bit in gate.values()))
+    return {
+        "run_id": run_dir.name,
+        "detection_quantity": DETECTION_QUANTITY_V2,
+        "extraction": {
+            "events": len(events),
+            "probe_edges": len(edges),
+            **root_stats,
+            "censored_by_reason": censor_counts(records),
+            "labeled_arms": labeled_arms,
+            "scored_arms": scored_arms,
+        },
+        "detection": {
+            "measurements": len(detection_rows),
+            "duplicate_arms": sum(detection_keys.values())
+            - len(detection_keys),
+            "rows": [
+                {
+                    "factual": row["factual"],
+                    "control": row["control"],
+                    "component_cells": row["component_cells"],
+                    "arms": row["arms"],
+                    **{
+                        f"{name}_{field}": value
+                        for name, _convention in conventions
+                        for field, value in (
+                            ("detected", row[name]["detected"]),
+                            (
+                                "signature_detected",
+                                row[name]["signature"]["detected"],
+                            ),
+                            (
+                                "differential_fired",
+                                row[name]["differential"]["fired"],
+                            ),
+                            (
+                                "differential_region_pixels",
+                                row[name]["differential"]["region_pixels"],
+                            ),
+                            (
+                                "differential_changed_pixels",
+                                row[name]["differential"]["changed_pixels"],
+                            ),
+                        )
+                    },
+                }
+                for row in detection_rows
+            ],
+            "views_consistent": {
+                name: sum(
+                    row[name]["signature"]["views_consistent"]
+                    for row in detection_rows
+                )
+                for name, _convention in conventions
+            },
+            "unmasked_frames": {
+                name: {
+                    "factual": sum(
+                        not row[name]["signature"]["factual_masked"]
+                        for row in detection_rows
+                    ),
+                    "control": sum(
+                        not row[name]["signature"]["control_masked"]
+                        for row in detection_rows
+                    ),
+                }
+                for name, _convention in conventions
+            },
+            "track_state": {
+                name: {
+                    "current_cells_mean": (
+                        sum(
+                            row[name]["signature"]["current_cells"]
+                            for row in detection_rows
+                        )
+                        / len(detection_rows)
+                        if detection_rows
+                        else None
+                    ),
+                    "observations_mean": (
+                        sum(
+                            row[name]["signature"]["observations"]
+                            for row in detection_rows
+                        )
+                        / len(detection_rows)
+                        if detection_rows
+                        else None
+                    ),
+                }
+                for name, _convention in conventions
+            },
+        },
+        "no_effect": {
+            "measurements": len(no_effect_rows),
+            "duplicate_arms": sum(
+                info["arms"] for info in no_effect_keys.values()
+            )
+            - len(no_effect_keys),
+            "conflicting_pairs_excluded": conflicting_pairs,
+            "fired_rows": [
+                {
+                    "factual": row["factual"],
+                    "control": row["control"],
+                    "class": row["class"],
+                    "convention": name,
+                    "region_pixels": row[name]["region_pixels"],
+                    "changed_pixels": row[name]["changed_pixels"],
+                }
+                for row in no_effect_rows
+                for name, _convention in conventions
+                if row[name]["fired"]
+            ],
+        },
+        "stability": {
+            "measurements": len(stability_keys),
+            "duplicate_instances": sum(stability_keys.values())
+            - len(stability_keys),
+            "l1": {
+                name: _distribution(values)
+                for name, values in stability_values.items()
+            },
+        },
+        "preservation": {
+            "measurements": len(preservation_keys),
+            "duplicate_instances": sum(preservation_keys.values())
+            - len(preservation_keys),
+            "l1": {
+                name: _distribution(values)
+                for name, values in preservation_values.items()
+            },
+        },
+        "divergence_telemetry": {
+            "frames": len(divergence_rows),
+            "mask_iou": _distribution(divergence_ious),
+            "empty_learned_masks": sum(
+                row["learned_pixels"] == 0 for row in divergence_rows
+            ),
+            "empty_assisted_masks": sum(
+                row["assisted_pixels"] == 0 for row in divergence_rows
+            ),
+            "learned_pixels": _distribution(
+                [float(row["learned_pixels"]) for row in divergence_rows]
+            ),
+            "assisted_pixels": _distribution(
+                [float(row["assisted_pixels"]) for row in divergence_rows]
+            ),
+        },
+        "gate": gate,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Report assembly
 # ---------------------------------------------------------------------------
@@ -1012,7 +1774,9 @@ def _round_floats(value: Any, digits: int = 6) -> Any:
     return value
 
 
-def content_digest(payload: Mapping[str, Any]) -> str:
+def content_digest(
+    payload: Mapping[str, Any], *, prefix: str = _DIGEST_PREFIX
+) -> str:
     """Deterministic digest over the report minus its own digest field."""
 
     body = {
@@ -1024,7 +1788,7 @@ def content_digest(payload: Mapping[str, Any]) -> str:
         body, sort_keys=True, separators=(",", ":"), allow_nan=False
     )
     return hashlib.sha256(
-        (_DIGEST_PREFIX + canonical).encode("utf-8")
+        (prefix + canonical).encode("utf-8")
     ).hexdigest()
 
 
@@ -1146,6 +1910,168 @@ def build_report(
     return report
 
 
+def _failing_mechanisms_v2(result: Mapping[str, Any]) -> List[str]:
+    """Name every failing mechanism of one v2-quantity corpus result.
+
+    Bits (a)-(c) reuse the v1 mechanism namer verbatim (the v2 detection
+    bit keeps every field the namer reads, with the v2 rates in place);
+    bit (d) adds the differential false-positive discipline.
+    """
+
+    mechanisms = _failing_mechanisms(result)
+    run_id = result["run_id"]
+    bit_d = result["gate"]["bit_d_differential_false_positive"]
+    if not bit_d["passed"]:
+        if not bit_d["measurements_sufficient"]:
+            mechanisms.append(
+                f"{run_id}: bit-d insufficient no-effect measurements "
+                f"({bit_d['measurements']} < {bit_d['minimum_measurements']})"
+            )
+        if bit_d["measurements_sufficient"] and not bit_d[
+            "identical_condition"
+        ]:
+            mechanisms.append(
+                f"{run_id}: bit-d masked-region differential fires on "
+                "byte-identical no-effect pairs (rate "
+                f"{bit_d['by_class'][NO_EFFECT_CLASS_IDENTICAL]['learned_rate']} "
+                f"> {bit_d['identical_rate_bound']} -- the phase "
+                "discipline is broken, an instrument defect)"
+            )
+        if bit_d["measurements_sufficient"] and not bit_d[
+            "uncorroborated_condition"
+        ]:
+            mechanisms.append(
+                f"{run_id}: bit-d masked-region differential fires on "
+                "uncorroborated-change no-effect pairs beyond the ceiling "
+                "(rate "
+                f"{bit_d['by_class'][NO_EFFECT_CLASS_UNCORROBORATED]['learned_rate']} "
+                f"> {bit_d['uncorroborated_rate_bound']} -- the v312/v313 "
+                "raw-change pathology guard)"
+            )
+        if bit_d["measurements_sufficient"] and not bit_d[
+            "no_regression_condition"
+        ]:
+            mechanisms.append(
+                f"{run_id}: bit-d learned convention fires on more "
+                "no-effect pairs than the assisted convention "
+                f"({bit_d['learned_fired']} > {bit_d['assisted_fired']} "
+                "over the same paired population)"
+            )
+    return mechanisms
+
+
+def build_report_v2(
+    corpus_results: Sequence[Mapping[str, Any]],
+    provenance: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Assemble the deterministic report for the v2 detection quantity."""
+
+    per_corpus = {
+        result["run_id"]: dict(result["gate"]) for result in corpus_results
+    }
+    passed = bool(corpus_results) and all(
+        gate["passed"] for gate in per_corpus.values()
+    )
+    mechanisms: List[str] = []
+    for result in corpus_results:
+        mechanisms.extend(_failing_mechanisms_v2(result))
+    if not corpus_results:
+        mechanisms.append("no corpora scored")
+    report = {
+        "version": GATE_VERSION_V2,
+        "kind": GATE_KIND,
+        "preregistration": "docs/wp5-tracker-training-2026-08-16.md",
+        "basis": "docs/learnings.md section 4.38 plan-change",
+        "design_principle": (
+            "functional promotion under detection quantity v2: the "
+            "outside-mask signature channel (v1, unchanged) OR the "
+            "masked-region differential channel -- the byte content of "
+            "the pixels a convention hides in BOTH endpoints, anchored "
+            "to the ground-truth component cell blocks -- so in-place "
+            "effects under an unmoved controllable footprint are "
+            "detectable; both conventions receive the identical "
+            "two-channel upgrade, both channels are logged per "
+            "measurement, and the new channel's false-positive risk is "
+            "priced on certified no-effect pairs (bit d)"
+        ),
+        "detection_quantity": {
+            "name": DETECTION_QUANTITY_V2,
+            "signature_channel": (
+                "world_effect_cells_state_signature over the component "
+                "cells differs between the factual and control endpoints "
+                "under the convention's per-frame masks (the v1 quantity, "
+                "unchanged, correspondence lift included)"
+            ),
+            "differential_channel": (
+                "the pixels the convention masks in BOTH endpoints, "
+                "restricted to the ground-truth component cell blocks, "
+                "differ byte-exactly between the factual and the "
+                "duration-matched NOOP endpoint (at least "
+                f"{DIFFERENTIAL_MIN_CHANGED_PIXELS} differing pixel; no "
+                "tolerance parameter -- endpoints are deterministic and "
+                "phase-matched by construction)"
+            ),
+            "false_positive_discipline": (
+                "on labeled arms with an empty corroborated controllable "
+                "set, the differential over the FULL dually-hidden "
+                "region -- an upper bound on the anchored channel -- is "
+                "gated per class: exactly zero fires on byte-identical "
+                "pairs (rate bound "
+                f"{DIFFERENTIAL_FP_IDENTICAL_RATE_BOUND}), at most "
+                f"{DIFFERENTIAL_FP_UNCORROBORATED_RATE_BOUND} on "
+                "uncorroborated-change pairs (the raw-frame-differencing "
+                "ceiling; training-distribution expectation ~0.78), and "
+                "no more learned fires than assisted fires over the same "
+                "paired population"
+            ),
+        },
+        "provenance": dict(provenance),
+        "thresholds": {
+            "learned_mask_probability": LEARNED_MASK_PROBABILITY_THRESHOLD,
+            "appearance_l1": APPEARANCE_L1_THRESHOLD,
+            "agreement_rate": AGREEMENT_RATE_THRESHOLD,
+            "minimum_measurements": MINIMUM_MEASUREMENTS,
+            "adjacency_chebyshev_radius": ADJACENCY_CHEBYSHEV_RADIUS,
+            "differential_min_changed_pixels": DIFFERENTIAL_MIN_CHANGED_PIXELS,
+            "differential_fp_identical_rate_bound": (
+                DIFFERENTIAL_FP_IDENTICAL_RATE_BOUND
+            ),
+            "differential_fp_uncorroborated_rate_bound": (
+                DIFFERENTIAL_FP_UNCORROBORATED_RATE_BOUND
+            ),
+            "rationale": (
+                "prior published operating points reused by import; the "
+                "differential fires on any byte difference (no free "
+                "tolerance parameter); its false-positive bounds are per "
+                "class -- zero on byte-identical pairs, the published "
+                "0.95 operating point as the raw-frame-differencing "
+                "ceiling on uncorroborated-change pairs -- fixed from "
+                "the training-corpus design measurement before scoring; "
+                "nothing tuned against these corpora"
+            ),
+        },
+        "corpora": [dict(result) for result in corpus_results],
+        "result": {
+            "per_corpus": per_corpus,
+            "gate": "PASS" if passed else "FAIL",
+            "failing_mechanisms": mechanisms,
+            "verdict": (
+                "PROMOTE-to-shadow (learned masking convention plus "
+                "detection quantity v2, with mask-divergence telemetry; "
+                "explicitly gated convention change per sections "
+                "4.35/4.38, claim boundary unmoved)"
+                if passed
+                else "NO-PROMOTE (functional bits failed: "
+                + "; ".join(mechanisms)
+                + ")"
+            ),
+        },
+    }
+    report = _round_floats(report)
+    report["content_digest"] = content_digest(report, prefix=_DIGEST_PREFIX_V2)
+    return report
+
+
 # ---------------------------------------------------------------------------
 # Driver
 # ---------------------------------------------------------------------------
@@ -1155,8 +2081,14 @@ def build_conventions(
     tracker_checkpoint: Path,
     backbone_path: Path,
     head_checkpoint: Path,
+    *,
+    cache_capacity: int = 512,
 ) -> Tuple[Any, Any, Dict[str, Any]]:
-    """Load pinned artifacts, verify their digests, compose conventions."""
+    """Load pinned artifacts, verify their digests, compose conventions.
+
+    ``cache_capacity`` sizes the per-convention mask LRU only; it cannot
+    change any scored quantity (masks are pure functions of the frame).
+    """
 
     from .pixel_mask_head import (
         PixelSilhouettePredictor,
@@ -1186,8 +2118,12 @@ def build_conventions(
     ) != (tracker.columns, tracker.rows):
         raise ValueError("pixel head cell grid does not match the tracker grid")
     predictor = PixelSilhouettePredictor(tracker, head, device="cpu")
-    learned = CachedConvention(LearnedReconstructionConvention(predictor))
-    assisted = CachedConvention(AssistedGoalPriorConvention())
+    learned = CachedConvention(
+        LearnedReconstructionConvention(predictor), capacity=cache_capacity
+    )
+    assisted = CachedConvention(
+        AssistedGoalPriorConvention(), capacity=cache_capacity
+    )
     provenance = dict(replay_provenance)
     provenance.update(
         {
@@ -1234,6 +2170,65 @@ def run_gate(
     return report
 
 
+def run_gate_v2(
+    corpus_dirs: Sequence[Path],
+    tracker_checkpoint: Path,
+    backbone_path: Path,
+    head_checkpoint: Path,
+    report_path: Path,
+) -> Dict[str, Any]:
+    """One preregistered run of the gate under detection quantity v2.
+
+    Artifact loading, digest cross-checks, and convention composition are
+    ``build_conventions`` unchanged (the reconstruction convention is
+    whatever the head checkpoint pins); the provenance strings are
+    corrected to describe the applied convention honestly, exactly as the
+    ``pixel_mask_train functional-gate`` driver did for the v2 run.
+    """
+
+    learned, assisted, provenance = build_conventions(
+        tracker_checkpoint,
+        backbone_path,
+        head_checkpoint,
+        cache_capacity=4096,
+    )
+    from .pixel_mask_head import load_pixel_mask_head_checkpoint
+
+    # Lazy import: pixel_mask_train imports this module at its top level,
+    # so the reverse import must happen at call time, never at load time.
+    from .pixel_mask_train import mask_source_description
+
+    _head, head_provenance = load_pixel_mask_head_checkpoint(
+        Path(head_checkpoint), device="cpu", frozen=True
+    )
+    provenance.update(
+        {
+            "pixel_mask_head_target_semantics": head_provenance[
+                "target_semantics"
+            ],
+            "pixel_mask_head_anchor_cell_dilation": head_provenance[
+                "anchor_cell_dilation"
+            ],
+            "mask_source": mask_source_description(
+                head_provenance["target_semantics"],
+                head_provenance["anchor_cell_dilation"],
+            ),
+            "detection_quantity": DETECTION_QUANTITY_V2,
+        }
+    )
+    results = [
+        score_corpus_v2(Path(run_dir), learned, assisted)
+        for run_dir in corpus_dirs
+    ]
+    report = build_report_v2(results, provenance)
+    report_path = Path(report_path)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
+        json.dumps(report, sort_keys=True, indent=1) + "\n", encoding="utf-8"
+    )
+    return report
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -1253,18 +2248,50 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "--tracker-checkpoint", default=DEFAULT_TRACKER_CHECKPOINT
     )
     parser.add_argument("--backbone", default=DEFAULT_BACKBONE)
-    parser.add_argument("--head-checkpoint", default=DEFAULT_HEAD_CHECKPOINT)
-    parser.add_argument("--report", default=DEFAULT_REPORT)
+    parser.add_argument(
+        "--head-checkpoint",
+        default=None,
+        help=(
+            "pixel head checkpoint (default: the v1 head for quantity v1, "
+            "the occupied-v2 head for quantity v2)"
+        ),
+    )
+    parser.add_argument(
+        "--report",
+        default=None,
+        help=(
+            "report path (default: the v1 report for quantity v1, the v3 "
+            "report for quantity v2)"
+        ),
+    )
+    parser.add_argument(
+        "--detection-quantity",
+        choices=("v1", "v2"),
+        default="v1",
+        help=(
+            "detection quantity for bit (a): v1 = outside-mask signature "
+            "only; v2 = signature OR masked-region differential, with the "
+            "bit-(d) false-positive discipline (section 4.38)"
+        ),
+    )
     arguments = parser.parse_args(argv)
     corpora = [
         Path(path) for path in (arguments.corpora or DEFAULT_CORPORA)
     ]
-    report = run_gate(
+    v2 = arguments.detection_quantity == "v2"
+    head_checkpoint = arguments.head_checkpoint or (
+        DEFAULT_HEAD_CHECKPOINT_V2 if v2 else DEFAULT_HEAD_CHECKPOINT
+    )
+    report_target = arguments.report or (
+        DEFAULT_REPORT_V3 if v2 else DEFAULT_REPORT
+    )
+    runner = run_gate_v2 if v2 else run_gate
+    report = runner(
         corpora,
         Path(arguments.tracker_checkpoint),
         Path(arguments.backbone),
-        Path(arguments.head_checkpoint),
-        Path(arguments.report),
+        Path(head_checkpoint),
+        Path(report_target),
     )
     summary = {
         "gate": report["result"]["gate"],
@@ -1275,12 +2302,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "bit_a": gate["bit_a_detection"]["passed"],
                 "bit_b": gate["bit_b_stability"]["passed"],
                 "bit_c": gate["bit_c_preservation"]["passed"],
+                **(
+                    {
+                        "bit_d": gate[
+                            "bit_d_differential_false_positive"
+                        ]["passed"]
+                    }
+                    if "bit_d_differential_false_positive" in gate
+                    else {}
+                ),
                 "passed": gate["passed"],
             }
             for run_id, gate in report["result"]["per_corpus"].items()
         },
         "content_digest": report["content_digest"],
-        "report": str(arguments.report),
+        "report": str(report_target),
     }
     print(json.dumps(summary, indent=1, sort_keys=True))
     return 0

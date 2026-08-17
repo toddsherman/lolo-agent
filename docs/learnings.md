@@ -1747,6 +1747,54 @@ Evidence:
 - `docs/wp5-tracker-training-2026-08-16.md`
 - `experiments/lolo1-wp5/functional-gate-v2-report.json`
 
+### 4.39 Two-channel detection closes bit (a); promotion hangs on a data-scale tail
+
+What was tried:
+
+- The §4.38 detection-quantity change (preregistered; report digest
+  `01a9b128…`, byte-identical rerun): outside-mask signature OR
+  masked-region differential, applied symmetrically to both conventions,
+  with a hard false-positive bit designed from training-corpus
+  measurement after the drafted flat bound was falsified at design time.
+
+Result:
+
+- **Bit (a) 1.000 on all three corpora** (0 misses / 4,488 measurements);
+  in-place erasure eliminated as predicted. Bit (d) passes everywhere
+  (0 fires on identical pairs; exact parity with the incumbent on
+  uncorroborated pairs). **v322 passes all four bits — first corpus
+  ever.** The incumbent's own 6–12% GT misses are explained by the same
+  in-place blindness and are fixed by the same quantity.
+- **NO-PROMOTE** solely on the bit-(b) placement-flip tail: v323 0.936,
+  v325 0.943 vs 0.95.
+
+Classification:
+
+- **Failed promotion gate by tail margin**, with every detection
+  mechanism now closed. The perception program's remaining gap is
+  quantitative (pose-diverse data at two states), not conceptual.
+
+Learning:
+
+- Class-mix-sensitive false-positive bounds must be per-class; a flat
+  bound was falsifiable from training data alone before spending the
+  gate run.
+- The masked-region differential dominates detection (~93–100% of GT
+  rows); any planner use outside GT-anchored evaluation must carry the
+  bit-(d) discipline.
+
+Plan change:
+
+- Tier-4 probe-distribution strict collection at the v323/v325 states
+  (pose diversity for the stability tail), pixel-head retrain, functional
+  gate v3 rerun unchanged. If bit (b) clears 0.95, recommend
+  shadow-promotion with divergence telemetry.
+
+Evidence:
+
+- `docs/wp5-tracker-training-2026-08-16.md`
+- `experiments/lolo1-wp5/functional-gate-v3-report.json`
+
 ## 5. Platform and cost learnings
 
 ### 5.1 RunPod for emulator branching

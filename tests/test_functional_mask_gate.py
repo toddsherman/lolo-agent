@@ -13,19 +13,39 @@ from lolo_agent.functional_mask_gate import (
     AGREEMENT_RATE_THRESHOLD,
     APPEARANCE_L1_THRESHOLD,
     ASSISTED_CONVENTION,
+    DEFAULT_HEAD_CHECKPOINT_V2,
+    DEFAULT_REPORT_V3,
+    DETECTION_QUANTITY_V2,
+    DIFFERENTIAL_FP_IDENTICAL_RATE_BOUND,
+    DIFFERENTIAL_FP_UNCORROBORATED_RATE_BOUND,
+    DIFFERENTIAL_MIN_CHANGED_PIXELS,
+    GATE_VERSION_V2,
     LEARNED_CONVENTION,
     LEARNED_MASK_PROBABILITY_THRESHOLD,
     MINIMUM_MEASUREMENTS,
+    NO_EFFECT_CLASS_IDENTICAL,
+    NO_EFFECT_CLASS_UNCORROBORATED,
+    _DIGEST_PREFIX_V2,
     build_report,
+    build_report_v2,
+    component_pixel_region,
     content_digest,
     detection_bit,
+    detection_bit_v2,
     detection_measurements,
+    differential_false_positive_bit,
+    hidden_pixels,
     labeled_arms_from_record,
+    masked_region_differential,
+    no_effect_measurements,
     preservation_bit,
     preservation_l1,
     preservation_measurements,
+    region_content_digest,
     score_corpus,
+    score_corpus_v2,
     score_detection,
+    score_detection_v2,
     stability_bit,
     stability_l1,
     stability_measurements,
@@ -721,6 +741,803 @@ class ScoreCorpusEndToEndTests(unittest.TestCase):
             (run_dir / "events.jsonl").write_text("", encoding="utf-8")
             with self.assertRaises(ValueError):
                 score_corpus(
+                    run_dir,
+                    _StubConvention(name="wrong"),
+                    _StubConvention(name=ASSISTED_CONVENTION),
+                )
+
+
+# ---------------------------------------------------------------------------
+# Detection quantity v2 (section 4.38): the masked-region differential
+# channel, its false-positive discipline, and the v2 scorer plumbing.
+# ---------------------------------------------------------------------------
+
+
+class DetectionQuantityV2ConstantTests(unittest.TestCase):
+    def test_v2_constants_are_pinned(self) -> None:
+        # The differential fires on any byte difference (no free tolerance
+        # parameter); its false-positive bounds are per class -- exact
+        # zero on byte-identical pairs, the published 0.95 operating
+        # point reused by import as the raw-frame-differencing ceiling on
+        # uncorroborated-change pairs.
+        self.assertEqual(DIFFERENTIAL_MIN_CHANGED_PIXELS, 1)
+        self.assertEqual(DIFFERENTIAL_FP_IDENTICAL_RATE_BOUND, 0.0)
+        self.assertEqual(DIFFERENTIAL_FP_UNCORROBORATED_RATE_BOUND, 0.95)
+        self.assertIs(
+            DIFFERENTIAL_FP_UNCORROBORATED_RATE_BOUND,
+            AGREEMENT_RATE_THRESHOLD,
+        )
+        self.assertEqual(
+            DETECTION_QUANTITY_V2,
+            "outside-mask-signature-or-masked-region-differential",
+        )
+        self.assertEqual(GATE_VERSION_V2, 2)
+        self.assertEqual(
+            DEFAULT_REPORT_V3,
+            "experiments/lolo1-wp5/functional-gate-v3-report.json",
+        )
+        self.assertEqual(
+            DEFAULT_HEAD_CHECKPOINT_V2,
+            "experiments/lolo1-wp5/pixel-mask-head-v2.pt",
+        )
+
+
+class MaskedRegionDifferentialTests(unittest.TestCase):
+    """The new channel catches in-place erasure; discipline keeps it quiet."""
+
+    def setUp(self) -> None:
+        # IN-PLACE change: the player transforms at cell (1, 1) without
+        # displacing -- the control shows pose A, the factual pose B, at
+        # the same cell.  A convention that masks the cell fully in BOTH
+        # endpoints hides the entire effect from the outside-mask
+        # signature quantity (fully masked pools encode zeros on both
+        # sides), which is exactly the section 4.38 failure class.
+        self.control = _frame(_cell_values((1, 1), _PLAYER_VALUE))
+        self.factual = _frame(_cell_values((1, 1), _OBJECT_VALUE))
+        self.component = ((1, 1),)
+        self.covering = _convention(
+            LEARNED_CONVENTION,
+            {
+                self.factual: ((1, 1), ((1, 1),)),
+                self.control: ((1, 1), ((1, 1),)),
+            },
+        )
+
+    def test_signature_misses_in_place_change_and_differential_catches(
+        self,
+    ) -> None:
+        row = score_detection_v2(
+            self.factual,
+            self.control,
+            self.component,
+            self.covering,
+            _memory(),
+        )
+        # The v1 quantity is structurally blind here...
+        self.assertFalse(row["signature"]["detected"])
+        # ...the dually-masked component region still carries the bytes.
+        self.assertTrue(row["differential"]["fired"])
+        self.assertEqual(row["differential"]["region_pixels"], 80)
+        self.assertEqual(row["differential"]["changed_pixels"], 80)
+        self.assertTrue(row["detected"])
+        # And the v1 scorer alone would have missed the manipulation.
+        v1 = score_detection(
+            self.factual,
+            self.control,
+            self.component,
+            self.covering,
+            _memory(),
+        )
+        self.assertFalse(v1["detected"])
+
+    def test_fired_equals_region_digest_inequality(self) -> None:
+        slot, pixels = self.covering.mask(self.factual)
+        region = pixels & component_pixel_region(
+            self.component, _WIDTH, _HEIGHT, _COLUMNS, _ROWS
+        )
+        differential = masked_region_differential(
+            self.factual,
+            self.control,
+            slot,
+            pixels,
+            slot,
+            pixels,
+            region_limit=component_pixel_region(
+                self.component, _WIDTH, _HEIGHT, _COLUMNS, _ROWS
+            ),
+        )
+        self.assertEqual(
+            differential["fired"],
+            region_content_digest(self.factual, region)
+            != region_content_digest(self.control, region),
+        )
+
+    def test_animation_under_mask_outside_component_does_not_fire(
+        self,
+    ) -> None:
+        # Ambient animation at (2, 1) differs between the endpoints and
+        # the mask covers it in both -- but the component anchor keeps
+        # the differential quiet: masked content outside the ground-truth
+        # locus can never claim a detection of THIS manipulation.
+        control_values = dict(_cell_values((1, 1), _PLAYER_VALUE))
+        control_values.update(_cell_values((2, 1), 120))
+        factual_values = dict(_cell_values((1, 1), _PLAYER_VALUE))
+        factual_values.update(_cell_values((2, 1), 140))
+        control = _frame(control_values)
+        factual = _frame(factual_values)
+        component = ((1, 1),)
+        spilling = _convention(
+            LEARNED_CONVENTION,
+            {
+                factual: ((1, 1), ((1, 1), (2, 1))),
+                control: ((1, 1), ((1, 1), (2, 1))),
+            },
+        )
+        row = score_detection_v2(
+            factual, control, component, spilling, _memory()
+        )
+        self.assertFalse(row["differential"]["fired"])
+        self.assertFalse(row["signature"]["detected"])
+        self.assertFalse(row["detected"])
+        # Without the anchor the same masked bytes WOULD fire -- the
+        # anchored region is what disciplines the channel; the unanchored
+        # form is reserved for the bit-(d) false-positive measurement,
+        # where it upper-bounds the anchored channel by construction.
+        slot, pixels = spilling.mask(factual)
+        unanchored = masked_region_differential(
+            factual, control, slot, pixels, slot, pixels
+        )
+        self.assertTrue(unanchored["fired"])
+        self.assertEqual(unanchored["changed_pixels"], 80)
+
+    def test_phase_matched_identical_endpoints_cannot_fire(self) -> None:
+        # Duration-matched byte-identical endpoints (the phase discipline
+        # holding exactly): no region can fire, even fully masked.
+        row = score_detection_v2(
+            self.control,
+            self.control,
+            self.component,
+            self.covering,
+            _memory(),
+        )
+        self.assertFalse(row["differential"]["fired"])
+        self.assertEqual(row["differential"]["region_pixels"], 80)
+        self.assertEqual(row["differential"]["changed_pixels"], 0)
+        self.assertFalse(row["detected"])
+
+    def test_unmasked_frame_hides_nothing(self) -> None:
+        # A convention without an anchor slot hides no pixels: the
+        # dually-hidden region is empty and the differential is inert
+        # (the signature channel already sees such frames whole).
+        self.assertEqual(
+            hidden_pixels(None, frozenset(_cell_block((1, 1)))), frozenset()
+        )
+        differential = masked_region_differential(
+            self.factual,
+            self.control,
+            None,
+            frozenset(_cell_block((1, 1))),
+            (8, 10),
+            frozenset(_cell_block((1, 1))),
+        )
+        self.assertEqual(differential["region_pixels"], 0)
+        self.assertFalse(differential["fired"])
+
+    def test_mismatched_geometry_raises(self) -> None:
+        other = Frame(
+            width=16, height=15, channels=1, pixels=bytes(16 * 15)
+        )
+        with self.assertRaises(ValueError):
+            masked_region_differential(
+                self.factual, other, None, frozenset(), None, frozenset()
+            )
+
+
+class NoEffectMeasurementTests(unittest.TestCase):
+    def test_no_effect_pairs_are_classed_and_deduplicated(self) -> None:
+        record = _record(
+            [
+                _arm(
+                    "left",
+                    "f-left",
+                    "c-8",
+                    [[0, 1], [1, 1]],
+                    [[0, 1], [1, 1]],
+                ),
+                # Byte-identical endpoints: the no-change class.
+                _arm("b", "c-8", "c-8", [], []),
+                # Changed but uncorroborated: the ambient/animation class.
+                _arm("up", "f-up", "c-8", [[3, 2]], []),
+                # Censored arms never participate.
+                _arm(
+                    "down",
+                    "f-down",
+                    "c-8",
+                    [[9, 9]],
+                    [[9, 9]],
+                    status="censored",
+                ),
+            ]
+        )
+        measurements, conflicting = no_effect_measurements([record, record])
+        self.assertEqual(conflicting, 0)
+        self.assertEqual(
+            dict(measurements),
+            {
+                ("c-8", "c-8"): {
+                    "class": NO_EFFECT_CLASS_IDENTICAL,
+                    "arms": 2,
+                },
+                ("f-up", "c-8"): {
+                    "class": NO_EFFECT_CLASS_UNCORROBORATED,
+                    "arms": 2,
+                },
+            },
+        )
+
+    def test_pairs_scored_elsewhere_are_excluded_as_conflicts(self) -> None:
+        unscored = _record(
+            [
+                _arm("up", "f-x", "c-8", [[3, 2]], []),
+                _arm("left", "f-left", "c-8", [[0, 1]], [[0, 1]]),
+            ]
+        )
+        scored = _record(
+            [_arm("up", "f-x", "c-8", [[3, 2]], [[3, 2]])], group=2
+        )
+        measurements, conflicting = no_effect_measurements(
+            [unscored, scored]
+        )
+        self.assertEqual(conflicting, 1)
+        self.assertEqual(dict(measurements), {})
+
+
+class DetectionBitV2Tests(unittest.TestCase):
+    @staticmethod
+    def _rows(
+        learned_signature: list,
+        learned_differential: list,
+        assisted_signature: list,
+        assisted_differential: list,
+    ) -> list:
+        rows = []
+        for ls, ld, as_, ad in zip(
+            learned_signature,
+            learned_differential,
+            assisted_signature,
+            assisted_differential,
+        ):
+            rows.append(
+                {
+                    LEARNED_CONVENTION: {
+                        "signature": {"detected": ls},
+                        "differential": {"fired": ld},
+                        "detected": bool(ls or ld),
+                    },
+                    ASSISTED_CONVENTION: {
+                        "signature": {"detected": as_},
+                        "differential": {"fired": ad},
+                        "detected": bool(as_ or ad),
+                    },
+                }
+            )
+        return rows
+
+    def test_or_combination_and_per_channel_accounting(self) -> None:
+        # 60 signature-only, 35 differential-only, 5 total misses: the
+        # combined rate is 0.95 (inclusive boundary) while the signature
+        # channel alone would fail at 0.60 -- and the report must show
+        # exactly which channel carried each detection.
+        learned_signature = [True] * 60 + [False] * 40
+        learned_differential = [False] * 60 + [True] * 35 + [False] * 5
+        assisted = [True] * 100
+        bit = detection_bit_v2(
+            self._rows(
+                learned_signature,
+                learned_differential,
+                assisted,
+                [False] * 100,
+            )
+        )
+        self.assertEqual(bit["detection_quantity"], DETECTION_QUANTITY_V2)
+        self.assertEqual(bit["learned_rate_vs_ground_truth"], 0.95)
+        self.assertEqual(bit["learned_rate_given_assisted"], 0.95)
+        channels = bit["channels"]
+        self.assertEqual(
+            channels[LEARNED_CONVENTION]["signature_detected"], 60
+        )
+        self.assertEqual(
+            channels[LEARNED_CONVENTION]["differential_fired"], 35
+        )
+        self.assertEqual(
+            channels[LEARNED_CONVENTION]["differential_only_detected"], 35
+        )
+        self.assertEqual(
+            channels[LEARNED_CONVENTION]["signature_rate_vs_ground_truth"],
+            0.6,
+        )
+        self.assertEqual(
+            channels[ASSISTED_CONVENTION]["differential_only_detected"], 0
+        )
+        self.assertTrue(bit["passed"])
+        below = detection_bit_v2(
+            self._rows(
+                learned_signature,
+                [False] * 60 + [True] * 34 + [False] * 6,
+                assisted,
+                [False] * 100,
+            )
+        )
+        self.assertFalse(below["passed"])
+
+    def test_assisted_gets_the_same_upgrade(self) -> None:
+        # The incumbent's differential detections count toward its own
+        # rate AND toward the learned-given-assisted condition -- the
+        # comparison is not rigged in either direction.
+        learned = self._rows(
+            [True] * 95 + [False] * 5,
+            [False] * 100,
+            [False] * 100,
+            [True] * 100,
+        )
+        bit = detection_bit_v2(learned)
+        self.assertEqual(bit["assisted_rate_vs_ground_truth"], 1.0)
+        self.assertEqual(bit["learned_rate_given_assisted"], 0.95)
+        self.assertEqual(
+            bit["channels"][ASSISTED_CONVENTION][
+                "differential_only_detected"
+            ],
+            100,
+        )
+        self.assertTrue(bit["passed"])
+
+    def test_vacuous_assisted_condition_and_insufficiency(self) -> None:
+        vacuous = detection_bit_v2(
+            self._rows(
+                [True] * 100, [False] * 100, [False] * 100, [False] * 100
+            )
+        )
+        self.assertTrue(vacuous["assisted_condition_vacuous"])
+        self.assertTrue(vacuous["passed"])
+        short = detection_bit_v2(
+            self._rows(
+                [True] * (MINIMUM_MEASUREMENTS - 1),
+                [False] * (MINIMUM_MEASUREMENTS - 1),
+                [True] * (MINIMUM_MEASUREMENTS - 1),
+                [False] * (MINIMUM_MEASUREMENTS - 1),
+            )
+        )
+        self.assertFalse(short["passed"])
+
+
+class DifferentialFalsePositiveBitTests(unittest.TestCase):
+    @staticmethod
+    def _rows(
+        total: int,
+        learned_fired: int,
+        assisted_fired: int = 0,
+        cls: str = NO_EFFECT_CLASS_UNCORROBORATED,
+    ) -> list:
+        return [
+            {
+                "class": cls,
+                LEARNED_CONVENTION: {"fired": index < learned_fired},
+                ASSISTED_CONVENTION: {"fired": index < assisted_fired},
+            }
+            for index in range(total)
+        ]
+
+    def test_identical_class_must_never_fire(self) -> None:
+        # A single fire on a byte-identical pair breaks the phase
+        # discipline: an instrument defect, not a tolerable rate.
+        clean = differential_false_positive_bit(
+            self._rows(100, 0, 0, NO_EFFECT_CLASS_IDENTICAL)
+        )
+        self.assertTrue(clean["identical_condition"])
+        self.assertTrue(clean["passed"])
+        broken = differential_false_positive_bit(
+            self._rows(100, 1, 1, NO_EFFECT_CLASS_IDENTICAL)
+        )
+        self.assertFalse(broken["identical_condition"])
+        self.assertFalse(broken["passed"])
+
+    def test_uncorroborated_ceiling_is_inclusive(self) -> None:
+        at_bound = differential_false_positive_bit(self._rows(100, 95, 95))
+        self.assertEqual(
+            at_bound["by_class"][NO_EFFECT_CLASS_UNCORROBORATED][
+                "learned_rate"
+            ],
+            0.95,
+        )
+        self.assertTrue(at_bound["uncorroborated_condition"])
+        self.assertTrue(at_bound["passed"])
+        over = differential_false_positive_bit(self._rows(100, 96, 96))
+        self.assertFalse(over["uncorroborated_condition"])
+        self.assertFalse(over["passed"])
+
+    def test_learned_regression_against_assisted_fails(self) -> None:
+        # The incumbent received the same upgrade: the learned convention
+        # firing on MORE certified-null pairs is a regression even when
+        # both rates sit under the ceiling.
+        regression = differential_false_positive_bit(self._rows(100, 10, 5))
+        self.assertFalse(regression["no_regression_condition"])
+        self.assertFalse(regression["passed"])
+        parity = differential_false_positive_bit(self._rows(100, 10, 10))
+        self.assertTrue(parity["passed"])
+
+    def test_by_class_accounting_and_vacuous_flags(self) -> None:
+        rows = self._rows(60, 3, 3) + self._rows(
+            40, 0, 0, NO_EFFECT_CLASS_IDENTICAL
+        )
+        bit = differential_false_positive_bit(rows)
+        self.assertEqual(bit["measurements"], 100)
+        self.assertEqual(
+            bit["by_class"][NO_EFFECT_CLASS_UNCORROBORATED],
+            {
+                "measurements": 60,
+                "learned_fired": 3,
+                "assisted_fired": 3,
+                "learned_rate": 0.05,
+            },
+        )
+        self.assertEqual(
+            bit["by_class"][NO_EFFECT_CLASS_IDENTICAL],
+            {
+                "measurements": 40,
+                "learned_fired": 0,
+                "assisted_fired": 0,
+                "learned_rate": 0.0,
+            },
+        )
+        self.assertFalse(bit["identical_condition_vacuous"])
+        self.assertFalse(bit["uncorroborated_condition_vacuous"])
+        self.assertTrue(bit["passed"])
+        # A corpus without an uncorroborated class leaves that condition
+        # vacuous (flagged), not failed.
+        identical_only = differential_false_positive_bit(
+            self._rows(60, 0, 0, NO_EFFECT_CLASS_IDENTICAL)
+        )
+        self.assertTrue(identical_only["uncorroborated_condition_vacuous"])
+        self.assertTrue(identical_only["passed"])
+
+    def test_insufficient_measurements_fail(self) -> None:
+        bit = differential_false_positive_bit(self._rows(10, 0))
+        self.assertFalse(bit["passed"])
+        self.assertFalse(bit["measurements_sufficient"])
+
+
+class ReportV2Tests(unittest.TestCase):
+    @staticmethod
+    def _corpus_result(
+        run_id: str,
+        *,
+        detect_signature: int = 60,
+        detect_differential: int = 40,
+        stability_learned: int = 100,
+        preserve_learned: int = 100,
+        preserve_assisted: int = 100,
+        fp_learned: int = 0,
+        fp_assisted: int = 0,
+        fp_total: int = 100,
+    ) -> Dict[str, object]:
+        total = 100
+        rows = DetectionBitV2Tests._rows(
+            [index < detect_signature for index in range(total)],
+            [
+                detect_signature <= index < detect_signature
+                + detect_differential
+                for index in range(total)
+            ],
+            [True] * total,
+            [False] * total,
+        )
+        gate = {
+            "bit_a_detection": detection_bit_v2(rows),
+            "bit_b_stability": stability_bit(
+                [index < stability_learned for index in range(total)],
+                [True] * total,
+            ),
+            "bit_c_preservation": preservation_bit(
+                [index < preserve_learned for index in range(total)],
+                [index < preserve_assisted for index in range(total)],
+            ),
+            "bit_d_differential_false_positive": (
+                differential_false_positive_bit(
+                    DifferentialFalsePositiveBitTests._rows(
+                        fp_total, fp_learned, fp_assisted
+                    )
+                )
+            ),
+        }
+        gate["passed"] = all(bit["passed"] for bit in gate.values())
+        return {"run_id": run_id, "gate": gate}
+
+    def test_pass_report_promotes_with_v2_quantity_named(self) -> None:
+        report = build_report_v2(
+            [self._corpus_result("corpus-a")], {"checkpoint": "v4"}
+        )
+        self.assertEqual(report["version"], GATE_VERSION_V2)
+        self.assertEqual(report["result"]["gate"], "PASS")
+        self.assertIn("PROMOTE-to-shadow", report["result"]["verdict"])
+        self.assertIn("detection quantity v2", report["result"]["verdict"])
+        self.assertEqual(report["result"]["failing_mechanisms"], [])
+        self.assertEqual(
+            report["detection_quantity"]["name"], DETECTION_QUANTITY_V2
+        )
+        self.assertEqual(
+            report["thresholds"]["differential_fp_identical_rate_bound"],
+            DIFFERENTIAL_FP_IDENTICAL_RATE_BOUND,
+        )
+        self.assertEqual(
+            report["thresholds"][
+                "differential_fp_uncorroborated_rate_bound"
+            ],
+            DIFFERENTIAL_FP_UNCORROBORATED_RATE_BOUND,
+        )
+
+    def test_bit_d_failures_name_each_condition(self) -> None:
+        regression = build_report_v2(
+            [self._corpus_result("corpus-a", fp_learned=10, fp_assisted=5)],
+            {},
+        )
+        self.assertEqual(regression["result"]["gate"], "FAIL")
+        mechanisms = regression["result"]["failing_mechanisms"]
+        self.assertEqual(len(mechanisms), 1)
+        self.assertIn("fires on more no-effect pairs", mechanisms[0])
+        ceiling = build_report_v2(
+            [
+                self._corpus_result(
+                    "corpus-b", fp_learned=96, fp_assisted=96
+                )
+            ],
+            {},
+        )
+        self.assertTrue(
+            any(
+                "v312/v313" in mechanism
+                for mechanism in ceiling["result"]["failing_mechanisms"]
+            )
+        )
+
+    def test_bits_a_to_c_mechanisms_still_named(self) -> None:
+        report = build_report_v2(
+            [
+                self._corpus_result(
+                    "corpus-b", detect_signature=50, detect_differential=30
+                )
+            ],
+            {},
+        )
+        self.assertTrue(
+            any(
+                "misses ground-truth manipulations" in mechanism
+                for mechanism in report["result"]["failing_mechanisms"]
+            )
+        )
+        stability_fail = build_report_v2(
+            [self._corpus_result("corpus-c", stability_learned=80)], {}
+        )
+        self.assertTrue(
+            any(
+                "unstable" in mechanism
+                for mechanism in stability_fail["result"][
+                    "failing_mechanisms"
+                ]
+            )
+        )
+
+    def test_v2_digest_deterministic_and_prefix_disjoint_from_v1(
+        self,
+    ) -> None:
+        results = [self._corpus_result("corpus-a")]
+        first = build_report_v2(results, {"checkpoint": "v4"})
+        second = build_report_v2(results, {"checkpoint": "v4"})
+        self.assertEqual(first["content_digest"], second["content_digest"])
+        self.assertEqual(
+            first["content_digest"],
+            content_digest(first, prefix=_DIGEST_PREFIX_V2),
+        )
+        # The v1 and v2 digest domains can never alias.
+        self.assertNotEqual(
+            content_digest(first), content_digest(first, prefix=_DIGEST_PREFIX_V2)
+        )
+        mutated = build_report_v2(results, {"checkpoint": "v3"})
+        self.assertNotEqual(
+            first["content_digest"], mutated["content_digest"]
+        )
+
+    def test_empty_report_fails(self) -> None:
+        report = build_report_v2([], {})
+        self.assertEqual(report["result"]["gate"], "FAIL")
+        self.assertIn(
+            "no corpora scored", report["result"]["failing_mechanisms"]
+        )
+
+
+class ScoreCorpusV2EndToEndTests(unittest.TestCase):
+    """The v2 scorer on a synthetic probe archive with an in-place arm."""
+
+    def _events_and_frames(self):
+        control = _e2e_frame({(5, 5): _PLAYER_VALUE})
+        # Root 1: an in-place transformation ("up") and a displacement
+        # ("left"), corroborating each other.
+        factual_press = _e2e_frame({(5, 5): _OBJECT_VALUE})
+        factual_left = _e2e_frame({(4, 5): _PLAYER_VALUE})
+        # Root 2: an ambient-change arm ("down", changed cell (9, 9) far
+        # from the player), a displacement arm ("right") that the ambient
+        # arm fails to corroborate, and a no-change arm ("b") whose
+        # endpoint is byte-identical to the control.
+        factual_amb = _e2e_frame({(5, 5): _PLAYER_VALUE, (9, 9): 90})
+        factual_right = _e2e_frame({(6, 5): _PLAYER_VALUE})
+
+        def branch(state: str, action: str, frame: Frame) -> Dict[str, object]:
+            return {
+                "event": "human_prior_option_branch_verified",
+                "parent_state_id": state,
+                "path": [action],
+                "durations": [8],
+                "frame": frame.digest,
+                "frame_width": _E2E_COLUMNS,
+                "frame_height": _E2E_ROWS,
+            }
+
+        def neutral(state: str) -> Dict[str, object]:
+            return {
+                "event": "human_prior_option_local_neutral_verified",
+                "parent_state_id": state,
+                "action": "noop",
+                "action_frames": 8,
+                "frame": control.digest,
+            }
+
+        events = [
+            branch("state-00000001", "up", factual_press),
+            branch("state-00000001", "left", factual_left),
+            neutral("state-00000001"),
+            branch("state-00000002", "down", factual_amb),
+            branch("state-00000002", "right", factual_right),
+            branch("state-00000002", "b", control),
+            neutral("state-00000002"),
+        ]
+        frames = (
+            control,
+            factual_press,
+            factual_left,
+            factual_amb,
+            factual_right,
+        )
+        return events, frames
+
+    def test_in_place_detection_and_priced_false_positive(self) -> None:
+        events, frames = self._events_and_frames()
+        control, factual_press, factual_left, factual_amb, factual_right = (
+            frames
+        )
+        # The learned stub masks the player cell of each frame -- and on
+        # the ambient pair it also spills over the animated cell (9, 9)
+        # in both endpoints, so its unanchored differential must fire
+        # there and be priced by bit (d).
+        learned = _StubConvention(
+            name=LEARNED_CONVENTION,
+            masks={
+                control.digest: ((5, 5), frozenset({(5, 5), (9, 9)})),
+                factual_press.digest: ((5, 5), frozenset({(5, 5)})),
+                factual_left.digest: ((4, 5), frozenset({(4, 5)})),
+                factual_amb.digest: ((5, 5), frozenset({(5, 5), (9, 9)})),
+                factual_right.digest: ((6, 5), frozenset({(6, 5)})),
+            },
+        )
+        assisted = _StubConvention(
+            name=ASSISTED_CONVENTION,
+            masks={
+                control.digest: ((5, 5), frozenset({(5, 5)})),
+                factual_press.digest: ((5, 5), frozenset({(5, 5)})),
+                factual_left.digest: ((4, 5), frozenset({(4, 5)})),
+                factual_amb.digest: ((5, 5), frozenset({(5, 5)})),
+                factual_right.digest: ((6, 5), frozenset({(6, 5)})),
+            },
+        )
+        with tempfile.TemporaryDirectory() as scratch:
+            run_dir = Path(scratch) / "corpus"
+            frames_dir = run_dir / "frames"
+            frames_dir.mkdir(parents=True)
+            for frame in frames:
+                (frames_dir / f"{frame.digest}.png").write_bytes(
+                    encode_png(frame)
+                )
+            (run_dir / "events.jsonl").write_text(
+                "".join(json.dumps(event) + "\n" for event in events),
+                encoding="utf-8",
+            )
+            result = score_corpus_v2(run_dir, learned, assisted)
+            again = score_corpus_v2(run_dir, learned, assisted)
+        self.assertEqual(result, again)
+        self.assertEqual(result["detection_quantity"], DETECTION_QUANTITY_V2)
+        # Root 1 scores both arms; root 2's arms are all uncorroborated
+        # or unchanged, so they land in the no-effect population.
+        self.assertEqual(result["extraction"]["labeled_arms"], 5)
+        self.assertEqual(result["extraction"]["scored_arms"], 2)
+        self.assertEqual(result["detection"]["measurements"], 2)
+
+        bit_a = result["gate"]["bit_a_detection"]
+        # The in-place arm is invisible to the signature channel under
+        # the fully covering masks; the differential channel catches it,
+        # for the incumbent as well (the symmetric upgrade).
+        self.assertEqual(bit_a["learned_rate_vs_ground_truth"], 1.0)
+        self.assertEqual(bit_a["assisted_rate_vs_ground_truth"], 1.0)
+        for name in (LEARNED_CONVENTION, ASSISTED_CONVENTION):
+            self.assertEqual(
+                bit_a["channels"][name]["signature_rate_vs_ground_truth"],
+                0.5,
+            )
+            self.assertEqual(
+                bit_a["channels"][name]["differential_only_detected"], 1
+            )
+        press_rows = [
+            row
+            for row in result["detection"]["rows"]
+            if row["factual"] == factual_press.digest
+        ]
+        self.assertEqual(len(press_rows), 1)
+        self.assertFalse(press_rows[0]["learned_signature_detected"])
+        self.assertTrue(press_rows[0]["learned_differential_fired"])
+        self.assertEqual(
+            press_rows[0]["learned_differential_changed_pixels"], 1
+        )
+
+        # No-effect population: the ambient pair, the failed-corroboration
+        # displacement pair, and the byte-identical pair.
+        no_effect = result["no_effect"]
+        self.assertEqual(no_effect["measurements"], 3)
+        self.assertEqual(no_effect["conflicting_pairs_excluded"], 0)
+        bit_d = result["gate"]["bit_d_differential_false_positive"]
+        self.assertEqual(
+            bit_d["by_class"][NO_EFFECT_CLASS_IDENTICAL]["measurements"], 1
+        )
+        self.assertEqual(
+            bit_d["by_class"][NO_EFFECT_CLASS_UNCORROBORATED][
+                "measurements"
+            ],
+            2,
+        )
+        # The learned spill over the animated cell fires exactly once --
+        # the raw-change pathology, caught and priced as a regression
+        # against the tight assisted mask, which stays quiet; the
+        # identical pair structurally cannot fire.
+        self.assertEqual(bit_d["learned_fired"], 1)
+        self.assertEqual(bit_d["assisted_fired"], 0)
+        self.assertEqual(
+            bit_d["by_class"][NO_EFFECT_CLASS_IDENTICAL]["learned_fired"], 0
+        )
+        self.assertTrue(bit_d["identical_condition"])
+        self.assertTrue(bit_d["uncorroborated_condition"])
+        self.assertFalse(bit_d["no_regression_condition"])
+        self.assertEqual(no_effect["fired_rows"], [
+            {
+                "factual": factual_amb.digest,
+                "control": control.digest,
+                "class": NO_EFFECT_CLASS_UNCORROBORATED,
+                "convention": LEARNED_CONVENTION,
+                "region_pixels": 2,
+                "changed_pixels": 1,
+            }
+        ])
+        # Honest insufficiency: perfect-looking rates over tiny synthetic
+        # populations never letter-pass.
+        self.assertFalse(bit_a["passed"])
+        self.assertFalse(bit_d["passed"])
+        self.assertFalse(result["gate"]["passed"])
+        report = build_report_v2([result], {"checkpoint": "stub"})
+        self.assertEqual(report["result"]["gate"], "FAIL")
+        json.dumps(report, sort_keys=True, allow_nan=False)
+
+    def test_convention_names_are_enforced(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            run_dir = Path(scratch) / "corpus"
+            (run_dir / "frames").mkdir(parents=True)
+            (run_dir / "events.jsonl").write_text("", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                score_corpus_v2(
                     run_dir,
                     _StubConvention(name="wrong"),
                     _StubConvention(name=ASSISTED_CONVENTION),

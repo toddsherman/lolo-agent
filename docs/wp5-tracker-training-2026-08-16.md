@@ -990,3 +990,228 @@ placement flips) may close with probe-distribution strict collection
 change under an unmoved footprint is deemed out of the manipulation
 claim's scope, that scope change must be preregistered and priced,
 not assumed.
+
+### Detection quantity v2 — preregistration (§4.38 plan-change; added before execution)
+
+Basis: learnings §4.38 — the residual bit-(a) failure class is IN-PLACE
+ERASURE, and it is a property of the detection QUANTITY, not the mask:
+for blocked/contact arms the world outside a correct controllable mask
+does not differ between the factual and duration-matched-NOOP
+endpoints, so "does the world outside the mask differ?" is structurally
+blind under ANY mask that covers the unmoved footprint in both
+endpoints.  This spike is §4.38's licensed path (a): an explicitly
+gated convention change on the detection quantity itself, never a mask
+tweak.  Everything below is fixed now, before the scorer touches any
+gate corpus; the implementation is additive in
+`lolo_agent/functional_mask_gate.py` (the v1 scorer, report builder,
+and driver are byte-identical to the published runs; 50 unit tests,
+including an in-place fixture the signature channel provably misses and
+the differential catches, an animation-under-mask fixture that must NOT
+fire, false-positive-discipline fixtures, and determinism).
+
+**Detection quantity v2 (fixed now).**  Per deduplicated ground-truth
+measurement (factual digest, control digest, component cells), a
+convention DETECTS the manipulation iff either channel fires:
+
+1. SIGNATURE channel — the v1 quantity verbatim: the joint
+   `world_effect_cells_state_signature` over the component cells
+   differs between the endpoints under that convention's per-frame
+   masks (correspondence lift and consistency reporting unchanged).
+2. MASKED-REGION DIFFERENTIAL channel — the byte content of the
+   DUALLY-HIDDEN COMPONENT REGION differs between the endpoints.  The
+   region is the intersection of the pixels the convention masks in the
+   factual frame and in the control frame (a frame without an anchor
+   slot hides nothing), restricted to the `feature_at` pixel blocks of
+   the ground-truth component cells.  Rationale, fixed now: pixels
+   hidden in only ONE endpoint already perturb that endpoint's pooled
+   features (the signature channel sees them), so the dually-hidden set
+   is exactly the evidence the v1 quantity cannot see; the component
+   anchor is the neutrality discipline — masked content outside the
+   ground-truth locus can never claim a detection of THIS manipulation.
+   The channel fires on >= 1 byte-differing pixel
+   (`DIFFERENTIAL_MIN_CHANGED_PIXELS` = 1, equivalently: the region
+   content digests differ); no tolerance parameter exists, mirroring
+   the `cell_difference` rationale (deterministic emulator, byte-exact
+   endpoints, duration-matched phase).
+
+Both conventions are scored under the same two-channel quantity — the
+incumbent gets the identical upgrade, so the comparison is not rigged
+in either direction — and both channels are logged per measurement per
+convention (`signature_detected`, `differential_fired`, region and
+changed-pixel counts), with per-corpus channel aggregates including
+`differential_only_detected`, so the conventions change is fully
+auditable, never blended.
+
+**Gated bits (fixed now).**  Bit (a) gates the SAME two preregistered
+conditions as v1 — learned v2 detection rate over ALL ground-truth
+measurements >= 0.95 AND over the measurements the assisted convention
+(also under v2) detects >= 0.95 — at the same thresholds (0.95
+agreement, 0.5 mask probability, minimum 50).  Bits (b) and (c) are
+UNCHANGED in definition, code path, and inputs; their per-corpus
+numbers must reproduce the v2 report's values exactly (an internal
+consistency check, verified and reported).  Verdict rule: PROMOTE-to-
+shadow iff bits (a) and (b) pass with bit (c) not regressing below
+assisted AND bit (d) (below) disciplined, on all three corpora;
+otherwise NO-PROMOTE with every failing mechanism named.
+
+**Bit (d) — differential false-positive discipline (new; the v312/v313
+raw-change-pathology guard).**  A detection channel that fires on
+animation inside the mask would repeat the raw-change pathology in new
+clothes, so the new channel's false-positive risk is priced on
+ground-truth-certified no-effect pairs and gated.  Population, per
+corpus: deduplicated (factual digest, control digest) pairs of LABELED
+arms whose corroborated controllable set is empty, in two
+label-rule-certified classes — `identical_endpoints` (empty changed
+set: byte-identical endpoints, the duration-matched no-change pairs)
+and `uncorroborated_change` (changed cells exist but every one failed
+leave-one-action-out corroboration: ambient/uncorroborated change, the
+animation class).  Pairs any scored arm certifies as carrying a
+controllable effect are excluded (count reported).  Censored arms
+never participate (no certified control pairing).  The differential is
+measured over the FULL dually-hidden region — no component exists to
+anchor to, and the unanchored region is a strict superset of the
+anchored one, so every measured rate upper-bounds the detection
+channel's.
+
+Design-phase evidence (training corpus only — the gate corpora were
+never touched): on deterministic stride samples of the pinned v4 label
+corpus (`records[::67]`: 299 roots, 192 no-effect pairs; and
+`records[::11]`: 1,819 roots, 1,063 no-effect pairs, 4 conflicting
+pairs excluded), with the pinned pixel-head-v2 learned convention and
+the assisted convention both applied:
+
+- `identical_endpoints` NEVER fires: 0/177 and 0/1,018, both
+  conventions — the phase discipline holds byte-exactly.
+- `uncorroborated_change` fires at PARITY across conventions: 12/15 =
+  0.80 (stride 67) and 35/45 = 0.778 (stride 11) for BOTH learned and
+  assisted — the firing is a property of the class (the uncorroborated
+  change is usually the player's own motion under whichever mask), not
+  of one convention's extent.
+
+Consequence, recorded before scoring: a single combined-rate bound
+would be class-mix sensitive (the combined rate measured 0.033–0.063
+purely as a function of the class mix) and would conflate "the raw
+ingredient is unsafe without its anchor" with "one convention is
+noisier than the other".  The preregistered discipline is therefore
+per class, plus a paired no-regression condition:
+
+- (d1) `identical_endpoints`: the learned differential fires on
+  exactly 0 pairs (rate bound 0.0) — any fire is an instrument defect.
+- (d2) `uncorroborated_change`: the learned rate is at most 0.95 (the
+  published agreement operating point reused by import as a ceiling —
+  a channel firing above it on certified-null changed pairs is
+  indistinguishable from raw frame differencing, the v312/v313
+  signature; the training-distribution expectation is ~0.78).
+- (d3) no regression: the learned convention fires on no more no-effect
+  pairs than the assisted convention over the same paired population
+  (bit (c)'s form, under the identical upgrade).
+- Instrument validity: >= 50 deduplicated no-effect pairs per corpus;
+  an empty class leaves its condition vacuous (flagged), never passed
+  silently.  All fired pairs are listed individually in the report.
+
+**Run (fixed now).**  Same three probe corpora (v322/v323/v325), same
+pinned artifacts as the v2 gate run (`pixel-mask-head-v2.pt`
+`d4866931…` over frozen tracker v4 `b2fdd8ba…` and backbone
+`642d66ed…`, digest cross-checks repeated at load), same ground-truth
+extraction, CPU.  Driver:
+`python -m lolo_agent.functional_mask_gate --detection-quantity v2`
+(the v1 CLI path is untouched; the only performance-affecting change is
+a larger convention mask LRU, which cannot alter any scored quantity).
+One preregistered run, deterministic content-digested report (version
+2, digest prefix `wp5-functional-mask-gate:v2:`) to
+`experiments/lolo1-wp5/functional-gate-v3-report.json`, plus a
+byte-identical determinism rerun to a scratch path (reported).  Honest
+outcome either way: PASS → recommend shadow-promotion of the learned
+masking convention TOGETHER WITH detection quantity v2 (one explicitly
+gated convention change, engineering-internal, reversible, claim
+boundary unmoved per §4.35); FAIL → name the failing mechanism per
+corpus and bit against the v2 run's numbers.  Expected a priori and
+disclosed: bits (b)/(c) cannot move (identical code and inputs), so a
+NO-PROMOTE via the v323/v325 bit-(b) tail remains possible even if the
+new quantity resolves bit (a) entirely; that outcome would confirm the
+quantity hypothesis while leaving promotion blocked on the already-
+documented placement-flip tail.
+
+### WP5-final functional gate v3 (detection quantity v2) — results (appended 2026-08-16, after one preregistered run)
+
+**FAIL overall — NO-PROMOTE — but bit (a) passes at 1.000 on every
+corpus and v322 becomes the first corpus ever to pass ALL gate bits.**
+Report `experiments/lolo1-wp5/functional-gate-v3-report.json`, content
+digest
+`01a9b128c90d509dece3370da1996fa9d3b83b4a182c8b0ca5694625761076b7`,
+byte-identical on the preregistered determinism rerun (scratch path,
+file sha256 `f49c3b6f…` equal).  No preregistration deviations.  The
+preregistered internal consistency check holds exactly: the bit-(b),
+bit-(c), stability, preservation, and divergence-telemetry blocks are
+byte-identical to the v2 report on all three corpora, ground truth is
+identical (1,175/1,563/1,750 detection measurements), the per-corpus
+signature-channel rates equal the v2 run's v1-quantity rates to the
+last digit (0.742979/0.781830/0.678286 learned), and the
+signature/track-state views agreed on 100% of measurements.
+
+| corpus | (a) v1-quantity → v2-quantity (assisted) | learned diff-only | (b) unchanged | (d) no-effect pairs / uncorr. rate | bits |
+|---|---|---|---|---|---|
+| v322 object-present | 0.743 → **1.000** (0.884 → **1.000**) | 302 of 1,175 | 0.975 PASS | 145 / vacuous (0 uncorr.) | **all PASS** |
+| v323 pre-push | 0.782 → **1.000** (0.940 → **1.000**) | 341 of 1,563 | **0.936 FAIL** | 3,155 / **0.902** ≤ 0.95 | b FAIL |
+| v325 object-removed | 0.678 → **1.000** (0.936 → **1.000**) | 563 of 1,750 | **0.943 FAIL** | 204 / vacuous (0 uncorr.) | b FAIL |
+
+What the run establishes:
+
+1. **The §4.38 quantity hypothesis is CONFIRMED, completely.**  Under
+   the two-channel quantity the learned convention detects EVERY
+   ground-truth manipulation on every corpus (0 misses in 4,488
+   measurements); the differential channel alone carries 302/341/563
+   detections the signature channel misses — the in-place erasure
+   class, eliminated exactly as designed.  In-place erasure was a
+   property of the detection quantity, not the mask.
+2. **The incumbent's own 6–12% miss class was ALSO in-place erasure —
+   now mechanistically demonstrated.**  Under the identical upgrade the
+   assisted convention likewise reaches 1.000 everywhere (differential-
+   only 136/94/112): §4.37's report-only observation that the assisted
+   pipeline misses GT manipulations is explained by the same quantity
+   blindness.  Both conditioned rates are 1.000/1.000 — the two
+   conventions now agree perfectly on detection.
+3. **Bit (d) — the raw-change-pathology guard holds.**  Identical-
+   endpoints pairs never fire (145/459/204 pairs, 0 fires, both
+   conventions — the phase discipline is byte-exact on the gate
+   corpora too).  Only v323 has an uncorroborated-change class (2,696
+   pairs, 142 conflicting pairs excluded): the learned differential
+   fires on 2,431 = 0.902, under the preregistered 0.95 ceiling, at
+   EXACT parity with the assisted convention (2,431 — no regression;
+   fired changed-pixels median 107 inside a median 399-pixel region).
+   Honest notes: the condition is vacuous on v322/v325 (flagged in the
+   report — the discipline is genuinely exercised only by v323), and
+   v323's 0.902 sits above the training-distribution expectation of
+   ~0.78 though under the ceiling — the probe corpora's uncorroborated
+   pairs are denser in player-adjacent change than the training mix.
+4. **The verdict is blocked exclusively by the pre-existing bit-(b)
+   tail**, numerically unchanged from the v2 run (v323 0.936, v325
+   0.943 vs 0.95; v322 passes at 0.975): whole-pool placement flips at
+   anchor/halo boundaries, the §4.38 path-(b) residual that
+   probe-distribution strict collection may close without any
+   convention change.  Bit (c) is also unchanged (learned 0.985–0.998
+   vs assisted 0.720–0.769).
+
+Disclosed channel-dominance observation (report rows, not gated): the
+differential fires on nearly every GT measurement (1,175/1,175,
+1,447/1,563, 1,748/1,750 learned) — whenever a convention's masks
+cover changed component content in both endpoints the differential
+sees it, and the signature channel covers the remainder — so under
+quantity v2 detection is carried primarily by the new channel.  That
+is the intended design (the masked region is exactly where the v1
+quantity was blind), it is fully auditable per row, and the bit-(d)
+discipline plus the component anchor are what keep it from collapsing
+into raw frame differencing.
+
+Consequence: per the preregistered criterion the learned masking
+convention plus detection quantity v2 are NOT promoted; tracker v4 +
+pixel head v2 stay telemetry-only.  The detection axis of WP5 is now
+closed — every remaining promotion blocker is the bit-(b)
+fingerprint-stability tail on v323/v325.  Paths this measurement
+licenses next (each requiring its own preregistration, then THIS gate
+rerun unchanged): (a) §4.38 path (b) — probe-distribution-targeted
+strict collection against the placement-flip tail, no convention
+change required; (b) if a future planner adopts quantity v2
+downstream, that adoption inherits this gate's evidence but any use of
+the differential OUTSIDE GT-anchored evaluation must carry the bit-(d)
+discipline with it, preregistered.
