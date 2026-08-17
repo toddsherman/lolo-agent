@@ -30,6 +30,7 @@ from lolo_agent.neural_planner import (
     _OptionCounterfactual,
     _TemporalOptionTrace,
 )
+from lolo_agent.object_tracks import ObjectTrackSet
 from lolo_agent.pixels import Frame
 from lolo_agent.unlabeled_entities import UnlabeledEntityMemory
 
@@ -10212,6 +10213,293 @@ class EnsemblePlannerTests(unittest.TestCase):
                     "anonymous_object_track_confirmed_world_effect_signature"
                 ]
             )
+
+    def _causal_archive_agent(
+        self,
+    ) -> tuple[UniqueStateEnv, RecordingLogger, VerifiedNeuralAgent]:
+        env = UniqueStateEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.LEFT),
+                planning_depth=1,
+                action_frames=1,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        return env, logger, agent
+
+    def test_causal_archive_add_carries_root_object_track(self) -> None:
+        env, logger, agent = self._causal_archive_agent()
+        agent.current_human_prior_root_object_state = replace(
+            ObjectTrackSet.empty().to_root_object_state(),
+            tracked_world_effect_cells=((7, 6),),
+            tracked_world_state_signature="track-state",
+            entity_interaction_signature="interaction",
+            entity_interaction_action=Action.RIGHT,
+            entity_interaction_direction=Action.RIGHT,
+            entity_interaction_cell=(6, 6),
+            entity_effect_persisted_in_search=True,
+            entity_effect_persistence_steps=2,
+            confirmed_world_effect_signature="ff00",
+        )
+
+        agent.decide()
+
+        self.assertTrue(agent.archive)
+        branch = agent.archive[-1]
+        self.assertEqual(branch.tracked_world_effect_cells, ((7, 6),))
+        self.assertEqual(
+            branch.tracked_world_state_signature, "track-state"
+        )
+        self.assertEqual(branch.entity_interaction_signature, "interaction")
+        self.assertEqual(branch.entity_interaction_cell, (6, 6))
+        self.assertEqual(
+            branch.entity_interaction_direction, Action.RIGHT
+        )
+        self.assertTrue(branch.entity_effect_persisted_in_search)
+        self.assertEqual(branch.entity_effect_persistence_steps, 2)
+        added = [
+            event
+            for event in logger.events
+            if event["event"] == "archive_branch_added"
+        ]
+        self.assertTrue(added)
+        for event in added:
+            self.assertEqual(
+                event["anonymous_object_track_cells"], [[7, 6]]
+            )
+            self.assertEqual(
+                event["anonymous_object_track_current_cell"], [7, 6]
+            )
+            self.assertEqual(
+                event["anonymous_object_track_confirmed_source_cell"],
+                [6, 6],
+            )
+            self.assertEqual(
+                event[
+                    "anonymous_object_track_confirmed_destination_cell"
+                ],
+                [7, 6],
+            )
+            self.assertEqual(
+                event[
+                    "anonymous_object_track_confirmed_world_effect_signature"
+                ],
+                branch.goal_world_effect_signature or None,
+            )
+
+    def test_causal_archive_add_without_track_state_emits_empty_block(
+        self,
+    ) -> None:
+        env, logger, agent = self._causal_archive_agent()
+
+        agent.decide()
+
+        self.assertTrue(agent.archive)
+        self.assertEqual(
+            agent.archive[-1].tracked_world_effect_cells, ()
+        )
+        added = [
+            event
+            for event in logger.events
+            if event["event"] == "archive_branch_added"
+        ]
+        self.assertTrue(added)
+        for event in added:
+            self.assertEqual(event["anonymous_object_track_cells"], [])
+            self.assertIsNone(
+                event["anonymous_object_track_current_cell"]
+            )
+            self.assertIsNone(
+                event["anonymous_object_track_confirmed_source_cell"]
+            )
+            self.assertIsNone(
+                event[
+                    "anonymous_object_track_confirmed_destination_cell"
+                ]
+            )
+            self.assertIsNone(
+                event[
+                    "anonymous_object_track_confirmed_world_effect_signature"
+                ]
+            )
+
+    def _restored_causal_archive_state(
+        self,
+        track_fields: dict,
+    ) -> tuple[RecordingLogger, VerifiedNeuralAgent]:
+        env = UniqueStateEnv()
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                behavioral_best_first_archive=True,
+                human_prior_best_first_archive=True,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.goal_prior = OrderingPositionGoalPrior()
+        root = env.save_state()
+        restored_frame = env.step(Action.RIGHT, 1)
+        restored_state = env.save_state()
+        env.load_state(root)
+        branch = _ArchivedBranch(
+            state=restored_state,
+            frame=restored_frame,
+            plan=NeuralPlan((Action.RIGHT,), (1,), 1.0, 0.0),
+            score=1.0,
+            scene=agent._scene_signature(restored_frame),
+            created=0,
+            origin_signature="source",
+            goal_source_signature="graph-source",
+            goal_target_signature="restored-target",
+            goal_heart_slots=tuple(
+                sorted(agent.goal_prior.current_slots())
+            ),
+            goal_progress_reward=1.0,
+            goal_remaining_hearts=2,
+            goal_total_hearts=2,
+            goal_player_slot=(1, 0),
+            **track_fields,
+        )
+        agent.archive = [branch]
+        agent.human_prior_graph_recovery_pending = True
+
+        decision = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(decision)
+        assert decision is not None
+        self.assertTrue(decision.restored_archive)
+        env.release_state(root)
+        return logger, agent
+
+    def test_causal_archive_restore_reseeds_root_object_track(
+        self,
+    ) -> None:
+        logger, agent = self._restored_causal_archive_state(
+            {
+                "goal_world_effect_signature": "1a2b",
+                "tracked_world_effect_cells": ((7, 6), (8, 6)),
+                "tracked_world_state_signature": "track-state",
+                "entity_interaction_signature": "interaction",
+                "entity_interaction_action": Action.RIGHT,
+                "entity_interaction_direction": Action.RIGHT,
+                "entity_interaction_cell": (7, 6),
+                "entity_effect_persisted_in_search": True,
+                "entity_effect_persistence_steps": 2,
+            }
+        )
+
+        restored = next(
+            event
+            for event in logger.events
+            if event["event"] == "archive_branch_restored"
+        )
+        self.assertEqual(
+            restored["anonymous_object_track_cells"],
+            [[7, 6], [8, 6]],
+        )
+        self.assertIsNone(
+            restored["anonymous_object_track_current_cell"]
+        )
+        self.assertEqual(
+            restored["anonymous_object_track_confirmed_source_cell"],
+            [7, 6],
+        )
+        self.assertEqual(
+            restored[
+                "anonymous_object_track_confirmed_destination_cell"
+            ],
+            [8, 6],
+        )
+        self.assertEqual(
+            restored[
+                "anonymous_object_track_confirmed_world_effect_signature"
+            ],
+            "1a2b",
+        )
+        state = agent.current_human_prior_root_object_state
+        self.assertEqual(
+            state.tracked_world_effect_cells, ((7, 6), (8, 6))
+        )
+        self.assertEqual(state.entity_interaction_cell, (7, 6))
+        self.assertEqual(
+            state.entity_interaction_direction, Action.RIGHT
+        )
+        self.assertEqual(
+            state.entity_interaction_signature, "interaction"
+        )
+        self.assertEqual(
+            state.confirmed_world_effect_signature, "1a2b"
+        )
+        self.assertEqual(state.entity_effect_persistence_steps, 2)
+        committed = next(
+            event
+            for event in logger.events
+            if event["event"] == "decision_committed"
+        )
+        self.assertEqual(
+            committed["anonymous_object_track_cells"],
+            [[7, 6], [8, 6]],
+        )
+        self.assertEqual(
+            committed[
+                "anonymous_object_track_confirmed_world_effect_signature"
+            ],
+            "1a2b",
+        )
+
+    def test_causal_archive_restore_without_track_state_reseeds_empty(
+        self,
+    ) -> None:
+        logger, agent = self._restored_causal_archive_state({})
+
+        restored = next(
+            event
+            for event in logger.events
+            if event["event"] == "archive_branch_restored"
+        )
+        self.assertEqual(restored["anonymous_object_track_cells"], [])
+        self.assertIsNone(
+            restored["anonymous_object_track_current_cell"]
+        )
+        self.assertIsNone(
+            restored["anonymous_object_track_confirmed_source_cell"]
+        )
+        self.assertIsNone(
+            restored[
+                "anonymous_object_track_confirmed_destination_cell"
+            ]
+        )
+        self.assertIsNone(
+            restored[
+                "anonymous_object_track_confirmed_world_effect_signature"
+            ]
+        )
+        state = agent.current_human_prior_root_object_state
+        self.assertEqual(state.tracked_world_effect_cells, ())
+        self.assertIsNone(state.entity_interaction_cell)
+        self.assertEqual(state.confirmed_world_effect_signature, "")
+        committed = next(
+            event
+            for event in logger.events
+            if event["event"] == "decision_committed"
+        )
+        self.assertEqual(
+            committed["anonymous_object_track_cells"], []
+        )
 
     def test_goal_milestone_exhaustion_rolls_back_exact_choice(self) -> None:
         model = EnsembleVisualDynamicsModel(

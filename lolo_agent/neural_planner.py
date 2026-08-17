@@ -1356,14 +1356,7 @@ class VerifiedNeuralAgent:
             goal_exhaustion_recovery_restore_budget=(
                 self._goal_exhaustion_recovery_restore_budget()
             ),
-            **object_track_telemetry(
-                branch.tracked_world_effect_cells,
-                source_cell=branch.entity_interaction_cell,
-                direction=branch.entity_interaction_direction,
-                world_effect_signature=(
-                    branch.goal_world_effect_signature
-                ),
-            ),
+            **self._branch_object_track_fields(branch),
             selected_primary=False,
             score=branch.score,
             archive_size=len(self.archive),
@@ -13627,6 +13620,89 @@ class VerifiedNeuralAgent:
             ),
         )
 
+    @staticmethod
+    def _branch_object_track_fields(
+        branch: _ArchivedBranch,
+    ) -> Dict[str, Any]:
+        """Anonymous object-track payload carried by one archived branch."""
+
+        return object_track_telemetry(
+            branch.tracked_world_effect_cells,
+            source_cell=branch.entity_interaction_cell,
+            direction=branch.entity_interaction_direction,
+            world_effect_signature=branch.goal_world_effect_signature,
+        )
+
+    def _root_object_track_branch_fields(self) -> Dict[str, Any]:
+        """Track-state kwargs seeding a causal-archive branch from the root.
+
+        Causal-archive branches fork from the current decision root, so
+        they inherit the root's confirmed anonymous object track verbatim.
+        Restoring a branch reseeds the root track from these carried
+        fields; without them a mid-run causal-archive restore silently
+        reset the accumulated configuration-hold evidence to empty.  The
+        branch's own goal/option effect fields keep their existing
+        branch-specific meaning and are deliberately not touched here.
+        """
+
+        root_object_state = self.current_human_prior_root_object_state
+        return {
+            "world_effect_state_signature": (
+                root_object_state.world_effect_state_signature
+            ),
+            "tracked_world_effect_cells": (
+                root_object_state.tracked_world_effect_cells
+            ),
+            "tracked_world_state_signature": (
+                root_object_state.tracked_world_state_signature
+            ),
+            "world_effect_changed_pixels": (
+                root_object_state.world_effect_changed_pixels
+            ),
+            "confirmed_action_indices": (
+                root_object_state.confirmed_action_indices
+            ),
+            "entity_interaction_signature": (
+                root_object_state.entity_interaction_signature
+            ),
+            "entity_interaction_action": (
+                root_object_state.entity_interaction_action
+            ),
+            "entity_interaction_action_index": (
+                root_object_state.entity_interaction_action_index
+            ),
+            "entity_interaction_direction": (
+                root_object_state.entity_interaction_direction
+            ),
+            "entity_interaction_cell": (
+                root_object_state.entity_interaction_cell
+            ),
+            "entity_interaction_appearance_fingerprint": (
+                root_object_state.entity_interaction_appearance_fingerprint
+            ),
+            "entity_interaction_type_id": (
+                root_object_state.entity_interaction_type_id
+            ),
+            "entity_interaction_context_signature": (
+                root_object_state.entity_interaction_context_signature
+            ),
+            "entity_interaction_phase_signature": (
+                root_object_state.entity_interaction_phase_signature
+            ),
+            "entity_interaction_neighborhood_signature": (
+                root_object_state.entity_interaction_neighborhood_signature
+            ),
+            "entity_effect_target_distance": (
+                root_object_state.entity_effect_target_distance
+            ),
+            "entity_effect_persisted_in_search": (
+                root_object_state.entity_effect_persisted_in_search
+            ),
+            "entity_effect_persistence_steps": (
+                root_object_state.entity_effect_persistence_steps
+            ),
+        }
+
     def _state_id(self, state: object) -> Optional[str]:
         state_id = getattr(self.env, "state_id", None)
         return None if state_id is None else state_id(state)
@@ -23447,6 +23523,7 @@ class VerifiedNeuralAgent:
                             committed_goal_analysis is not None
                             and committed_goal_analysis.chest_obtained
                         ),
+                        **self._root_object_track_branch_fields(),
                     )
                 )
                 added += 1
@@ -23906,6 +23983,7 @@ class VerifiedNeuralAgent:
                             alternative_goal_analysis is not None
                             and alternative_goal_analysis.chest_obtained
                         ),
+                        **self._root_object_track_branch_fields(),
                     )
                 )
                 added += 1
@@ -23947,6 +24025,7 @@ class VerifiedNeuralAgent:
                     human_prior_world_effect_signature=(
                         alternative_goal_world_effect_signature or None
                     ),
+                    **self._branch_object_track_fields(self.archive[-1]),
                     persistent_frontier_value=archive_frontier_value,
                     causal_spatial_archive_bonus=(
                         archive_causal_spatial_bonus
@@ -24134,6 +24213,7 @@ class VerifiedNeuralAgent:
                             goal_chest_obtained=(
                                 source_goal_chest_obtained
                             ),
+                            **self._root_object_track_branch_fields(),
                         )
                     )
                     added += 1
@@ -26985,6 +27065,7 @@ class VerifiedNeuralAgent:
             human_prior_world_effect_signature=(
                 branch.goal_world_effect_signature or None
             ),
+            **self._branch_object_track_fields(branch),
             human_prior_graph_edge_visits_before=(
                 restored_goal_graph_edge_visits_before
             ),
