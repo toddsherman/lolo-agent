@@ -2009,6 +2009,65 @@ Evidence:
 - `experiments/lolo1-wp5/wp8lite-ablation-report.json`
 - runs `entity-v327-…-control-w0-d12`, `entity-v328-…-treatment-w1-d12`
 
+### 4.44 Relational shadow run: the chain forms; non-interference confirmed
+
+What was tried:
+
+- The design's mandatory telemetry-only shadow run
+  (`entity-v329-room3-relational-shadow-d12`, 79,493 events, complete):
+  the relational planner proposes, logs, and tracks hypotheses with zero
+  selection influence.
+
+Result:
+
+- **The full chain formed with correct linkage**: `establish` proposed and
+  logged at decision 1 *before any realization* (Gate 4's open criterion,
+  mechanically satisfied), achieved at d2 on the removal-class
+  configuration `85fd9014…`; `hold` chained to it, achieved d3;
+  `exploit` chained to the hold, targeting the certified milestone cell
+  `(12,11)`, correctly gated on
+  `requires_uncollected_certified_milestone`.
+- **Options stored and reused**: a hold option was re-instantiated at d8
+  from its relational initiation conditions — the first observed option
+  transfer.
+- **Non-interference confirmed**: the committed trajectory is identical
+  to the incidental runs (hearts at d1/d3, same endpoints), as
+  telemetry authority requires.
+- The exploit terminated `budget_exhausted` at d7.
+
+Interpretive caution (recorded to prevent a false inference):
+
+- That termination is the EXPECTED null in telemetry mode, not evidence
+  about budget sizing. With zero steering authority the exploit's
+  realization budget drains across decisions it does not control — and
+  indeed the agent moved west/up, away from the eastern target region,
+  throughout. Budget adequacy is only measurable under selection
+  authority.
+
+Classification:
+
+- **Instrument validation** for the chain machinery; the capability claim
+  remains untested pending E1.
+
+Learning:
+
+- Hypothesis chaining, chain-parent linkage, option storage and reuse,
+  and pre-execution logging all work on real native state — the parts
+  §4.43 showed a restore scalar could not express.
+- A telemetry-mode null must not be read as a parameter finding; the same
+  discipline that made the shadow run mandatory applies to reading it.
+
+Plan change:
+
+- Proceed to E1 under selection authority with the exploit realization
+  budget justified from v325's actual traverse cost (the certified run
+  that did reach `(12,11)`), disclosed in the E1 preregistration.
+
+Evidence:
+
+- run `entity-v329-room3-relational-shadow-d12`
+- `docs/wp8-relational-planner-design-2026-08-17.md`
+
 ## 5. Platform and cost learnings
 
 ### 5.1 RunPod for emulator branching
