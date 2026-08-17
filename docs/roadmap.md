@@ -1599,6 +1599,20 @@ ablation; (c) WP2 multi-track correspondence with the endpoint-relative
 contract; (d) WP3 including the removal-chain gate; (e) WP5 spike and
 strict-lineage linter in parallel; (f) reflect and amend again.
 
+Status updates (2026-08-16 evening): (a) DONE — Gate 3 closed on the
+assisted track (learnings §4.28-note in the probe doc). (c) WP2-lite
+correspondence engine landed (`befd629`). (e) WP5 pipeline landed and
+iterating: labels → tracker v2 (gates passed) → substitution replay
+no-promote (§4.31) → OOD gap quantified (§4.32) → ratified
+strict_from_assisted_state collection (§ recon doc) → tier-2 corpus →
+tracker v3 training. **WP9 step 1 FALSIFIED as written** (§4.33) —
+redesign requirements: censoring semantics for mixed changed-cell sets,
+multi-decision successor windows, delayed-divergence valence in place of
+reversion (terminal commits are action-independent: matched NOOP controls
+also die). WP8-lite module + preregistered ablation design landed
+(`25a8eda`); the planner seam patch is prepared and waits on file
+ownership. WP6a instrument productized (`33bbeb7`).
+
 Do not begin with a larger beam, a new reward weight, or a long room-clearing
 run. The next decisive result must demonstrate that the agent can represent
 multiple object changes and measure how one of those changes affects future

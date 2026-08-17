@@ -1440,6 +1440,58 @@ Evidence:
 - `docs/tracker-ood-eval-2026-08-16.md`
 - `experiments/lolo1-wp5/tracker-ood-report.json`
 
+### 4.33 WP9 step 1 falsified as written; the mechanism survives in parts
+
+What was tried:
+
+- The preregistered WP9a scoring pass (`docs/milestone-scoring-2026-08-16.md`,
+  report digest `424bb775…`): thresholds fixed from the event census
+  before scoring, then one pass over ~1.33M matched factual/NOOP endpoint
+  pairs across three corpora.
+
+Result:
+
+- **Falsified via heart-inseparability**: 7/47 collection instances
+  scored positive against the fixed 0.80 recall threshold. Timer/animation
+  domination did NOT occur (matched differencing is phase-aligned by
+  construction) — the failure is subtler than the preregistered worry.
+- **Reversion-based negative valence failed 0/14**: at the fatal commit
+  the matched NOOP control also dies, so life loss is action-independent
+  exactly where the valence rule required dependence; losses present as
+  large persistent novel changes, not reversions.
+- Named failure mechanisms, each verified on an instance: event-level
+  dependence-censoring on mixed changed-cell sets; return-censoring by
+  restore-heavy assisted timelines; rarity non-separation in the biggest
+  corpus. Clean collections in corpus B still rank 7/14/48 — the
+  matched-NOOP core and score shape survive.
+
+Classification:
+
+- **Falsified at the measured gate** for WP9 step 1 as written; the early
+  falsification is precisely the value Amendment D promised — this would
+  otherwise have surfaced at WP12.
+
+Learning:
+
+- Milestone valence needs a signal that works when death is
+  action-independent at the terminal commit (e.g., delayed divergence
+  before the terminal horizon, as the causal hazard machinery already
+  does) — reversion/control-collapse alone cannot carry it.
+- Milestone extraction must handle mixed changed-cell sets and
+  restore-heavy timelines; single-decision successor windows are too
+  short.
+
+Plan change:
+
+- WP9a redesign requirements recorded (censoring semantics, multi-decision
+  windows, hazard-style delayed-divergence valence); WP9b unchanged.
+  Rescoring only after a redesign with these fixes, preregistered afresh.
+
+Evidence:
+
+- `docs/milestone-scoring-2026-08-16.md`
+- `experiments/lolo1-wp5/milestone-scoring-report.json`
+
 ## 5. Platform and cost learnings
 
 ### 5.1 RunPod for emulator branching
