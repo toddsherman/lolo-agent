@@ -1538,6 +1538,60 @@ Evidence:
 - `docs/wp5-tracker-training-2026-08-16.md` (preregistration + results)
 - `experiments/lolo1-wp5/mask-sensitive-gate-report.json`
 
+### 4.35 Pixel reconstruction closes the resolution gap; replication is the wrong gate
+
+What was tried:
+
+- The §4.34 pixel-mask reconstruction spike (preregistered; report digest
+  `1052c9ea…`, byte-identical rerun): a 19.7k-param pixel head trained on
+  pixel-granularity counterfactual silhouettes (detector-free; pixel AUC
+  0.99843 held-out), reconstruction anchored on tracker v4 cells, and the
+  mask-sensitive gate rerun unchanged.
+
+Result:
+
+- **FAIL / NO-PROMOTE** on the preregistered bits — but every measurable
+  axis moved (mask IoU mean 0.33→0.40, per-frame max 0.90–0.95; the L1
+  bound now holds on high-IoU frames, which v1 never achieved once).
+- Two residual causes, one of them an instrument insight: (1) silhouette
+  extent diverges because the assisted mask is strongly multi-modal
+  (~340/1,100/1,640 px modes — occlusion shrinkage plus the same
+  white-component leakage that produced the v316/v317 defects) while the
+  learned mask is stable (~760 px); (2) the signature bit requires
+  byte-identical masks per pooled cell — an equality-class criterion no
+  learned reconstruction can satisfy short of replication.
+
+Classification:
+
+- **Failed promotion gate** plus a **gate-design finding**: the
+  replication criterion conflates "masks correctly" with "reproduces the
+  assisted mask including its defects." A learned mask that is more
+  stable than the assisted one can never pass a byte-equality bit.
+
+Learning:
+
+- Substitution gates must ultimately be FUNCTIONAL: does tracking built on
+  the learned mask produce correct, ground-truth-verifiable outcomes
+  (correspondence, fingerprints, confirmed manipulations) — not identical
+  intermediate bytes. §4.34's "explicitly gated convention change" path is
+  the scientifically correct one and is hereby chosen (engineering-internal,
+  reversible, claim boundary unmoved): the strict pipeline defines its own
+  masking convention around the learned mask and gates it on functional
+  track-reconstruction correctness against counterfactual ground truth.
+
+Plan change:
+
+- Design the functional gate (WP5-final): learned-convention tracking vs
+  assisted-convention tracking scored on outcome agreement over the probe
+  corpora ground truth; preregister before running. Replication gates
+  retired for perception promotion.
+
+Evidence:
+
+- `docs/wp5-tracker-training-2026-08-16.md` (spike preregistration +
+  results)
+- `experiments/lolo1-wp5/mask-sensitive-gate-v2-report.json`
+
 ## 5. Platform and cost learnings
 
 ### 5.1 RunPod for emulator branching

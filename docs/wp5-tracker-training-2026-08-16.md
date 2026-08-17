@@ -261,3 +261,236 @@ sprite component inside the predicted region), or move the downstream
 convention itself to cell-resolution masking on both sides — a
 convention change that must be gated on its own, not smuggled in as
 substitution.
+
+### Pixel-mask reconstruction spike — preregistration (§4.34 plan-change; added before execution)
+
+Basis: learnings §4.34 — the mask-sensitive gate failed on RESOLUTION
+(the learned mask erases whole 16×16 cell blocks; the assisted convention
+erases a pixel sprite silhouette plus a ~3px halo), with localization
+closed by tracker v4.  This spike is the first promotion path §4.34
+licenses: reconstruct a pixel-resolution mask anchored at the learned
+cells, then rerun the same gate unchanged.  Everything below is fixed
+now, before the training run and before any gate execution; the
+implementation is `lolo_agent/pixel_mask_head.py` +
+`lolo_agent/pixel_mask_train.py` (unit-tested on synthetic fixtures only
+at preregistration time; 31 tests).
+
+Key insight being exploited: pixel-resolution supervision already exists
+detector-free — the factual-vs-duration-matched-NOOP endpoint difference
+is per-PIXEL before `counterfactual_labels` pools it to cells.
+
+**Supervision (strict, detector-free).** Pixel silhouette targets per
+labeled arm of the pinned v4 corpus: the byte-exact per-pixel
+factual-vs-control endpoint difference, reduced to the 4-connected
+components that survive leave-one-action-out corroboration at pixel
+granularity (intersection of corroborating sibling arms' changed-pixel
+sets; arms sharing an action never corroborate; empty-change siblings
+abstain).  Censoring is inherited unchanged from the v4 cell records;
+the pixel path cross-checks the record's changed cells and
+corroborating-arm counts and fails loudly on mismatch.  Changed-but-
+uncorroborated pixels are weighted hard negatives (residual).  Arms whose
+pixel silhouette is empty are excluded exactly as the cell trainer
+excludes empty cell masks.  Disclosed caveat inherited from the cell
+path: the target is the union of vacated and occupied silhouettes (one
+displacement step of blur); the appearance-conditioned head is expected
+to resolve it because vacated pixels look like background.  No goal
+prior, player detector, or any assisted symbol appears anywhere in the
+label or training path (`strict_lineage` lint pinned by unit test).
+
+**Head.** `PixelMaskHead`: 4 input channels (native 256×240 RGB + the
+FROZEN tracker v4 per-cell probability map upsampled to its 16×16 pixel
+blocks), three 3×3 convolutions (hidden 32, SiLU; 7×7 receptive field —
+enough to see a 3px halo's context) and a 1×1 output logit per pixel;
+19,713 parameters, single head (no ensemble — the cell trainer's
+uncertainty gate axis is therefore N/A and dropped; disclosed deviation).
+Tracker v4 (`controllable-tracker-v4.pt`, parameter sha256 `b2fdd8ba…`)
+and the spatial-v10 backbone (`642d66ed…`) are frozen throughout; only
+the new head trains.  Digest checks fail the run if either frozen
+artifact's parameters change.
+
+**Training run (fixed now).** v4 corpus: labels
+`experiments/lolo1-wp5/wp5-labels-full-v4.jsonl` (file sha256
+`a9f15805…`, manifest digest `ee8d4f8e…`, digest-verified per record) +
+`experiments/lolo1-medium/dataset` (strict-bound).  Run-held-out
+hash-stable split via the cell trainer's own `split_sequence_runs` and
+`sample_arm_examples` (modulus 5, seeds 17/18), caps 6,000 training /
+1,500 validation arms (a spike-scale corpus, disclosed as capped), 20
+epochs, batch 16, lr 1e-3 (fresh-head rate per the recorded finding),
+positive weight 8.0 / residual weight 4.0, MPS, internal wall-clock
+ceiling 2,100 s so the external watchdog never kills a run mid-epoch.
+Checkpoint to `experiments/lolo1-wp5/pixel-mask-head-v1.pt` pinning the
+label manifest digest, the pixel-target corpus digest, tracker v4's
+parameter sha256, and the backbone parameter sha256; metrics sidecar
+alongside.
+
+**Training gates (fixed now).** Untrained same-architecture baseline
+beaten on all of: (1) held-out per-pixel loss, (2) pixel ROC AUC,
+(3) mean probability on silhouette pixels above background, (4) above
+residual pixels when residual pixels exist.  Reported, not gated:
+precision/recall/IoU at the pinned 0.5 operating point, Brier vs
+constant-prevalence.  Checkpoint must lint clean under the
+`strict_lineage` checkpoint audit.
+
+**Reconstruction convention (fixed now, before any gate run).** The
+reconstructed pixel mask of a frame is: tracker v4 cells at probability
+≥ 0.5 (the pinned operating point), dilated by 1 cell (anchor region);
+head pixels at probability ≥ 0.5 INSIDE the anchor; Chebyshev-dilated by
+3 pixels (the documented halo radius parameter of the recorded assisted
+masking convention — a convention-matching constant, mirrored by value;
+no assisted code participates).  An empty v4 cell mask yields an empty
+pixel mask — the 47 v323 frames with empty v4 masks therefore stay
+empty and will disagree; accepted, not patched.  Constants pinned by
+unit tests; no post-hoc tuning of any threshold, dilation, or halo after
+seeing real-corpus results.
+
+**Gate rerun (preregistered).** Rerun `lolo_agent.mask_sensitive_gate`
+UNCHANGED — same mattering-frame detector, same two agreement bits
+(`signature_equal`, `l1_within`), same thresholds (agreement ≥ 0.95,
+appearance L1 ≤ 0.08, ≥ 50 mattering frames per corpus), same three
+probe corpora (v322/v323/v325) — except the learned mask source is the
+reconstructed pixel mask.  Exact substitution mechanism: the gate's
+`score_corpus` already takes the mask source as a predictor object; the
+substituted predictor (`PixelSilhouettePredictor`) returns a
+pixel-resolution prediction whose grid is one unit per pixel
+(columns=width, rows=height) and whose probability map is the
+reconstructed mask as a 1.0/0.0 indicator, so the gate's unchanged
+helpers (`learned_mask_cells` / `learned_pixel_mask` /
+`learned_reference_slot`, at the pinned 0.5 threshold) recover exactly
+the reconstructed pixel mask — verified by a unit test that round-trips
+a mask through the unchanged helpers and through `score_frame`.  The
+driver is `python -m lolo_agent.pixel_mask_train gate`, which only loads
+the pinned artifacts (verifying the head checkpoint's pinned tracker and
+backbone digests against the loaded ones), composes the predictor, and
+calls the gate module's own `score_corpus`/`build_report`; no gate code
+is modified.  The driver module is assisted-coupled through the
+evaluation-instrument imports exactly as `mask_sensitive_gate` itself
+is; the lint test pins that neither new module references an assisted
+symbol directly.
+
+One preregistered scoring run, CPU, deterministic report to
+`experiments/lolo1-wp5/mask-sensitive-gate-v2-report.json` (the
+unchanged gate's own digest scheme), plus a byte-identical determinism
+rerun to a scratch path (reported).  Honest outcome either way: PASS →
+recommend shadow-promotion with divergence telemetry (parity claim only,
+per Amendment B's salvaged form); FAIL → report which quantity diverges
+and by how much, per corpus.
+
+### Pixel-mask head v1 — training results (appended 2026-08-16)
+
+**All four preregistered training gates PASS.**  Run exactly as
+preregistered (6,000/1,500 arms, 20 epochs completed, MPS, 684 s
+wall-clock — ceiling not hit).  Checkpoint
+`experiments/lolo1-wp5/pixel-mask-head-v1.pt`, parameter sha256
+`85e977f244d545b8047795f15d41d9cbc47c2ae5ed589298b8c572221870c167`,
+pinning labels manifest `ee8d4f8e…`, pixel-target corpus digest
+`4a8a6af0…`, tracker v4 `b2fdd8ba…`, backbone `642d66ed…`; frozen-digest
+checks passed (tracker and backbone parameters unchanged);
+`strict_lineage` checkpoint audit clean; head module lints clean
+(assisted=False), and the lint test pins that neither new module
+references an assisted symbol directly.
+
+Pixel-target derivation: every one of the 7,500 selected arms produced a
+non-empty corroborated pixel silhouette (0 empty-mask exclusions;
+prevalence 0.42% of pixels), and the pixel/cell cross-checks (changed
+cells, corroborating-arm counts) held on all of them.
+
+| quantity (held-out, 92.2M pixels) | untrained baseline | trained |
+|---|---|---|
+| per-pixel loss | 0.7296 | **0.00859** |
+| pixel ROC AUC | 0.5788 | **0.99843** |
+| Brier (constant 0.00422) | 0.2682 | **0.00292** |
+| precision / recall @0.5 | 0.0042 / 1.0 | 0.4997 / 0.9319 |
+| IoU @0.5 | 0.0042 | 0.4821 |
+| mean p: silhouette / residual / background | ~0.518 each | 0.828 / 0.738 / 0.0036 |
+
+Reading: the head separates silhouette pixels from background by ~230x
+in mean probability; the 2x over-coverage at 0.5 (precision ≈ 0.5 at
+recall ≈ 0.93) is consistent with the disclosed vacated/occupied target
+blur — and the high residual-pixel probability (0.738, separated from
+the silhouette but well above 0.5) shows the head also fires on
+changed-but-uncorroborated pixels, which the gate will price honestly.
+Metrics sidecar: `experiments/lolo1-wp5/pixel-mask-head-v1.metrics.json`.
+
+### Mask-sensitive gate v2 (reconstructed pixel mask) — results (appended 2026-08-16, after one preregistered run)
+
+**FAIL on all three corpora — NO-PROMOTE.**  Report
+`experiments/lolo1-wp5/mask-sensitive-gate-v2-report.json`, content
+digest
+`1052c9eae73918220d430b9ac0a53fe9fbe97f3b6d35106cfb1a7466959616a7`,
+byte-identical on the preregistered determinism rerun.  No
+preregistration deviations: the gate module ran unchanged (same
+mattering detector — counts identical to v1 at 1116/3910/1448 — same
+bits, same thresholds), with only the learned mask source substituted
+via the preregistered predictor mechanism.
+
+| corpus | mattering | sig-agree v1→v2 | L1-agree v1→v2 | mask IoU mean v1→v2 | bit |
+|---|---|---|---|---|---|
+| v322 object-present | 1116/1116 | 0.000 → **0.000** | 0.068 → 0.094 | 0.338 → 0.406 | FAIL |
+| v323 pre-push | 3910/3910 | 0.000 → **0.000** | 0.039 → 0.056 | 0.342 → 0.404 | FAIL |
+| v325 object-removed | 1448/1448 | 0.000 → **0.000** | 0.025 → 0.038 | 0.314 → 0.396 | FAIL |
+
+Which quantity diverges, and by how much:
+
+- The binding signature bit is 0.000 everywhere (required ≥ 0.95):
+  exact quantized-feature equality over the comparison cells never
+  occurs, on any of the 6,474 mattering frames.
+- The graded L1 bit reaches 0.038–0.094 (required ≥ 0.95); the median
+  per-frame max-cell L1 is 0.39–0.42, ~5x the 0.08 bound — essentially
+  unchanged from v1 in the median, but no longer in the same failure
+  class everywhere (below).
+- Pixel mask IoU improved from ~0.33 to ~0.40 mean on every corpus, with
+  per-frame maxima now 0.90–0.95 (v1 ceiling: 0.73); overlap fractions
+  match v1 (100% / 98.7% / 100%).  v323 has 50 empty reconstructed
+  masks: the 47 empty-v4-anchor frames from v1 (empty anchor ⟹ empty
+  reconstruction by construction) plus 3 where no head pixel reached
+  threshold inside a non-empty anchor.
+
+Reading — the failure decomposes into two distinct residual gaps, and
+the resolution-class gap of §4.34 is closed:
+
+1. **Silhouette agreement is bimodal.**  On frames where the
+   reconstructed mask nearly coincides with the assisted mask
+   (IoU ≥ 0.8: 105/246/52 frames, ~4–9% per corpus), the L1 bound holds
+   almost always (105/105, 215/246, 52/52; median max-cell L1 ≈ 0.026,
+   a third of the bound) — the pixel reconstruction is a faithful
+   drop-in there, something no v1 frame achieved.  On the ~85–88% of
+   frames with IoU < 0.5 the bound always fails (median ≈ 0.42).  The
+   learned silhouette is nearly constant-size (median ≈ 760 px,
+   min 338, max ~1,100–1,670) while the assisted mask itself is
+   strongly multi-modal on the same corpora (sampled 340 / ~1,100 /
+   ~1,640 px modes within one corpus: the blue-anchored connected
+   component shrinks when the sprite is partially occluded and leaks
+   into adjacent white regions when touching them, halo included).  The
+   remaining disagreement is therefore silhouette shape/extent on the
+   probe distribution — partly head error (the disclosed
+   vacated/occupied target blur inflates its positives; residual-pixel
+   mean probability 0.738 confirms it fires on uncorroborated change),
+   and partly the assisted convention's own frame-to-frame variance,
+   which counterfactual supervision has no reason to reproduce.
+2. **Exact signature equality is an equality-class criterion.**  Even
+   the near-perfect frames (max-cell L1 ≈ 0.008–0.026, IoU 0.9+) never
+   produce an equal signature: any handful of boundary pixels that
+   differ inside one 4×4 pool shifts a pooled mean across a
+   quantization step somewhere among the ~11 comparison cells.  The
+   binding bit effectively demands pixel-identical masks in every pool
+   of every touched cell — byte replication of the assisted mask, not
+   appearance equivalence within the planner's own 0.08 tolerance.
+
+Consequence: per the preregistered criterion the tracker + pixel head
+stay telemetry-only; no shadow-promotion.  The spike's positive result
+is instrumental: cell-block resolution is no longer the failure mode —
+a learned pixel mask can match the assisted convention to within the
+planner's appearance tolerance on the frames where it localizes the
+same silhouette, and the measured residuals name the two remaining
+obstacles precisely.  Paths this measurement licenses considering next
+(not attempted here, each requiring its own preregistration): (a) close
+the silhouette-extent gap with probe-distribution-targeted strict
+collection (the three-cycle recipe, now at pixel granularity) and an
+occupied/vacated disambiguation in the label path (e.g. intersecting
+the changed-pixel set with sibling-arm evidence about the factual
+endpoint); (b) accept that byte-exact signature reproduction is
+unattainable for any learned mask and gate a convention change instead
+— either cell-resolution masking on both sides (§4.34's alternative) or
+an appearance-tolerance state-identity criterion — as an explicitly
+gated downstream change with its own regression evidence, never as
+silent substitution.
