@@ -553,3 +553,128 @@ open. The next durable artifacts, in order: the module + tests commit, the
 merged `6a8488a`, the conflict-root manifest appended here, the shadow-run
 disclosure, and only then the E1/E2 preregistration addendum with exact
 digests and command lines — each before the step it governs executes.
+
+## 11. Conflict-root mining manifest (appended 2026-08-17, §6 executed)
+
+The §6 procedure was executed offline by `lolo_agent/conflict_root_mining.py`
+(new pure analysis module, stdlib + `accessibility_preference` only; tests in
+`tests/test_conflict_root_mining.py`, 41 tests; full suite 953 OK, 4
+skipped). Read-only over stored telemetry; zero emulator cost; no native
+runs. Output is deterministic — two full reruns produced byte-identical
+manifests. Regenerate with:
+
+```
+.venv/bin/python -m lolo_agent.conflict_root_mining \
+  --evaluations-dir experiments/lolo1-entity-v10/evaluations \
+  --records experiments/lolo1-wp5/wp8lite-accessibility-records.json \
+  --output experiments/lolo1-wp5/conflict-root-manifest.json
+```
+
+Manifest artifact: `experiments/lolo1-wp5/conflict-root-manifest.json`
+(gitignored, like the run telemetry it derives from). Manifest content
+digest (`digest_sha256`, canonical-JSON over the manifest body):
+`f3d240384044242599599c39c72134562fb29a9e94fd4555ee90d8fc3652e1a7`; file
+sha256 `67af4a669201c0dc0de9e6437cfac654452223ffd075ff75bd327e7f57fc9bfa`.
+Record store re-verified at mining time: sha `cf01a67a…` (§6.8 value),
+3 records, content signatures byte-equal to the values every v327/v328 run
+logged at load (`15604cb5…`/`37ea410d…`/`47975c94…`), root designation
+`prepush-root-empty-track-unmatchable`.
+
+### 11.1 Corpus and verification
+
+v322–v328 (7 runs): 489,521 events walked; 401 archived candidates (option
++ frontier archives; causal-outcome entries tracked but excluded from the
+scored universe per the recorded `archive_size` evidence); 16 candidates
+map to certified records (the four removal-class `85fd9014…` states in
+each of v323/v324/v327/v328); 19 restore-selection instants; 74 decision
+points evaluated (every restore instant + every committed-decision
+boundary). Instrument checks all pass: the offline re-scorer reproduces
+v328's recorded treatment bonuses exactly at all three restores (+25.0 /
+`baseline` at d2; 0.0 / `mapped` at d5 and d8), and `archive_size`
+reconciles exactly at every instant that decides the result below
+(including the decision-2 seam: 13 = 13, 4 bonus-positive candidates);
+late d5/d8 instants show ±1–2 entry discrepancies from unnamed add
+streams, disclosed in the manifest and not load-bearing.
+
+### 11.2 Result: NO organic conflict roots
+
+**Zero conflicts, all three families** (novelty-decoy 0, post-exploit 0,
+exhaustion 0). The §4.43 learning now quantified over every recorded
+decision point: wherever a certified-improving candidate coexisted with a
+scoring current side (v323/v324/v327/v328, d1–d2), the baseline argmax was
+*itself* the certified removal-class branch (`state-00012257`, 53.65); at
+every other instant no live candidate mapped to any record (v322: pushed
+root, all candidate signatures uncertified; v325/v326: post-removal
+accumulated-track signatures, none certified) or the current side had
+already acquired the removal signature, zeroing every bonus. Four
+*near-conflict observations* are recorded: at the d8 restores of
+v323/v324/v327/v328 the in-run baseline selected the unmapped causal
+branch `state-00012322` (restore-time 59.243) over the live certified
+`state-00012258` — but the root was already mapped to the removal record,
+so the bonus was structurally zero. This is the §7.7 boundary, and it is
+exactly the shape the primary seeded root reconstructs at a scoring-live
+root.
+
+### 11.3 Seeded designs (§6 step 5 fallback — DISCLOSED AS CONSTRUCTED)
+
+**Primary — archive-seeded root (novelty-decoy; E2's top-ranked root).**
+No fabricated certification: real record store, real restorable states.
+Root: the §6.1 pre-push staging
+(`episodic_resume:entity-v318-room3-known-push-connected-mask-d2:decision-4`,
+empty root signature ⇒ §6.8 baseline designation live). Archive seeded
+with, from sibling runs:
+
+| Role | State | Source | Signature | Baseline value | State sha256 (digest verified) |
+| --- | --- | --- | --- | --- | --- |
+| Decoy (neutral, higher baseline) | `state-00001391` | v325 (restore winner, seq 15054) | none (unmapped) | 54.6125 (restore-time) | `b9283ab1…` ✓ |
+| Certified-improving | `state-00012257` | v323 (≡ v324/v327/v328) | `85fd9014d58deb42` | 52.3094 (restore-time; 53.65 add) | `5a3cf71c…` ✓ |
+
+Arithmetic: baseline gap 2.3031 = minimum flipping bonus; provided
+certified bonus +25.0 (17 cells + milestone ×8 vs the designated pre-push
+baseline); flip margin 22.6969. Selection rule (fixed in the module):
+maximize `min(gap, flip margin)` over all valid restorable pairs;
+deterministic tie-break. VOID: at the staged root's first restore instant
+the weight-0 argmax must be the decoy and the certified branch must score
+exactly +25.0, else fix staging, disclose, rerun once (§7.1 VOID rule).
+Cross-run restore-time values are a disclosed staging assumption the VOID
+condition covers.
+
+**Alternate — records-file variant** (the §6 step 5 "certify a coverage
+record for a configuration the baseline underranks"), for use only if the
+archive-seeding mechanism is unavailable: seeded record = the certified
+removal envelope re-keyed to an underranked configuration, provenance
+force-marked `SEEDED-CONSTRUCT` (it can never read as a measured
+certification; discrimination staging only, never accessibility
+evidence). Selected instants, both at existing restorable states:
+
+- *novelty-decoy*: v325 d2 (seq 15054) — decoy `state-00001951` (27.8547,
+  unmapped, sha `9d56adcb…` ✓) vs challenger `state-00001475` (13.7, sig
+  `d532f20cbec33347`, sha `55864657…` ✓); gap 14.1547, flip margin
+  10.8453; seeded-record content signature `4d6377f4…`; variant-file
+  recipe sha `2155ed25…`.
+- *post-exploit*: v325 d5 (seq 56852; milestone `(12,11)` collected at
+  d4, so the seeded record's milestone component is spent-but-scoring —
+  the milestone-vs-cells decomposition §6 step 4 asks for) — decoy
+  `state-00001076` (15.5104) vs the same challenger; gap 1.8104, flip
+  margin 23.1896.
+
+**Exhaustion family: not constructible** from existing certified
+evidence, honestly recorded per-instant in the manifest: the
+goal-exhaustion instants (v325/v326 d8) carry a non-empty *unmapped*
+current signature (structural refusal ⇒ every bonus zero), and the mapped
+d8 instants resolve to the removal record itself, so any positive
+challenger would require inventing cells beyond every certified envelope.
+Deferred to the `(8,4)`/`(9,12)` continuation measurements.
+
+### 11.4 Consequence for §7.1 E2
+
+E2's root is the primary seeded design above (mining found no organic
+root to rank ahead of it); the disclosure obligation of §6 step 5 is
+hereby met before any arm launches. Everything else in §7.1 stands. The
+E1/E2 preregistration addendum with exact digests and command lines
+remains a separate, later artifact (§10 ordering), and §9.2's `6a8488a`
+merge remains a precondition — note the mining also shows why: the only
+argmax flips the predicate ever produced on raw telemetry were
+instrument-gap artifacts of the §4.29 signature reset, which the module
+detects, flags, and disqualifies (they vanish under the corrected
+candidate universe).
