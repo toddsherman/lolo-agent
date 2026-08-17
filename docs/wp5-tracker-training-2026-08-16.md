@@ -117,3 +117,28 @@ sharper masks expose the true gap; AUC rose 0.865→0.937 regardless.)
 Next data increment: east-region collection from v325 decision snapshots
 (d2 in-band pre-heart; d4 post-heart east), then labels v4 → tracker v4.
 Report: `experiments/lolo1-wp5/tracker-v3-room3-report.json`.
+
+### Tracker v4 — full Room 3 closure (appended 2026-08-16)
+
+Labels v4 (20,002 roots / 90,678 arms; tier-3 east-region collection from
+v325 d2/d4 snapshots). Training gates pass (AUC 0.9993, IoU 0.7559,
+corr +0.53). Room 3 re-evaluation:
+
+| state | v2 | v3 | v4 |
+|---|---|---|---|
+| object-present | 0.000/0.440 | 1.000/1.000 | 1.000/1.000/0.929 |
+| pre-push | 0.001/0.446 | 0.946/0.996 | 0.952/0.995/0.822 |
+| object-removed | 0.833*/0.865 | 0.162/0.937 | **1.000/1.000/0.866** |
+
+(held-in 1.000/0.9991/0.785 throughout — no forgetting; * = blob artifact)
+
+Three collection cycles, each closing exactly what it covered:
+state-local, immediate, reproducible. The perception recipe —
+counterfactual labels + targeted strict collection — is validated as an
+iterative pipeline. Remaining before promotion: the §4.31(c)
+mask-sensitive gate (agreement with the assisted mask specifically on
+frames where masking demonstrably matters), noting the WP5 comparison
+lands at parity with the color heuristic on these corpora (both at
+ceiling against counterfactual ground truth), which per Amendment B's
+salvaged form supports shadow-promotion with divergence telemetry rather
+than a superiority claim.
