@@ -986,3 +986,238 @@ pre-launch check reproduces on the fixed build. As in §6.7, no
 by the arms and by the appended seam tests.
 
 Staging of the §6.5 fix is complete. Neither ablation arm has been run.
+
+## 7. Results (appended 2026-08-17, after both arms ran once)
+
+Both arms ran once, to completion, per §6.2:
+
+- **Control:** `entity-v327-room3-wp8lite-control-w0-d12` (weight 0.0) —
+  79,477 events, 12,232 verified branches, 8 decisions, manifest status
+  `complete`.
+- **Treatment:** `entity-v328-room3-wp8lite-treatment-w1-d12` (weight
+  1.0) — 79,477 events, 12,232 verified branches, 8 decisions, manifest
+  status `complete`.
+
+Disclosed naming deviation: the executed run ids drop the `ablation-`
+infix relative to the §6.2 strings. `run_id` is explicitly exempt from
+the config-equality rule; no other flag differs, so this is a naming
+deviation, not a validity condition.
+
+Scoring was performed by a deterministic scorer whose full output is
+`experiments/lolo1-wp5/wp8lite-ablation-report.json` (§7.8); every number
+below is reproduced there.
+
+### 7.1 VOID check — not void
+
+- **Config equality.** 278 flattened manifest fields compared between
+  arms; the only differences are
+  `metadata.planning_config.verified_accessibility_weight` (0.0 vs 1.0),
+  `run_id`, and the two wall-clock timestamps. Each arm's
+  `planning_config` equals v324's in all 117 shared fields with the
+  single addition of `verified_accessibility_weight` — the §6.2
+  pre-launch check holds post-hoc. Input digests (host, core, ROM,
+  neural checkpoint, entity-behavior checkpoint) equal the §6.1 values
+  in both arms; the `episodic_resume` blocks are identical between arms
+  and match §6.1 (v318 source, decision 1, checkpoint seq 2026, events
+  sha `0bbe1d15…`).
+- **Records loaded identically.** `verified_accessibility_records_loaded`
+  fires at seq 3 in both arms with `record_count: 3`, the three §6.4
+  content signatures byte-equal between arms
+  (`85fd9014d58deb42 → 15604cb5…`, `596a1c8a3c0fc8be → 37ea410d…`,
+  `prepush-root-empty-track-unmatchable → 47975c94…`), and
+  `root_configuration_signature:
+  "prepush-root-empty-track-unmatchable"` (§6.8 designation visible at
+  load). Records file sha256 re-verified at scoring time:
+  `cf01a67a…` (the §6.8 value).
+- **Seeding.** The removal-class configuration was discovered **inside
+  the scoring window** in both arms: `85fd9014d58deb42` is carried by 23
+  branch-verified events per arm, of which branch indices
+  9419/9420/9423/9424 (seqs 43060–43080, depth 11) fall within the
+  first 10,000; four `human_prior_option_archive_added` events carry the
+  signature at seqs 62944/62949/62984/63004 in both arms (§6.7-smoke
+  identical). The treatment faced the §3.2 choice at every restore.
+- **§6.5/§6.8 staging defect discharged.** The treatment's three
+  restore-selection events log `verified_accessibility_current_source`
+  = `baseline` (d2), `mapped` (d5), `mapped` (d8) — never an
+  unresolved `missing` at the root — so the §6.5 VOID-class outcome
+  (every restore unscored for the mapping reason) did **not** occur.
+  The root really carried the empty signature
+  (`human_prior_root_object_state_seeded`:
+  `tracked_world_state_signature: null`,
+  `legacy_track_reconstructed: true`) and the designated baseline
+  resolved it, as §6.8 intended.
+- **Window not starved.** 12,232 branches per arm ≥ the 10,000-branch
+  window; event count 79,477 ≤ 200k.
+
+### 7.2 Scoring window — facts and one disclosed semantics ruling
+
+The 10,000th `human_prior_option_branch_verified` event sits at seq
+45,718 in both arms; the last (12,232nd) at seq 55,887. All 12,232
+branch events per arm are emitted by the single decision-1 option
+search, which completes before any decision commits (decision 1 commits
+at seq 75,742; restores at seqs 76,560/78,049/79,426, decisions 2/5/8 —
+the v324 geometry §6.1 anticipated). Every restore therefore postdates
+the 10,000th branch in wall order. A strict "events after the 10,000th
+branch event are outside the window" reading would place every restore
+of every conforming run from this root outside the window and make the
+design self-voiding by construction, contradicting §6.1 ("the §3.2
+seeded-archive requirement is satisfied by the deterministic decision-1
+search itself; restores at decisions 2/5/8") and §6.8 ("bit 1 can fire
+(or fail) for valuation reasons"). The window is therefore applied as
+the branch-budget it is: branch-level quantities (life-loss
+confirmations, certified coverage, removal-class discovery) are
+hard-truncated at branch 10,000, and the run's decision-level
+restore/commit events are in scope provided the restored branch itself
+was verified within the first 10,000 branches (it was — §7.3). The
+verdict is insensitive to this ruling: bit 2 fails under either
+reading, so the outcome is FAIL either way.
+
+### 7.3 Bit 1 — deliberate selection: **PASS**
+
+Treatment `archive_branch_restored`, seq 76,560, decision 2:
+
+- Restored branch `state-00012256` — archived at seq 62,949 with
+  `human_prior_option_tracked_world_state_signature: 85fd9014d58deb42`
+  (the removal-class signature); the identical branch (same 11-action
+  path and durations) was verified in-window at **branch index 9,420**
+  (seq 43,064, `state-00009422`).
+- `verified_accessibility_total_bonus: 25.0` (> 0), decomposition:
+  `new_cell_count: 17` (+17.0), `new_milestone_count: 1` at cell
+  `(12,11)` (+8.0), `new_frontier_count: 0`,
+  `churn_excluded_frontiers: []`, `confirmed_manipulation_count: 0` —
+  the hardened reason (certified new cells and a certified new
+  milestone-bearing cell), not churn.
+- `verified_accessibility_current_source: baseline` (§6.8 path),
+  candidate content signature `15604cb5…` (the removal record),
+  `verified_accessibility_outcome_category: removal`, `scored: true`.
+
+The preference term ranked the removal-class restore, for the hardened
+reason, at the first restore opportunity.
+
+### 7.4 Bit 2 — matched-budget consequence advantage: **FAIL**
+
+The committed trajectories of the two arms are **identical** in every
+decision (actions up/up/down/right/up/up/left/left; identical endpoint
+slots, heart collections, and track sets; the `decision_committed`
+streams are equal after removing run id/timestamps and the treatment's
+additional `verified_accessibility_*` telemetry). Both arms first reach
+a cell outside the certified 7-cell baseline envelope at **decision 2**
+(restore-installed endpoint cell `(8,8)`, inside the removal record's
+certified 24-cell envelope), then `(9,8)`/`(8,7)`/`(8,6)`/`(7,6)` at
+d4–d8, always at equal decision indices. The milestone at the
+previously-unreachable milestone-bearing cell `(12,11)` (heart slot
+(192,176)) is collected by **neither** arm within the window —
+censored non-reach at budget, never "unreachable" (learnings §2/§4.14).
+The treatment is therefore not strictly earlier on cells or milestone,
+and the alternative clause (control never doing so) does not hold:
+bit 2 fails.
+
+Hearts for the record (identical in both arms): d1 collects the heart
+at slot (96,128) (cell `(6,8)`, inside the baseline envelope), d3
+collects slot (128,128) (cell `(8,8)`); 3 of 5 hearts remain at run
+end; the milestone heart at `(12,11)` is untouched.
+
+### 7.5 Bit 3 — no safety regression: **PASS**
+
+Zero `human_prior_life_loss_confirmed` branches in the treatment arm vs
+zero in the control arm, both within the 10,000-branch window and over
+the full runs (0 ≤ 0).
+
+### 7.6 Verdict: **FAIL** (mixed outcome; §3.4 rule applied as written)
+
+Bits: 1 PASS, 2 FAIL, 3 PASS — a mixed outcome, and **ANY mixed outcome
+= FAIL**. Per §3.4/§5: the verified-accessibility preference term stays
+engineering-only, this result is to be recorded in learnings, and the
+declared fallback to evaluate is Amendment E
+(`relational_planner.py` extraction). No post-hoc weight search on this
+dataset; no rerun on an identical negative result; no depth/beam
+escalation.
+
+What the paired evidence actually shows (report-only interpretation):
+the term did exactly what it was built to do at the seam — it valued
+the certified removal-class restore +25.0 for the hardened reason — but
+the existing frontier score had already selected that same branch at
+the same decision in the control arm
+(`persistent_frontier_value` 29.578… control vs 54.578… treatment for
+the identical `state-00012256` selection, identical `score: 30.7`). The
+preference term reinforced a choice the planner was already making
+non-deliberately and therefore produced no earlier consequence — which
+is precisely the failure mode bit 2 was preregistered to detect. The
+valuation bottleneck of §1 is real, but at this root the frontier
+score's stagnation-driven restore already lands on the valuable
+configuration, so the term adds attribution, not behavior.
+
+### 7.7 Paired divergence analysis (report-only)
+
+Full-stream normalized diff (79,477 line pairs; `run_id`, `time_utc`,
+`elapsed_ms` excluded): **1,509 differing events, none inside the
+scoring window** (the arms are bit-identical from seq 4 through seq
+45,718 and beyond, up to seq 49,461; the only earlier difference is the
+weight value inside the seq-3 records-loaded event).
+
+- **First behavioral divergence: seq 49,462**, depth-11
+  `human_prior_option_search_depth_completed` — the world-state
+  reserve's retained **order** permutes (the same 32-signature set;
+  goal-region bucket phase flipped). This is the §4.5 reserve seam: the
+  +25-ranked removal-class world-state representative reordered the
+  reserve's goal-region interleave. The removal signature itself is
+  retained in neither arm's world-state reserve list (membership
+  everywhere unchanged; every other reserve's retained telemetry is
+  identical).
+- **Consequence:** the depth-12 expansion visits 330 of the final 1,210
+  branches with different paths (first at branch index 11,023, seq
+  50,388), with matching `state_loaded`/`env_step`/`state_saved`/
+  local-neutral telemetry differences — all outside the scoring window.
+- **Convergence:** the 13 `human_prior_option_archive_added` events
+  (identical signatures, states, scores, paths), all three restore
+  selections (d2 `state-00012256` score 30.7; d5 `state-00012257` score
+  53.65; d8 `state-00012322` score 7.745), and all eight committed
+  decisions are identical between arms. **The treatment's committed
+  trajectory and archive-restore choices never diverged from
+  control's.** The remaining differences are exactly the §3.5
+  `verified_accessibility_*` decomposition fields on the three restore
+  events and their committed-decision echoes (d2: scored +25.0,
+  source `baseline`; d5: scored 0.0, `mapped`, candidate == current
+  removal record; d8: unscored refusal `record_missing_or_disabled`,
+  `mapped` — the d8 branch, created at decision 7, carries no
+  store-mapped signature) plus the d2 `persistent_frontier_value`
+  (+25.0). §3.5 is satisfied: every restore in both arms carries the
+  full decomposition or the explicit unscored refusal, and every
+  ranking difference is attributable to named components.
+- **Precedent correction (disclosed):** v324's own telemetry shows the
+  identical committed trajectory from this root (hearts collected at
+  decisions 1 and 3, restores at decisions 2/5/8 of the same archived
+  states at identical scores, seq offset −1 for the extra records-loaded
+  event). The working assumption relayed into scoring — that v323/v324
+  collected no heart from this root within 8 decisions — is contradicted
+  by the telemetry; the correct precedent statement is that the
+  **milestone heart at `(12,11)` was never collected** in v323/v324 or
+  in either arm. The mid-run appearance/vanishing of committed
+  heart-slot lists is fully explained by restores: restore decisions
+  jump to archived states whose branch lineages carry their own
+  collection history, and `human_prior_collected_heart_slots` is null
+  on restore decisions.
+
+### 7.8 Certified-hold corroboration and report artifact
+
+Applying the WP6 instrument (`lolo_agent/accessibility.py`,
+certified-hold predicate, validity window bounded by each arm's first
+causal restore) to **each arm's own first 10,000 branch-verified
+events** with the empty-track root: 1,756/10,000 branches certified
+configuration-held in each arm, certified envelope exactly the 7-cell
+baseline record (`[[6,6],[6,7],[6,8],[6,9],[6,10],[7,10],[8,10]]`),
+identical coverage content signature `4355bd59…` in both arms — the
+in-run baseline reproduces the v324 record, so the bit-2 "previously
+unreachable" boundary is honest for these runs, not just inherited.
+Side-effect-only cells (departed branches; reported, never scored):
+`(7,6),(8,6),(8,7),(8,8)`.
+
+Scoring artifact: `experiments/lolo1-wp5/wp8lite-ablation-report.json`
+(gitignored artifact, like the records file). Deterministic content
+digest (sha256 over the canonical sorted-key JSON of the report without
+the digest field):
+`19f4092f344c0272638919b540ddf4353aae18e3b26a1e0a998b50dfecc74326`;
+file sha256
+`1bdb539a7f7a2186646f7ce59325496c635f173f25f78feb4986fb1501ca1f60`.
+Verified by rerunning the scorer: three independent runs produced
+byte-identical reports and the identical content digest.

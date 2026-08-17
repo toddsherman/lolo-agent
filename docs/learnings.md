@@ -1946,6 +1946,69 @@ Evidence:
 - `docs/wp5-tracker-training-2026-08-16.md` (full campaign chronicle)
 - `experiments/lolo1-wp5/functional-gate-v5-report.json`
 
+### 4.43 WP8-lite ablation: mechanism validated, behavior unchanged — FAIL as preregistered
+
+What was tried:
+
+- The preregistered paired ablation (design doc §3/§6, report digest
+  `19f4092f…`, scorer byte-identical across three reruns): control
+  (weight 0.0) vs treatment (weight 1.0), byte-identical otherwise
+  (278-field config equality verified), from the v318 pre-push checkpoint
+  root with the certified record store loaded in both arms.
+
+Result:
+
+- **Bit 1 PASS**: the treatment's decision-2 restore selected the
+  removal-class archive on its certified value — bonus 25.0 (17 new
+  cells + milestone ×8), `current_source: baseline`, full component
+  attribution; later restores correctly show `mapped/0.0` once the root
+  acquired the removal-class signature.
+- **Bit 2 FAIL**: the arms' committed trajectories are identical — the
+  control's plain frontier score already restored the *same*
+  removal-class branch non-deliberately (29.578 vs 54.578 on the same
+  winner). Both arms reach beyond the baseline envelope at the same
+  decision; neither collects the `(12,11)` milestone within 8 decisions.
+- **Bit 3 PASS**: zero life losses both arms. First behavioral divergence
+  is post-window reserve-order permutation that fully reconverges.
+- Record correction: v324's committed trajectory DID collect hearts at
+  d1/d3 (the §4.27-era "zero hearts from this root" framing was wrong);
+  the uncollected object is specifically the `(12,11)` milestone heart.
+
+Classification:
+
+- **FAIL (mixed) per the preregistration** — no weight tuning, no rerun;
+  the declared Amendment E fallback (relational planner extraction)
+  engages. The mechanism itself is validated at the selection level; what
+  failed is *discrimination*: at this root, novelty/coverage and
+  certified accessibility prefer the same branch, so deliberateness is
+  behaviorally redundant.
+
+Learning:
+
+- An ablation root must exhibit *score conflict* — a configuration the
+  baseline scorer disprefers but certified accessibility prefers —
+  or bit-2-style consequence bits cannot discriminate deliberate from
+  incidental choice. Root selection is part of experimental power, not
+  just provenance.
+- The existing novelty machinery is better at finding valuable
+  configurations than the §4.28-era narrative suggested: it chose the
+  removal twice (v324's committed line, and here) without any
+  accessibility term. The planner's gap is sustaining and *chaining*
+  preparations, not the single restore choice.
+
+Plan change:
+
+- WP8 proceeds on the declared fallback: relational planner extraction
+  (Amendment E), whose hypothesis-level planning is where deliberateness
+  can matter beyond a single restore — with ablation roots chosen for
+  score conflict, preregistered.
+
+Evidence:
+
+- `docs/wp8-lite-ablation-design-2026-08-16.md` §7
+- `experiments/lolo1-wp5/wp8lite-ablation-report.json`
+- runs `entity-v327-…-control-w0-d12`, `entity-v328-…-treatment-w1-d12`
+
 ## 5. Platform and cost learnings
 
 ### 5.1 RunPod for emulator branching
