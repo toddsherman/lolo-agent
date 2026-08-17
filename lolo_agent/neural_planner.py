@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import heapq
+import json
 import math
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field, replace
@@ -23,6 +24,12 @@ from typing import (
 import torch
 from torch import Tensor
 
+from .accessibility_preference import (
+    AccessibilityPreferenceComponents,
+    AccessibilityRecordProvenance,
+    CertifiedAccessibilityRecord,
+    verified_accessibility_preference,
+)
 from .agent import Decision
 from .bidirectional_probe import BidirectionalProbeCollector
 from .entity_behavior import (
@@ -87,6 +94,7 @@ class NeuralPlanningConfig:
     persistent_change_speculative_recovery: bool = False
     causal_affordance_weight: float = 3.0
     causal_event_archive_weight: float = 4.0
+    verified_accessibility_weight: float = 0.0
     causal_change_pixel_threshold: int = 12
     causal_spatial_columns: int = 16
     causal_spatial_rows: int = 15
@@ -748,6 +756,13 @@ class VerifiedNeuralAgent:
                 "human-prior option search milestone reserve must be "
                 "non-negative"
             )
+        if not math.isfinite(self.config.verified_accessibility_weight) or (
+            self.config.verified_accessibility_weight < 0.0
+        ):
+            raise ValueError(
+                "verified accessibility weight must be finite and "
+                "non-negative"
+            )
         if self.config.human_prior_option_search_milestone_extension < 0:
             raise ValueError(
                 "human-prior option search milestone extension must be "
@@ -1172,6 +1187,13 @@ class VerifiedNeuralAgent:
         self.current_human_prior_root_object_state = (
             ObjectTrackSet.empty().to_root_object_state()
         )
+        # WP8-lite verified-accessibility record store: tracked world-state
+        # signature -> certified record, empty by default and populated only
+        # by the provenance-checked import path (never inferred in-run) —
+        # docs/wp8-lite-ablation-design-2026-08-16.md section 4.2.
+        self.verified_accessibility_records: Dict[
+            str, CertifiedAccessibilityRecord
+        ] = {}
         self.last_navigation_change_decision: Optional[int] = None
         self.human_prior_navigation_detour_origin_signature = ""
         self.human_prior_navigation_detour_started_decision: Optional[
@@ -10941,7 +10963,10 @@ class VerifiedNeuralAgent:
                 ]
                 world_state_candidates = list(
                     self._human_prior_world_state_reserve_candidates(
-                        observed_candidates
+                        observed_candidates,
+                        verified_accessibility_rank=(
+                            self._verified_accessibility_reserve_rank
+                        ),
                     )
                 )
                 preparation_goal_slot = (
@@ -18225,6 +18250,9 @@ class VerifiedNeuralAgent:
     def _human_prior_world_state_reserve_candidates(
         cls,
         nodes: Sequence[_HumanPriorOptionNode],
+        verified_accessibility_rank: Optional[
+            Callable[[str], float]
+        ] = None,
     ) -> Tuple[_HumanPriorOptionNode, ...]:
         """Choose useful endpoints per cumulative anonymous world state.
 
@@ -18291,7 +18319,16 @@ class VerifiedNeuralAgent:
             )
 
         def topology_rank(node: _HumanPriorOptionNode) -> tuple:
+            verified_bonus = (
+                verified_accessibility_rank(
+                    node.tracked_world_state_signature
+                )
+                if verified_accessibility_rank is not None
+                else 0.0
+            )
             return (
+                verified_bonus > 0.0,
+                verified_bonus,
                 node.world_state_reachability_axes,
                 node.world_state_reachability_count,
                 node.world_state_reachability_span,
@@ -19090,6 +19127,54 @@ class VerifiedNeuralAgent:
             branch.plan.durations[0],
         )[2]
 
+    def _archive_verified_accessibility_bonus(
+        self, branch: _ArchivedBranch
+    ) -> Tuple[float, Optional[AccessibilityPreferenceComponents]]:
+        """Verified-accessibility preference term (WP8-lite).
+
+        Certified records only; a missing record on either side scores
+        0.0 (unverified accessibility never scores as observed —
+        docs/wp8-lite-ablation-design-2026-08-16.md).
+        """
+
+        if self.config.verified_accessibility_weight <= 0.0:
+            return 0.0, None
+        candidate = self.verified_accessibility_records.get(
+            branch.tracked_world_state_signature
+        )
+        current = self.verified_accessibility_records.get(
+            self.current_human_prior_root_object_state
+            .tracked_world_state_signature
+        )
+        if candidate is None or current is None:
+            return 0.0, None
+        components = verified_accessibility_preference(candidate, current)
+        return (
+            self.config.verified_accessibility_weight
+            * components.total_bonus,
+            components,
+        )
+
+    def _verified_accessibility_reserve_rank(self, signature: str) -> float:
+        if (
+            self.config.verified_accessibility_weight <= 0.0
+            or not signature
+        ):
+            return 0.0
+        candidate = self.verified_accessibility_records.get(signature)
+        current = self.verified_accessibility_records.get(
+            self.current_human_prior_root_object_state
+            .tracked_world_state_signature
+        )
+        if candidate is None or current is None:
+            return 0.0
+        return (
+            self.config.verified_accessibility_weight
+            * verified_accessibility_preference(
+                candidate, current
+            ).total_bonus
+        )
+
     def _archive_frontier_score(self, branch: _ArchivedBranch) -> float:
         own_value = self._frontier_estimate(
             branch.frontier_signature
@@ -19126,6 +19211,9 @@ class VerifiedNeuralAgent:
             self.config.causal_event_archive_weight
             if branch.causal_event_outcome
             else 0.0
+        )
+        verified_accessibility_bonus, _verified_accessibility_components = (
+            self._archive_verified_accessibility_bonus(branch)
         )
         goal_navigation_bonus = 0.0
         if (
@@ -19178,6 +19266,7 @@ class VerifiedNeuralAgent:
                 + causal_event_bonus
                 + goal_navigation_bonus
                 + goal_progress_bonus
+                + verified_accessibility_bonus
             )
         return (
             max(own_value, self.config.frontier_origin_weight * origin_value)
@@ -19189,6 +19278,7 @@ class VerifiedNeuralAgent:
             + causal_event_bonus
             + goal_navigation_bonus
             + goal_progress_bonus
+            + verified_accessibility_bonus
         )
 
     def _record_delayed_return(
@@ -26510,6 +26600,10 @@ class VerifiedNeuralAgent:
         )
         self.visual_last_visit[self._signature(branch.frame)] = self.decision_index
         selected_frontier_value = self._archive_frontier_score(branch)
+        (
+            selected_verified_accessibility_bonus,
+            selected_verified_accessibility_components,
+        ) = self._archive_verified_accessibility_bonus(branch)
         selected_causal_spatial_archive_bonus = (
             self._archive_causal_spatial_bonus(branch)
         )
@@ -26736,6 +26830,20 @@ class VerifiedNeuralAgent:
             target_pose_action=self.current_pose_action,
             score=branch.score,
             persistent_frontier_value=selected_frontier_value,
+            verified_accessibility_bonus=(
+                selected_verified_accessibility_bonus
+            ),
+            **(
+                selected_verified_accessibility_components.log_fields()
+                if selected_verified_accessibility_components is not None
+                else {
+                    "verified_accessibility_scored": False,
+                    "verified_accessibility_refusal_reason": (
+                        "record_missing_or_disabled"
+                    ),
+                    "verified_accessibility_total_bonus": 0.0,
+                }
+            ),
             causal_spatial_archive_bonus=(
                 selected_causal_spatial_archive_bonus
             ),
@@ -27043,6 +27151,20 @@ class VerifiedNeuralAgent:
             archive_branches_added=0,
             archive_size=len(self.archive),
             persistent_frontier_value=selected_frontier_value,
+            verified_accessibility_bonus=(
+                selected_verified_accessibility_bonus
+            ),
+            **(
+                selected_verified_accessibility_components.log_fields()
+                if selected_verified_accessibility_components is not None
+                else {
+                    "verified_accessibility_scored": False,
+                    "verified_accessibility_refusal_reason": (
+                        "record_missing_or_disabled"
+                    ),
+                    "verified_accessibility_total_bonus": 0.0,
+                }
+            ),
             action_effect_contrast=None,
             action_effect_value=restored_action_effect_value,
             action_effect_is_known=restored_action_effect_known,
@@ -27176,3 +27298,93 @@ class VerifiedNeuralAgent:
         if decisions < 0:
             raise ValueError("decisions must be non-negative")
         return [self.decide() for _ in range(decisions)]
+
+
+def load_verified_accessibility_records(
+    path: str,
+) -> Dict[str, CertifiedAccessibilityRecord]:
+    """Provenance-checked import path for WP8-lite certified records.
+
+    Minimal loader for the preregistered ablation
+    (docs/wp8-lite-ablation-design-2026-08-16.md section 4.7): reads a JSON
+    list of record objects mirroring
+    :class:`accessibility_preference.CertifiedAccessibilityRecord` and
+    returns a mapping from the record's configuration signature (the
+    tracked world-state signature the restore-selection seams match
+    against) to the validated record. Every record must carry explicit
+    provenance with ``verification == "certified_hold"``; anything else is
+    refused here, before it can reach planner state. Records are never
+    synthesized in-run — this file is the only sanctioned population path
+    until the ``experience_import.py`` importer lands.
+
+    Expected JSON shape per entry::
+
+        {
+          "provenance": {
+            "run_id": "...", "preregistration_doc": "...",
+            "configuration_signature": "...",
+            "verification": "certified_hold",
+            "certification_predicate": "...",
+            "certified_branches": 135, "total_branches": 9691,
+            "search_depth": 12, "search_beam": 128
+          },
+          "certified_cells": [[x, y], ...],
+          "certified_open_frontiers": [[[sx, sy], [tx, ty]], ...],
+          "certified_milestone_cells": [[x, y], ...],
+          "preparation_outcome_category": "removal",
+          "confirmed_manipulation_count": 0
+        }
+    """
+
+    with open(path, "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if not isinstance(payload, list):
+        raise ValueError(
+            "verified accessibility records file must hold a JSON list "
+            "of record objects"
+        )
+    records: Dict[str, CertifiedAccessibilityRecord] = {}
+    for index, entry in enumerate(payload):
+        if not isinstance(entry, dict) or not isinstance(
+            entry.get("provenance"), dict
+        ):
+            raise ValueError(
+                f"record {index} must be an object with a provenance object"
+            )
+        provenance = AccessibilityRecordProvenance(**entry["provenance"])
+        if not provenance.certified:
+            raise ValueError(
+                f"record {index} ({provenance.run_id!r}) is not "
+                "certified_hold: unverified accessibility can never be "
+                "imported as observed"
+            )
+        record = CertifiedAccessibilityRecord(
+            provenance=provenance,
+            certified_cells=tuple(
+                tuple(cell) for cell in entry.get("certified_cells", ())
+            ),
+            certified_open_frontiers=tuple(
+                (tuple(source), tuple(target))
+                for source, target in entry.get(
+                    "certified_open_frontiers", ()
+                )
+            ),
+            certified_milestone_cells=tuple(
+                tuple(cell)
+                for cell in entry.get("certified_milestone_cells", ())
+            ),
+            preparation_outcome_category=entry.get(
+                "preparation_outcome_category", "none"
+            ),
+            confirmed_manipulation_count=entry.get(
+                "confirmed_manipulation_count", 0
+            ),
+        )
+        signature = provenance.configuration_signature
+        if signature in records:
+            raise ValueError(
+                "duplicate configuration signature "
+                f"{signature!r} in record {index}"
+            )
+        records[signature] = record
+    return records

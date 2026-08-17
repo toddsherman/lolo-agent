@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -17,7 +18,11 @@ from .ensemble_world_model import load_ensemble_checkpoint
 from .experience_import import classify_reward_track, decode_logged_png
 from .log_summary import build_run_summary
 from .native_env import NativeLibretroEnv
-from .neural_planner import NeuralPlanningConfig, VerifiedNeuralAgent
+from .neural_planner import (
+    NeuralPlanningConfig,
+    VerifiedNeuralAgent,
+    load_verified_accessibility_records,
+)
 from .neural_world_model import ACTION_ORDER, choose_torch_device
 from .pixels import Frame, signature_key
 from .replay import (
@@ -937,6 +942,28 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--human-prior-accessibility-preference-weight",
+        type=float,
+        default=0.0,
+        help=(
+            "WP8-lite verified-accessibility preference weight applied in "
+            "the archive/restore-selection seams; 0.0 (the default) keeps "
+            "ranking bit-identical to the current frontier score "
+            "(docs/wp8-lite-ablation-design-2026-08-16.md)"
+        ),
+    )
+    parser.add_argument(
+        "--human-prior-accessibility-records",
+        type=Path,
+        default=None,
+        help=(
+            "JSON file of certified accessibility records (provenance-"
+            "checked import path; certified_hold only) keyed by tracked "
+            "world-state signature; loaded identically in both ablation "
+            "arms — the weight alone gates scoring"
+        ),
+    )
+    parser.add_argument(
         "--human-prior-episodic-graph-guidance",
         action="store_true",
         help=(
@@ -1510,6 +1537,13 @@ def main() -> None:
         parser.error(
             "--human-prior-option-search-goal-world-state-reserve must be "
             "non-negative"
+        )
+    if not math.isfinite(
+        args.human_prior_accessibility_preference_weight
+    ) or args.human_prior_accessibility_preference_weight < 0.0:
+        parser.error(
+            "--human-prior-accessibility-preference-weight must be finite "
+            "and non-negative"
         )
     if args.human_prior_option_archive_representatives <= 0:
         parser.error(
@@ -2102,6 +2136,9 @@ def main() -> None:
         returnability_probe_pixel_l1_threshold=(
             args.returnability_probe_pixel_l1_threshold
         ),
+        verified_accessibility_weight=(
+            args.human_prior_accessibility_preference_weight
+        ),
     )
     rom_sha256 = sha256_file(args.rom)
     resume_metadata = None
@@ -2413,6 +2450,26 @@ def main() -> None:
                 spatial_shadow=spatial_shadow,
                 entity_behavior_model=entity_behavior_model,
             )
+            if args.human_prior_accessibility_records is not None:
+                agent.verified_accessibility_records = (
+                    load_verified_accessibility_records(
+                        str(args.human_prior_accessibility_records)
+                    )
+                )
+                logger.log(
+                    "verified_accessibility_records_loaded",
+                    path=str(args.human_prior_accessibility_records),
+                    record_count=len(agent.verified_accessibility_records),
+                    record_content_signatures={
+                        signature: record.content_signature()
+                        for signature, record in sorted(
+                            agent.verified_accessibility_records.items()
+                        )
+                    },
+                    verified_accessibility_weight=(
+                        config.verified_accessibility_weight
+                    ),
+                )
             if restored is not None:
                 initial_frame = env.start_attempt_from_current(
                     restored.frame,

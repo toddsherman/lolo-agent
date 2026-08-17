@@ -1,5 +1,7 @@
 import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from lolo_agent.accessibility_preference import (
     AccessibilityPreferenceConfig,
@@ -14,6 +16,19 @@ from lolo_agent.accessibility_preference import (
     VERIFICATION_PREDICTED,
     verified_accessibility_preference,
 )
+from lolo_agent.ensemble_world_model import EnsembleVisualDynamicsModel
+from lolo_agent.environment import Action
+from lolo_agent.goal_prior import HeartGoalAnalysis
+from lolo_agent.neural_planner import (
+    NeuralPlan,
+    NeuralPlanningConfig,
+    VerifiedNeuralAgent,
+    _ArchivedBranch,
+    _HumanPriorOptionNode,
+    load_verified_accessibility_records,
+)
+from lolo_agent.object_tracks import HumanPriorRootObjectState
+from lolo_agent.pixels import Frame
 
 
 # Synthetic fixtures shaped like the certified v322-v326 series: a 7-cell
@@ -496,6 +511,608 @@ class LogFieldsTests(unittest.TestCase):
             components.total_bonus,
         )
         json.dumps(fields)
+
+
+# ---------------------------------------------------------------------------
+# Planner-seam integration (WP8-lite seam patch,
+# docs/wp8-lite-ablation-design-2026-08-16.md section 4): the preference term
+# wired into the archive/restore-selection seams behind
+# NeuralPlanningConfig.verified_accessibility_weight (default 0.0).
+# ---------------------------------------------------------------------------
+
+
+class _RecordingLogger:
+    def __init__(self) -> None:
+        self.events = []
+
+    def log(self, event_type: str, **fields) -> None:
+        self.events.append({"event": event_type, **fields})
+
+
+class _SeamEnv:
+    """Deterministic position-coded frames with handle-tracked save states."""
+
+    def __init__(self) -> None:
+        self.position = 0
+        self.serial = 0
+        self.active_states = set()
+
+    def reset(self) -> Frame:
+        self.position = 0
+        self.active_states = set()
+        return self._frame()
+
+    def step(self, action: Action, frames: int = 1) -> Frame:
+        if action == Action.RIGHT:
+            self.position = min(63, self.position + frames)
+        return self._frame()
+
+    def save_state(self):
+        self.serial += 1
+        state = (self.serial, self.position)
+        self.active_states.add(state)
+        return state
+
+    def load_state(self, state) -> Frame:
+        if state not in self.active_states:
+            raise RuntimeError("unknown save-state handle")
+        self.position = state[1]
+        return self._frame()
+
+    def release_state(self, state) -> None:
+        self.active_states.remove(state)
+
+    def _frame(self) -> Frame:
+        pixels = bytearray(64)
+        pixels[self.position] = 255
+        return Frame(8, 8, 1, bytes(pixels))
+
+
+class _ExplodingRecordStore(dict):
+    """Fails the test if the seam consults the store at weight 0.0."""
+
+    def get(self, key, default=None):
+        raise AssertionError(
+            "verified-accessibility record store consulted at weight 0.0"
+        )
+
+
+CURRENT_SIGNATURE = "current-sig"
+NEUTRAL_SIGNATURE = "neutral-sig"
+REMOVAL_SIGNATURE = "removal-sig"
+
+
+def _seam_records(removal_verification: str = VERIFICATION_CERTIFIED_HOLD):
+    return {
+        CURRENT_SIGNATURE: record(
+            configuration_signature=CURRENT_SIGNATURE
+        ),
+        NEUTRAL_SIGNATURE: record(
+            configuration_signature=NEUTRAL_SIGNATURE
+        ),
+        REMOVAL_SIGNATURE: record(
+            cells=REMOVED_CELLS,
+            milestone_cells=(MILESTONE_CELL,),
+            configuration_signature=REMOVAL_SIGNATURE,
+            outcome_category=OUTCOME_REMOVAL,
+            verification=removal_verification,
+        ),
+    }
+
+
+def _seam_agent(weight: float, records):
+    """Agent plus a two-branch archive facing the ablation's real choice.
+
+    The archived branches are byte-identical except for their tracked
+    world-state signature and their stored score: the certified-neutral
+    branch carries the higher plain score, so weight 0.0 must restore it
+    and only a scored preference term can flip selection to the certified
+    removal-class branch.
+    """
+
+    env = _SeamEnv()
+    logger = _RecordingLogger()
+    agent = VerifiedNeuralAgent(
+        env,
+        EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        ),
+        "cpu",
+        NeuralPlanningConfig(
+            actions=(Action.LEFT, Action.RIGHT),
+            planning_depth=1,
+            verified_accessibility_weight=weight,
+        ),
+        event_logger=logger,
+    )
+    agent.reset()
+    agent.current_human_prior_root_object_state = HumanPriorRootObjectState(
+        tracked_world_state_signature=CURRENT_SIGNATURE
+    )
+    if records is not None:
+        agent.verified_accessibility_records = records
+    env.position = 1
+    frame = env._frame()
+
+    def branch(signature: str, score: float) -> _ArchivedBranch:
+        return _ArchivedBranch(
+            state=env.save_state(),
+            frame=frame,
+            plan=NeuralPlan((Action.RIGHT,), (1,), score, 0.0),
+            score=score,
+            scene="archived-elsewhere",
+            created=0,
+            origin_signature="origin",
+            tracked_world_state_signature=signature,
+        )
+
+    neutral = branch(NEUTRAL_SIGNATURE, 5.0)
+    removal = branch(REMOVAL_SIGNATURE, 4.0)
+    agent.archive = [neutral, removal]
+    agent.visual_stagnation_streak = 99
+    agent.autonomous_grace_remaining = 0
+    return env, logger, agent, neutral, removal
+
+
+def _restored_event(logger: _RecordingLogger):
+    return next(
+        event
+        for event in logger.events
+        if event["event"] == "archive_branch_restored"
+    )
+
+
+def _committed_event(logger: _RecordingLogger):
+    return next(
+        event
+        for event in logger.events
+        if event["event"] == "decision_committed"
+    )
+
+
+def _reserve_node(
+    signature: str,
+    effect_cells,
+    player_slot,
+) -> _HumanPriorOptionNode:
+    analysis = HeartGoalAnalysis(
+        reliable=True,
+        known_slots=((7, 0),),
+        source_present=((7, 0),),
+        target_present=((7, 0),),
+        collected=(),
+        target_similarities=(),
+        heart_reward=0.0,
+        all_hearts_reward=0.0,
+        chest_reward=0.0,
+        navigation_reward=0.0,
+        life_loss_penalty=0.0,
+        total_reward=0.0,
+        global_visual_change=0.0,
+        target_intensity=1.0,
+        source_player_slot=(0, 0),
+        target_player_slot=player_slot,
+        source_heart_distance=None,
+        target_heart_distance=None,
+        source_chest_slot=None,
+        target_chest_slot=None,
+        source_chest_distance=None,
+        target_chest_distance=None,
+        chest_completed=False,
+        source_life_signature="life",
+        target_life_signature="life",
+        life_counter_changed=False,
+        dark_transition_started=False,
+        life_loss_confirmed=False,
+    )
+    return _HumanPriorOptionNode(
+        state=None,
+        frame=Frame(8, 8, 1, bytes(64)),
+        path=(Action.RIGHT,),
+        durations=(1,),
+        analysis=analysis,
+        source_signature="source",
+        target_signature=f"target-{signature}",
+        score=1.0,
+        depth=1,
+        target_state_visits=0,
+        target_position_visits=0,
+        tracked_world_effect_cells=tuple(effect_cells),
+        tracked_world_state_signature=signature,
+    )
+
+
+class PlannerSeamWeightZeroInvarianceTests(unittest.TestCase):
+    """Control-arm invariance: weight 0.0 is byte-identical ranking.
+
+    The primary net is the full existing suite passing unchanged on the
+    patched build (design section 4.6); these tests additionally prove the
+    seam-local claims directly.
+    """
+
+    def test_default_config_weight_is_zero(self) -> None:
+        self.assertEqual(
+            NeuralPlanningConfig().verified_accessibility_weight, 0.0
+        )
+
+    def test_zero_weight_never_consults_the_record_store(self) -> None:
+        _env, _logger, agent, neutral, removal = _seam_agent(
+            0.0, _ExplodingRecordStore()
+        )
+        for branch in (neutral, removal):
+            self.assertEqual(
+                agent._archive_verified_accessibility_bonus(branch),
+                (0.0, None),
+            )
+        self.assertEqual(
+            agent._verified_accessibility_reserve_rank(REMOVAL_SIGNATURE),
+            0.0,
+        )
+
+    def test_zero_weight_frontier_scores_are_identical_with_records(
+        self,
+    ) -> None:
+        _env, _logger, loaded, ln, lr = _seam_agent(0.0, _seam_records())
+        _env2, _logger2, bare, bn, br = _seam_agent(0.0, None)
+        self.assertEqual(
+            loaded._archive_frontier_score(ln),
+            bare._archive_frontier_score(bn),
+        )
+        self.assertEqual(
+            loaded._archive_frontier_score(lr),
+            bare._archive_frontier_score(br),
+        )
+
+    def test_zero_weight_restore_selection_and_telemetry_identical(
+        self,
+    ) -> None:
+        env_a, logger_a, loaded, *_rest = _seam_agent(0.0, _seam_records())
+        env_b, logger_b, bare, *_rest2 = _seam_agent(0.0, None)
+
+        decision_a = loaded._restore_if_stagnant()
+        decision_b = bare._restore_if_stagnant()
+
+        self.assertIsNotNone(decision_a)
+        self.assertIsNotNone(decision_b)
+        assert decision_a is not None and decision_b is not None
+        self.assertEqual(decision_a.action, decision_b.action)
+        self.assertEqual(
+            decision_a.action_frames, decision_b.action_frames
+        )
+        self.assertEqual(decision_a.score, decision_b.score)
+        self.assertEqual(env_a.position, env_b.position)
+        # The higher-scored certified-neutral branch wins the tiebreak in
+        # both agents: the loaded records changed nothing at weight 0.0.
+        self.assertEqual(
+            [b.tracked_world_state_signature for b in loaded.archive],
+            [REMOVAL_SIGNATURE],
+        )
+        self.assertEqual(
+            [b.tracked_world_state_signature for b in bare.archive],
+            [REMOVAL_SIGNATURE],
+        )
+        restored_a = _restored_event(logger_a)
+        restored_b = _restored_event(logger_b)
+        self.assertEqual(restored_a, restored_b)
+        self.assertEqual(
+            _committed_event(logger_a), _committed_event(logger_b)
+        )
+        self.assertEqual(
+            [event["event"] for event in logger_a.events],
+            [event["event"] for event in logger_b.events],
+        )
+        # The unscored term is logged as unscored, never silently absent.
+        self.assertFalse(restored_a["verified_accessibility_scored"])
+        self.assertEqual(
+            restored_a["verified_accessibility_refusal_reason"],
+            "record_missing_or_disabled",
+        )
+        self.assertEqual(restored_a["verified_accessibility_bonus"], 0.0)
+        self.assertEqual(
+            restored_a["verified_accessibility_total_bonus"], 0.0
+        )
+
+    def test_zero_weight_reserve_ranking_unchanged(self) -> None:
+        _env, _logger, agent, *_rest = _seam_agent(0.0, _seam_records())
+        nodes = [
+            _reserve_node(REMOVAL_SIGNATURE, ((2, 2),), (1, 0)),
+            _reserve_node(NEUTRAL_SIGNATURE, ((3, 3),), (2, 0)),
+        ]
+        plain = VerifiedNeuralAgent._human_prior_world_state_reserve_candidates(
+            nodes
+        )
+        ranked = VerifiedNeuralAgent._human_prior_world_state_reserve_candidates(
+            nodes,
+            verified_accessibility_rank=(
+                agent._verified_accessibility_reserve_rank
+            ),
+        )
+        self.assertEqual(
+            [node.tracked_world_state_signature for node in plain],
+            [node.tracked_world_state_signature for node in ranked],
+        )
+
+
+class PlannerSeamTreatmentTests(unittest.TestCase):
+    """Treatment arm: a scored term selects deliberately and logs fully."""
+
+    def test_restore_prefers_certified_removal_configuration(self) -> None:
+        env, logger, agent, neutral, removal = _seam_agent(
+            1.0, _seam_records()
+        )
+        expected_components = verified_accessibility_preference(
+            agent.verified_accessibility_records[REMOVAL_SIGNATURE],
+            agent.verified_accessibility_records[CURRENT_SIGNATURE],
+        )
+        self.assertGreater(expected_components.total_bonus, 0.0)
+        # Captured before the restore commits: restoring rebinds the
+        # current root object state, which changes later scores.
+        expected_frontier_value = agent._archive_frontier_score(removal)
+
+        decision = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(decision)
+        assert decision is not None
+        self.assertTrue(decision.restored_archive)
+        # The certified removal-class branch was selected despite its lower
+        # plain score: the preference term ranked it, for the hardened
+        # reason (certified new cells and a certified milestone cell).
+        self.assertEqual(
+            [b.tracked_world_state_signature for b in agent.archive],
+            [NEUTRAL_SIGNATURE],
+        )
+        restored = _restored_event(logger)
+        self.assertTrue(restored["verified_accessibility_scored"])
+        self.assertIsNone(
+            restored["verified_accessibility_refusal_reason"]
+        )
+        self.assertEqual(
+            restored["verified_accessibility_total_bonus"],
+            expected_components.total_bonus,
+        )
+        self.assertEqual(
+            restored["verified_accessibility_bonus"],
+            1.0 * expected_components.total_bonus,
+        )
+        self.assertEqual(
+            restored["persistent_frontier_value"],
+            expected_frontier_value,
+        )
+        # Every component of the module's decomposition is logged.
+        for key, value in expected_components.log_fields().items():
+            self.assertIn(key, restored)
+            self.assertEqual(restored[key], value)
+        committed = _committed_event(logger)
+        self.assertEqual(
+            committed["verified_accessibility_total_bonus"],
+            expected_components.total_bonus,
+        )
+        self.assertEqual(
+            committed["verified_accessibility_bonus"],
+            expected_components.total_bonus,
+        )
+
+    def test_seam_bonus_scales_with_the_config_weight(self) -> None:
+        _env, logger, agent, _neutral, removal = _seam_agent(
+            2.0, _seam_records()
+        )
+        expected_components = verified_accessibility_preference(
+            agent.verified_accessibility_records[REMOVAL_SIGNATURE],
+            agent.verified_accessibility_records[CURRENT_SIGNATURE],
+        )
+
+        decision = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(decision)
+        restored = _restored_event(logger)
+        self.assertEqual(
+            restored["verified_accessibility_bonus"],
+            2.0 * expected_components.total_bonus,
+        )
+        self.assertEqual(
+            restored["verified_accessibility_total_bonus"],
+            expected_components.total_bonus,
+        )
+
+    def test_missing_current_record_scores_zero_and_is_logged_unscored(
+        self,
+    ) -> None:
+        records = _seam_records()
+        del records[CURRENT_SIGNATURE]
+        _env, logger, agent, _neutral, _removal = _seam_agent(1.0, records)
+
+        decision = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(decision)
+        # Without a certified record for the current configuration the term
+        # refuses to score and the plain tiebreak restores the
+        # higher-scored neutral branch.
+        self.assertEqual(
+            [b.tracked_world_state_signature for b in agent.archive],
+            [REMOVAL_SIGNATURE],
+        )
+        restored = _restored_event(logger)
+        self.assertFalse(restored["verified_accessibility_scored"])
+        self.assertEqual(
+            restored["verified_accessibility_refusal_reason"],
+            "record_missing_or_disabled",
+        )
+
+    def test_predicted_candidate_record_never_scores_at_the_seam(
+        self,
+    ) -> None:
+        _env, logger, agent, _neutral, removal = _seam_agent(
+            1.0, _seam_records(removal_verification=VERIFICATION_PREDICTED)
+        )
+        # At the seam the predicted removal-class record scores exactly
+        # zero and exposes the refusal (WP8 scoring rule).
+        bonus, components = agent._archive_verified_accessibility_bonus(
+            removal
+        )
+        self.assertEqual(bonus, 0.0)
+        assert components is not None
+        self.assertFalse(components.scored)
+        self.assertEqual(
+            components.refusal_reason, REFUSAL_CANDIDATE_NOT_CERTIFIED
+        )
+        self.assertEqual(components.total_bonus, 0.0)
+
+        decision = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(decision)
+        # With the removal record refused, the neutral branch keeps
+        # winning on plain score: unverified predicted accessibility can
+        # never flip restore selection.
+        self.assertEqual(
+            [b.tracked_world_state_signature for b in agent.archive],
+            [REMOVAL_SIGNATURE],
+        )
+        restored = _restored_event(logger)
+        # The restored neutral branch scored validly at zero (identical
+        # certified envelopes), and its decomposition says so.
+        self.assertTrue(restored["verified_accessibility_scored"])
+        self.assertEqual(
+            restored["verified_accessibility_total_bonus"], 0.0
+        )
+        self.assertEqual(restored["verified_accessibility_bonus"], 0.0)
+
+    def test_reserve_ranking_prefers_certified_configuration(self) -> None:
+        _env, _logger, agent, *_rest = _seam_agent(1.0, _seam_records())
+        # The neutral configuration carries strictly better reachability
+        # topology (observed from three player positions spanning both
+        # axes); only the certified preference term can put the
+        # removal-class configuration first.
+        removal_node = _reserve_node(REMOVAL_SIGNATURE, ((2, 2),), (1, 0))
+        neutral_nodes = [
+            _reserve_node(NEUTRAL_SIGNATURE, ((3, 3),), player_slot)
+            for player_slot in ((2, 0), (3, 0), (2, 1))
+        ]
+        nodes = [removal_node, *neutral_nodes]
+        plain = VerifiedNeuralAgent._human_prior_world_state_reserve_candidates(
+            nodes
+        )
+        self.assertEqual(
+            plain[0].tracked_world_state_signature, NEUTRAL_SIGNATURE
+        )
+        ranked = VerifiedNeuralAgent._human_prior_world_state_reserve_candidates(
+            nodes,
+            verified_accessibility_rank=(
+                agent._verified_accessibility_reserve_rank
+            ),
+        )
+        self.assertEqual(
+            ranked[0].tracked_world_state_signature, REMOVAL_SIGNATURE
+        )
+
+
+class RecordLoaderTests(unittest.TestCase):
+    """Minimal provenance-checked JSON import path (design section 4.7)."""
+
+    @staticmethod
+    def _entry(
+        signature: str = REMOVAL_SIGNATURE,
+        verification: str = VERIFICATION_CERTIFIED_HOLD,
+    ):
+        return {
+            "provenance": {
+                "run_id": "entity-v325-room3-object-removed-probe-d12",
+                "preregistration_doc": (
+                    "docs/object-removed-probe-2026-08-16.md"
+                ),
+                "configuration_signature": signature,
+                "verification": verification,
+                "certification_predicate": (
+                    "anonymous_object_track_cells == []"
+                    if verification == VERIFICATION_CERTIFIED_HOLD
+                    else ""
+                ),
+                "certified_branches": (
+                    135
+                    if verification == VERIFICATION_CERTIFIED_HOLD
+                    else 0
+                ),
+                "total_branches": 9691,
+                "search_depth": 12,
+                "search_beam": 128,
+            },
+            "certified_cells": [list(cell) for cell in REMOVED_CELLS],
+            "certified_open_frontiers": [
+                [[12, 11], [13, 11]],
+            ],
+            "certified_milestone_cells": [list(MILESTONE_CELL)],
+            "preparation_outcome_category": OUTCOME_REMOVAL,
+            "confirmed_manipulation_count": 2,
+        }
+
+    def _load(self, payload):
+        with tempfile.TemporaryDirectory() as tempdir:
+            path = Path(tempdir) / "records.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            return load_verified_accessibility_records(str(path))
+
+    def test_round_trip_keyed_by_configuration_signature(self) -> None:
+        records = self._load(
+            [
+                self._entry(),
+                self._entry(signature=NEUTRAL_SIGNATURE),
+            ]
+        )
+        self.assertEqual(
+            sorted(records), [NEUTRAL_SIGNATURE, REMOVAL_SIGNATURE]
+        )
+        loaded = records[REMOVAL_SIGNATURE]
+        self.assertEqual(loaded.certified_cells, tuple(sorted(REMOVED_CELLS)))
+        self.assertEqual(
+            loaded.certified_open_frontiers, (((12, 11), (13, 11)),)
+        )
+        self.assertEqual(loaded.certified_milestone_cells, (MILESTONE_CELL,))
+        self.assertEqual(
+            loaded.preparation_outcome_category, OUTCOME_REMOVAL
+        )
+        self.assertEqual(loaded.confirmed_manipulation_count, 2)
+        self.assertTrue(loaded.provenance.certified)
+        # The loaded record is scoreable against a certified baseline.
+        components = verified_accessibility_preference(
+            loaded, record(configuration_signature=CURRENT_SIGNATURE)
+        )
+        self.assertTrue(components.scored)
+        self.assertGreater(components.total_bonus, 0.0)
+
+    def test_refuses_predicted_records(self) -> None:
+        with self.assertRaisesRegex(ValueError, "certified_hold"):
+            self._load([self._entry(verification=VERIFICATION_PREDICTED)])
+
+    def test_refuses_duplicate_configuration_signatures(self) -> None:
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            self._load([self._entry(), self._entry()])
+
+    def test_refuses_non_list_payloads(self) -> None:
+        with self.assertRaisesRegex(ValueError, "JSON list"):
+            self._load({"records": []})
+
+    def test_agent_rejects_negative_weight(self) -> None:
+        with self.assertRaisesRegex(ValueError, "verified accessibility"):
+            VerifiedNeuralAgent(
+                _SeamEnv(),
+                EnsembleVisualDynamicsModel(
+                    latent_size=32, action_size=8, ensemble_size=2
+                ),
+                "cpu",
+                NeuralPlanningConfig(verified_accessibility_weight=-0.5),
+            )
+
+    def test_agent_rejects_non_finite_weight(self) -> None:
+        with self.assertRaisesRegex(ValueError, "verified accessibility"):
+            VerifiedNeuralAgent(
+                _SeamEnv(),
+                EnsembleVisualDynamicsModel(
+                    latent_size=32, action_size=8, ensemble_size=2
+                ),
+                "cpu",
+                NeuralPlanningConfig(
+                    verified_accessibility_weight=float("nan")
+                ),
+            )
 
 
 if __name__ == "__main__":
