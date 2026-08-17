@@ -1492,6 +1492,52 @@ Evidence:
 - `docs/milestone-scoring-2026-08-16.md`
 - `experiments/lolo1-wp5/milestone-scoring-report.json`
 
+### 4.34 Mask-sensitive gate: localization closed, resolution is the remaining gap
+
+What was tried:
+
+- The §4.31(c) redesigned promotion gate (preregistered in
+  `docs/wp5-tracker-training-2026-08-16.md`; report digest `7bb95c5e…`,
+  byte-identical rerun): learned-vs-assisted agreement scored only on
+  mask-mattering frames (6,474/6,474 — the instrument cannot pass
+  vacuously, fixing the §4.31 lesson).
+
+Result:
+
+- **FAIL — NO-PROMOTE.** Signature agreement 0.000 on all three corpora
+  despite 100%/100%/98.8% mask overlap. The failure is mask
+  resolution/extent, not localization: the learned mask erases whole
+  16×16 cell blocks while the assisted mask erases a pixel silhouette
+  plus a 3px halo across partial cells, so pooled features differ by
+  construction.
+
+Classification:
+
+- **Failed promotion gate** with a completed diagnosis chain: v2 failed
+  localization (§4.31–4.32) → v3/v4 closed it state-by-state → the
+  remaining gap is representational resolution, not learning.
+
+Learning:
+
+- Cell-resolution perception cannot silently substitute into a
+  pixel-resolution masking convention; promotion requires either a
+  pixel-mask reconstruction head anchored at learned cells, or an
+  explicitly gated convention change with its own regression evidence.
+- The three-cycle collection recipe (counterfactual labels + targeted
+  strict collection) is validated as an iterative pipeline — state-local
+  closure was immediate every time coverage was supplied.
+
+Plan change:
+
+- Next WP5 step: pixel-mask reconstruction spike (learned-cell-anchored
+  silhouette recovery), then re-run this same gate unchanged. Tracker v4
+  remains telemetry-only with divergence telemetry.
+
+Evidence:
+
+- `docs/wp5-tracker-training-2026-08-16.md` (preregistration + results)
+- `experiments/lolo1-wp5/mask-sensitive-gate-report.json`
+
 ## 5. Platform and cost learnings
 
 ### 5.1 RunPod for emulator branching

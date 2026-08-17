@@ -142,3 +142,122 @@ lands at parity with the color heuristic on these corpora (both at
 ceiling against counterfactual ground truth), which per Amendment B's
 salvaged form supports shadow-promotion with divergence telemetry rather
 than a superiority claim.
+
+### Mask-sensitive promotion gate — preregistration (§4.31(c); added before execution)
+
+Instrument lesson being fixed: the original substitution replay's gated
+bits were mask-IRRELEVANT for the replayed archive shapes (§4.31), so a
+letter-pass demonstrated nothing about the learned mask. This gate scores
+agreement ONLY where masking demonstrably matters. All definitions,
+thresholds, and pass criteria below are fixed now, before the scorer runs
+on any real corpus; the implementation is `lolo_agent/mask_sensitive_gate.py`
+(unit-tested on synthetic fixtures only at preregistration time).
+
+Corpora: the three probe corpora under
+`experiments/lolo1-entity-v10/evaluations/` — v322 (object-present), v323
+(pre-push), v325 (object-removed). Population per corpus: every
+content-addressed frame in `frames/` (each unique frame once, sorted by
+digest, digest-verified on decode).
+
+Mattering-frame detector (assisted mask vs no mask; the learned mask does
+not participate): per frame, run the assisted goal-prior detection
+(`PixelHeartGoalPrior.detect_player`, `player_pixel_mask`, fresh per
+frame, as in the replay's divergence sweep). A frame is MASK-MATTERING iff
+`world_effect_cells_state_signature` over the coarse cells the assisted
+mask touches (16×15 `UnlabeledEntityMemory` grid) differs between the
+assisted-masked and the fully unmasked computation. Per-cell
+`masked_cell_fingerprint` values are recorded alongside (same features,
+so the two views agree modulo hash collision). Frames without an assisted
+detection cannot be mattering and are reported by reason.
+
+Gate quantities on mattering frames: recompute the same quantities with
+the LEARNED mask substituted — tracker v4
+(`experiments/lolo1-wp5/controllable-tracker-v4.pt`, parameter sha256
+`b2fdd8ba…`, frozen spatial-v10 backbone `642d66ed…`) thresholded at the
+pinned 0.5 validation operating point and pixel-expanded with the
+`tracker_substitution_replay` helpers (`learned_mask_cells`,
+`learned_pixel_mask`, `learned_reference_slot` — reused by import). The
+comparison cell set is every coarse cell touched by EITHER mask, so
+learned over-coverage that erases neighbouring anonymous appearance is a
+scored disagreement, not an invisible one. Two per-frame agreement bits:
+
+1. `signature_equal`: `world_effect_cells_state_signature` over the
+   comparison cells identical under learned and assisted masks (exact
+   equality is the planner's own world-state comparison — the
+   silently-replaceable criterion).
+2. `l1_within`: every comparison cell's `feature_at` vector within the
+   established normalized-L1 appearance threshold 0.08
+   (`UnlabeledEntityMemory.feature_distance`).
+
+Preregistered gate bits (per corpus, over mattering frames): both
+agreement rates ≥ 0.95, AND ≥ 50 mattering frames (instrument validity —
+perfect agreement over fewer frames is vacuous, not a pass). The gate
+passes only if all three corpora pass. Note `signature_equal` implies
+`l1_within` per frame (the signature hashes the same features), so the
+signature rate is the binding bit and the L1 rate is the graded
+instrument reporting HOW close the learned reconstruction is.
+
+Reported, not gated: agreement rates on non-mattering frames (expected
+trivially high; disagreements there are still listed honestly), frame
+counts by reason, and per-frame mask IoU
+(`mask_divergence`) on every mattering frame.
+
+One run, then results appended here. Deterministic content-digested
+report to `experiments/lolo1-wp5/mask-sensitive-gate-report.json`
+(digest prefix `wp5-mask-sensitive-gate:v1:`). Honest outcome either
+way: PASS supports shadow-promotion with divergence telemetry (parity
+claim only, per Amendment B's salvaged form); FAIL means the learned
+mask changes downstream tracking quantities on exactly the frames where
+masking matters and cannot silently replace the assisted mask yet.
+
+### Mask-sensitive gate — results (appended 2026-08-16, after one preregistered run)
+
+**FAIL on all three corpora — NO-PROMOTE.** Report
+`experiments/lolo1-wp5/mask-sensitive-gate-report.json`, content digest
+`7bb95c5e3e08640716585cceaf838c870ccc122b9600a3dde85966bad191c030`,
+byte-identical on rerun. No preregistration deviations.
+
+The instrument worked: every frame in every corpus is mask-mattering
+(assisted detection on 6,474/6,474 frames; erasing the assisted mask
+changes quantized features in 4–9 cells per frame), so unlike the §4.31
+bits, these bits could not letter-pass vacuously — and they fail
+decisively:
+
+| corpus | mattering | sig-agree | L1-agree | mask IoU mean/med | bit |
+|---|---|---|---|---|---|
+| v322 object-present | 1116/1116 | **0.000** | 0.068 | 0.338 / 0.275 | FAIL |
+| v323 pre-push | 3910/3910 | **0.000** | 0.039 | 0.342 / 0.280 | FAIL |
+| v325 object-removed | 1448/1448 | **0.000** | 0.025 | 0.314 / 0.289 | FAIL |
+
+(Non-mattering agreement rates are vacuous — there are no non-mattering
+frames. Preregistration expected that bucket to be large; it is empty
+because the probe corpora always show the player on screen.)
+
+Reading — the failure is mask RESOLUTION and EXTENT, not localization:
+
+- Localization is fine, as §4.32/v4 closure predicted: the learned mask
+  overlaps the assisted mask on 100% of v322/v325 frames and 98.8% of
+  v323 (pixel IoU mean ≈ 0.33 vs the v2 replay's 0.0002–0.0009 — three
+  orders of magnitude — with 47 v323 frames of empty learned mask as the
+  only residual coverage gap).
+- But the learned mask erases 1–3 whole 16×16 cell blocks, while the
+  assisted mask erases the sprite silhouette plus a 3-pixel halo spread
+  partially across 5–9 cells. Fully-masked pools encode zeros; partially
+  masked pools average the surviving background pixels — so the
+  downstream features differ at the player cell BY CONSTRUCTION, and the
+  halo's fringe erasure in neighbouring cells is not reproduced at all
+  (max per-cell L1 median ≈ 0.4, five times the 0.08 bound; exact
+  signature equality never occurs).
+
+Consequence: tracker v4 knows WHERE the player is at cell resolution,
+but a cell-resolution mask is not a drop-in replacement for the
+pixel-resolution assisted mask in `object_tracks` quantities. Per the
+preregistered criterion the tracker stays telemetry-only; the honest
+§4.31 letter-pass/substantive-fail pattern is now inverted — a
+substantive instrument, a clean fail. Promotion paths this measurement
+licenses considering next (not attempted here): reconstruct a
+pixel-resolution mask anchored at the learned cells (e.g. the connected
+sprite component inside the predicted region), or move the downstream
+convention itself to cell-resolution masking on both sides — a
+convention change that must be gated on its own, not smuggled in as
+substitution.
