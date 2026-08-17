@@ -1795,6 +1795,53 @@ Evidence:
 - `docs/wp5-tracker-training-2026-08-16.md`
 - `experiments/lolo1-wp5/functional-gate-v3-report.json`
 
+### 4.40 Stability tail resists the data lever; WP5 promotion campaign paused
+
+What was tried:
+
+- Tier-4 pose-diversity strict collection (10 sub-runs at the two tail
+  states, cycle 20, labels v5: 21,633 roots / 96,682 arms), pixel head v3
+  retrained on occupied-v2 semantics, functional gate rerun unchanged
+  (report digest `99285632…`).
+
+Result:
+
+- **v322 passes all four bits with learned stability 1.000** (first
+  full-pass corpus, now with a perfect stability score); detection 1.000
+  everywhere; preservation 0.982–0.998 vs incumbent 0.72–0.77.
+- **NO-PROMOTE**: the stability tail at v323 (0.936→0.929) and v325
+  (0.943→0.933) moved slightly against the data lever. Two bounded
+  attempts (v3 gate, v4 gate) reproduce the same failure with different
+  data — the roadmap §11 stopping rule fires for this lever.
+
+Classification:
+
+- **Negative result for the data lever** on the stability tail;
+  campaign paused per stopping rule rather than escalated.
+
+Learning:
+
+- The placement-flip tail is not a coverage phenomenon — pose-diverse
+  data improved nothing and slightly worsened it. The flip is plausibly a
+  property of single-forward-pass extent prediction across adjacent
+  poses; the next lever is a design change (reconstruction hysteresis
+  across matched frames, ensemble extent averaging, or extent
+  regularization), which must be preregistered fresh, not tuned into the
+  current head.
+
+Plan change:
+
+- WP5 promotion campaign PAUSED at the tail (perception is at
+  parity-plus for every functional purpose except it; tracker/heads
+  remain telemetry-only with the divergence discipline). Queue priority
+  shifts to: WP8-lite ablation (awaiting planner-file release), WP9a
+  rethink, and the stability-design lever when prioritized.
+
+Evidence:
+
+- `docs/wp5-tracker-training-2026-08-16.md`
+- `experiments/lolo1-wp5/functional-gate-v4-report.json`
+
 ## 5. Platform and cost learnings
 
 ### 5.1 RunPod for emulator branching
