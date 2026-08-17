@@ -860,3 +860,129 @@ Run `wp8lite-smoke-control-records-d1` (control command of §6.2, decisions
   §3.5.
 
 Staging is complete. Neither ablation arm has been run.
+
+### 6.8 Disclosure — root/current baseline designation fixes the §6.5 current-side mapping defect (appended 2026-08-17, BEFORE either arm runs)
+
+The §6.5 disclosed staging gap is a VOID-class defect by its own terms:
+at the preregistered root the planner's current tracked world-state
+signature is the empty string, `AccessibilityRecordProvenance` refuses
+empty keys, so the current-side lookup structurally missed and the
+treatment bonus was 0.0 for every candidate. Fixed now, before either arm
+has run, via §6.5's own remedy clause ("resolve the current record
+through a designated root-record key rather than the raw signature").
+Neither arm has run; no scored quantity was chosen after seeing arm
+output.
+
+**Mechanism.** The records file may designate exactly ONE record as the
+root/current baseline via a `"root_configuration": true` entry field.
+`load_verified_accessibility_records` returns a
+`VerifiedAccessibilityRecordStore` (a dict subclass): the lookup dict
+still refuses empty `configuration_signature` keys, the designated record
+still carries its real, deliberately unmatchable sentinel signature
+(`prepush-root-empty-track-unmatchable`), and the designation is stored
+separately on the store (`root_configuration_signature`). More than one
+designation, or a non-boolean flag, is refused at load. The designation
+is store metadata, never record content: all three §6.4 record content
+signatures are unchanged (re-verified after the edit —
+`85fd9014d58deb42 → 15604cb504868b33…`,
+`596a1c8a3c0fc8be → 37ea410d76472a12…`,
+`prepush-root-empty-track-unmatchable → 47975c94dea2b0fe…`), so the §6.2
+pre-launch check values stand as written.
+
+**Current-side resolution rule (both seams:
+`_archive_verified_accessibility_bonus` and
+`_verified_accessibility_reserve_rank`, via the shared
+`_resolve_verified_accessibility_current_record`).**
+
+1. If the current root object state's tracked world-state signature is
+   non-empty and mapped in the store → that record (`mapped`).
+2. Else, if the signature is the empty string — the one value the store
+   structurally cannot represent, i.e. exactly the preregistered root of
+   §6.1 — and a baseline record is designated → the baseline record
+   (`baseline`).
+3. Else → no record, refusal exactly as before (`missing`).
+
+A non-empty signature without a record is a genuinely unknown
+configuration and never falls back to the baseline: the empty-only gate
+in step 2 is deliberate, so refusal semantics for uncertified
+configurations (including sub-threshold removal-class variants such as
+`7f20180008c6ecea`, §6.4) are fully preserved. Candidate-side resolution
+is unchanged. Weight 0.0 continues to consult nothing (the exploding-store
+invariance test still passes; control-arm invariance argument of §4.6
+unchanged).
+
+**Telemetry.** Restore-selection events (`archive_branch_restored` and
+the committed-decision restore telemetry) now carry
+`verified_accessibility_current_source: mapped|baseline|missing`
+(`disabled` at weight 0.0), captured at selection time before the restore
+rebinds the current root object state, so a §6.5-style outcome audit can
+attribute every scored/unscored restore to its resolution path.
+`verified_accessibility_records_loaded` now additionally reports
+`root_configuration_signature` (the §6.2 pre-launch check fields —
+`record_count: 3`, the §6.4 content signatures — are unchanged; this is
+an additive field, like the `state_source_reward_track` manifest field
+noted in §6.7).
+
+**Records file.** `experiments/lolo1-wp5/wp8lite-accessibility-records.json`
+now carries `"root_configuration": true` on the pre-push record only. New
+file sha256
+`cf01a67aca2b6e8feeab38c0c85520dec2470cba2a5f2257cd817912c204d1fe`
+(supersedes the §6.4 value `cb8449…`; record content and keys are
+otherwise byte-identical). Module sanity values re-verified on the loaded
+store through the designated baseline: removed vs pre-push baseline
++25.0 (17 new cells + 1 milestone × 8.0), pushed vs baseline 0.0,
+removed vs removed 0.0.
+
+**Tests.** Appended to `tests/test_accessibility_preference.py`
+(`PlannerSeamRootBaselineTests`, `RootConfigurationLoaderTests`):
+baseline resolution fires at an empty-signature root and flips restore
+selection to the certified removal-class branch; removal-candidate vs
+baseline scores exactly the +25.0 sanity value; candidate == baseline
+scores 0.0; missing baseline preserves refusal (and logs
+`current_source: missing`); a representable-but-unmapped current
+signature still refuses; a mapped current signature wins over the
+baseline; weight 0.0 never consults a designated store; duplicate or
+non-boolean `root_configuration` is refused at load. Full suite: 908
+tests, OK, 4 skipped (895 + 13 appended).
+
+**Consequence for the preregistered bits.** With the root identified, the
+§6.5 consequence paragraph is discharged: at the §6.1 root the treatment
+arm's current side resolves to the certified v324 pre-push record via the
+baseline designation, so bit 1 can fire (or fail) for valuation reasons,
+which is what the ablation measures. The §3.4 bits, window, budgets, and
+VOID rule are unchanged. Per §6.5/§3.4, both arms run (once) only after
+this disclosed fix — which is the state we are in: neither arm has run.
+
+**Smoke rerun (§6.6 command, this build).** Run
+`wp8lite-smoke-control-records-d1-rootfix` (control command of §6.2,
+decisions 1, weight 0.0, log-root outside the repo): **complete, exit
+0**, and byte-parity with §6.7 on every recorded reference value —
+75,813 events, `run_finished` emitted, manifest status `complete`;
+decision-1 search verified **12,232 branches**; the same 13
+`human_prior_option_archive_added` events including the **four
+removal-class archives carrying `85fd9014d58deb42` at seqs
+62944/62949/62984/63004** (§6.7-identical); decision 1 committed at seq
+75,742 (§6.7-identical); zero `human_prior_life_loss_confirmed`;
+`frozen_parameter_audit` **pass** and
+`anonymous_entity_behavior_parameter_audit` **pass**. The determinism of
+the seeded choice is therefore unaffected by the fix.
+`verified_accessibility_records_loaded` at seq 3 now reports
+`record_count: 3`, the three unchanged §6.4 content signatures,
+`verified_accessibility_weight: 0.0`, **and
+`root_configuration_signature: "prepush-root-empty-track-unmatchable"`**
+— the baseline designation is visible at load time, satisfying the §6.5
+audit requirement. `human_prior_root_object_state_seeded` still reports
+`tracked_world_state_signature: null` with
+`legacy_track_reconstructed: true`: the root really does carry the empty
+signature, and it is now covered by the designated baseline whenever the
+weight is positive (the smoke's weight is 0.0, so the term consulted
+nothing, per the §4.6 invariance argument). Manifest `planning_config`
+equals v324's in all 117 shared fields with the single addition
+`verified_accessibility_weight: 0.0`, and the `episodic_resume` block
+carries the §6.1 source seqs and events sha `0bbe1d15…` — the §6.2
+pre-launch check reproduces on the fixed build. As in §6.7, no
+`archive_branch_restored` occurs within one decision; the
+`verified_accessibility_current_source` restore-time field is exercised
+by the arms and by the appended seam tests.
+
+Staging of the §6.5 fix is complete. Neither ablation arm has been run.

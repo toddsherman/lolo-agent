@@ -2466,6 +2466,10 @@ def main() -> None:
                             agent.verified_accessibility_records.items()
                         )
                     },
+                    root_configuration_signature=(
+                        agent.verified_accessibility_records
+                        .root_configuration_signature
+                    ),
                     verified_accessibility_weight=(
                         config.verified_accessibility_weight
                     ),

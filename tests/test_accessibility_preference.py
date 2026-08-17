@@ -22,12 +22,13 @@ from lolo_agent.goal_prior import HeartGoalAnalysis
 from lolo_agent.neural_planner import (
     NeuralPlan,
     NeuralPlanningConfig,
+    VerifiedAccessibilityRecordStore,
     VerifiedNeuralAgent,
     _ArchivedBranch,
     _HumanPriorOptionNode,
     load_verified_accessibility_records,
 )
-from lolo_agent.object_tracks import HumanPriorRootObjectState
+from lolo_agent.object_tracks import HumanPriorRootObjectState, ObjectTrackSet
 from lolo_agent.pixels import Frame
 
 
@@ -1113,6 +1114,332 @@ class RecordLoaderTests(unittest.TestCase):
                     verified_accessibility_weight=float("nan")
                 ),
             )
+
+
+# ---------------------------------------------------------------------------
+# Root/current baseline designation (design sections 6.5/6.8): the pre-push
+# ablation root's tracked world-state signature is the empty string — the one
+# value the store structurally cannot key — so the records file designates
+# exactly one record as the root/current baseline and the seam's current-side
+# resolution falls back to it only at an empty-signature root. Refusal
+# semantics for genuinely unknown (non-empty, unmapped) configurations are
+# preserved, and weight 0.0 still consults nothing.
+# ---------------------------------------------------------------------------
+
+
+BASELINE_SENTINEL_SIGNATURE = "prepush-root-sentinel"
+
+
+class _ExplodingDesignatedStore(VerifiedAccessibilityRecordStore):
+    """Fails the test if the seam consults a designated store at 0.0."""
+
+    def get(self, key, default=None):
+        raise AssertionError(
+            "designated record store consulted at weight 0.0"
+        )
+
+
+def _root_designated_records():
+    """The shipped store's shape: baseline (designated, sentinel-keyed),
+    certified-neutral, and removal-class records."""
+
+    store = VerifiedAccessibilityRecordStore()
+    store[BASELINE_SENTINEL_SIGNATURE] = record(
+        configuration_signature=BASELINE_SENTINEL_SIGNATURE
+    )
+    store[NEUTRAL_SIGNATURE] = record(
+        configuration_signature=NEUTRAL_SIGNATURE
+    )
+    store[REMOVAL_SIGNATURE] = record(
+        cells=REMOVED_CELLS,
+        milestone_cells=(MILESTONE_CELL,),
+        configuration_signature=REMOVAL_SIGNATURE,
+        outcome_category=OUTCOME_REMOVAL,
+    )
+    store.root_configuration_signature = BASELINE_SENTINEL_SIGNATURE
+    return store
+
+
+def _empty_root_seam_agent(weight: float, records):
+    """Seam agent whose current root state is the ablation root: the
+    tracked world-state signature seeds empty by construction (design
+    section 6.5)."""
+
+    env, logger, agent, neutral, removal = _seam_agent(weight, records)
+    agent.current_human_prior_root_object_state = (
+        ObjectTrackSet.empty().to_root_object_state()
+    )
+    return env, logger, agent, neutral, removal
+
+
+class PlannerSeamRootBaselineTests(unittest.TestCase):
+    """Section 6.5 fix: the designated baseline resolves the current side
+    at the empty-signature ablation root; refusal survives elsewhere."""
+
+    def test_root_track_state_seeds_the_empty_signature(self) -> None:
+        # The defect precondition, pinned: the empty root track state
+        # carries the empty signature, which the store can never key.
+        _env, _logger, agent, *_rest = _empty_root_seam_agent(
+            1.0, _root_designated_records()
+        )
+        self.assertEqual(
+            agent.current_human_prior_root_object_state
+            .tracked_world_state_signature,
+            "",
+        )
+        with self.assertRaises(ValueError):
+            provenance(configuration_signature="")
+
+    def test_baseline_resolution_fires_at_empty_signature_root(self) -> None:
+        _env, logger, agent, _neutral, removal = _empty_root_seam_agent(
+            1.0, _root_designated_records()
+        )
+        bonus, components = agent._archive_verified_accessibility_bonus(
+            removal
+        )
+        assert components is not None
+        self.assertTrue(components.scored)
+        self.assertIsNone(components.refusal_reason)
+        self.assertGreater(bonus, 0.0)
+
+        decision = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(decision)
+        # The certified removal-class branch was selected despite its
+        # lower plain score: the baseline resolution let the preference
+        # term rank it at the ablation root.
+        self.assertEqual(
+            [b.tracked_world_state_signature for b in agent.archive],
+            [NEUTRAL_SIGNATURE],
+        )
+        restored = _restored_event(logger)
+        self.assertEqual(
+            restored["verified_accessibility_current_source"], "baseline"
+        )
+        self.assertTrue(restored["verified_accessibility_scored"])
+        self.assertGreater(
+            restored["verified_accessibility_total_bonus"], 0.0
+        )
+        committed = _committed_event(logger)
+        self.assertEqual(
+            committed["verified_accessibility_current_source"], "baseline"
+        )
+
+    def test_removal_candidate_vs_baseline_scores_the_sanity_value(
+        self,
+    ) -> None:
+        # The section 6.4 sanity value: 17 certified new cells plus the
+        # certified milestone-bearing cell (12, 11) at weight 8.0 = +25.0.
+        _env, _logger, agent, _neutral, removal = _empty_root_seam_agent(
+            1.0, _root_designated_records()
+        )
+        bonus, components = agent._archive_verified_accessibility_bonus(
+            removal
+        )
+        assert components is not None
+        self.assertTrue(components.scored)
+        self.assertEqual(len(components.newly_reachable_cells), 17)
+        self.assertEqual(
+            components.newly_reachable_milestone_cells, (MILESTONE_CELL,)
+        )
+        self.assertEqual(components.total_bonus, 25.0)
+        self.assertEqual(bonus, 25.0)
+
+    def test_candidate_equal_to_baseline_scores_zero(self) -> None:
+        env, _logger, agent, *_rest = _empty_root_seam_agent(
+            1.0, _root_designated_records()
+        )
+        baseline_branch = _ArchivedBranch(
+            state=env.save_state(),
+            frame=env._frame(),
+            plan=NeuralPlan((Action.RIGHT,), (1,), 1.0, 0.0),
+            score=1.0,
+            scene="archived-elsewhere",
+            created=0,
+            origin_signature="origin",
+            tracked_world_state_signature=BASELINE_SENTINEL_SIGNATURE,
+        )
+        bonus, components = agent._archive_verified_accessibility_bonus(
+            baseline_branch
+        )
+        assert components is not None
+        self.assertTrue(components.scored)
+        self.assertEqual(components.total_bonus, 0.0)
+        self.assertEqual(bonus, 0.0)
+
+    def test_missing_baseline_preserves_refusal(self) -> None:
+        records = _root_designated_records()
+        records.root_configuration_signature = None
+        _env, logger, agent, _neutral, removal = _empty_root_seam_agent(
+            1.0, records
+        )
+        self.assertEqual(
+            agent._archive_verified_accessibility_bonus(removal),
+            (0.0, None),
+        )
+
+        decision = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(decision)
+        # Without a designated baseline the term refuses at the empty
+        # root exactly as before and the plain tiebreak restores the
+        # higher-scored neutral branch.
+        self.assertEqual(
+            [b.tracked_world_state_signature for b in agent.archive],
+            [REMOVAL_SIGNATURE],
+        )
+        restored = _restored_event(logger)
+        self.assertFalse(restored["verified_accessibility_scored"])
+        self.assertEqual(
+            restored["verified_accessibility_refusal_reason"],
+            "record_missing_or_disabled",
+        )
+        self.assertEqual(
+            restored["verified_accessibility_current_source"], "missing"
+        )
+
+    def test_unknown_nonempty_current_signature_still_refuses(self) -> None:
+        # A representable-but-unmapped current configuration is genuinely
+        # unknown: the baseline never stands in for it (section 6.8).
+        _env, _logger, agent, _neutral, removal = _seam_agent(
+            1.0, _root_designated_records()
+        )
+        agent.current_human_prior_root_object_state = (
+            HumanPriorRootObjectState(
+                tracked_world_state_signature="unknown-sig"
+            )
+        )
+        self.assertEqual(
+            agent._archive_verified_accessibility_bonus(removal),
+            (0.0, None),
+        )
+        self.assertEqual(
+            agent._verified_accessibility_current_source(), "missing"
+        )
+
+    def test_mapped_current_signature_wins_over_the_baseline(self) -> None:
+        # Candidate-side and mapped current-side resolution are unchanged:
+        # with a live mapped signature the baseline is never consulted.
+        _env, _logger, agent, _neutral, removal = _seam_agent(
+            1.0, _root_designated_records()
+        )
+        agent.current_human_prior_root_object_state = (
+            HumanPriorRootObjectState(
+                tracked_world_state_signature=REMOVAL_SIGNATURE
+            )
+        )
+        bonus, components = agent._archive_verified_accessibility_bonus(
+            removal
+        )
+        assert components is not None
+        self.assertTrue(components.scored)
+        self.assertEqual(components.total_bonus, 0.0)
+        self.assertEqual(bonus, 0.0)
+        self.assertEqual(
+            agent._verified_accessibility_current_source(), "mapped"
+        )
+
+    def test_zero_weight_never_consults_a_designated_store(self) -> None:
+        store = _ExplodingDesignatedStore()
+        store.root_configuration_signature = BASELINE_SENTINEL_SIGNATURE
+        _env, _logger, agent, neutral, removal = _empty_root_seam_agent(
+            0.0, store
+        )
+        for branch in (neutral, removal):
+            self.assertEqual(
+                agent._archive_verified_accessibility_bonus(branch),
+                (0.0, None),
+            )
+        self.assertEqual(
+            agent._verified_accessibility_reserve_rank(REMOVAL_SIGNATURE),
+            0.0,
+        )
+        self.assertEqual(
+            agent._verified_accessibility_current_source(), "disabled"
+        )
+
+    def test_reserve_ranking_uses_the_baseline_at_the_empty_root(
+        self,
+    ) -> None:
+        _env, _logger, agent, *_rest = _empty_root_seam_agent(
+            1.0, _root_designated_records()
+        )
+        self.assertEqual(
+            agent._verified_accessibility_reserve_rank(REMOVAL_SIGNATURE),
+            25.0,
+        )
+        self.assertEqual(
+            agent._verified_accessibility_reserve_rank(NEUTRAL_SIGNATURE),
+            0.0,
+        )
+
+
+class RootConfigurationLoaderTests(unittest.TestCase):
+    """Loader-side designation: at most one root/current baseline."""
+
+    @staticmethod
+    def _entry(signature: str, root=None):
+        entry = RecordLoaderTests._entry(signature=signature)
+        if root is not None:
+            entry["root_configuration"] = root
+        return entry
+
+    def _load(self, payload):
+        with tempfile.TemporaryDirectory() as tempdir:
+            path = Path(tempdir) / "records.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            return load_verified_accessibility_records(str(path))
+
+    def test_designated_baseline_is_stored_separately(self) -> None:
+        records = self._load(
+            [
+                self._entry(REMOVAL_SIGNATURE),
+                self._entry(BASELINE_SENTINEL_SIGNATURE, root=True),
+            ]
+        )
+        self.assertIsInstance(records, VerifiedAccessibilityRecordStore)
+        self.assertEqual(
+            records.root_configuration_signature,
+            BASELINE_SENTINEL_SIGNATURE,
+        )
+        self.assertIs(
+            records.root_record, records[BASELINE_SENTINEL_SIGNATURE]
+        )
+        # The designation adds no lookup key and is not record content:
+        # the designated record's content signature is unchanged.
+        self.assertEqual(
+            sorted(records),
+            sorted([REMOVAL_SIGNATURE, BASELINE_SENTINEL_SIGNATURE]),
+        )
+        undesignated = self._load(
+            [self._entry(BASELINE_SENTINEL_SIGNATURE)]
+        )
+        self.assertEqual(
+            records[BASELINE_SENTINEL_SIGNATURE].content_signature(),
+            undesignated[BASELINE_SENTINEL_SIGNATURE].content_signature(),
+        )
+
+    def test_undesignated_store_has_no_baseline(self) -> None:
+        records = self._load(
+            [self._entry(REMOVAL_SIGNATURE, root=False)]
+        )
+        self.assertIsNone(records.root_configuration_signature)
+        self.assertIsNone(records.root_record)
+
+    def test_duplicate_root_configuration_refused_at_load(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError, "duplicate root_configuration"
+        ):
+            self._load(
+                [
+                    self._entry(REMOVAL_SIGNATURE, root=True),
+                    self._entry(BASELINE_SENTINEL_SIGNATURE, root=True),
+                ]
+            )
+
+    def test_non_boolean_root_configuration_refused(self) -> None:
+        with self.assertRaisesRegex(ValueError, "root_configuration"):
+            self._load([self._entry(REMOVAL_SIGNATURE, root="yes")])
 
 
 if __name__ == "__main__":

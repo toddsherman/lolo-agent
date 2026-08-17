@@ -19127,6 +19127,51 @@ class VerifiedNeuralAgent:
             branch.plan.durations[0],
         )[2]
 
+    def _resolve_verified_accessibility_current_record(
+        self,
+    ) -> Tuple[Optional[CertifiedAccessibilityRecord], str]:
+        """Resolve the current-side record, naming the resolution path.
+
+        ``"mapped"``: the current root object state's tracked world-state
+        signature has a record in the store. ``"baseline"``: the current
+        root track state carries the empty signature — the one value the
+        store structurally cannot key
+        (docs/wp8-lite-ablation-design-2026-08-16.md section 6.5) — and
+        the records file designated a root/current baseline record
+        (``root_configuration``), which stands in for the preregistered
+        root. ``"missing"``: no record; callers refuse to score exactly
+        as before. A non-empty signature without a record is a genuinely
+        unknown configuration and never falls back to the baseline
+        (section 6.8).
+        """
+
+        signature = (
+            self.current_human_prior_root_object_state
+            .tracked_world_state_signature
+        )
+        if signature:
+            current = self.verified_accessibility_records.get(signature)
+            if current is not None:
+                return current, "mapped"
+            return None, "missing"
+        baseline = getattr(
+            self.verified_accessibility_records, "root_record", None
+        )
+        if baseline is not None:
+            return baseline, "baseline"
+        return None, "missing"
+
+    def _verified_accessibility_current_source(self) -> str:
+        """Current-side resolution path for telemetry.
+
+        Never consults the record store while the term is disabled
+        (weight 0.0 control-arm invariance, design section 4.6).
+        """
+
+        if self.config.verified_accessibility_weight <= 0.0:
+            return "disabled"
+        return self._resolve_verified_accessibility_current_record()[1]
+
     def _archive_verified_accessibility_bonus(
         self, branch: _ArchivedBranch
     ) -> Tuple[float, Optional[AccessibilityPreferenceComponents]]:
@@ -19134,7 +19179,11 @@ class VerifiedNeuralAgent:
 
         Certified records only; a missing record on either side scores
         0.0 (unverified accessibility never scores as observed —
-        docs/wp8-lite-ablation-design-2026-08-16.md).
+        docs/wp8-lite-ablation-design-2026-08-16.md). The current side
+        resolves through
+        :meth:`_resolve_verified_accessibility_current_record`, so the
+        designated root baseline can stand in for the empty-signature
+        ablation root (sections 6.5/6.8).
         """
 
         if self.config.verified_accessibility_weight <= 0.0:
@@ -19142,9 +19191,8 @@ class VerifiedNeuralAgent:
         candidate = self.verified_accessibility_records.get(
             branch.tracked_world_state_signature
         )
-        current = self.verified_accessibility_records.get(
-            self.current_human_prior_root_object_state
-            .tracked_world_state_signature
+        current, _current_source = (
+            self._resolve_verified_accessibility_current_record()
         )
         if candidate is None or current is None:
             return 0.0, None
@@ -19162,9 +19210,8 @@ class VerifiedNeuralAgent:
         ):
             return 0.0
         candidate = self.verified_accessibility_records.get(signature)
-        current = self.verified_accessibility_records.get(
-            self.current_human_prior_root_object_state
-            .tracked_world_state_signature
+        current, _current_source = (
+            self._resolve_verified_accessibility_current_record()
         )
         if candidate is None or current is None:
             return 0.0
@@ -26604,6 +26651,11 @@ class VerifiedNeuralAgent:
             selected_verified_accessibility_bonus,
             selected_verified_accessibility_components,
         ) = self._archive_verified_accessibility_bonus(branch)
+        # Captured here, before the restore rebinds the current root
+        # object state, so the logged path matches the scored comparison.
+        selected_verified_accessibility_current_source = (
+            self._verified_accessibility_current_source()
+        )
         selected_causal_spatial_archive_bonus = (
             self._archive_causal_spatial_bonus(branch)
         )
@@ -26832,6 +26884,9 @@ class VerifiedNeuralAgent:
             persistent_frontier_value=selected_frontier_value,
             verified_accessibility_bonus=(
                 selected_verified_accessibility_bonus
+            ),
+            verified_accessibility_current_source=(
+                selected_verified_accessibility_current_source
             ),
             **(
                 selected_verified_accessibility_components.log_fields()
@@ -27154,6 +27209,9 @@ class VerifiedNeuralAgent:
             verified_accessibility_bonus=(
                 selected_verified_accessibility_bonus
             ),
+            verified_accessibility_current_source=(
+                selected_verified_accessibility_current_source
+            ),
             **(
                 selected_verified_accessibility_components.log_fields()
                 if selected_verified_accessibility_components is not None
@@ -27300,9 +27358,39 @@ class VerifiedNeuralAgent:
         return [self.decide() for _ in range(decisions)]
 
 
+class VerifiedAccessibilityRecordStore(
+    Dict[str, CertifiedAccessibilityRecord]
+):
+    """WP8-lite record store: signature-keyed lookup plus at most one
+    designated root/current baseline record.
+
+    The lookup dict never keys an empty configuration signature
+    (:class:`accessibility_preference.AccessibilityRecordProvenance`
+    refuses it), so the pre-push root track state — whose actually-carried
+    in-run signature IS the empty string — cannot be resolved by raw
+    signature (docs/wp8-lite-ablation-design-2026-08-16.md section 6.5).
+    The records file may instead designate exactly one record
+    (``"root_configuration": true``) as the root/current baseline; the
+    seam's current-side resolution falls back to it only while the current
+    root object state carries the empty signature (section 6.8). The
+    designated record still carries a real, deliberately unmatchable
+    sentinel ``configuration_signature`` for the lookup dict.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.root_configuration_signature: Optional[str] = None
+
+    @property
+    def root_record(self) -> Optional[CertifiedAccessibilityRecord]:
+        if self.root_configuration_signature is None:
+            return None
+        return self.get(self.root_configuration_signature)
+
+
 def load_verified_accessibility_records(
     path: str,
-) -> Dict[str, CertifiedAccessibilityRecord]:
+) -> VerifiedAccessibilityRecordStore:
     """Provenance-checked import path for WP8-lite certified records.
 
     Minimal loader for the preregistered ablation
@@ -27334,6 +27422,11 @@ def load_verified_accessibility_records(
           "preparation_outcome_category": "removal",
           "confirmed_manipulation_count": 0
         }
+
+    An entry may additionally carry ``"root_configuration": true`` to
+    designate it as the root/current baseline record (at most one per
+    file; duplicates are refused). The designation is store metadata: it
+    never enters the record, its content signature, or the lookup keys.
     """
 
     with open(path, "r", encoding="utf-8") as handle:
@@ -27343,13 +27436,18 @@ def load_verified_accessibility_records(
             "verified accessibility records file must hold a JSON list "
             "of record objects"
         )
-    records: Dict[str, CertifiedAccessibilityRecord] = {}
+    records = VerifiedAccessibilityRecordStore()
     for index, entry in enumerate(payload):
         if not isinstance(entry, dict) or not isinstance(
             entry.get("provenance"), dict
         ):
             raise ValueError(
                 f"record {index} must be an object with a provenance object"
+            )
+        root_configuration = entry.get("root_configuration", False)
+        if not isinstance(root_configuration, bool):
+            raise ValueError(
+                f"record {index} root_configuration must be a boolean"
             )
         provenance = AccessibilityRecordProvenance(**entry["provenance"])
         if not provenance.certified:
@@ -27387,4 +27485,13 @@ def load_verified_accessibility_records(
                 f"{signature!r} in record {index}"
             )
         records[signature] = record
+        if root_configuration:
+            if records.root_configuration_signature is not None:
+                raise ValueError(
+                    "duplicate root_configuration designation: record "
+                    f"{index} ({signature!r}) is designated but "
+                    f"{records.root_configuration_signature!r} is already "
+                    "the root/current baseline"
+                )
+            records.root_configuration_signature = signature
     return records
