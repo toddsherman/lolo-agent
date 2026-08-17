@@ -91,6 +91,29 @@ unchanged; the ``*_v2`` functions implement the three redesign requirements:
    from the pre-terminal root contrast plus the structural rewind, never
    from reversion of the event's own cells. Positive valence is unchanged:
    novel-and-persistent successor structure.
+
+V3 rethink (docs/learnings.md section 4.36; preregistered in
+docs/milestone-scoring-v3-2026-08-16.md). The v1 and v2 functions remain
+unchanged; the ``*_v3`` functions implement the two rethink requirements:
+
+1. Component-anchored rewind (:func:`extract_component_event_v3`): the v2
+   structural reset recognizer is kept unchanged, and a successor marks the
+   occurrence rewound only when, against the SAME history array that
+   satisfied the proximity test, the event's own component cells revert
+   toward the pre-event configuration — strictly more component cells hold
+   a pre-event-consistent value (the cell's root value, or the matched
+   history array's value at that cell) than hold their post-event value. A
+   terminal reset that merely falls inside the successor window no longer
+   poisons an unrelated event whose own cells survived it.
+2. Occurrence-scoped valence (:func:`occurrence_valence`,
+   :func:`score_events_v3`): each occurrence carries its own valence from
+   its own evidence (negative: component-anchored rewind plus the unchanged
+   v2 divergence-evidence rule, checked first; positive: own persistence
+   and own successor novelty fraction; unresolved otherwise, including
+   return-censored occurrences). The signature score m(sigma) is unchanged
+   and remains the only signature-level aggregate with decision power
+   (ranking); the per-signature valence label is a reporting-only plurality
+   of occurrence valences that overwrites no occurrence.
 """
 
 from __future__ import annotations
@@ -445,8 +468,13 @@ class MilestoneScoreConfig:
 class SignatureScore:
     """The preregistered score and valence for one event signature.
 
-    The trailing defaulted fields are v2-only diagnostics; v1 scoring
-    leaves them at their defaults.
+    The trailing defaulted fields are v2/v3-only diagnostics; v1 scoring
+    leaves them at their defaults. The occurrence-valence tallies are
+    populated by v3 scoring only: they count each occurrence's own valence
+    (docs/milestone-scoring-v3-2026-08-16.md section 1.2.2), and for v3 the
+    signature-level ``valence``/``valence_basis`` are a REPORTING-ONLY
+    plurality over those tallies — ranking comes exclusively from
+    ``score``, and no occurrence's valence is overwritten by its class.
     """
 
     signature: str
@@ -468,6 +496,9 @@ class SignatureScore:
     negative_divergence_rate: float = 0.0
     rewound_occurrences: int = 0
     escape_lookback_occurrences: int = 0
+    positive_occurrences: int = 0
+    negative_occurrences: int = 0
+    unresolved_occurrences: int = 0
 
 
 @dataclass(frozen=True)
@@ -701,34 +732,42 @@ def escape_divergence_cells(
     )
 
 
-def extract_component_event(
-    pair: MatchedEndpointPair,
-    config: Optional[MilestoneScoreConfig] = None,
-) -> Optional[ExtractedEvent]:
-    """Extract the per-component matched endpoint difference from one pair.
+def _component_reverts(
+    successor: Sequence[int],
+    reference: Sequence[int],
+    component: Sequence[ChangedCell],
+) -> bool:
+    """Whether the component cells revert toward the pre-event configuration.
 
-    Requirement 1 of the section-4.33 redesign. Changed cells are
-    partitioned against the matched control:
-
-    - control at the root value: action-DEPENDENT cell;
-    - control at the factual value: AUTONOMOUS cell;
-    - control at a third value: AMBIGUOUS cell (cell-level censored).
-
-    When dependent cells exist, the event IS that component: its signature,
-    reversion, and dependence cover the attributable cells only, and the
-    autonomous/ambiguous cells are recorded but excluded. With no dependent
-    cells the event keeps the full changed set and is autonomous when the
-    control reproduced everything, dependence-censored when ambiguous cells
-    exist or the control is missing (censoring never supports a claim).
-
-    ``rewound`` implements the structural reset test for requirement 3: a
-    successor at least ``rewind_transient_floor`` cells from the event root
-    that lies within ``rewind_proximity_ceiling`` cells of a pre-event
-    ``history`` array.
+    The v3 component anchor (docs/milestone-scoring-v3-2026-08-16.md
+    section 1.2.1): at ``successor``, strictly more component cells must
+    hold a pre-event-consistent value (the cell's root value ``before``, or
+    the matched history ``reference`` value at that cell) than hold their
+    post-event value ``after``. Precedence is fixed: a cell whose
+    post-event value equals the reference value counts as
+    pre-event-consistent (the change moved the cell onto a known
+    configuration — reset-shaped by construction). Cells at third values
+    support neither side.
     """
 
-    if config is None:
-        config = MilestoneScoreConfig()
+    reverted = 0
+    retained = 0
+    for index, before, after in component:
+        value = successor[index]
+        if value == before or value == reference[index]:
+            reverted += 1
+        elif value == after:
+            retained += 1
+    return reverted > retained
+
+
+def _extract_component_event(
+    pair: MatchedEndpointPair,
+    config: MilestoneScoreConfig,
+    anchored_rewind: bool,
+) -> Optional[ExtractedEvent]:
+    """Shared v2/v3 per-component extraction (see the public wrappers)."""
+
     changed = tuple(
         (index, before, after)
         for index, (before, after) in enumerate(zip(pair.root, pair.factual))
@@ -785,13 +824,18 @@ def extract_component_event(
                 < config.rewind_transient_floor
             ):
                 continue
-            if any(
-                _within_distance(
+            for reference in pair.history:
+                if not _within_distance(
                     successor, reference, config.rewind_proximity_ceiling
-                )
-                for reference in pair.history
-            ):
+                ):
+                    continue
+                if anchored_rewind and not _component_reverts(
+                    successor, reference, component
+                ):
+                    continue
                 rewound = True
+                break
+            if rewound:
                 break
 
     successor_signatures = tuple(
@@ -816,6 +860,58 @@ def extract_component_event(
     )
 
 
+def extract_component_event(
+    pair: MatchedEndpointPair,
+    config: Optional[MilestoneScoreConfig] = None,
+) -> Optional[ExtractedEvent]:
+    """Extract the per-component matched endpoint difference from one pair.
+
+    Requirement 1 of the section-4.33 redesign. Changed cells are
+    partitioned against the matched control:
+
+    - control at the root value: action-DEPENDENT cell;
+    - control at the factual value: AUTONOMOUS cell;
+    - control at a third value: AMBIGUOUS cell (cell-level censored).
+
+    When dependent cells exist, the event IS that component: its signature,
+    reversion, and dependence cover the attributable cells only, and the
+    autonomous/ambiguous cells are recorded but excluded. With no dependent
+    cells the event keeps the full changed set and is autonomous when the
+    control reproduced everything, dependence-censored when ambiguous cells
+    exist or the control is missing (censoring never supports a claim).
+
+    ``rewound`` implements the structural reset test for requirement 3: a
+    successor at least ``rewind_transient_floor`` cells from the event root
+    that lies within ``rewind_proximity_ceiling`` cells of a pre-event
+    ``history`` array.
+    """
+
+    if config is None:
+        config = MilestoneScoreConfig()
+    return _extract_component_event(pair, config, anchored_rewind=False)
+
+
+def extract_component_event_v3(
+    pair: MatchedEndpointPair,
+    config: Optional[MilestoneScoreConfig] = None,
+) -> Optional[ExtractedEvent]:
+    """Per-component extraction with the v3 component-anchored rewind.
+
+    Identical to :func:`extract_component_event` — same component
+    partition, same signature, same reversion — except that ``rewound``
+    requires the component anchor of the section-4.36 rethink: the
+    successor must pass the unchanged structural reset test AND, against
+    the same matched history array, the event's own component cells must
+    revert toward the pre-event configuration (:func:`_component_reverts`).
+    A later terminal reset merely crossing the successor window no longer
+    marks an occurrence whose own cells survived it.
+    """
+
+    if config is None:
+        config = MilestoneScoreConfig()
+    return _extract_component_event(pair, config, anchored_rewind=True)
+
+
 def extract_component_events(
     pairs: Sequence[MatchedEndpointPair],
     config: Optional[MilestoneScoreConfig] = None,
@@ -827,6 +923,22 @@ def extract_component_events(
     events = []
     for pair in pairs:
         event = extract_component_event(pair, config)
+        if event is not None:
+            events.append(event)
+    return tuple(events)
+
+
+def extract_component_events_v3(
+    pairs: Sequence[MatchedEndpointPair],
+    config: Optional[MilestoneScoreConfig] = None,
+) -> Tuple[ExtractedEvent, ...]:
+    """V3 anchored-rewind extraction over every pair (see the singular)."""
+
+    if config is None:
+        config = MilestoneScoreConfig()
+    events = []
+    for pair in pairs:
+        event = extract_component_event_v3(pair, config)
         if event is not None:
             events.append(event)
     return tuple(events)
@@ -1001,5 +1113,244 @@ def discover_milestones_v2(
         pairs_without_event=len(pairs) - len(events),
         total_events=len(events),
         scores=score_events_v2(events, seen_signatures, config),
+        config=config,
+    )
+
+
+# ---------------------------------------------------------------------------
+# V3 rethink (docs/learnings.md section 4.36, preregistered in
+# docs/milestone-scoring-v3-2026-08-16.md). Additive: nothing above changes.
+# ---------------------------------------------------------------------------
+
+
+def occurrence_valence(
+    event: ExtractedEvent,
+    seen_signatures: AbstractSet[str] = frozenset(),
+    config: Optional[MilestoneScoreConfig] = None,
+) -> Tuple[str, str]:
+    """One occurrence's own valence from its own evidence (v3 requirement 2).
+
+    Returns ``(valence, basis)``. Rules, in order
+    (docs/milestone-scoring-v3-2026-08-16.md section 1.2.2):
+
+    - no successor observations: unresolved (return-censored);
+    - NEGATIVE (delayed divergence, checked first): the occurrence is
+      rewound — the caller supplies an event extracted with the v3
+      component-anchored rewind — and participates in measured
+      factual-vs-control divergence structure (its matched contrast is
+      dependence-evaluable, or an escape divergence was observed within the
+      preregistered lookback). Dependence-censored occurrences with no
+      escape evidence can never be negative;
+    - POSITIVE (novel-and-persistent): the component never reverts within
+      the window, the first successor does not collapse onto the seen pool,
+      and the occurrence's own successor novelty fraction reaches
+      ``positive_novelty_threshold``;
+    - unresolved (mixed) otherwise.
+
+    ``negative_divergence_threshold`` does not appear: at occurrence scope
+    the negative rule is binary, exactly as v2 retired the v1 reversion
+    threshold without removing it from the config.
+    """
+
+    if config is None:
+        config = MilestoneScoreConfig()
+    if event.reverted is None:
+        return VALENCE_UNRESOLVED, VALENCE_BASIS_RETURN_CENSORED
+    if event.rewound is True and (
+        event.action_dependent is not None or event.escape_lookback is True
+    ):
+        return VALENCE_NEGATIVE, VALENCE_BASIS_DELAYED_DIVERGENCE
+    collapsed = (
+        event.first_successor_signature is not None
+        and event.first_successor_signature in seen_signatures
+    )
+    if not event.reverted and not collapsed:
+        novel = sum(
+            1
+            for successor in event.successor_signatures
+            if successor not in seen_signatures
+        )
+        novelty = novel / len(event.successor_signatures)
+        if novelty >= config.positive_novelty_threshold:
+            return VALENCE_POSITIVE, VALENCE_BASIS_NOVEL_AND_PERSISTENT
+    return VALENCE_UNRESOLVED, VALENCE_BASIS_MIXED
+
+
+def _score_signature_v3(
+    signature: str,
+    events: Sequence[ExtractedEvent],
+    total_events: int,
+    seen_signatures: AbstractSet[str],
+    config: MilestoneScoreConfig,
+) -> SignatureScore:
+    occurrences = len(events)
+    log_rarity = math.log(total_events / occurrences)
+
+    dependent = sum(1 for event in events if event.action_dependent is True)
+    independent = sum(1 for event in events if event.action_dependent is False)
+    dependence_evaluable = dependent + independent
+    dependence_censored = occurrences - dependence_evaluable
+    if dependence_evaluable > 0:
+        action_dependence_rate = dependent / dependence_evaluable
+    else:
+        action_dependence_rate = 0.0
+
+    reverted_cells = sum(1 for event in events if event.reverted is True)
+    persisted_cells = sum(1 for event in events if event.reverted is False)
+    return_evaluable = reverted_cells + persisted_cells
+    return_censored = occurrences - return_evaluable
+    if return_evaluable > 0:
+        censored_non_return_factor = persisted_cells / return_evaluable
+    else:
+        censored_non_return_factor = 0.0
+
+    novelty_fractions: List[float] = []
+    reversion_to_seen = 0
+    persistent_not_seen = 0
+    rewound_occurrences = 0
+    positive_occurrences = 0
+    negative_occurrences = 0
+    unresolved_occurrences = 0
+    for event in events:
+        valence, _basis = occurrence_valence(event, seen_signatures, config)
+        if valence == VALENCE_POSITIVE:
+            positive_occurrences += 1
+        elif valence == VALENCE_NEGATIVE:
+            negative_occurrences += 1
+        else:
+            unresolved_occurrences += 1
+        if event.reverted is None:
+            continue
+        novel = sum(
+            1
+            for successor in event.successor_signatures
+            if successor not in seen_signatures
+        )
+        novelty_fractions.append(novel / len(event.successor_signatures))
+        collapsed = (
+            event.first_successor_signature is not None
+            and event.first_successor_signature in seen_signatures
+        )
+        if event.reverted or collapsed:
+            reversion_to_seen += 1
+        else:
+            persistent_not_seen += 1
+        if event.rewound is True:
+            rewound_occurrences += 1
+    escape_lookback_occurrences = sum(
+        1 for event in events if event.escape_lookback is True
+    )
+    if novelty_fractions:
+        mean_novelty = sum(novelty_fractions) / len(novelty_fractions)
+    else:
+        mean_novelty = 0.0
+    successor_novelty_margin = max(
+        0.0, mean_novelty - config.novelty_baseline
+    )
+
+    if return_evaluable > 0:
+        reversion_to_seen_rate = reversion_to_seen / return_evaluable
+        persistence_rate = persistent_not_seen / return_evaluable
+        negative_divergence_rate = negative_occurrences / return_evaluable
+    else:
+        reversion_to_seen_rate = 0.0
+        persistence_rate = 0.0
+        negative_divergence_rate = 0.0
+
+    score = (
+        log_rarity
+        * action_dependence_rate
+        * censored_non_return_factor
+        * successor_novelty_margin
+    )
+
+    # REPORTING-ONLY plurality label (never gates, overwrites no
+    # occurrence): negative when negative occurrences strictly exceed
+    # positive, positive when the reverse, unresolved otherwise.
+    if return_evaluable == 0:
+        valence = VALENCE_UNRESOLVED
+        valence_basis = VALENCE_BASIS_RETURN_CENSORED
+    elif negative_occurrences > positive_occurrences:
+        valence = VALENCE_NEGATIVE
+        valence_basis = VALENCE_BASIS_DELAYED_DIVERGENCE
+    elif positive_occurrences > negative_occurrences:
+        valence = VALENCE_POSITIVE
+        valence_basis = VALENCE_BASIS_NOVEL_AND_PERSISTENT
+    else:
+        valence = VALENCE_UNRESOLVED
+        valence_basis = VALENCE_BASIS_MIXED
+
+    return SignatureScore(
+        signature=signature,
+        occurrences=occurrences,
+        log_rarity=log_rarity,
+        action_dependence_rate=action_dependence_rate,
+        dependence_evaluable=dependence_evaluable,
+        dependence_censored=dependence_censored,
+        censored_non_return_factor=censored_non_return_factor,
+        return_evaluable=return_evaluable,
+        return_censored=return_censored,
+        successor_novelty_margin=successor_novelty_margin,
+        reversion_to_seen_rate=reversion_to_seen_rate,
+        persistence_rate=persistence_rate,
+        score=score,
+        valence=valence,
+        valence_basis=valence_basis,
+        provenance=tuple(event.provenance for event in events),
+        negative_divergence_rate=negative_divergence_rate,
+        rewound_occurrences=rewound_occurrences,
+        escape_lookback_occurrences=escape_lookback_occurrences,
+        positive_occurrences=positive_occurrences,
+        negative_occurrences=negative_occurrences,
+        unresolved_occurrences=unresolved_occurrences,
+    )
+
+
+def score_events_v3(
+    events: Sequence[ExtractedEvent],
+    seen_signatures: AbstractSet[str] = frozenset(),
+    config: Optional[MilestoneScoreConfig] = None,
+) -> Tuple[SignatureScore, ...]:
+    """Score v3 events: unchanged ranking, occurrence-scoped valence.
+
+    ``events`` must come from the v3 anchored-rewind extraction. The score
+    product is identical to v1/v2 (rarity, dependence, non-return, novelty)
+    and remains the only signature-level aggregate with decision power;
+    each occurrence's valence is computed by :func:`occurrence_valence` and
+    tallied, and the signature's ``valence`` field is only the reporting
+    plurality of those tallies.
+    """
+
+    if config is None:
+        config = MilestoneScoreConfig()
+    grouped: Dict[str, List[ExtractedEvent]] = {}
+    for event in events:
+        grouped.setdefault(event.signature, []).append(event)
+    total_events = len(events)
+    scores = [
+        _score_signature_v3(
+            signature, grouped[signature], total_events, seen_signatures, config
+        )
+        for signature in grouped
+    ]
+    scores.sort(key=lambda score: (-score.score, score.signature))
+    return tuple(scores)
+
+
+def discover_milestones_v3(
+    pairs: Sequence[MatchedEndpointPair],
+    seen_signatures: AbstractSet[str] = frozenset(),
+    config: Optional[MilestoneScoreConfig] = None,
+) -> MilestoneReport:
+    """Extract and score pairs with the v3 semantics in one pass."""
+
+    if config is None:
+        config = MilestoneScoreConfig()
+    events = extract_component_events_v3(pairs, config)
+    return MilestoneReport(
+        total_pairs=len(pairs),
+        pairs_without_event=len(pairs) - len(events),
+        total_events=len(events),
+        scores=score_events_v3(events, seen_signatures, config),
         config=config,
     )

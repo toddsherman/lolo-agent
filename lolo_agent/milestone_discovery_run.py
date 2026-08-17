@@ -50,11 +50,15 @@ from lolo_agent.milestone_discovery import (
     content_signature,
     escape_divergence_cells,
     extract_component_event,
+    extract_component_event_v3,
     extract_component_events,
+    extract_component_events_v3,
     extract_event,
     extract_events,
+    occurrence_valence,
     score_events,
     score_events_v2,
+    score_events_v3,
 )
 
 # Preregistered constants (docs/milestone-scoring-2026-08-16.md section 1).
@@ -71,6 +75,10 @@ DRIFT_DOMINATION_FRACTION = 0.5
 BRANCH_FOLLOWUP_WINDOW = SUCCESSOR_WINDOW
 PARENT_WALK_LIMIT = 100000
 V2_REPORT_BASENAME = "milestone-scoring-v2-report.json"
+
+# V3 constants (docs/milestone-scoring-v3-2026-08-16.md). Same corpora,
+# gates, thresholds, and falsification frame; no new numeric constants.
+V3_REPORT_BASENAME = "milestone-scoring-v3-report.json"
 
 KIND_COLLECTION = "collection_increase"
 KIND_LIFE_LOSS = "life_loss"
@@ -1007,6 +1015,9 @@ def _history_by_decision(
 def assemble_run_pairs_v2(
     reduction: RunReduction,
     config: Optional[MilestoneScoreConfig] = None,
+    committed_pair_sink: Optional[
+        Dict[Tuple[int, int], MatchedEndpointPair]
+    ] = None,
 ) -> RunPairs:
     """Assemble one run's pairs per the v2 preregistration.
 
@@ -1017,6 +1028,13 @@ def assemble_run_pairs_v2(
     per-decision escape-lookback flag, pairs with successors carry the
     rewind history, and committed-transition signatures come from the same
     control-aware per-component extraction the scorer uses.
+
+    ``committed_pair_sink`` (v3 bookkeeping; assembly is unchanged when it
+    is supplied): when not ``None``, receives, per committed transition
+    key, the exact pair whose component signature is recorded in
+    ``committed_signatures`` — the covering verified pair when one exists,
+    else the committed-only probe pair (NOOP-commit probes included, even
+    though those never become scored pairs).
     """
 
     if config is None:
@@ -1100,6 +1118,7 @@ def assemble_run_pairs_v2(
     pairs: List[MatchedEndpointPair] = []
     covered_transitions: set = set()
     covered_signatures: Dict[Tuple[int, int], str] = {}
+    covered_pairs: Dict[Tuple[int, int], MatchedEndpointPair] = {}
 
     def add_pair(
         root: PooledArray,
@@ -1166,6 +1185,7 @@ def assemble_run_pairs_v2(
             event = extract_component_event(pair, config)
             if event is not None:
                 covered_signatures[key] = event.signature
+                covered_pairs[key] = pair
 
     for branch in reduction.strict_branches:
         attempt = branch["attempt"]
@@ -1275,6 +1295,8 @@ def assemble_run_pairs_v2(
         elif key in covered_signatures:
             signature = covered_signatures[key]
             committed_signatures[key] = signature
+            if committed_pair_sink is not None:
+                committed_pair_sink.setdefault(key, covered_pairs[key])
         else:
             control = (
                 None
@@ -1340,6 +1362,8 @@ def assemble_run_pairs_v2(
                 else:
                     signature = probe.signature
                     committed_signatures[key] = signature
+                    if committed_pair_sink is not None:
+                        committed_pair_sink.setdefault(key, probe_pair)
                     if record.action != "noop":
                         if control is not None:
                             counters["controls_resolved"] += 1
@@ -1425,6 +1449,56 @@ def assemble_run_pairs_v2(
         committed_signatures=committed_signatures,
         counters=counters,
     )
+
+
+# ---------------------------------------------------------------------------
+# V3 assembly (docs/milestone-scoring-v3-2026-08-16.md). Additive: pair
+# construction is the v2 assembly verbatim; v3 adds committed-occurrence
+# bookkeeping so instance rows can carry occurrence-scoped valence.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RunPairsV3:
+    """One run's v2-assembled pairs plus v3 committed-occurrence events.
+
+    ``committed_events`` maps each mapped committed transition to the
+    occurrence event of the exact pair whose signature
+    ``run_pairs.committed_signatures`` records, extracted with the v3
+    component-anchored rewind. Signatures are identical between the two
+    extractions (the anchor changes only ``rewound``), so instance mapping
+    is unchanged; the events exist so each instance's valence can come
+    from its OWN occurrence rather than its signature class.
+    """
+
+    run_pairs: RunPairs
+    committed_events: Mapping[Tuple[int, int], ExtractedEvent]
+
+
+def assemble_run_pairs_v3(
+    reduction: RunReduction,
+    config: Optional[MilestoneScoreConfig] = None,
+) -> RunPairsV3:
+    """Assemble one run's pairs per the v3 preregistration.
+
+    Pair construction deltas versus v2: NONE (section 1.4 of the v3
+    preregistration). The v2 assembler runs verbatim with a committed-pair
+    sink, and each sunk pair is re-extracted with the v3 anchored rewind to
+    yield the committed-occurrence events.
+    """
+
+    if config is None:
+        config = MilestoneScoreConfig()
+    sink: Dict[Tuple[int, int], MatchedEndpointPair] = {}
+    run_pairs = assemble_run_pairs_v2(
+        reduction, config, committed_pair_sink=sink
+    )
+    committed_events: Dict[Tuple[int, int], ExtractedEvent] = {}
+    for key in sorted(sink):
+        event = extract_component_event_v3(sink[key], config)
+        if event is not None:
+            committed_events[key] = event
+    return RunPairsV3(run_pairs=run_pairs, committed_events=committed_events)
 
 
 def iter_run_events(path: str) -> Iterable[Mapping[str, object]]:
@@ -1833,6 +1907,208 @@ def score_corpus_v2(
     return section
 
 
+def _signature_row_v3(
+    rank: int,
+    score: SignatureScore,
+    drift: FrozenSet[str],
+    candidate_signatures: Mapping[str, Tuple[str, ...]],
+) -> Dict[str, object]:
+    row = _signature_row_v2(rank, score, drift, candidate_signatures)
+    row["positive_occurrences"] = score.positive_occurrences
+    row["negative_occurrences"] = score.negative_occurrences
+    row["unresolved_occurrences"] = score.unresolved_occurrences
+    return row
+
+
+def score_corpus_v3(
+    corpus_id: str,
+    run_directories: Sequence[str],
+    config: Optional[MilestoneScoreConfig] = None,
+) -> Dict[str, object]:
+    """Reduce, pair, and score one corpus with the v3 semantics.
+
+    Identical pair volumes and counters to v2 (assembly is reused
+    verbatim). Differences: events carry the component-anchored rewind,
+    instance rows carry their OWN occurrence's valence (the signature's
+    reporting-only plurality label rides along as ``signature_valence``),
+    and signature rows carry occurrence-valence tallies.
+    """
+
+    if config is None:
+        config = MilestoneScoreConfig()
+    events: List[ExtractedEvent] = []
+    total_pairs = 0
+    counters: Dict[str, int] = {}
+    drift: set = set()
+    pool: set = set()
+    instances: List[InstanceRecord] = []
+    committed_signatures: Dict[Tuple[str, int, int], str] = {}
+    occurrence_events: Dict[Tuple[str, int, int], ExtractedEvent] = {}
+    runs_scanned = 0
+    runs_missing_events = 0
+
+    for run_directory in sorted(run_directories):
+        run_id = os.path.basename(run_directory.rstrip(os.sep))
+        events_path = os.path.join(run_directory, "events.jsonl")
+        if not os.path.exists(events_path):
+            runs_missing_events += 1
+            continue
+        runs_scanned += 1
+        reduction = reduce_run_events(iter_run_events(events_path), run_id)
+        assembled = assemble_run_pairs_v3(reduction, config)
+        run_pairs = assembled.run_pairs
+        total_pairs += len(run_pairs.pairs)
+        events.extend(extract_component_events_v3(run_pairs.pairs, config))
+        _merge_counters(counters, run_pairs.counters)
+        drift.update(run_pairs.drift_signatures)
+        pool.update(run_pairs.pool_signatures)
+        instances.extend(run_pairs.instances)
+        for key, signature in run_pairs.committed_signatures.items():
+            committed_signatures[(run_id, key[0], key[1])] = signature
+        for key, event in assembled.committed_events.items():
+            occurrence_events[(run_id, key[0], key[1])] = event
+
+    pool_frozen = frozenset(pool)
+    scores = score_events_v3(events, pool_frozen, config)
+    rank_by_signature = {
+        score.signature: (rank, score)
+        for rank, score in enumerate(scores, 1)
+    }
+    drift_frozen = frozenset(drift)
+
+    candidate_signatures: Dict[str, Tuple[str, ...]] = {}
+    for instance in instances:
+        if instance.event_signature is None:
+            continue
+        kinds = set(candidate_signatures.get(instance.event_signature, ()))
+        kinds.add(instance.kind)
+        candidate_signatures[instance.event_signature] = tuple(sorted(kinds))
+
+    top = scores[:TOP_RANK_WINDOW]
+    top_nonzero = [score for score in top if score.score > 0.0]
+    drift_in_top = sum(
+        1 for score in top_nonzero if score.signature in drift_frozen
+    )
+    nonzero_signatures = sum(1 for score in scores if score.score > 0.0)
+    drift_fraction = (
+        drift_in_top / len(top_nonzero) if top_nonzero else 0.0
+    )
+    animation_dominated = (
+        nonzero_signatures < TOP_RANK_WINDOW
+        or drift_fraction >= DRIFT_DOMINATION_FRACTION
+    )
+    precision_matches = sum(
+        1 for score in top if score.signature in candidate_signatures
+    )
+
+    instance_rows = []
+    for instance in sorted(
+        instances,
+        key=lambda row: (row.kind, row.run_id, row.attempt, row.decision),
+    ):
+        row: Dict[str, object] = {
+            "run_id": instance.run_id,
+            "attempt": instance.attempt,
+            "decision": instance.decision,
+            "kind": instance.kind,
+            "reason": instance.reason,
+            "event_signature": instance.event_signature,
+        }
+        if instance.event_signature is not None:
+            ranked = rank_by_signature.get(instance.event_signature)
+            if ranked is not None:
+                rank, score = ranked
+                row["rank"] = rank
+                row["score"] = score.score
+                row["signature_valence"] = score.valence
+                row["signature_valence_basis"] = score.valence_basis
+            occurrence = occurrence_events.get(
+                (instance.run_id, instance.attempt, instance.decision)
+            )
+            if occurrence is not None:
+                valence, basis = occurrence_valence(
+                    occurrence, pool_frozen, config
+                )
+                row["valence"] = valence
+                row["valence_basis"] = basis
+        instance_rows.append(row)
+
+    valence_counts: Dict[str, int] = {}
+    for score in scores:
+        valence_counts[score.valence] = valence_counts.get(score.valence, 0) + 1
+
+    anchor_rows = []
+    if corpus_id == "C":
+        for decision in CORPUS_C_ANCHOR_DECISIONS:
+            found = None
+            found_key = None
+            for (run_id, attempt, dec), signature in sorted(
+                committed_signatures.items()
+            ):
+                if run_id == CORPUS_C_ANCHOR_RUN and dec == decision:
+                    found = signature
+                    found_key = (run_id, attempt, dec)
+                    break
+            row = {
+                "run_id": CORPUS_C_ANCHOR_RUN,
+                "decision": decision,
+                "event_signature": found,
+            }
+            if found is not None and found in rank_by_signature:
+                rank, score = rank_by_signature[found]
+                row["rank"] = rank
+                row["score"] = score.score
+                row["signature_valence"] = score.valence
+                row["signature_valence_basis"] = score.valence_basis
+            if found_key is not None:
+                occurrence = occurrence_events.get(found_key)
+                if occurrence is not None:
+                    valence, basis = occurrence_valence(
+                        occurrence, pool_frozen, config
+                    )
+                    row["valence"] = valence
+                    row["valence_basis"] = basis
+            anchor_rows.append(row)
+
+    section: Dict[str, object] = {
+        "corpus_id": corpus_id,
+        "runs_scanned": runs_scanned,
+        "runs_missing_events": runs_missing_events,
+        "total_pairs": total_pairs,
+        "total_events": len(events),
+        "pairs_without_event": total_pairs - len(events),
+        "counters": dict(sorted(counters.items())),
+        "seen_pool_size": len(pool),
+        "neutral_drift_signatures": len(drift_frozen),
+        "distinct_signatures": len(scores),
+        "nonzero_score_signatures": nonzero_signatures,
+        "valence_counts": dict(sorted(valence_counts.items())),
+        "top_signatures": [
+            _signature_row_v3(rank, score, drift_frozen, candidate_signatures)
+            for rank, score in enumerate(
+                scores[:REPORT_TOP_SIGNATURES], 1
+            )
+        ],
+        "top10_nonzero_count": len(top_nonzero),
+        "top10_neutral_drift_fraction": drift_fraction,
+        "animation_dominated": animation_dominated,
+        "top10_candidate_event_precision": precision_matches
+        / max(1, len(top)),
+        "instances": instance_rows,
+        "instance_counts": {
+            kind: sum(1 for row in instances if row.kind == kind)
+            for kind in (
+                KIND_COLLECTION,
+                KIND_LIFE_LOSS,
+                KIND_SCENE_TRANSITION,
+            )
+        },
+    }
+    if anchor_rows:
+        section["floor1_clear_anchor"] = anchor_rows
+    return section
+
+
 def evaluate_gates(
     section_a: Mapping[str, object], section_b: Mapping[str, object]
 ) -> Dict[str, object]:
@@ -2064,6 +2340,113 @@ def build_report_v2(
     return payload
 
 
+def build_report_v3(
+    repo_root: str, config: Optional[MilestoneScoreConfig] = None
+) -> Dict[str, object]:
+    """Run the preregistered v3 scoring pass and build the report payload.
+
+    Same corpora, gates, thresholds, and falsification frame as v1/v2;
+    redesigned mechanisms (component-anchored rewind, occurrence-scoped
+    valence) per docs/milestone-scoring-v3-2026-08-16.md.
+    """
+
+    if config is None:
+        config = MilestoneScoreConfig()
+    corpus_a_root = os.path.join(
+        repo_root, "experiments", "lolo1-entity-v10", "evaluations"
+    )
+    extended_root = os.path.join(
+        repo_root, "experiments", "lolo1-medium", "extended_evaluations"
+    )
+    corpus_a_runs = [
+        os.path.join(corpus_a_root, name)
+        for name in sorted(os.listdir(corpus_a_root))
+        if os.path.isdir(os.path.join(corpus_a_root, name))
+    ]
+    extended_runs = [
+        name
+        for name in sorted(os.listdir(extended_root))
+        if os.path.isdir(os.path.join(extended_root, name))
+    ]
+    corpus_b_runs = [
+        os.path.join(extended_root, name)
+        for name in extended_runs
+        if "human-prior" in name
+    ]
+    corpus_c_runs = [
+        os.path.join(extended_root, name)
+        for name in extended_runs
+        if "human-prior" not in name
+    ]
+
+    section_a = score_corpus_v3("A", corpus_a_runs, config)
+    section_b = score_corpus_v3("B", corpus_b_runs, config)
+    section_c = score_corpus_v3("C", corpus_c_runs, config)
+    gates = evaluate_gates(section_a, section_b)
+
+    falsification = {
+        "timer_animation_domination": {
+            "A": section_a["animation_dominated"],
+            "B": section_b["animation_dominated"],
+            "C": section_c["animation_dominated"],
+        },
+        "heart_inseparability": not gates["positive_recall_gate_passed"],
+        "wp9_step1_falsified_as_rethought": bool(
+            section_a["animation_dominated"]
+            or section_b["animation_dominated"]
+            or section_c["animation_dominated"]
+            or not gates["positive_recall_gate_passed"]
+        ),
+    }
+
+    payload: Dict[str, object] = {
+        "schema": "milestone-scoring-v3-report/1",
+        "preregistration": "docs/milestone-scoring-v3-2026-08-16.md",
+        "v2_preregistration": "docs/milestone-scoring-v2-2026-08-16.md",
+        "v1_preregistration": "docs/milestone-scoring-2026-08-16.md",
+        "census": "docs/milestone-event-census-2026-08-16.md",
+        "provenance_note": (
+            "engineering-only offline spike; assisted-footprint caveat "
+            "applies; corpora A/B assisted-track, corpus C excluded from "
+            "precision/recall thresholds per census section 5; v3 rethink "
+            "per docs/learnings.md section 4.36"
+        ),
+        "config": {
+            "novelty_baseline": config.novelty_baseline,
+            "negative_reversion_threshold": (
+                config.negative_reversion_threshold
+            ),
+            "positive_persistence_threshold": (
+                config.positive_persistence_threshold
+            ),
+            "positive_novelty_threshold": config.positive_novelty_threshold,
+            "negative_divergence_threshold": (
+                config.negative_divergence_threshold
+            ),
+            "rewind_transient_floor": config.rewind_transient_floor,
+            "rewind_proximity_ceiling": config.rewind_proximity_ceiling,
+            "escape_cell_minimum": config.escape_cell_minimum,
+            "divergence_lookback": config.divergence_lookback,
+            "successor_window": SUCCESSOR_WINDOW,
+            "branch_followup_window": BRANCH_FOLLOWUP_WINDOW,
+            "top_rank_window": TOP_RANK_WINDOW,
+            "drift_domination_fraction": DRIFT_DOMINATION_FRACTION,
+            "seen_pool": "pre_intervention",
+            "successor_windows": "lineage_filtered_with_branch_followups",
+            "event_extraction": "per_component",
+            "negative_valence": "delayed_divergence",
+            "rewind_evidence": "component_anchored",
+            "valence_scope": "occurrence",
+            "signature_valence": "reporting_only_plurality",
+        },
+        "corpora": {"A": section_a, "B": section_b, "C": section_c},
+        "gates": gates,
+        "falsification": falsification,
+    }
+    payload["content_digest"] = content_digest(payload)
+    return payload
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -2092,16 +2475,30 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "docs/milestone-scoring-v2-2026-08-16.md instead of the v1 pass."
         ),
     )
+    parser.add_argument(
+        "--v3",
+        action="store_true",
+        help=(
+            "Run the section-4.36 rethink preregistered in "
+            "docs/milestone-scoring-v3-2026-08-16.md instead of the v1 pass."
+        ),
+    )
     arguments = parser.parse_args(argv)
+    if arguments.v2 and arguments.v3:
+        parser.error("--v2 and --v3 are mutually exclusive")
     if arguments.output is None:
+        if arguments.v3:
+            basename = V3_REPORT_BASENAME
+        elif arguments.v2:
+            basename = V2_REPORT_BASENAME
+        else:
+            basename = "milestone-scoring-report.json"
         arguments.output = os.path.join(
-            "experiments",
-            "lolo1-wp5",
-            V2_REPORT_BASENAME
-            if arguments.v2
-            else "milestone-scoring-report.json",
+            "experiments", "lolo1-wp5", basename
         )
-    if arguments.v2:
+    if arguments.v3:
+        payload = build_report_v3(arguments.repo_root)
+    elif arguments.v2:
         payload = build_report_v2(arguments.repo_root)
     else:
         payload = build_report(arguments.repo_root)

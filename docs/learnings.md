@@ -1842,6 +1842,55 @@ Evidence:
 - `docs/wp5-tracker-training-2026-08-16.md`
 - `experiments/lolo1-wp5/functional-gate-v4-report.json`
 
+### 4.41 Third falsification: the event unit itself is wrong
+
+What was tried:
+
+- The §4.36 rethink (component-anchored rewind + occurrence-scoped
+  valence), preregistered in `docs/milestone-scoring-v3-2026-08-16.md`
+  and rescored once (digest `e2c3434c…`, byte-identical rerun; v1/v2
+  reports re-verified byte-identical first).
+
+Result:
+
+- Reset bleed-through repaired exactly as designed (the flagship v2
+  class goes 6/9 rewound → 0/9). Heart recall improves a third time
+  (0.149 → 0.319 → **0.574**) yet fails the 0.80 gate; and the negative
+  gate regresses to 2/14 for a mirror-image structural reason: fatal
+  commits' own windows are empty — nothing descends from a death
+  endpoint — so occurrence scoping starves precisely the terminal class
+  that class scoping over-reached.
+
+Classification:
+
+- **Falsified at the measured gate, third time — the unit is wrong.**
+  Class-scoped valence bleeds; occurrence-scoped valence starves; both
+  defects live inside the matched-endpoint-pair + successor-window event
+  representation itself. No fourth rescore of this unit.
+
+Learning:
+
+- Monotone metric improvement across redesigns can coexist with a
+  structurally unsatisfiable representation — the paired gates exposed
+  it where either gate alone would have invited more tuning.
+- Milestone events should be represented at the OBJECT level — the
+  track/transition units WP2/WP3 already model (collection = a tracked
+  appearance ceasing at a heart cell; death = control-loss divergence on
+  the tracked controllable region) — with replay/reset-stable identity,
+  rather than as pixel-pair windows. The strict-objective path and the
+  object-centric roadmap converge on the same machinery.
+
+Plan change:
+
+- WP9 step 1 paused at the representation level; its next incarnation is
+  scheduled AFTER WP2/WP3 integration provides object-level event
+  streams, and will be preregistered against the same three gates.
+
+Evidence:
+
+- `docs/milestone-scoring-v3-2026-08-16.md`
+- `experiments/lolo1-wp5/milestone-scoring-v3-report.json`
+
 ## 5. Platform and cost learnings
 
 ### 5.1 RunPod for emulator branching

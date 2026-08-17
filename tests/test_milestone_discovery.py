@@ -1409,3 +1409,536 @@ class EscapeFlagTests(unittest.TestCase):
         flags = _escape_flags(reduction, MilestoneScoreConfig())
         self.assertEqual(flags, {(1, 1): False})
         self.assertIs(_escape_lookback(flags, 1, 1, 8), False)
+
+
+# ---------------------------------------------------------------------------
+# WP9a v3 rethink additions (append-only): section-4.36 mechanisms.
+# Synthetic arrays and synthetic event dicts only (the runner-level test
+# writes its own synthetic events.jsonl to a temporary directory); no stored
+# telemetry is read. Preregistration: docs/milestone-scoring-v3-2026-08-16.md.
+# ---------------------------------------------------------------------------
+
+import json as _json
+import os as _os
+import tempfile as _tempfile
+
+from lolo_agent.milestone_discovery import (
+    discover_milestones_v3,
+    extract_component_event_v3,
+    extract_component_events_v3,
+    occurrence_valence,
+    score_events_v2,
+    score_events_v3,
+)
+from lolo_agent.milestone_discovery_run import (
+    assemble_run_pairs_v3,
+    score_corpus_v2,
+    score_corpus_v3,
+)
+
+
+def bleed_arrays():
+    """Reset bleed-through fixture arrays (64 cells).
+
+    A small dependent change (cell 1: 0 -> 7) committed mid-play, whose
+    successor window later crosses a terminal reset back to the pre-event
+    configuration — while the event's own component cell SURVIVES the reset
+    (the section-4.36 bleed-through mechanism v2 mislabels).
+    """
+
+    base = (0,) * 64                                       # pre-event pool
+    mid = tuple(5 if 10 <= i < 40 else 0 for i in range(64))   # event root
+    collected = tuple(7 if i == 1 else v for i, v in enumerate(mid))
+    onward = tuple(9 if i == 60 else v for i, v in enumerate(collected))
+    reset = tuple(7 if i == 1 else 0 for i in range(64))   # near base; the
+    return base, mid, collected, onward, reset             # cell-1 change kept
+
+
+class ComponentAnchoredRewindTests(unittest.TestCase):
+    """V3 requirement 1: rewind anchored to the event's own component."""
+
+    def test_reset_bleed_through_not_rewound_v3(self) -> None:
+        base, mid, collected, onward, reset = bleed_arrays()
+        target = v2_pair(
+            mid,
+            collected,
+            control=mid,
+            successors=(onward, reset),
+            history=(base,),
+        )
+        v2_event = extract_component_event(target)
+        v3_event = extract_component_event_v3(target)
+        assert v2_event is not None and v3_event is not None
+        # Same component, same signature; only the rewind flag differs.
+        self.assertEqual(v2_event.signature, v3_event.signature)
+        self.assertEqual(v2_event.changed_cells, ((1, 0, 7),))
+        self.assertIs(v2_event.rewound, True)   # window-scoped bleed-through
+        self.assertIs(v3_event.rewound, False)  # component survived the reset
+
+    def test_component_reset_still_rewound_v3(self) -> None:
+        base, mid, collected, _onward, _reset = bleed_arrays()
+        # The reset also restores the component cell to its pre-event value:
+        # this change genuinely reset, and v3 must keep marking it.
+        event = extract_component_event_v3(
+            v2_pair(
+                mid,
+                collected,
+                control=mid,
+                successors=(base,),
+                history=(base,),
+            )
+        )
+        assert event is not None
+        self.assertIs(event.rewound, True)
+
+    def test_terminal_transient_remains_rewound_v3(self) -> None:
+        early, flash, respawn, resumed = flash_arrays()
+        event = extract_component_event_v3(
+            v2_pair(
+                flash,
+                respawn,
+                control=respawn,
+                successors=(resumed,),
+                history=(early,),
+            )
+        )
+        assert event is not None
+        self.assertIs(event.rewound, True)
+
+    def test_settled_reset_endpoint_remains_rewound_v3(self) -> None:
+        # Precedence rule: a change whose post-event values coincide with
+        # the matched pre-event reference (the endpoint IS the settled
+        # reset) counts as reverted, not retained.
+        base, mid, _collected, _onward, _reset = bleed_arrays()
+        event = extract_component_event_v3(
+            v2_pair(
+                mid,
+                base,
+                control=base,
+                successors=(base,),
+                history=(base,),
+            )
+        )
+        assert event is not None
+        self.assertIs(event.rewound, True)
+
+
+class OccurrenceValenceTests(unittest.TestCase):
+    """V3 requirement 2: each occurrence's valence from its own evidence."""
+
+    def test_return_censored_occurrence_is_unresolved(self) -> None:
+        event = extract_component_event_v3(v2_pair((0, 0), (0, 5)))
+        assert event is not None
+        self.assertEqual(
+            occurrence_valence(event),
+            (VALENCE_UNRESOLVED, VALENCE_BASIS_RETURN_CENSORED),
+        )
+
+    def test_terminal_occurrence_is_negative(self) -> None:
+        early, flash, respawn, resumed = flash_arrays()
+        event = extract_component_event_v3(
+            v2_pair(
+                flash,
+                respawn,
+                control=respawn,
+                successors=(resumed,),
+                history=(early,),
+            )
+        )
+        assert event is not None
+        self.assertEqual(
+            occurrence_valence(event),
+            (VALENCE_NEGATIVE, VALENCE_BASIS_DELAYED_DIVERGENCE),
+        )
+
+    def test_censored_dependence_needs_escape_evidence(self) -> None:
+        early, flash, respawn, resumed = flash_arrays()
+        censored = extract_component_event_v3(
+            v2_pair(flash, respawn, successors=(resumed,), history=(early,))
+        )
+        assert censored is not None
+        self.assertNotEqual(occurrence_valence(censored)[0], VALENCE_NEGATIVE)
+        with_escape = extract_component_event_v3(
+            v2_pair(
+                flash,
+                respawn,
+                successors=(resumed,),
+                history=(early,),
+                escape_lookback=True,
+            )
+        )
+        assert with_escape is not None
+        self.assertEqual(
+            occurrence_valence(with_escape),
+            (VALENCE_NEGATIVE, VALENCE_BASIS_DELAYED_DIVERGENCE),
+        )
+
+    def test_persistent_novel_occurrence_is_positive(self) -> None:
+        base, mid, collected, onward, reset = bleed_arrays()
+        event = extract_component_event_v3(
+            v2_pair(
+                mid,
+                collected,
+                control=mid,
+                successors=(onward, reset),
+                history=(base,),
+            )
+        )
+        assert event is not None
+        self.assertEqual(
+            occurrence_valence(event),
+            (VALENCE_POSITIVE, VALENCE_BASIS_NOVEL_AND_PERSISTENT),
+        )
+
+    def test_familiar_successors_stay_unresolved(self) -> None:
+        base, mid, collected, onward, _reset = bleed_arrays()
+        event = extract_component_event_v3(
+            v2_pair(
+                mid,
+                collected,
+                control=mid,
+                successors=(onward,),
+                history=(base,),
+            )
+        )
+        assert event is not None
+        seen = frozenset({content_signature(onward)})
+        # First successor collapses onto the seen pool: not positive.
+        self.assertEqual(
+            occurrence_valence(event, seen),
+            (VALENCE_UNRESOLVED, VALENCE_BASIS_MIXED),
+        )
+
+
+class OccurrenceScopedScoringTests(unittest.TestCase):
+    """V3 requirement 2 at signature scope: aggregation ranks, never flips."""
+
+    def bleed_corpus(self):
+        base, mid, collected, onward, reset = bleed_arrays()
+        target = v2_pair(
+            mid,
+            collected,
+            control=mid,
+            successors=(onward, reset),
+            history=(base,),
+        )
+        background = [
+            v2_pair(
+                (3,) * 64,
+                (3,) * 63 + (4,),
+                control=(3,) * 64,
+                successors=((3,) * 62 + (5, 4),),
+                history=((3,) * 64,),
+                decision=d,
+            )
+            for d in range(2, 5)
+        ]
+        return [target] + background
+
+    def test_bleed_through_class_negative_under_v2_positive_under_v3(
+        self,
+    ) -> None:
+        pairs = self.bleed_corpus()
+        pool = seen_pool_from_pairs(pairs)
+        v2_scores = score_events_v2(extract_component_events(pairs), pool)
+        v2_target = next(
+            s for s in v2_scores if s.provenance[0].decision == 1
+        )
+        self.assertEqual(v2_target.valence, VALENCE_NEGATIVE)  # the mislabel
+        v3_scores = score_events_v3(extract_component_events_v3(pairs), pool)
+        v3_target = next(
+            s for s in v3_scores if s.provenance[0].decision == 1
+        )
+        self.assertEqual(v3_target.valence, VALENCE_POSITIVE)
+        self.assertEqual(v3_target.positive_occurrences, 1)
+        self.assertEqual(v3_target.negative_occurrences, 0)
+        self.assertGreater(v3_target.score, 0.0)
+
+    def test_ranking_is_identical_between_v2_and_v3(self) -> None:
+        # The score product has decision power and must not move: only
+        # valence semantics changed.
+        pairs = self.bleed_corpus()
+        pool = seen_pool_from_pairs(pairs)
+        v2_scores = score_events_v2(extract_component_events(pairs), pool)
+        v3_scores = score_events_v3(extract_component_events_v3(pairs), pool)
+        self.assertEqual(
+            [(s.signature, s.score) for s in v2_scores],
+            [(s.signature, s.score) for s in v3_scores],
+        )
+
+    def test_class_valence_cannot_overwrite_an_occurrence(self) -> None:
+        # Two occurrences of ONE signature: A genuinely resets (its
+        # component cell reverts at the terminal reset), B is the
+        # bleed-through survivor. v2's class valence flips B negative;
+        # v3 keeps each occurrence's own valence.
+        base, mid, collected, onward, reset = bleed_arrays()
+        occurrence_a = v2_pair(
+            mid,
+            collected,
+            control=mid,
+            successors=(base,),
+            history=(base,),
+            decision=1,
+        )
+        occurrence_b = v2_pair(
+            mid,
+            collected,
+            control=mid,
+            successors=(onward, reset),
+            history=(base,),
+            decision=2,
+        )
+        pairs = [occurrence_a, occurrence_b]
+        pool = seen_pool_from_pairs(pairs)
+        v2_scores = score_events_v2(extract_component_events(pairs), pool)
+        self.assertEqual(len(v2_scores), 1)
+        self.assertEqual(v2_scores[0].valence, VALENCE_NEGATIVE)  # flips B
+        v3_events = extract_component_events_v3(pairs)
+        self.assertEqual(len({e.signature for e in v3_events}), 1)
+        event_a = next(
+            e for e in v3_events if e.provenance.decision == 1
+        )
+        event_b = next(
+            e for e in v3_events if e.provenance.decision == 2
+        )
+        self.assertEqual(
+            occurrence_valence(event_a, pool)[0], VALENCE_NEGATIVE
+        )
+        self.assertEqual(
+            occurrence_valence(event_b, pool)[0], VALENCE_POSITIVE
+        )
+        v3_scores = score_events_v3(v3_events, pool)
+        self.assertEqual(len(v3_scores), 1)
+        self.assertEqual(v3_scores[0].positive_occurrences, 1)
+        self.assertEqual(v3_scores[0].negative_occurrences, 1)
+        # Reporting-only plurality: a tie stays unresolved, and neither
+        # occurrence's valence was overwritten above.
+        self.assertEqual(v3_scores[0].valence, VALENCE_UNRESOLVED)
+        self.assertEqual(v3_scores[0].valence_basis, VALENCE_BASIS_MIXED)
+
+    def test_discover_milestones_v3_is_deterministic(self) -> None:
+        pairs = self.bleed_corpus()
+        pool = seen_pool_from_pairs(pairs)
+        forward = discover_milestones_v3(pairs, pool)
+        backward = discover_milestones_v3(tuple(reversed(pairs)), pool)
+        self.assertEqual(
+            [
+                (s.signature, s.score, s.valence, s.positive_occurrences)
+                for s in forward.scores
+            ],
+            [
+                (s.signature, s.score, s.valence, s.positive_occurrences)
+                for s in backward.scores
+            ],
+        )
+
+
+class V3RunnerFixtureTests(unittest.TestCase):
+    """V3 runner bookkeeping: instance valence from the OWN occurrence."""
+
+    def test_committed_events_align_with_signatures(self) -> None:
+        reduction = reduce_run_events(synthetic_run_events(), "fixture-run")
+        assembled = assemble_run_pairs_v3(reduction)
+        self.assertEqual(
+            set(assembled.committed_events),
+            set(assembled.run_pairs.committed_signatures),
+        )
+        for key, signature in (
+            assembled.run_pairs.committed_signatures.items()
+        ):
+            self.assertEqual(
+                assembled.committed_events[key].signature, signature
+            )
+
+    def test_v2_assembly_unchanged_by_sink(self) -> None:
+        reduction = reduce_run_events(synthetic_run_events(), "fixture-run")
+        plain = assemble_run_pairs_v2(reduction)
+        assembled = assemble_run_pairs_v3(reduction)
+        self.assertEqual(plain.pairs, assembled.run_pairs.pairs)
+        self.assertEqual(plain.counters, assembled.run_pairs.counters)
+        self.assertEqual(
+            plain.committed_signatures,
+            assembled.run_pairs.committed_signatures,
+        )
+
+    def bleed_run_events(self):
+        base, mid, collected, onward, reset = bleed_arrays()
+        mid0 = tuple(1 if i == 5 else v for i, v in enumerate(base))
+        resumed = tuple(
+            7 if i == 1 else (1 if i == 63 else v)
+            for i, v in enumerate(base)
+        )
+        seq = [0]
+
+        def event(name, **fields):
+            seq[0] += 1
+            row = {"event": name, "seq": seq[0], "attempt": 1}
+            row.update(fields)
+            return row
+
+        return [
+            event(
+                "env_reset", frame="f-base", visual_signature=hexsig(base)
+            ),
+            event(
+                "decision_started",
+                decision=0,
+                frame="f-mid0",
+                visual_signature=hexsig(mid0),
+            ),
+            event(
+                "decision_committed",
+                decision=0,
+                action="up",
+                action_frames=16,
+                frame="f-mid",
+                visual_signature=hexsig(mid),
+                restored_archive=False,
+                human_prior_collected_hearts=0,
+            ),
+            event(
+                "decision_started",
+                decision=1,
+                frame="f-mid",
+                visual_signature=hexsig(mid),
+            ),
+            event(
+                "branch_verified",
+                decision=1,
+                action="right",
+                action_frames=16,
+                branch_id="d1-b1",
+                frame="f-collect",
+                visual_signature=hexsig(collected),
+            ),
+            event(
+                "branch_verified",
+                decision=1,
+                action="noop",
+                action_frames=16,
+                branch_id="d1-b2",
+                frame="f-noop1",
+                visual_signature=hexsig(mid),
+            ),
+            event(
+                "decision_committed",
+                decision=1,
+                action="right",
+                action_frames=16,
+                frame="f-collect",
+                visual_signature=hexsig(collected),
+                restored_archive=False,
+                human_prior_collected_hearts=1,
+            ),
+            event(
+                "decision_started",
+                decision=2,
+                frame="f-collect",
+                visual_signature=hexsig(collected),
+            ),
+            event(
+                "decision_committed",
+                decision=2,
+                action="up",
+                action_frames=16,
+                frame="f-onward",
+                visual_signature=hexsig(onward),
+                restored_archive=False,
+            ),
+            event(
+                "decision_started",
+                decision=3,
+                frame="f-onward",
+                visual_signature=hexsig(onward),
+            ),
+            event(
+                "branch_verified",
+                decision=3,
+                action="left",
+                action_frames=16,
+                branch_id="d3-b1",
+                frame="f-reset",
+                visual_signature=hexsig(reset),
+            ),
+            event(
+                "branch_verified",
+                decision=3,
+                action="noop",
+                action_frames=16,
+                branch_id="d3-b2",
+                frame="f-reset-n",
+                visual_signature=hexsig(reset),
+            ),
+            event(
+                "decision_committed",
+                decision=3,
+                action="left",
+                action_frames=16,
+                frame="f-reset",
+                visual_signature=hexsig(reset),
+                restored_archive=False,
+                human_prior_life_loss_confirmed=True,
+            ),
+            event(
+                "decision_started",
+                decision=4,
+                frame="f-reset",
+                visual_signature=hexsig(reset),
+            ),
+            event(
+                "decision_committed",
+                decision=4,
+                action="down",
+                action_frames=16,
+                frame="f-resumed",
+                visual_signature=hexsig(resumed),
+                restored_archive=False,
+            ),
+        ]
+
+    def score_bleed_run(self, score_corpus_function):
+        with _tempfile.TemporaryDirectory() as root:
+            run_dir = _os.path.join(root, "fixture-bleed-run")
+            _os.makedirs(run_dir)
+            with open(
+                _os.path.join(run_dir, "events.jsonl"), "w", encoding="utf-8"
+            ) as handle:
+                for row in self.bleed_run_events():
+                    # Compact separators: iter_run_events keys on the
+                    # canonical '"event":"name"' marker telemetry uses.
+                    handle.write(
+                        _json.dumps(row, separators=(",", ":")) + "\n"
+                    )
+            return score_corpus_function("B", [run_dir])
+
+    def test_bleed_through_instance_positive_under_v3(self) -> None:
+        section = self.score_bleed_run(score_corpus_v3)
+        rows = {row["kind"]: row for row in section["instances"]}
+        collection = rows[KIND_COLLECTION]
+        self.assertEqual(collection["decision"], 1)
+        self.assertEqual(collection["valence"], VALENCE_POSITIVE)
+        self.assertEqual(
+            collection["valence_basis"], VALENCE_BASIS_NOVEL_AND_PERSISTENT
+        )
+        self.assertGreater(collection["score"], 0.0)
+        loss = rows[KIND_LIFE_LOSS]
+        self.assertEqual(loss["decision"], 3)
+        self.assertEqual(loss["valence"], VALENCE_NEGATIVE)
+        self.assertEqual(
+            loss["valence_basis"], VALENCE_BASIS_DELAYED_DIVERGENCE
+        )
+        gates = evaluate_gates({"instances": []}, section)
+        self.assertEqual(gates["collection_positive_nonzero"], 1)
+        self.assertEqual(gates["life_loss_negative"], 1)
+
+    def test_bleed_through_instance_mislabeled_under_v2(self) -> None:
+        # The same synthetic run under the v2 pipeline: the collection's
+        # window crosses the later terminal reset, the class flips
+        # negative, and the instance fails — the mechanism v3 removes.
+        section = self.score_bleed_run(score_corpus_v2)
+        rows = {row["kind"]: row for row in section["instances"]}
+        collection = rows[KIND_COLLECTION]
+        self.assertEqual(collection["decision"], 1)
+        self.assertEqual(collection["valence"], VALENCE_NEGATIVE)
+        gates = evaluate_gates({"instances": []}, section)
+        self.assertEqual(gates["collection_positive_nonzero"], 0)
