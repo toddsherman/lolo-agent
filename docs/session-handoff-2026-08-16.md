@@ -178,6 +178,11 @@ persistent memory; see the /loop queue in the latest ScheduleWakeup.
   localization closed across Room 3 (tracker v4), promotion failed on
   mask RESOLUTION (4.34) - next spike is pixel-mask reconstruction, then
   rerun the same gate.
+- Coordination decision (2026-08-17 morning): WP8-lite and shadow wiring
+  proceed in main while the two worktree sessions remain unresolved —
+  worktrees are isolated checkouts, so no live collision is possible; the
+  merge reconciliation when their branches land is owned by this session,
+  with the full suite as the acceptance net.
 - Landed modules: partitions, object_tracks, counterfactual_labels,
   strict_lineage, milestone_discovery(+run), controllable_tracker(+train),
   tracker_substitution_replay, tracker_ood_eval, mask_sensitive_gate,
