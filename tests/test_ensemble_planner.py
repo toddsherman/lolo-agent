@@ -16558,3 +16558,623 @@ class EnsemblePlannerTests(unittest.TestCase):
         self.assertIsNotNone(decision)
         self.assertTrue(decision.restored_archive)
         self.assertFalse(agent.delayed_return_recovery)
+
+
+# ---------------------------------------------------------------------------
+# WP8 relational planner seam integration
+# (docs/wp8-relational-planner-design-2026-08-17.md sections 4-5; test-plan
+# item 9). Authority "off" (the default) must keep planner ranking and
+# restore selection bit-identical to today — the full existing suite
+# passing unchanged remains the primary net; the tests below prove the
+# seam-local claims directly, mirroring the WP8-lite invariance pattern.
+# ---------------------------------------------------------------------------
+
+from lolo_agent.accessibility_preference import (
+    AccessibilityRecordProvenance,
+    CertifiedAccessibilityRecord,
+    OUTCOME_REMOVAL,
+    VERIFICATION_CERTIFIED_HOLD,
+)
+from lolo_agent.object_tracks import HumanPriorRootObjectState
+from lolo_agent.relational_planner import (
+    HypothesisKind as RelationalHypothesisKind,
+    REALIZATION_REACH_CELLS_UNDER_HOLD,
+    REALIZATION_RESTORE_ARCHIVE,
+    TERMINATED_CONTRADICTED,
+    TERMINATED_HOLD_VIOLATED,
+)
+
+
+RELATIONAL_CURRENT_SIGNATURE = "relational-current-sig"
+RELATIONAL_NEUTRAL_SIGNATURE = "relational-neutral-sig"
+RELATIONAL_REMOVAL_SIGNATURE = "relational-removal-sig"
+RELATIONAL_BASE_CELLS = tuple((1, y) for y in range(1, 6))
+RELATIONAL_REMOVAL_CELLS = RELATIONAL_BASE_CELLS + tuple(
+    (x, 3) for x in range(2, 6)
+)
+
+
+class _RelationalRecordingLogger:
+    def __init__(self) -> None:
+        self.events = []
+
+    def log(self, event_type: str, **fields) -> None:
+        self.events.append({"event": event_type, **fields})
+
+
+class _RelationalSeamEnv:
+    """Deterministic position-coded frames with handle-tracked states."""
+
+    def __init__(self) -> None:
+        self.position = 0
+        self.serial = 0
+        self.active_states = set()
+
+    def reset(self) -> Frame:
+        self.position = 0
+        self.active_states = set()
+        return self._frame()
+
+    def step(self, action: Action, frames: int = 1) -> Frame:
+        if action == Action.RIGHT:
+            self.position = min(63, self.position + frames)
+        return self._frame()
+
+    def save_state(self):
+        self.serial += 1
+        state = (self.serial, self.position)
+        self.active_states.add(state)
+        return state
+
+    def load_state(self, state) -> Frame:
+        if state not in self.active_states:
+            raise RuntimeError("unknown save-state handle")
+        self.position = state[1]
+        return self._frame()
+
+    def release_state(self, state) -> None:
+        self.active_states.remove(state)
+
+    def _frame(self) -> Frame:
+        pixels = bytearray(64)
+        pixels[self.position] = 255
+        return Frame(8, 8, 1, bytes(pixels))
+
+
+class _RelationalExplodingRecordStore(dict):
+    """Fails the test if the seams consult the store at authority off."""
+
+    def get(self, key, default=None):
+        raise AssertionError(
+            "verified-accessibility record store consulted at relational "
+            "authority off"
+        )
+
+    def keys(self):
+        raise AssertionError(
+            "verified-accessibility record store enumerated at relational "
+            "authority off"
+        )
+
+    def __iter__(self):
+        raise AssertionError(
+            "verified-accessibility record store iterated at relational "
+            "authority off"
+        )
+
+
+def _relational_record(
+    configuration_signature: str,
+    cells=RELATIONAL_BASE_CELLS,
+    milestone_cells=(),
+    outcome_category: str = "none",
+) -> CertifiedAccessibilityRecord:
+    return CertifiedAccessibilityRecord(
+        provenance=AccessibilityRecordProvenance(
+            run_id="relational-fixture-run",
+            preregistration_doc="docs/fixture-preregistration.md",
+            configuration_signature=configuration_signature,
+            verification=VERIFICATION_CERTIFIED_HOLD,
+            certification_predicate=(
+                "anonymous_object_track_cells == []"
+            ),
+            certified_branches=7,
+            total_branches=100,
+            search_depth=6,
+            search_beam=16,
+        ),
+        certified_cells=tuple(cells),
+        certified_milestone_cells=tuple(milestone_cells),
+        preparation_outcome_category=outcome_category,
+    )
+
+
+def _relational_records():
+    return {
+        RELATIONAL_CURRENT_SIGNATURE: _relational_record(
+            RELATIONAL_CURRENT_SIGNATURE
+        ),
+        RELATIONAL_NEUTRAL_SIGNATURE: _relational_record(
+            RELATIONAL_NEUTRAL_SIGNATURE
+        ),
+        RELATIONAL_REMOVAL_SIGNATURE: _relational_record(
+            RELATIONAL_REMOVAL_SIGNATURE,
+            cells=RELATIONAL_REMOVAL_CELLS,
+            outcome_category=OUTCOME_REMOVAL,
+        ),
+    }
+
+
+def _relational_seam_agent(authority: str, records, model=None):
+    """Agent plus a two-branch archive facing the discrimination choice.
+
+    The archived branches are byte-identical except for their tracked
+    world-state signature and stored score: the certified-neutral branch
+    carries the higher plain score, so authorities "off" and "telemetry"
+    must restore it and only "selection" authority can deliberately flip
+    the restore to the certified removal-class branch. Paired-arm tests
+    pass one shared model so model-derived telemetry values compare
+    equal across arms.
+    """
+
+    env = _RelationalSeamEnv()
+    logger = _RelationalRecordingLogger()
+    agent = VerifiedNeuralAgent(
+        env,
+        model
+        if model is not None
+        else EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        ),
+        "cpu",
+        NeuralPlanningConfig(
+            actions=(Action.LEFT, Action.RIGHT),
+            planning_depth=1,
+            relational_planner_enabled=(authority != "off"),
+            relational_planner_authority=authority,
+        ),
+        event_logger=logger,
+    )
+    agent.reset()
+    agent.current_human_prior_root_object_state = HumanPriorRootObjectState(
+        tracked_world_state_signature=RELATIONAL_CURRENT_SIGNATURE
+    )
+    if records is not None:
+        agent.verified_accessibility_records = records
+    env.position = 1
+    frame = env._frame()
+
+    def branch(signature: str, score: float) -> _ArchivedBranch:
+        return _ArchivedBranch(
+            state=env.save_state(),
+            frame=frame,
+            plan=NeuralPlan((Action.RIGHT,), (1,), score, 0.0),
+            score=score,
+            scene="archived-elsewhere",
+            created=0,
+            origin_signature="origin",
+            tracked_world_state_signature=signature,
+        )
+
+    neutral = branch(RELATIONAL_NEUTRAL_SIGNATURE, 5.0)
+    removal = branch(RELATIONAL_REMOVAL_SIGNATURE, 4.0)
+    agent.archive = [neutral, removal]
+    agent.visual_stagnation_streak = 99
+    agent.autonomous_grace_remaining = 0
+    return env, logger, agent, neutral, removal
+
+
+def _relational_events(logger, event_type):
+    return [
+        event
+        for event in logger.events
+        if event["event"] == event_type
+    ]
+
+
+def _non_relational_events(logger):
+    return [
+        event
+        for event in logger.events
+        if not event["event"].startswith("relational_")
+    ]
+
+
+class RelationalPlannerConfigGateTests(unittest.TestCase):
+    def test_default_config_keeps_the_relational_planner_off(self) -> None:
+        config = NeuralPlanningConfig()
+        self.assertFalse(config.relational_planner_enabled)
+        self.assertEqual(config.relational_planner_authority, "off")
+
+    def test_authority_is_validated_like_the_accessibility_weight(
+        self,
+    ) -> None:
+        env = _RelationalSeamEnv()
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        with self.assertRaises(ValueError):
+            VerifiedNeuralAgent(
+                env,
+                model,
+                "cpu",
+                NeuralPlanningConfig(
+                    relational_planner_authority="sideways"
+                ),
+            )
+        with self.assertRaises(ValueError):
+            VerifiedNeuralAgent(
+                env,
+                model,
+                "cpu",
+                NeuralPlanningConfig(
+                    relational_planner_authority="telemetry"
+                ),
+            )
+        with self.assertRaises(ValueError):
+            VerifiedNeuralAgent(
+                env,
+                model,
+                "cpu",
+                NeuralPlanningConfig(
+                    relational_planner_enabled=True,
+                    relational_planner_authority="off",
+                ),
+            )
+        with self.assertRaises(ValueError):
+            VerifiedNeuralAgent(
+                env,
+                model,
+                "cpu",
+                NeuralPlanningConfig(
+                    relational_planner_enabled=True,
+                    relational_planner_authority="selection",
+                    relational_max_queue=0,
+                ),
+            )
+
+
+class RelationalPlannerOffModeInvarianceTests(unittest.TestCase):
+    """Design test-plan item 9: authority off is bit-identical to today."""
+
+    def test_off_mode_never_consults_the_record_store(self) -> None:
+        _env, _logger, agent, _n, _r = _relational_seam_agent(
+            "off", _RelationalExplodingRecordStore()
+        )
+        agent._relational_propose_and_log()
+        agent._relational_feedback("committed_decision")
+        self.assertIsNone(agent.relational_plan)
+
+    def test_off_mode_restore_selection_and_telemetry_identical(
+        self,
+    ) -> None:
+        shared_model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env_a, logger_a, loaded, *_rest = _relational_seam_agent(
+            "off", _relational_records(), model=shared_model
+        )
+        env_b, logger_b, bare, *_rest2 = _relational_seam_agent(
+            "off", None, model=shared_model
+        )
+
+        loaded._relational_propose_and_log()
+        bare._relational_propose_and_log()
+        decision_a = loaded._restore_if_stagnant()
+        decision_b = bare._restore_if_stagnant()
+
+        self.assertIsNotNone(decision_a)
+        self.assertIsNotNone(decision_b)
+        assert decision_a is not None and decision_b is not None
+        self.assertEqual(decision_a.action, decision_b.action)
+        self.assertEqual(decision_a.score, decision_b.score)
+        self.assertEqual(env_a.position, env_b.position)
+        # The higher-scored certified-neutral branch wins in both agents:
+        # the loaded records changed nothing at authority off.
+        self.assertEqual(
+            [b.tracked_world_state_signature for b in loaded.archive],
+            [RELATIONAL_REMOVAL_SIGNATURE],
+        )
+        self.assertEqual(
+            [b.tracked_world_state_signature for b in bare.archive],
+            [RELATIONAL_REMOVAL_SIGNATURE],
+        )
+        self.assertEqual(logger_a.events, logger_b.events)
+        self.assertEqual(
+            [
+                event
+                for event in logger_a.events
+                if event["event"].startswith("relational_")
+            ],
+            [],
+        )
+
+    def test_off_mode_reserve_family_and_reorder_are_neutral(self) -> None:
+        _env, _logger, agent, *_rest = _relational_seam_agent(
+            "off", _relational_records()
+        )
+        self.assertEqual(
+            agent._relational_hold_reserve_candidates(()), ()
+        )
+        self.assertEqual(agent._relational_reach_cells_slot_budget(), 0)
+        candidates = ["sentinel-a", "sentinel-b"]
+        self.assertIs(
+            agent._relational_reproduce_transition_priority(candidates),
+            candidates,
+        )
+        for branch in agent.archive:
+            self.assertEqual(
+                agent._relational_restore_preference(branch), 0.0
+            )
+        self.assertFalse(agent._relational_restore_preference_active())
+
+
+class RelationalPlannerTelemetryModeTests(unittest.TestCase):
+    """Shadow authority: hypothesis telemetry, zero selection influence."""
+
+    def test_telemetry_mode_emits_hypotheses_without_selection_influence(
+        self,
+    ) -> None:
+        shared_model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env_t, logger_t, shadow, *_rest = _relational_seam_agent(
+            "telemetry", _relational_records(), model=shared_model
+        )
+        env_o, logger_o, control, *_rest2 = _relational_seam_agent(
+            "off", _relational_records(), model=shared_model
+        )
+
+        shadow._relational_propose_and_log()
+        control._relational_propose_and_log()
+        decision_t = shadow._restore_if_stagnant()
+        decision_o = control._restore_if_stagnant()
+
+        self.assertIsNotNone(decision_t)
+        self.assertIsNotNone(decision_o)
+        # Selection is untouched: both restore the higher-scored neutral
+        # branch, and every non-relational event is identical.
+        self.assertEqual(
+            [b.tracked_world_state_signature for b in shadow.archive],
+            [RELATIONAL_REMOVAL_SIGNATURE],
+        )
+        self.assertEqual(
+            _non_relational_events(logger_t),
+            _non_relational_events(logger_o),
+        )
+
+        proposed = _relational_events(
+            logger_t, "relational_hypothesis_proposed"
+        )
+        self.assertEqual(len(proposed), 1)
+        queue = proposed[0]["hypotheses"]
+        self.assertEqual(
+            [row["hypothesis_kind"] for row in queue],
+            [
+                "establish_configuration",
+                "hold_configuration",
+                "exploit_configuration",
+            ],
+        )
+        establish_row, hold_row, exploit_row = queue
+        self.assertIsNone(establish_row["chain_parent_id"])
+        self.assertEqual(
+            hold_row["chain_parent_id"], establish_row["hypothesis_id"]
+        )
+        self.assertEqual(
+            exploit_row["chain_parent_id"], hold_row["hypothesis_id"]
+        )
+        self.assertEqual(
+            establish_row["realization_kind"], REALIZATION_RESTORE_ARCHIVE
+        )
+        self.assertGreater(
+            establish_row[
+                "relational_hypothesis_expected_accessibility_improvement"
+            ],
+            0.0,
+        )
+        self.assertIn(
+            "relational_hypothesis_total_score", establish_row
+        )
+        # The hypothesis is logged BEFORE the restore executes (Gate 4
+        # criterion 1).
+        event_names = [event["event"] for event in logger_t.events]
+        self.assertLess(
+            event_names.index("relational_hypothesis_proposed"),
+            event_names.index("archive_branch_restored"),
+        )
+        # The unaided restore chose the neutral branch, contradicting the
+        # active establish hypothesis: the exact outcome overrides the
+        # prior and the chain is terminated, reason-coded.
+        terminated = _relational_events(
+            logger_t, "relational_hypothesis_terminated"
+        )
+        self.assertTrue(terminated)
+        self.assertIn(
+            TERMINATED_CONTRADICTED,
+            [event["reason"] for event in terminated],
+        )
+        self.assertIsNone(shadow.relational_plan)
+
+
+class RelationalPlannerSelectionModeTests(unittest.TestCase):
+    """Selection authority: the chain directs and verifies the restore."""
+
+    def test_selection_mode_realizes_the_establish_hypothesis(
+        self,
+    ) -> None:
+        env, logger, agent, neutral, removal = _relational_seam_agent(
+            "selection", _relational_records()
+        )
+        agent._relational_propose_and_log()
+        active = agent._relational_active_hypothesis()
+        self.assertIsNotNone(active)
+        assert active is not None
+        self.assertIs(
+            active.kind, RelationalHypothesisKind.ESTABLISH_CONFIGURATION
+        )
+        self.assertTrue(agent._relational_restore_preference_active())
+        self.assertEqual(
+            agent._relational_restore_preference(removal), 1.0
+        )
+        self.assertEqual(
+            agent._relational_restore_preference(neutral), 0.0
+        )
+
+        decision = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(decision)
+        # The hypothesis-preferred removal-class branch was restored even
+        # though the neutral branch carries the higher plain score.
+        self.assertEqual(
+            [b.tracked_world_state_signature for b in agent.archive],
+            [RELATIONAL_NEUTRAL_SIGNATURE],
+        )
+        self.assertEqual(
+            agent.current_human_prior_root_object_state
+            .tracked_world_state_signature,
+            RELATIONAL_REMOVAL_SIGNATURE,
+        )
+        realized = _relational_events(
+            logger, "relational_hypothesis_realized"
+        )
+        achieved = _relational_events(
+            logger, "relational_hypothesis_achieved"
+        )
+        activated = _relational_events(
+            logger, "relational_hypothesis_activated"
+        )
+        stored = _relational_events(logger, "relational_option_stored")
+        self.assertEqual(len(realized), 1)
+        self.assertEqual(
+            realized[0]["hypothesis_kind"], "establish_configuration"
+        )
+        self.assertEqual(
+            realized[0]["transition_kind"], "archive_restore"
+        )
+        self.assertIn("restored_state_id", realized[0])
+        self.assertEqual(len(achieved), 1)
+        self.assertEqual(
+            achieved[0]["hypothesis_id"], realized[0]["hypothesis_id"]
+        )
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(
+            stored[0]["option"]["transfer_evidence_count"], 1
+        )
+        # The hold successor is activated with the chain linkage intact.
+        self.assertEqual(
+            activated[-1]["hypothesis_kind"], "hold_configuration"
+        )
+        self.assertEqual(
+            activated[-1]["chain_parent_id"],
+            realized[0]["hypothesis_id"],
+        )
+        follow_on = agent._relational_active_hypothesis()
+        assert follow_on is not None
+        self.assertIs(
+            follow_on.kind, RelationalHypothesisKind.HOLD_CONFIGURATION
+        )
+
+    def test_selection_mode_chains_hold_to_exploit_and_reserves(
+        self,
+    ) -> None:
+        env, logger, agent, neutral, removal = _relational_seam_agent(
+            "selection", _relational_records()
+        )
+        agent._relational_propose_and_log()
+        self.assertIsNotNone(agent._restore_if_stagnant())
+
+        # One committed decision later the configuration still maps: the
+        # hold hypothesis is verified and the exploit activates.
+        agent._relational_feedback("committed_decision")
+        active = agent._relational_active_hypothesis()
+        assert active is not None
+        self.assertIs(
+            active.kind, RelationalHypothesisKind.EXPLOIT_CONFIGURATION
+        )
+        self.assertEqual(
+            active.realization.kind, REALIZATION_REACH_CELLS_UNDER_HOLD
+        )
+        self.assertEqual(
+            agent._relational_reach_cells_slot_budget(),
+            agent.config.relational_exploit_budget,
+        )
+
+        # The reach-cells reserve family retains only endpoints whose
+        # root-track configuration signature still satisfies the hold
+        # predicate.
+        def reserve_node(signature, player_slot):
+            analysis = HeartGoalAnalysis(
+                reliable=True,
+                known_slots=((7, 0),),
+                source_present=((7, 0),),
+                target_present=((7, 0),),
+                collected=(),
+                target_similarities=(),
+                heart_reward=0.0,
+                all_hearts_reward=0.0,
+                chest_reward=0.0,
+                navigation_reward=0.0,
+                life_loss_penalty=0.0,
+                total_reward=0.0,
+                global_visual_change=0.0,
+                target_intensity=1.0,
+                source_player_slot=(0, 0),
+                target_player_slot=player_slot,
+                source_heart_distance=None,
+                target_heart_distance=None,
+                source_chest_slot=None,
+                target_chest_slot=None,
+                source_chest_distance=None,
+                target_chest_distance=None,
+                chest_completed=False,
+                source_life_signature="life",
+                target_life_signature="life",
+                life_counter_changed=False,
+                dark_transition_started=False,
+                life_loss_confirmed=False,
+            )
+            return _HumanPriorOptionNode(
+                state=None,
+                frame=Frame(8, 8, 1, bytes(64)),
+                path=(Action.RIGHT,),
+                durations=(1,),
+                analysis=analysis,
+                source_signature="source",
+                target_signature=f"target-{signature}",
+                score=1.0,
+                depth=1,
+                target_state_visits=0,
+                target_position_visits=0,
+                tracked_world_effect_cells=((2, 2),),
+                tracked_world_state_signature=signature,
+            )
+
+        holding = reserve_node(RELATIONAL_REMOVAL_SIGNATURE, (32, 48))
+        departed = reserve_node(RELATIONAL_NEUTRAL_SIGNATURE, (16, 48))
+        retained = agent._relational_hold_reserve_candidates(
+            [departed, holding]
+        )
+        self.assertEqual(
+            [node.tracked_world_state_signature for node in retained],
+            [RELATIONAL_REMOVAL_SIGNATURE],
+        )
+
+        # A verified transition that departs the held configuration
+        # terminates the exploit with the reason exposed.
+        agent.current_human_prior_root_object_state = (
+            HumanPriorRootObjectState(
+                tracked_world_state_signature=(
+                    RELATIONAL_NEUTRAL_SIGNATURE
+                )
+            )
+        )
+        agent._relational_feedback("committed_decision")
+        terminated = _relational_events(
+            logger, "relational_hypothesis_terminated"
+        )
+        self.assertIn(
+            TERMINATED_HOLD_VIOLATED,
+            [event["reason"] for event in terminated],
+        )
+        self.assertIsNone(agent.relational_plan)

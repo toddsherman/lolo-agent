@@ -31,6 +31,31 @@ from .accessibility_preference import (
     verified_accessibility_preference,
 )
 from .agent import Decision
+from .relational_planner import (
+    AUTHORITIES as RELATIONAL_AUTHORITIES,
+    AUTHORITY_OFF as RELATIONAL_AUTHORITY_OFF,
+    AUTHORITY_SELECTION as RELATIONAL_AUTHORITY_SELECTION,
+    ArchiveCandidateView as RelationalArchiveCandidateView,
+    HypothesisKind as RelationalHypothesisKind,
+    HypothesisPlan as RelationalHypothesisPlan,
+    REALIZATION_REACH_CELLS_UNDER_HOLD as RELATIONAL_REACH_CELLS,
+    REALIZATION_REPRODUCE_TRANSITION as RELATIONAL_REPRODUCE_TRANSITION,
+    REALIZATION_RESTORE_ARCHIVE as RELATIONAL_RESTORE_ARCHIVE,
+    RealizedOption as RelationalRealizedOption,
+    RelationalHypothesis,
+    RelationalPlannerConfig,
+    RelationalStateView,
+    SUMMARY_ARCHIVE_RESTORE as RELATIONAL_SUMMARY_ARCHIVE_RESTORE,
+    SUMMARY_COMMITTED_DECISION as RELATIONAL_SUMMARY_COMMITTED_DECISION,
+    TransitionRuleView as RelationalTransitionRuleView,
+    VerifiedTransitionSummary as RelationalVerifiedTransitionSummary,
+    advance as relational_advance,
+    hypothesis_log_fields as relational_hypothesis_log_fields,
+    option_key as relational_option_key,
+    propose as relational_propose,
+    record_attempt as relational_record_attempt,
+    record_success as relational_record_success,
+)
 from .bidirectional_probe import BidirectionalProbeCollector
 from .entity_behavior import (
     AnonymousEntityBehaviorModel,
@@ -95,6 +120,19 @@ class NeuralPlanningConfig:
     causal_affordance_weight: float = 3.0
     causal_event_archive_weight: float = 4.0
     verified_accessibility_weight: float = 0.0
+    # WP8 relational hypothesis planner
+    # (docs/wp8-relational-planner-design-2026-08-17.md section 4 step 6):
+    # authority is config-gated off by default; "telemetry" proposes and
+    # logs hypothesis plans with zero selection influence; "selection"
+    # additionally lets the active hypothesis direct restore selection and
+    # reserve slots.
+    relational_planner_enabled: bool = False
+    relational_planner_authority: str = "off"
+    relational_max_queue: int = 4
+    relational_establish_budget: int = 48
+    relational_hold_budget: int = 8
+    relational_exploit_budget: int = 48
+    relational_decision_budget: int = 4
     causal_change_pixel_threshold: int = 12
     causal_spatial_columns: int = 16
     causal_spatial_rows: int = 15
@@ -763,6 +801,36 @@ class VerifiedNeuralAgent:
                 "verified accessibility weight must be finite and "
                 "non-negative"
             )
+        if (
+            self.config.relational_planner_authority
+            not in RELATIONAL_AUTHORITIES
+        ):
+            raise ValueError(
+                "relational planner authority must be one of "
+                f"{RELATIONAL_AUTHORITIES}"
+            )
+        if self.config.relational_planner_enabled != (
+            self.config.relational_planner_authority
+            != RELATIONAL_AUTHORITY_OFF
+        ):
+            raise ValueError(
+                "relational planner enabled flag must match its "
+                "authority mode"
+            )
+        if self.config.relational_max_queue <= 0:
+            raise ValueError("relational max queue must be positive")
+        if self.config.relational_decision_budget <= 0:
+            raise ValueError(
+                "relational decision budget must be positive"
+            )
+        if (
+            self.config.relational_establish_budget < 0
+            or self.config.relational_hold_budget < 0
+            or self.config.relational_exploit_budget < 0
+        ):
+            raise ValueError(
+                "relational per-kind budgets must be non-negative"
+            )
         if self.config.human_prior_option_search_milestone_extension < 0:
             raise ValueError(
                 "human-prior option search milestone extension must be "
@@ -1193,6 +1261,14 @@ class VerifiedNeuralAgent:
         # docs/wp8-lite-ablation-design-2026-08-16.md section 4.2.
         self.verified_accessibility_records: Dict[
             str, CertifiedAccessibilityRecord
+        ] = {}
+        # WP8 relational hypothesis planner state
+        # (docs/wp8-relational-planner-design-2026-08-17.md): the bounded
+        # hypothesis plan and realized-option evidence, populated only
+        # while relational_planner_authority != "off".
+        self.relational_plan: Optional[RelationalHypothesisPlan] = None
+        self.relational_realized_options: Dict[
+            str, RelationalRealizedOption
         ] = {}
         self.last_navigation_change_decision: Optional[int] = None
         self.human_prior_navigation_detour_origin_signature = ""
@@ -11051,6 +11127,14 @@ class VerifiedNeuralAgent:
                     key=self._human_prior_entity_probe_rank_key,
                     reverse=True,
                 )
+                # WP8 reproduce-transition seam: a stable reorder by the
+                # active hypothesis's interaction signature; the input
+                # list is returned unchanged outside selection authority.
+                entity_curiosity_candidates = (
+                    self._relational_reproduce_transition_priority(
+                        entity_curiosity_candidates
+                    )
+                )
                 route_replay_candidates = sorted(
                     (
                         node
@@ -11083,6 +11167,31 @@ class VerifiedNeuralAgent:
                         if (
                             len(milestone_continuation_parents)
                             >= milestone_continuation_slots
+                        ):
+                            break
+                # WP8 reach-cells-under-hold reserve family, budgeted like
+                # the milestone-continuation slots; empty (zero slots,
+                # parents unchanged) outside selection authority.
+                relational_hold_candidates = list(
+                    self._relational_hold_reserve_candidates(
+                        observed_candidates
+                    )
+                )
+                relational_hold_slots = min(
+                    self._relational_reach_cells_slot_budget(),
+                    max(0, beam_width - len(retained_parent_ids)),
+                    len(relational_hold_candidates),
+                )
+                relational_hold_parents = []
+                if relational_hold_slots > 0:
+                    for node in relational_hold_candidates:
+                        if id(node) in retained_parent_ids:
+                            continue
+                        relational_hold_parents.append(node)
+                        retained_parent_ids.add(id(node))
+                        if (
+                            len(relational_hold_parents)
+                            >= relational_hold_slots
                         ):
                             break
                 goal_proximity_slots = min(
@@ -11223,6 +11332,7 @@ class VerifiedNeuralAgent:
                             break
                 parents = list(route_replay_parents)
                 parents.extend(milestone_continuation_parents)
+                parents.extend(relational_hold_parents)
                 parents.extend(goal_proximity_parents)
                 parents.extend(goal_world_state_parents)
                 parents.extend(world_state_parents)
@@ -19298,6 +19408,522 @@ class VerifiedNeuralAgent:
             ).total_bonus
         )
 
+    # ------------------------------------------------------------------
+    # WP8 relational hypothesis planner seams
+    # (docs/wp8-relational-planner-design-2026-08-17.md section 4).
+    # Authority "off" (the default) makes every method below a no-op or a
+    # neutral value, keeping planner ranking and restore selection
+    # bit-identical to today; "telemetry" proposes and logs hypothesis
+    # plans without selection influence; "selection" additionally lets
+    # the active hypothesis direct restore selection and reserve slots.
+    # ------------------------------------------------------------------
+
+    def _relational_planner_active(self) -> bool:
+        return bool(
+            self.config.relational_planner_enabled
+            and self.config.relational_planner_authority
+            != RELATIONAL_AUTHORITY_OFF
+        )
+
+    def _relational_selection_authority(self) -> bool:
+        return bool(
+            self._relational_planner_active()
+            and self.config.relational_planner_authority
+            == RELATIONAL_AUTHORITY_SELECTION
+        )
+
+    def _relational_config(self) -> RelationalPlannerConfig:
+        return RelationalPlannerConfig(
+            max_queue=self.config.relational_max_queue,
+            establish_branch_budget=(
+                self.config.relational_establish_budget
+            ),
+            hold_branch_budget=self.config.relational_hold_budget,
+            exploit_branch_budget=self.config.relational_exploit_budget,
+            decision_budget=self.config.relational_decision_budget,
+        )
+
+    def _relational_state_view(self) -> RelationalStateView:
+        """Read-only view assembly (design section 4 step 2).
+
+        Milestone slots arrive as pixel goal slots and are reduced to the
+        coarse causal cells the certified records use.
+        """
+
+        root_object_state = self.current_human_prior_root_object_state
+        remaining: Tuple[Tuple[int, int], ...] = ()
+        player_cell: Optional[Tuple[int, int]] = None
+        if self.goal_prior is not None:
+            remaining = tuple(
+                sorted(
+                    (slot[0] // 16, slot[1] // 16)
+                    for slot in self.goal_prior.current_slots()
+                )
+            )
+            player_slot = self.goal_prior.current_player_slot
+            if player_slot is not None:
+                player_cell = (player_slot[0] // 16, player_slot[1] // 16)
+        return RelationalStateView(
+            configuration_signature=(
+                root_object_state.tracked_world_state_signature
+            ),
+            track_set_signature=ObjectTrackSet.from_root_object_state(
+                root_object_state
+            ).signature,
+            player_cell=player_cell,
+            remaining_milestone_cells=remaining,
+            decision_index=self.decision_index,
+        )
+
+    def _relational_archive_candidate_views(
+        self,
+    ) -> Tuple[RelationalArchiveCandidateView, ...]:
+        """Archive views carrying each branch's pre-bonus frontier score."""
+
+        views = []
+        for branch in self.archive:
+            if not branch.tracked_world_state_signature:
+                continue
+            bonus, _components = (
+                self._archive_verified_accessibility_bonus(branch)
+            )
+            views.append(
+                RelationalArchiveCandidateView(
+                    state_id=self._state_id(branch.state) or "",
+                    configuration_signature=(
+                        branch.tracked_world_state_signature
+                    ),
+                    baseline_score=(
+                        self._archive_frontier_score(branch) - bonus
+                    ),
+                    verified_option=bool(
+                        branch.human_prior_verified_option
+                    ),
+                )
+            )
+        return tuple(views)
+
+    def _relational_transition_rule_views(
+        self,
+    ) -> Tuple[RelationalTransitionRuleView, ...]:
+        """Behavior-model rule summaries (posterior, not authority).
+
+        Aggregated read-only over the model's empirical rule statistics:
+        for each registered outcome descriptor, the pooled probability of
+        that outcome among rules that observed it, the pooled inert mass
+        of those same rules, and their causal-hazard rate. Summaries only
+        rank; exact search remains the acceptance oracle.
+        """
+
+        model = self.entity_behavior_model
+        if model is None:
+            return ()
+        views = []
+        for transition in model.transitions():
+            signature = transition.outcome_signature
+            samples = 0
+            matches = 0
+            inert_matches = 0
+            causal_hazardous = 0
+            causal_hazard_samples = 0
+            # Read-only aggregation over the model's empirical rule
+            # stats; Counter reads never insert keys.
+            for stats in model._rules.values():
+                outcome_count = stats.outcomes[signature]
+                if outcome_count <= 0:
+                    continue
+                samples += stats.samples
+                matches += outcome_count
+                causal_hazardous += stats.causal_hazardous
+                causal_hazard_samples += stats.causal_hazard_samples
+                for other_signature, count in stats.outcomes.items():
+                    other = model.transition_for(other_signature)
+                    if other is not None and other.kind == "no_effect":
+                        inert_matches += count
+            if samples <= 0:
+                continue
+            views.append(
+                RelationalTransitionRuleView(
+                    interaction_signature=signature,
+                    transition_kind=transition.kind,
+                    posterior=matches / samples,
+                    samples=matches,
+                    inert_probability=inert_matches / samples,
+                    causal_hazard_probability=(
+                        causal_hazardous / causal_hazard_samples
+                        if causal_hazard_samples > 0
+                        else 0.0
+                    ),
+                )
+            )
+        return tuple(views)
+
+    def _relational_active_hypothesis(
+        self,
+    ) -> Optional[RelationalHypothesis]:
+        plan = self.relational_plan
+        if plan is None or not plan.active_id:
+            return None
+        return next(
+            (
+                hypothesis
+                for hypothesis in plan.hypotheses
+                if hypothesis.hypothesis_id == plan.active_id
+            ),
+            None,
+        )
+
+    def _relational_emit_hypothesis_event(
+        self,
+        event_type: str,
+        hypothesis: RelationalHypothesis,
+        decision: int,
+        **fields: Any,
+    ) -> None:
+        self._emit(
+            event_type,
+            decision=decision,
+            authority=self.config.relational_planner_authority,
+            **relational_hypothesis_log_fields(hypothesis),
+            **fields,
+        )
+
+    def _relational_record_attempt(
+        self, hypothesis: RelationalHypothesis
+    ) -> None:
+        key = relational_option_key(hypothesis)
+        self.relational_realized_options[key] = relational_record_attempt(
+            self.relational_realized_options.get(key), hypothesis
+        )
+
+    def _relational_propose_and_log(self) -> None:
+        """Propose-and-log hook in decide() (design section 4 step 3).
+
+        Runs after life-loss recovery and before restore/stagnation
+        handling; the full queue with per-hypothesis score decomposition
+        is logged BEFORE any realization step executes (Gate 4 criterion
+        1). While a proposed chain still has an active hypothesis the
+        plan is retained — replanning is driven by ``advance`` at every
+        verified transition, never by silently re-proposing mid-chain.
+        """
+
+        if not self._relational_planner_active():
+            return
+        if (
+            self.relational_plan is not None
+            and self.relational_plan.active_id
+        ):
+            return
+        state = self._relational_state_view()
+        plan = relational_propose(
+            state,
+            self.verified_accessibility_records,
+            self._relational_archive_candidate_views(),
+            self._relational_transition_rule_views(),
+            tuple(
+                option
+                for _key, option in sorted(
+                    self.relational_realized_options.items()
+                )
+            ),
+            self._relational_config(),
+        )
+        self.relational_plan = plan if plan.active_id else None
+        self._emit(
+            "relational_hypothesis_proposed",
+            decision=self.decision_index + 1,
+            authority=self.config.relational_planner_authority,
+            configuration_signature=(
+                state.configuration_signature or None
+            ),
+            track_set_signature=state.track_set_signature,
+            remaining_milestone_cells=list(
+                list(cell) for cell in state.remaining_milestone_cells
+            ),
+            queue_length=len(plan.hypotheses),
+            active_hypothesis_id=plan.active_id,
+            hypotheses=[
+                relational_hypothesis_log_fields(hypothesis)
+                for hypothesis in plan.hypotheses
+            ],
+        )
+        if plan.active_id:
+            active = self._relational_active_hypothesis()
+            assert active is not None
+            prior = self.relational_realized_options.get(
+                relational_option_key(active)
+            )
+            self._relational_record_attempt(active)
+            self._relational_emit_hypothesis_event(
+                "relational_hypothesis_activated",
+                active,
+                decision=self.decision_index + 1,
+            )
+            if prior is not None and prior.transfer_evidence_count > 0:
+                self._relational_emit_hypothesis_event(
+                    "relational_option_reused",
+                    active,
+                    decision=self.decision_index + 1,
+                    option=prior.to_payload(),
+                )
+
+    def _relational_feedback(
+        self,
+        transition_kind: str,
+        restored_state_id: Optional[str] = None,
+    ) -> None:
+        """Verified-transition feedback seam (design section 4 step 5).
+
+        Builds a :class:`VerifiedTransitionSummary` from the committed
+        root state and advances the chain state machine, emitting the
+        reason-coded hypothesis telemetry and storing realized options.
+        """
+
+        if not self._relational_planner_active():
+            return
+        plan = self.relational_plan
+        if plan is None:
+            return
+        state = self._relational_state_view()
+        result = relational_advance(
+            plan,
+            RelationalVerifiedTransitionSummary(
+                kind=transition_kind,
+                decision_index=self.decision_index,
+                configuration_signature=state.configuration_signature,
+                track_set_signature=state.track_set_signature,
+                player_cell=state.player_cell,
+                remaining_milestone_cells=(
+                    state.remaining_milestone_cells
+                ),
+                restored_state_id=restored_state_id,
+            ),
+        )
+        by_id = {
+            hypothesis.hypothesis_id: hypothesis
+            for hypothesis in plan.hypotheses
+        }
+        shared = dict(
+            transition_kind=transition_kind,
+            outcome=result.outcome,
+            configuration_signature=(
+                state.configuration_signature or None
+            ),
+            restored_state_id=restored_state_id,
+            collected_cells=list(
+                list(cell) for cell in result.collected_cells
+            ),
+        )
+        realized = by_id.get(result.realized_id or "")
+        if realized is not None:
+            self._relational_emit_hypothesis_event(
+                "relational_hypothesis_realized",
+                realized,
+                decision=self.decision_index,
+                **shared,
+            )
+        achieved = by_id.get(result.achieved_id or "")
+        if achieved is not None:
+            self._relational_emit_hypothesis_event(
+                "relational_hypothesis_achieved",
+                achieved,
+                decision=self.decision_index,
+                **shared,
+            )
+            key = relational_option_key(achieved)
+            option = relational_record_success(
+                self.relational_realized_options.get(key), achieved
+            )
+            self.relational_realized_options[key] = option
+            self._relational_emit_hypothesis_event(
+                "relational_option_stored",
+                achieved,
+                decision=self.decision_index,
+                option=option.to_payload(),
+            )
+        for hypothesis_id, reason in result.terminated:
+            terminated = by_id.get(hypothesis_id)
+            if terminated is not None:
+                self._relational_emit_hypothesis_event(
+                    "relational_hypothesis_terminated",
+                    terminated,
+                    decision=self.decision_index,
+                    reason=reason,
+                    **shared,
+                )
+        activated = by_id.get(result.activated_id or "")
+        if activated is not None:
+            self._relational_record_attempt(activated)
+            self._relational_emit_hypothesis_event(
+                "relational_hypothesis_activated",
+                activated,
+                decision=self.decision_index,
+                **shared,
+            )
+        self.relational_plan = (
+            result.plan if result.plan.active_id else None
+        )
+
+    def _relational_restore_preference(
+        self, branch: _ArchivedBranch
+    ) -> float:
+        """Restore-selection preference for the active establish target.
+
+        Applied beside — never inside — the untouched WP8-lite frontier
+        bonus (design section 4 step 4): the caller keys the selection on
+        ``(preference, existing restore key)`` only in selection
+        authority, so any nonzero value here is fully attributable to the
+        active hypothesis.
+        """
+
+        active = self._relational_active_hypothesis()
+        if (
+            active is None
+            or active.realization.kind != RELATIONAL_RESTORE_ARCHIVE
+        ):
+            return 0.0
+        return (
+            1.0
+            if branch.tracked_world_state_signature
+            == active.target_configuration_signature
+            else 0.0
+        )
+
+    def _relational_restore_preference_active(self) -> bool:
+        if not self._relational_selection_authority():
+            return False
+        active = self._relational_active_hypothesis()
+        return bool(
+            active is not None
+            and active.realization.kind == RELATIONAL_RESTORE_ARCHIVE
+        )
+
+    def _relational_reach_cells_slot_budget(self) -> int:
+        if not self._relational_selection_authority():
+            return 0
+        active = self._relational_active_hypothesis()
+        if (
+            active is None
+            or active.realization.kind != RELATIONAL_REACH_CELLS
+        ):
+            return 0
+        return active.realization.branch_budget
+
+    def _relational_hold_reserve_candidates(
+        self,
+        nodes: Sequence[_HumanPriorOptionNode],
+    ) -> Tuple[_HumanPriorOptionNode, ...]:
+        """The reach-cells-under-hold reserve family (section 4 step 4).
+
+        The hold predicate is a certification check on candidate
+        endpoints: the endpoint's root-track configuration signature must
+        still match the held configuration (the root-track match of
+        ``accessibility.certify_branch``). Matching endpoints rank toward
+        the objective's certified target cells, one representative per
+        detected player position.
+        """
+
+        if not self._relational_selection_authority():
+            return ()
+        active = self._relational_active_hypothesis()
+        if (
+            active is None
+            or active.realization.kind != RELATIONAL_REACH_CELLS
+        ):
+            return ()
+        hold_signature = str(
+            active.realization.payload.get(
+                "hold_configuration_signature", ""
+            )
+        )
+        if not hold_signature:
+            return ()
+        target_cells = tuple(
+            tuple(cell)
+            for cell in active.realization.payload.get(
+                "target_cells", ()
+            )
+        )
+
+        def rank(node: _HumanPriorOptionNode) -> tuple:
+            player = node.analysis.target_player_slot
+            distance = None
+            if player is not None and target_cells:
+                distance = min(
+                    abs(player[0] - cell[0] * 16)
+                    + abs(player[1] - cell[1] * 16)
+                    for cell in target_cells
+                ) / 16.0
+            return (
+                distance is not None,
+                -(distance if distance is not None else math.inf),
+                node.target_position_visits == 0,
+                node.target_state_visits == 0,
+                node.score,
+                -node.depth,
+            )
+
+        representatives: Dict[
+            Tuple[int, int], _HumanPriorOptionNode
+        ] = {}
+        for node in nodes:
+            if node.tracked_world_state_signature != hold_signature:
+                continue
+            if (
+                node.analysis.life_counter_changed
+                or node.analysis.dark_transition_started
+            ):
+                continue
+            player = node.analysis.target_player_slot
+            if player is None:
+                continue
+            previous = representatives.get(player)
+            if previous is None or rank(node) > rank(previous):
+                representatives[player] = node
+        return tuple(
+            sorted(representatives.values(), key=rank, reverse=True)
+        )
+
+    def _relational_reproduce_transition_priority(
+        self,
+        candidates: List[_HumanPriorOptionNode],
+    ) -> List[_HumanPriorOptionNode]:
+        """Rank entity-frontier candidates by the active hypothesis.
+
+        A stable partition: candidates whose interaction signature
+        matches the active reproduce-transition hypothesis come first,
+        everything else keeps its existing order. Outside selection
+        authority the input list is returned unchanged.
+        """
+
+        if not self._relational_selection_authority():
+            return candidates
+        active = self._relational_active_hypothesis()
+        if (
+            active is None
+            or active.realization.kind
+            != RELATIONAL_REPRODUCE_TRANSITION
+        ):
+            return candidates
+        signature = str(
+            active.realization.payload.get("interaction_signature", "")
+        )
+        if not signature:
+            return candidates
+        preferred = [
+            node
+            for node in candidates
+            if node.entity_interaction_signature == signature
+        ]
+        if not preferred:
+            return candidates
+        rest = [
+            node
+            for node in candidates
+            if node.entity_interaction_signature != signature
+        ]
+        return [*preferred, *rest]
+
     def _archive_frontier_score(self, branch: _ArchivedBranch) -> float:
         own_value = self._frontier_estimate(
             branch.frontier_signature
@@ -20010,6 +20636,9 @@ class VerifiedNeuralAgent:
         life_recovery = self._restore_after_life_loss()
         if life_recovery is not None:
             return life_recovery
+        # WP8 relational propose-and-log seam: after life-loss recovery,
+        # before restore/stagnation handling; a no-op at authority "off".
+        self._relational_propose_and_log()
         proactive_entity_probe = (
             self._probe_current_adjacent_anonymous_affordances()
         )
@@ -24529,6 +25158,12 @@ class VerifiedNeuralAgent:
                 **self._persistent_change_fields(),
                 **self._frame_fields(target),
             )
+            # WP8 verified-transition feedback seam: the decision endpoint
+            # above is committed, so the chain state machine advances on
+            # the verified root configuration; a no-op at authority "off".
+            self._relational_feedback(
+                RELATIONAL_SUMMARY_COMMITTED_DECISION
+            )
             return Decision(
                 plan.path[0],
                 target,
@@ -26437,6 +27072,16 @@ class VerifiedNeuralAgent:
                 ),
                 **self._frame_fields(self.frame),
             )
+        # WP8 restore-selection seam: in selection authority with an
+        # active restore-archive hypothesis, the hypothesis preference
+        # leads the key beside the untouched frontier scoring; otherwise
+        # the selection is bit-identical to today.
+        if self._relational_restore_preference_active():
+            plain_restore_key = restore_key
+            restore_key = lambda item: (
+                self._relational_restore_preference(item),
+                plain_restore_key(item),
+            )
         branch = max(
             restore_eligible,
             key=restore_key,
@@ -27378,6 +28023,13 @@ class VerifiedNeuralAgent:
             **self._root_object_track_fields(),
             **self._persistent_change_fields(),
             **self._frame_fields(branch.frame),
+        )
+        # WP8 verified-transition feedback seam: the restore committed and
+        # the root track state was reseeded from the branch's carried
+        # fields above, so the summary reflects the restored configuration.
+        self._relational_feedback(
+            RELATIONAL_SUMMARY_ARCHIVE_RESTORE,
+            restored_state_id=restored_state_id,
         )
         return Decision(
             branch.plan.path[0],

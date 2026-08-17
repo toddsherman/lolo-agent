@@ -964,6 +964,20 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--relational-planner-authority",
+        choices=("off", "telemetry", "selection"),
+        default="off",
+        help=(
+            "WP8 relational hypothesis planner authority "
+            "(docs/wp8-relational-planner-design-2026-08-17.md): 'off' "
+            "(the default) keeps planner ranking and restore selection "
+            "bit-identical to today; 'telemetry' proposes and logs "
+            "hypothesis plans with zero selection influence; 'selection' "
+            "additionally lets the active hypothesis direct restore "
+            "selection and option-search reserve slots"
+        ),
+    )
+    parser.add_argument(
         "--human-prior-episodic-graph-guidance",
         action="store_true",
         help=(
@@ -2139,6 +2153,10 @@ def main() -> None:
         verified_accessibility_weight=(
             args.human_prior_accessibility_preference_weight
         ),
+        relational_planner_enabled=(
+            args.relational_planner_authority != "off"
+        ),
+        relational_planner_authority=args.relational_planner_authority,
     )
     rom_sha256 = sha256_file(args.rom)
     resume_metadata = None
