@@ -1257,5 +1257,297 @@ class FunctionalGateDriverTests(unittest.TestCase):
         )
 
 
+class ReconstructionConventionV3Tests(unittest.TestCase):
+    """Ensemble-agreement anchor (stability design lever, learnings 4.40)."""
+
+    def test_preregistered_v3_constants_pinned(self) -> None:
+        from lolo_agent.mask_sensitive_gate import AGREEMENT_RATE_THRESHOLD
+        from lolo_agent.pixel_mask_head import (
+            ANCHOR_CELL_UNCERTAINTY_BOUND_V3,
+            ANCHOR_DECISIVE_PROBABILITY_V3,
+            RECONSTRUCTION_CONVENTION_V3,
+        )
+
+        # The decisive-probability cutoff reuses the campaign's published
+        # 0.95 operating point by value (the module is strict-lineage
+        # linted, so the equality is pinned here by import); the variance
+        # bound is the preregistered training-corpus calibration.
+        self.assertEqual(
+            ANCHOR_DECISIVE_PROBABILITY_V3, AGREEMENT_RATE_THRESHOLD
+        )
+        self.assertEqual(ANCHOR_CELL_UNCERTAINTY_BOUND_V3, 0.004)
+        self.assertEqual(
+            RECONSTRUCTION_CONVENTION_V3, "ensemble-agreement-anchor-v3"
+        )
+
+    def test_agreement_filter_drops_contested_cells_only(self) -> None:
+        from lolo_agent.pixel_mask_head import agreement_filtered_cells
+
+        uncertainty = _cell_map({(1, 1): 0.0, (2, 1): 0.06, (3, 2): 0.004})
+        kept = agreement_filtered_cells(
+            ((1, 1), (2, 1), (3, 2)), uncertainty, 0.004
+        )
+        # At-bound cells stay (<=); only the contested cell drops.
+        self.assertEqual(kept, ((1, 1), (3, 2)))
+        with self.assertRaises(ValueError):
+            agreement_filtered_cells(((1, 1),), uncertainty, -0.1)
+
+    def test_anchor_region_requires_paired_uncertainty_arguments(self) -> None:
+        probabilities = _cell_map({(1, 1): 0.9})
+        with self.assertRaises(ValueError):
+            anchor_pixel_region(
+                probabilities,
+                COLUMNS,
+                ROWS,
+                WIDTH,
+                HEIGHT,
+                cell_uncertainty=_cell_map({}),
+            )
+        with self.assertRaises(ValueError):
+            anchor_pixel_region(
+                probabilities,
+                COLUMNS,
+                ROWS,
+                WIDTH,
+                HEIGHT,
+                uncertainty_bound=0.004,
+            )
+
+    def test_v3_suppresses_the_marginal_cell_placement_flip(self) -> None:
+        """The measured bit-(b) mechanism, reproduced and suppressed.
+
+        A sprite-edge cell straddles the tracker's 0.5 operating point
+        across two adjacent poses (0.42 vs 0.58) with the ensemble
+        contesting it in both (variance 0.06); the head fires inside the
+        cell whenever the anchor admits it.  Under the prior convention
+        the reconstructed masks differ by the whole cell block plus halo
+        (the placement flip); under convention v3 the contested cell is
+        excluded in BOTH poses and the masks are identical.
+        """
+
+        from lolo_agent.pixel_mask_head import (
+            ANCHOR_CELL_UNCERTAINTY_BOUND_V3,
+        )
+
+        # Head probabilities: decisive positives across cell (1, 1) in
+        # both poses; the flip cell (2, 1) also carries head positives.
+        pixel_probabilities = [
+            [
+                0.9
+                if pixel_grid_cell(x, y, WIDTH, HEIGHT, COLUMNS, ROWS)
+                in ((1, 1), (2, 1))
+                else 0.0
+                for x in range(WIDTH)
+            ]
+            for y in range(HEIGHT)
+        ]
+        uncertainty = _cell_map({(1, 1): 0.0, (2, 1): 0.06})
+        masks = {}
+        for pose, flip_probability in (("a", 0.42), ("b", 0.58)):
+            probabilities = _cell_map({(1, 1): 0.99, (2, 1): flip_probability})
+            for bound in (None, ANCHOR_CELL_UNCERTAINTY_BOUND_V3):
+                anchor = anchor_pixel_region(
+                    probabilities,
+                    COLUMNS,
+                    ROWS,
+                    WIDTH,
+                    HEIGHT,
+                    cell_dilation=0,
+                    cell_uncertainty=None if bound is None else uncertainty,
+                    uncertainty_bound=bound,
+                )
+                masks[(pose, bound)] = reconstruct_silhouette_pixels(
+                    pixel_probabilities, anchor, WIDTH, HEIGHT
+                )
+        # Prior convention: the pose pair flips by the whole cell block
+        # (pose a keeps only the fixed 3-pixel halo spill from cell (1, 1),
+        # pose b covers the entire flipped block -- the all-or-nothing
+        # extent swing the gate measures as a placement flip).
+        self.assertNotEqual(masks[("a", None)], masks[("b", None)])
+        flip_block = cell_pixel_block((2, 1), WIDTH, HEIGHT, COLUMNS, ROWS)
+        self.assertTrue(flip_block <= masks[("b", None)])
+        self.assertFalse(flip_block <= masks[("a", None)])
+        # Convention v3: the contested cell is withheld in both poses and
+        # the pair is placement-stable.
+        bound = ANCHOR_CELL_UNCERTAINTY_BOUND_V3
+        self.assertEqual(masks[("a", bound)], masks[("b", bound)])
+        self.assertFalse(flip_block <= masks[("b", bound)])
+        # The agreed sprite cell still carries its extent.
+        self.assertTrue(
+            cell_pixel_block((1, 1), WIDTH, HEIGHT, COLUMNS, ROWS)
+            <= masks[("a", bound)]
+        )
+
+    def test_v3_keeps_genuine_extent_changes_and_never_adds_pixels(
+        self,
+    ) -> None:
+        """No creep: a decisive pose change moves the v3 mask identically.
+
+        When the ensemble agrees on the arriving cell (variance ~0), the
+        v3 reconstruction reproduces the prior convention exactly on both
+        poses -- the flip suppression cannot freeze genuinely-changing
+        extent.  And on ensemble-contested inputs the v3 mask is always a
+        subset of the prior convention's mask (the lever only withholds
+        extent, never adds it).
+        """
+
+        from lolo_agent.pixel_mask_head import (
+            ANCHOR_CELL_UNCERTAINTY_BOUND_V3,
+        )
+
+        pixel_probabilities = [[0.9] * WIDTH for _ in range(HEIGHT)]
+        agreed = _cell_map({(1, 1): 0.001, (2, 1): 0.0008})
+        for arriving_probability in (0.02, 0.98):
+            probabilities = _cell_map(
+                {(1, 1): 0.99, (2, 1): arriving_probability}
+            )
+            v2_anchor = anchor_pixel_region(
+                probabilities, COLUMNS, ROWS, WIDTH, HEIGHT, cell_dilation=0
+            )
+            v3_anchor = anchor_pixel_region(
+                probabilities,
+                COLUMNS,
+                ROWS,
+                WIDTH,
+                HEIGHT,
+                cell_dilation=0,
+                cell_uncertainty=agreed,
+                uncertainty_bound=ANCHOR_CELL_UNCERTAINTY_BOUND_V3,
+            )
+            self.assertEqual(v2_anchor, v3_anchor)
+        # Subset property under contested inputs, across a probability grid.
+        contested = _cell_map({(1, 1): 0.2, (2, 1): 0.9, (3, 2): 0.04})
+        for cells in (
+            {(1, 1): 0.99, (2, 1): 0.58},
+            {(1, 1): 0.51, (2, 1): 0.51, (3, 2): 0.7},
+            {(2, 1): 0.49},
+        ):
+            probabilities = _cell_map(cells)
+            v2_anchor = anchor_pixel_region(
+                probabilities, COLUMNS, ROWS, WIDTH, HEIGHT, cell_dilation=0
+            )
+            v3_anchor = anchor_pixel_region(
+                probabilities,
+                COLUMNS,
+                ROWS,
+                WIDTH,
+                HEIGHT,
+                cell_dilation=0,
+                cell_uncertainty=contested,
+                uncertainty_bound=ANCHOR_CELL_UNCERTAINTY_BOUND_V3,
+            )
+            self.assertTrue(v3_anchor <= v2_anchor)
+            v2_mask = reconstruct_silhouette_pixels(
+                pixel_probabilities, v2_anchor, WIDTH, HEIGHT
+            )
+            v3_mask = reconstruct_silhouette_pixels(
+                pixel_probabilities, v3_anchor, WIDTH, HEIGHT
+            )
+            self.assertTrue(v3_mask <= v2_mask)
+
+    def test_v3_predictor_deterministic_and_default_byte_identical(
+        self,
+    ) -> None:
+        from lolo_agent.pixel_mask_head import (
+            ANCHOR_CELL_UNCERTAINTY_BOUND_V3,
+        )
+
+        @dataclass(frozen=True)
+        class _UncertainPrediction:
+            columns: int
+            rows: int
+            probabilities: Tuple[Tuple[float, ...], ...]
+            uncertainty: Tuple[Tuple[float, ...], ...]
+
+        @dataclass(frozen=True)
+        class _UncertainTracker:
+            prediction: _UncertainPrediction
+
+            def predict(self, frame: Frame) -> _UncertainPrediction:
+                return self.prediction
+
+        head = _make_head()
+        head.anchor_cell_dilation = ANCHOR_CELL_DILATION_V2
+        tracker = _UncertainTracker(
+            _UncertainPrediction(
+                COLUMNS,
+                ROWS,
+                _cell_map({(1, 1): 0.99, (2, 1): 0.58}),
+                _cell_map({(1, 1): 0.0, (2, 1): 0.06}),
+            )
+        )
+        v3_predictor = PixelSilhouettePredictor(
+            tracker,
+            head,
+            device="cpu",
+            anchor_uncertainty_bound=ANCHOR_CELL_UNCERTAINTY_BOUND_V3,
+        )
+        first = v3_predictor.predict(ROOT)
+        second = v3_predictor.predict(ROOT)
+        self.assertEqual(first.mask, second.mask)
+        self.assertEqual(first.probabilities, second.probabilities)
+        # The contested cell contributes no extent under v3: every mask
+        # pixel lies within the agreed cell's block plus the fixed halo.
+        allowed = dilate_pixels(
+            cell_pixel_block((1, 1), WIDTH, HEIGHT, COLUMNS, ROWS),
+            WIDTH,
+            HEIGHT,
+            SILHOUETTE_HALO_DILATION,
+        )
+        self.assertTrue(first.mask <= allowed)
+        # Default composition (no bound) is byte-identical to the prior
+        # convention: same weights, same reconstruction.
+        default_predictor = PixelSilhouettePredictor(tracker, head, device="cpu")
+        self.assertIsNone(default_predictor.anchor_uncertainty_bound)
+        baseline = PixelSilhouettePredictor(
+            _StubTracker(
+                _StubCellPrediction(
+                    COLUMNS, ROWS, _cell_map({(1, 1): 0.99, (2, 1): 0.58})
+                )
+            ),
+            head,
+            device="cpu",
+        ).predict(ROOT)
+        self.assertEqual(default_predictor.predict(ROOT).mask, baseline.mask)
+
+    def test_v3_predictor_refuses_trackers_without_uncertainty(self) -> None:
+        from lolo_agent.pixel_mask_head import (
+            ANCHOR_CELL_UNCERTAINTY_BOUND_V3,
+        )
+
+        head = _make_head()
+        tracker = _StubTracker(
+            _StubCellPrediction(COLUMNS, ROWS, _cell_map({(1, 1): 0.9}))
+        )
+        predictor = PixelSilhouettePredictor(
+            tracker,
+            head,
+            device="cpu",
+            anchor_uncertainty_bound=ANCHOR_CELL_UNCERTAINTY_BOUND_V3,
+        )
+        with self.assertRaises(ValueError):
+            predictor.predict(ROOT)
+        with self.assertRaises(ValueError):
+            PixelSilhouettePredictor(
+                tracker, head, device="cpu", anchor_uncertainty_bound=-0.1
+            )
+
+    def test_v3_description_reports_the_applied_convention(self) -> None:
+        from lolo_agent.pixel_mask_head import (
+            ANCHOR_CELL_UNCERTAINTY_BOUND_V3,
+            reconstruction_v3_description,
+        )
+
+        description = reconstruction_v3_description(
+            TARGET_SEMANTICS_OCCUPIED_V2, 0
+        )
+        self.assertIn("reconstruction convention v3", description)
+        self.assertIn("ensemble-agreement-anchor-v3", description)
+        self.assertIn("dilation 0 cells", description)
+        self.assertIn("occupied-v2", description)
+        self.assertIn(str(ANCHOR_CELL_UNCERTAINTY_BOUND_V3), description)
+        self.assertIn("unchanged substitution-replay helpers", description)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

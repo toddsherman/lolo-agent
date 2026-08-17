@@ -113,6 +113,46 @@ head checkpoint (``target_semantics`` / ``anchor_cell_dilation``), so a
 v2-supervised head is never silently reconstructed under the v1
 convention.
 
+Reconstruction convention v3: ensemble-agreement anchor (stability
+design lever, learnings 4.40)
+-------------------------------------------------------------------
+
+Learnings 4.40 records that the bit-(b) placement-flip tail resisted the
+data lever twice and licensed a preregistered DESIGN change to
+reconstruction.  The flip-structure measurement (preregistered in
+``docs/wp5-tracker-training-2026-08-16.md`` before any gate run) found
+the dominant mechanism at the ANCHOR: in 125/152 (v323) and 127/143
+(v325) bit-(b) failures the measured byte-identical cell is inside the
+0.5-thresholded tracker anchor in exactly one frame of the compared
+pair -- the tracker's mean probability at sprite-edge cells is
+pose-marginal, and every downstream stage (anchor gating, the head's
+cell-map conditioning) inherits that marginality.  Convention v3
+therefore admits a cell to the anchor only when the tracker ENSEMBLE
+AGREES on it:
+
+    anchor cells = { cell : mean probability >= 0.5 (the pinned
+    operating point, unchanged) AND ensemble variance <=
+    ``ANCHOR_CELL_UNCERTAINTY_BOUND_V3`` }
+
+The bound is calibrated from the training corpus at design time (the
+section 4.39 precedent), never from the gate corpora: among anchored
+cells whose mean probability meets the campaign's published 0.95
+operating point (the decisively-controllable population) on the pinned
+v5 label corpus, the maximum observed ensemble variance is 0.003762
+(stride-11 sample, 12,731 cells); the bound rounds it outward to
+0.004, so a cell may carry mask extent only when the ensemble contests
+it no more than the most-contested decisively-controllable training
+cell.  Everything else is unchanged (head
+positives at 0.5 inside the anchor, Chebyshev halo 3, empty anchor
+yields an empty mask), so the v3 mask of a frame is always a SUBSET of
+its v2-convention mask -- the lever can only withhold extent at
+ensemble-contested cells, never add it (pinned by unit test).  The
+variant is selected explicitly at composition time
+(``PixelSilhouettePredictor`` ``anchor_uncertainty_bound``); the
+default ``None`` reproduces the prior conventions byte-identically, and
+head checkpoints are untouched (the lever changes reconstruction, not
+weights).
+
 Strict lineage: this module references no assisted perception symbol;
 inputs are pixels, actions, action durations, and duration-matched
 counterfactual endpoints.  Checkpoints declare strict provenance and pin
@@ -198,6 +238,23 @@ TARGET_SEMANTICS_OCCUPIED_V2 = "occupied-v2"
 TARGET_SEMANTICS = (TARGET_SEMANTICS_UNION_V1, TARGET_SEMANTICS_OCCUPIED_V2)
 OCCUPIED_SPLIT_NEIGHBORHOOD_RADIUS = 1
 ANCHOR_CELL_DILATION_V2 = 0
+
+# Reconstruction convention v3 constants (learnings 4.40 plan-change; see
+# the module docstring).  The decisive-probability cutoff reuses the
+# campaign's published 0.95 operating point (``AGREEMENT_RATE_THRESHOLD``;
+# not imported here because its home module composes assisted-perception
+# code and this module is strict-lineage linted -- the unit tests pin the
+# equality by import).  The uncertainty bound is the design-phase
+# training-corpus calibration recorded in the preregistration: the
+# maximum ensemble variance observed among anchored cells at or above the
+# 0.95 decisive point on the pinned v5 label corpus (stride-11 sample,
+# 12,731 decisive anchored cells, measured maximum 0.003762), rounded
+# outward -- no anchored cell may be more ensemble-contested than the
+# most-contested decisively-controllable training cell.  The gate corpora
+# played no part in the constant's derivation.
+ANCHOR_DECISIVE_PROBABILITY_V3 = 0.95
+ANCHOR_CELL_UNCERTAINTY_BOUND_V3 = 0.004
+RECONSTRUCTION_CONVENTION_V3 = "ensemble-agreement-anchor-v3"
 
 _PIXEL_TARGET_DIGEST_PREFIX = b"lolo-pixel-mask-targets-v1:"
 _PIXEL_TARGET_DIGEST_PREFIX_V2 = b"lolo-pixel-mask-targets-v2:"
@@ -1311,6 +1368,29 @@ def anchored_cells(
     )
 
 
+def agreement_filtered_cells(
+    cells: Iterable[Cell],
+    cell_uncertainty: Sequence[Sequence[float]],
+    uncertainty_bound: float,
+) -> Tuple[Cell, ...]:
+    """Anchored cells the ensemble agrees on (convention v3).
+
+    Keeps exactly the cells whose ensemble variance is at or below the
+    bound; the probability threshold is applied by the caller so the
+    pinned 0.5 operating point stays in one place.
+    """
+
+    if uncertainty_bound < 0:
+        raise ValueError("anchor uncertainty bound must be non-negative")
+    return tuple(
+        sorted(
+            (column, row)
+            for column, row in cells
+            if cell_uncertainty[row][column] <= uncertainty_bound
+        )
+    )
+
+
 def anchor_pixel_region(
     cell_probabilities: Sequence[Sequence[float]],
     columns: int,
@@ -1320,10 +1400,30 @@ def anchor_pixel_region(
     *,
     cell_threshold: float = ANCHOR_CELL_PROBABILITY_THRESHOLD,
     cell_dilation: int = ANCHOR_CELL_DILATION,
+    cell_uncertainty: Optional[Sequence[Sequence[float]]] = None,
+    uncertainty_bound: Optional[float] = None,
 ) -> FrozenSet[Pixel]:
-    """Pixel region the reconstruction may mark: anchored cells, dilated."""
+    """Pixel region the reconstruction may mark: anchored cells, dilated.
 
-    cells = anchored_cells(cell_probabilities, columns, rows, cell_threshold)
+    With ``cell_uncertainty`` and ``uncertainty_bound`` both provided the
+    convention-v3 ensemble-agreement filter drops anchored cells whose
+    ensemble variance exceeds the bound (see the module docstring); the
+    defaults leave the prior conventions byte-identical.  Passing only
+    one of the two is refused loudly.
+    """
+
+    if (cell_uncertainty is None) != (uncertainty_bound is None):
+        raise ValueError(
+            "cell uncertainty and its bound must be supplied together"
+        )
+    cells: Iterable[Cell] = anchored_cells(
+        cell_probabilities, columns, rows, cell_threshold
+    )
+    if uncertainty_bound is not None:
+        assert cell_uncertainty is not None
+        cells = agreement_filtered_cells(
+            cells, cell_uncertainty, uncertainty_bound
+        )
     if not cells:
         return frozenset()
     region: Set[Pixel] = set()
@@ -1384,6 +1484,16 @@ class PixelSilhouettePredictor:
     heads reconstruct under the v1 convention (dilation 1), v2 heads
     under convention v2 (dilation 0).  An explicit
     ``anchor_cell_dilation`` argument overrides for tests.
+
+    ``anchor_uncertainty_bound`` selects reconstruction convention v3
+    (the ensemble-agreement anchor; see the module docstring): anchored
+    cells whose tracker ensemble variance exceeds the bound carry no
+    extent.  The default ``None`` reproduces the prior conventions
+    byte-identically.  The convention is an explicit composition-time
+    choice, never read from the head checkpoint, because the lever
+    changes reconstruction only -- the same weights reconstruct under
+    either convention, and the gate run's provenance records which one
+    was applied.
     """
 
     def __init__(
@@ -1392,6 +1502,7 @@ class PixelSilhouettePredictor:
         head: PixelMaskHead,
         device: Union[torch.device, str] = "cpu",
         anchor_cell_dilation: Optional[int] = None,
+        anchor_uncertainty_bound: Optional[float] = None,
     ) -> None:
         self.tracker = tracker
         self.head = head.to(device)
@@ -1404,9 +1515,20 @@ class PixelSilhouettePredictor:
         if anchor_cell_dilation < 0:
             raise ValueError("anchor cell dilation must be non-negative")
         self.anchor_cell_dilation = int(anchor_cell_dilation)
+        if anchor_uncertainty_bound is not None and anchor_uncertainty_bound < 0:
+            raise ValueError("anchor uncertainty bound must be non-negative")
+        self.anchor_uncertainty_bound = anchor_uncertainty_bound
 
     def predict(self, frame: Frame) -> PixelMaskPrediction:
         cell_prediction = self.tracker.predict(frame)
+        cell_uncertainty: Optional[Sequence[Sequence[float]]] = None
+        if self.anchor_uncertainty_bound is not None:
+            cell_uncertainty = getattr(cell_prediction, "uncertainty", None)
+            if cell_uncertainty is None:
+                raise ValueError(
+                    "the ensemble-agreement anchor requires a tracker "
+                    "prediction that reports per-cell ensemble variance"
+                )
         anchor = anchor_pixel_region(
             cell_prediction.probabilities,
             cell_prediction.columns,
@@ -1414,6 +1536,8 @@ class PixelSilhouettePredictor:
             frame.width,
             frame.height,
             cell_dilation=self.anchor_cell_dilation,
+            cell_uncertainty=cell_uncertainty,
+            uncertainty_bound=self.anchor_uncertainty_bound,
         )
         mask: FrozenSet[Pixel] = frozenset()
         if anchor:
@@ -1439,6 +1563,29 @@ class PixelSilhouettePredictor:
             probabilities=tuple(tuple(row) for row in indicator),
             mask=mask,
         )
+
+
+def reconstruction_v3_description(
+    target_semantics: str,
+    anchor_cell_dilation: int,
+    uncertainty_bound: float = ANCHOR_CELL_UNCERTAINTY_BOUND_V3,
+) -> str:
+    """Honest mask-source provenance for the convention-v3 reconstruction."""
+
+    return (
+        "reconstructed-pixel-silhouette, reconstruction convention v3 "
+        f"({RECONSTRUCTION_CONVENTION_V3}): frozen tracker v4 cell anchor "
+        f"(threshold {ANCHOR_CELL_PROBABILITY_THRESHOLD}, dilation "
+        f"{anchor_cell_dilation} cells) restricted to ensemble-agreed "
+        f"cells (variance <= {uncertainty_bound}, the training-corpus "
+        "maximum among anchored cells at the published 0.95 decisive "
+        f"operating point, rounded outward) + pixel_mask_head positives (threshold "
+        f"{PIXEL_MASK_PROBABILITY_THRESHOLD}, {target_semantics} "
+        f"silhouette targets) + Chebyshev halo dilation "
+        f"{SILHOUETTE_HALO_DILATION}; mask pixels and reference slot "
+        "recovered through the unchanged substitution-replay helpers at "
+        "the pinned 0.5 threshold"
+    )
 
 
 def attach_cell_probabilities(

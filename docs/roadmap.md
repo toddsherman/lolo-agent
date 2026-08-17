@@ -1605,7 +1605,15 @@ correspondence engine landed (`befd629`). (e) WP5 pipeline landed and
 iterating: labels → tracker v2 (gates passed) → substitution replay
 no-promote (§4.31) → OOD gap quantified (§4.32) → ratified
 strict_from_assisted_state collection (§ recon doc) → tier-2 corpus →
-tracker v3 training. **WP9 step 1 FALSIFIED as written** (§4.33) —
+tracker v3 training. **WP5 CAMPAIGN COMPLETE (2026-08-17): PROMOTE-to-shadow** — the learned
+masking convention passes the functional gate on every axis and every
+corpus, exceeding the incumbent on stability, preservation, and in-place
+detection (learnings §4.42; six-gate chronicle in the WP5 tracker doc).
+Shadow wiring queues behind the planner-file release. **WP9 step 1
+demoted to representation rethink after three falsifications** (§4.33,
+§4.36→§4.41): delayed-divergence valence validated; the event unit
+rebuilds on object-level tracks after WP2/WP3 integration. Original
+note: **WP9 step 1 FALSIFIED as written** (§4.33) —
 redesign requirements: censoring semantics for mixed changed-cell sets,
 multi-decision successor windows, delayed-divergence valence in place of
 reversion (terminal commits are action-independent: matched NOOP controls

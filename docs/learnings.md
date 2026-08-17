@@ -1891,6 +1891,61 @@ Evidence:
 - `docs/milestone-scoring-v3-2026-08-16.md`
 - `experiments/lolo1-wp5/milestone-scoring-v3-report.json`
 
+### 4.42 WP5 campaign complete: PROMOTE-to-shadow on the ensemble-agreement anchor
+
+What was tried:
+
+- The §4.40 design lever, chosen from flip-structure measurement (the
+  v4 bit-b failures reproduced to the last digit; the flip lives at the
+  tracker anchor — marginal cells straddling 0.5 across adjacent poses —
+  not at the head threshold; hysteresis excluded structurally, morphology
+  excluded by blob shape). Reconstruction convention v3: anchor requires
+  mean p ≥ 0.5 AND cell-ensemble variance ≤ 0.004, calibrated from the
+  training corpus only. No retraining; single-variable change; functional
+  gate rerun unchanged (report digest `ac4bd00f…`, byte-identical rerun).
+
+Result:
+
+- **PASS / PROMOTE-to-shadow — first full pass of the campaign.**
+  Stability 1.000 / 0.9995 / 0.9728, exceeding the incumbent on all
+  three corpora for the first time; detection 1.000 everywhere;
+  preservation 0.994–0.999; false-positive discipline at exact v4 parity.
+- Watch-items for shadow telemetry (not re-tuning): v325's residual 2.7%
+  tail, empty-mask rates, and the detection-channel shift toward the
+  differential.
+
+Classification:
+
+- **Promotion gate PASSED.** The WP5 evidence chain is complete: six gate
+  iterations, each isolating one mechanism (mask-irrelevance → coverage →
+  resolution → symmetric erasure → in-place erasure → anchor
+  marginality), each fix verified by the next unchanged gate. The learned
+  masking convention (tracker v4 + pixel head v3 occupied-v2 +
+  reconstruction v3 + detection quantity v2) is detector-free,
+  lineage-clean, and functionally superior to the assisted incumbent on
+  stability, preservation, and in-place detection.
+
+Learning:
+
+- Measure the failure before choosing the lever: all three candidate
+  designs were decidable from data before spending the gate run.
+- Ensemble variance is the reusable uncertainty instrument the roadmap
+  hoped for — here it converts pose-marginality into an abstention rule.
+
+Plan change:
+
+- Next: shadow wiring in the planner (learned convention as telemetry
+  alongside assisted, divergence + empty-mask + tail dashboards) — this
+  touches `neural_planner.py` and queues with WP8-lite behind the
+  worktree release. WP5's acceptance clause (strict tracking without
+  `PixelHeartGoalPrior` imports) becomes reachable once shadow telemetry
+  accumulates native evidence.
+
+Evidence:
+
+- `docs/wp5-tracker-training-2026-08-16.md` (full campaign chronicle)
+- `experiments/lolo1-wp5/functional-gate-v5-report.json`
+
 ## 5. Platform and cost learnings
 
 ### 5.1 RunPod for emulator branching
