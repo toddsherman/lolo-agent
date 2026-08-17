@@ -494,3 +494,223 @@ unattainable for any learned mask and gate a convention change instead
 an appearance-tolerance state-identity criterion — as an explicitly
 gated downstream change with its own regression evidence, never as
 silent substitution.
+
+### WP5-final functional promotion gate — preregistration (§4.35 plan-change; added before execution)
+
+Basis: learnings §4.35 — the replication gates are RETIRED for perception
+promotion (a byte-equality criterion conflates "masks correctly" with
+"reproduces the assisted mask including its defects"; even near-perfect
+frames of the pixel spike could never letter-pass it).  This gate is the
+§4.35-chosen path: an explicitly gated convention change, scored on
+FUNCTION — does tracking built on the learned masking convention produce
+correct outcomes — judged against detector-free counterfactual ground
+truth, never against the assisted mask's bytes.  Everything below is
+fixed now, before the scorer runs on any real corpus; the implementation
+is `lolo_agent/functional_mask_gate.py` (unit-tested on synthetic
+fixtures only at preregistration time; 26 tests, each gate bit with a
+fixture the scorer must catch: a missed ground-truth change, a
+self-consistency violation, an absorption case).
+
+**Corpora.** The three probe corpora under
+`experiments/lolo1-entity-v10/evaluations/` — v322 (object-present),
+v323 (pre-push), v325 (object-removed).
+
+**Ground truth (detector-free; the referee).** Per corpus, the
+`tracker_ood_eval` extraction machinery reused unchanged: option-search
+telemetry regrouped into counterfactual roots
+(`probe_first_step_edges` → `collect_probe_roots`) and labeled by
+`counterfactual_labels.label_counterfactual_root` itself.  Scored arms
+are labeled arms with a non-empty corroborated controllable-cell set
+(expected counts, from the §4.32 report: 2,920 / 3,765 / 7,044).  Each
+scored arm carries: the factual endpoint frame, the duration-matched
+NOOP control endpoint frame from the same saved emulator state, the
+corroborated controllable cells (the GT component), and the byte-exact
+changed-cell set — which also certifies, per arm, exactly which cells
+did NOT change between the two endpoints.  No goal-prior symbol
+participates in the ground truth.
+
+**Conventions compared.** LEARNED: the pinned pixel-mask reconstruction
+(`pixel-mask-head-v1.pt`, parameter sha256 `85e977f2…`, over frozen
+tracker v4 `b2fdd8ba…` and backbone `642d66ed…`; anchor threshold 0.5 +
+1-cell dilation, head threshold 0.5, Chebyshev halo 3 — the convention
+preregistered for the spike, unchanged), mask pixels and reference slot
+recovered through the unchanged substitution-replay helpers at the
+pinned 0.5 threshold; an empty reconstruction leaves the frame
+explicitly unmasked.  ASSISTED: `PixelHeartGoalPrior.detect_player` +
+`player_pixel_mask`, fresh per frame; no detection ⇒ explicitly
+unmasked.  Each convention masks every frame it evaluates with its own
+mask for that frame; no quantity mixes conventions.  The pinned-digest
+cross-checks of the spike's gate driver are repeated at load time.
+
+**Bit (a) — manipulation detection, GT-refereed.**  Measurement =
+deduplicated (factual digest, control digest, component cells) triple
+(duplicate arm counts reported).  A convention DETECTS the manipulation
+iff `object_tracks.world_effect_cells_state_signature` over the
+component cells differs between the factual and control endpoints under
+that convention's per-frame masks — the planner's own world-state
+identity quantity.  The same evidence is lifted through
+`object_correspondence` (per-cell signatures + `masked_cell_fingerprint`
+as `CellEvidence` → `endpoint_relative_state` →
+`observations_from_evidence`), deriving the endpoint-relative track
+state on every factual/control pair; the track-state view
+(current_cells non-empty) must agree with the signature view modulo
+hash collision and the consistency count is reported.  Gated (per
+corpus): learned detection rate over ALL GT measurements ≥ 0.95 AND
+learned detection rate over the measurements the assisted convention
+detects ≥ 0.95.  Both directions reported (assisted-vs-GT,
+assisted-given-learned), so assisted defects are visible and a learned
+convention that out-detects assisted is not penalized; if assisted
+detects zero measurements the assisted-conditioned requirement is
+vacuous (flagged) and GT remains the referee.
+
+**Bit (b) — fingerprint stability under the learned convention
+(self-consistency, not cross-convention equality).**  Instances: per
+root, scored arm i, labeled sibling arm j of a different
+(action, duration) with a non-empty changed set: every cell of
+component_i ∖ changed_j — cells where the label rule itself certifies
+arm j's factual and control endpoints are byte-identical while the
+player stands at different positions.  Deduplicated per (factual
+digest, control digest, cell).  Any feature motion at such a cell is
+pure masking-convention noise: the same GT-tracked object bytes must
+fingerprint consistently across player poses or the planner sees
+phantom world-state changes.  Gated: learned normalized-L1 feature
+distance ≤ 0.08 on ≥ 0.95 of measurements.  The assisted convention's
+rate is reported for context only.
+
+**Bit (c) — no player-absorption regression (the v316/v317 defect
+class).**  Instances: per scored arm, every in-grid cell at Chebyshev
+distance 1 from the GT component that is NOT in the arm's changed-cell
+set, deduplicated per (factual digest, cell).  Such cells are
+byte-certified player-free at the factual endpoint (any sprite spill
+would have differed from the control, landing the cell in the changed
+set), directly adjacent to where GT localizes the player's action — the
+exact configuration in which the assisted mask's white-component
+leakage absorbed adjacent objects.  A convention PRESERVES the adjacent
+appearance iff its masked feature stays within L1 0.08 of the unmasked
+feature of the same frame and cell.  Gated: learned preservation rate ≥
+assisted preservation rate (both reported).  Interpretation note fixed
+now: cells the arm itself changed are excluded because the mask SHOULD
+alter features where player pixels moved; the defect class
+(player-adjacent resting objects, e.g. the v322 corpus's pushed object
+at rest) is covered by these instances across the corpus's probe arms.
+
+**Instrument validity.**  Every bit requires ≥ 50 deduplicated
+measurements per corpus; perfect agreement over fewer is vacuous, not a
+pass (§4.31 lesson).  All thresholds are prior published operating
+points reused by import — mask probability 0.5, appearance L1 0.08,
+agreement rate 0.95, minimum 50 — plus the structural Chebyshev-1
+adjacency radius; nothing is tuned against these corpora, and the unit
+tests pin every constant.
+
+**Verdict rule.**  PROMOTE-to-shadow (learned masking convention with
+mask-divergence telemetry; engineering-internal, reversible, claim
+boundary unmoved per §4.35) iff all three bits pass on all three
+corpora; otherwise NO-PROMOTE with every failing mechanism named
+per corpus and bit.  Reported, not gated: learned-vs-assisted pixel
+mask IoU distributions over the unique factual endpoint frames
+(divergence telemetry), empty-mask counts, unmasked-frame counts,
+track-state summary statistics, censoring and dedup counts.
+
+One preregistered run, CPU, deterministic content-digested report to
+`experiments/lolo1-wp5/functional-gate-report.json` (digest prefix
+`wp5-functional-mask-gate:v1:`), plus a byte-identical determinism
+rerun to a scratch path (reported).  Honest outcome either way: PASS →
+the strict pipeline's masking convention is the learned reconstruction,
+shadow-promoted with divergence telemetry; FAIL → the failing
+mechanism names which functional quantity the learned convention gets
+wrong, per corpus.
+
+### WP5-final functional gate — results (appended 2026-08-16, after one preregistered run)
+
+**FAIL on all three corpora — NO-PROMOTE.**  Report
+`experiments/lolo1-wp5/functional-gate-report.json`, content digest
+`414c65763cfcc6731b8a38bba646806a58dbf39f18f7351f18cc91bdfb9bc086`,
+byte-identical on the preregistered determinism rerun.  No
+preregistration deviations.  Instrument validity held everywhere: every
+bit cleared its 50-measurement floor by 20x or more (1,069–12,680
+deduplicated measurements per bit per corpus), and the signature and
+correspondence track-state views agreed on 100% of the 4,488 detection
+measurements — the hash-collision consistency channel never fired.
+
+| corpus | (a) GT-detect learned/assisted | learned given assisted | (b) stability learned/assisted | (c) preserve learned/assisted | bits |
+|---|---|---|---|---|---|
+| v322 object-present | **0.302** / 0.884 (1,175) | 0.342 | **0.766** / 0.964 (1,069) | **0.983 / 0.720** (6,101) | a,b FAIL; c PASS |
+| v323 pre-push | **0.447** / 0.940 (1,563) | 0.471 | **0.820** / 0.970 (2,151) | **0.970 / 0.742** (12,680) | a,b FAIL; c PASS |
+| v325 object-removed | **0.353** / 0.936 (1,750) | 0.375 | **0.766** / 0.961 (2,129) | **0.965 / 0.769** (9,031) | a,b FAIL; c PASS |
+
+Failing mechanisms, each instance-verified on the report's own rows:
+
+1. **Bit (a) — symmetric erasure of the counterfactual evidence.**  On
+   200/200 sampled learned-miss measurements the reconstruction covers
+   100% of every ground-truth component cell's pixel block in BOTH
+   endpoints (verified instance: component `(6,6),(6,7)`, learned
+   coverage 1.00/1.00 both frames, both features all-zeros, joint
+   signatures equal; assisted coverage 0.52–0.66, signatures differ).
+   The cause chain is the disclosed vacated/occupied training blur (the
+   head fires on both ends of a displacement; residual-pixel probability
+   0.738) plus the 1-cell anchor dilation and 3-pixel halo: the mask
+   blankets the entire displacement region regardless of which endpoint
+   the frame shows, so fully-masked pools encode zeros on both sides and
+   the factual and control world states become IDENTICAL at exactly the
+   cells where ground truth certifies the action's effect.  The assisted
+   silhouette is tight enough to leave differing sub-cell residue.
+   Learned detections are almost a strict subset of assisted ones
+   (assisted-given-learned 0.99–1.00).  Honest instrument note: part of
+   the miss set is pure locomotion rendered pose-invariantly invisible,
+   which a future pipeline might even want — but the erasure applies to
+   the whole corroborated controllable component, which for push arms
+   includes the manipulated object's cells (they are what the tracker was
+   trained on), so under the planner's existing downstream quantities
+   this is a functional regression against the incumbent, not a
+   defensible convention difference.  A pipeline that WANTS pose-invariant
+   collapse must redesign the detection quantities and gate that change
+   on its own.
+2. **Bit (b) — all-or-nothing extent swings across poses.**  18–23% of
+   byte-certified-identical cells breach the 0.08 bound under the
+   learned convention (verified instance: cell `(7,10)`, identical bytes
+   across the pair, learned mask coverage 0.17 in one frame and 1.00 in
+   the other, L1 0.354 — 4.4x the bound; assisted coverage 0.23/0.25,
+   L1 0.005).  The reconstruction's extent is stable in SIZE (§4.35) but
+   not in PLACEMENT relative to cell boundaries: whole 16x16 pools flip
+   between fully-erased and untouched as the player pose shifts, so the
+   same resting object fingerprints differently — the phantom
+   world-state-change mechanism the planner cannot tolerate.  Assisted
+   stability is 0.96–0.97 on the identical instances.
+3. **Bit (c) — PASS, and the direction is informative: the learned
+   convention strictly beats the assisted one on the v316/v317 defect
+   class.**  The assisted mask erases player-adjacent, byte-certified
+   player-free cells on 23–28% of measurements (verified instances:
+   assisted coverage 0.88–0.94 of the neighbouring cell, L1 0.32–0.42
+   erased appearance, while learned coverage is 0.12 with L1 0.003);
+   learned preservation is 0.965–0.983 versus assisted 0.720–0.769 on
+   every corpus.  This is the first measured functional axis where the
+   learned convention is strictly better than the incumbent — the
+   absorption defect that motivated the bit is real, frequent, and the
+   learned reconstruction does not have it.
+
+Reported alongside (not gated): the assisted convention itself detects
+only 88.4–94.0% of ground-truth manipulations — the incumbent misses
+6–12% of GT-certified changes, a fact no replication gate could ever
+have surfaced; 29 of v323's 1,308 unique factual endpoints have an
+empty learned reconstruction (the known empty-anchor gap, 36/41
+control/factual unmasked detection frames); mask divergence telemetry
+matches the spike (IoU mean 0.36–0.42, learned size stable ~660–720 px
+mean vs the assisted multi-modal 860–916 px mean).
+
+Consequence: per the preregistered criterion the learned masking
+convention is NOT adopted; tracker v4 + pixel head v1 stay
+telemetry-only.  The functional gate itself is validated as the
+standing WP5 promotion instrument — its bits are mechanism-sensitive
+(none could letter-pass), ground truth referees instead of the
+incumbent's bytes, and it prices both directions (bit (c) credits the
+learned mask where it is genuinely better).  Paths this measurement
+licenses next (each requiring its own preregistration, then THIS gate
+rerun unchanged): (a) occupied/vacated disambiguation in the pixel
+label path — §4.35's path (a), now with a functional measurement
+naming it as the binding defect: a reconstruction that masks only the
+occupied silhouette cannot symmetrically erase a displacement, directly
+attacking the bit-(a) mechanism and most bit-(b) flips; (b) with that
+disambiguation, revisit the anchor dilation and halo as part of a
+convention v2 — extent constants are convention parameters and may
+only change with the convention version, never tuned against this
+gate's corpora between runs.

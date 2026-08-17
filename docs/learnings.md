@@ -1645,6 +1645,56 @@ Evidence:
 - `docs/milestone-scoring-v2-2026-08-16.md`
 - `experiments/lolo1-wp5/milestone-scoring-v2-report.json`
 
+### 4.37 Functional gate: learned beats incumbent on absorption; symmetric erasure blocks promotion
+
+What was tried:
+
+- The WP5-final functional gate (preregistered; report digest `414c6576…`,
+  byte-identical rerun; GT = detector-free counterfactual components as
+  referee): manipulation detection, fingerprint stability, and
+  absorption-regression bits over the three probe corpora, learned vs
+  assisted conventions.
+
+Result:
+
+- **FAIL / NO-PROMOTE**: detection 0.30–0.45 vs gate 0.95 (mechanism,
+  instance-verified on 200/200 misses: symmetric erasure — the
+  vacated/occupied label blur plus anchor dilation covers the entire GT
+  component in BOTH endpoints, zeroing the factual/control difference
+  exactly where the effect lives); stability 0.77–0.82 vs 0.95
+  (all-or-nothing extent swings produce phantom world-state changes).
+- **Learned strictly beats assisted on bit (c)**: preservation 0.97–0.98
+  vs 0.72–0.77 — the incumbent erases 23–28% of player-adjacent
+  player-free object cells, the exact v316/v317 defect class. First
+  measured functional axis where the learned convention exceeds the
+  incumbent.
+- Report-only: the assisted convention itself misses 6–12% of GT
+  manipulations — a defect structurally invisible to replication gates.
+
+Classification:
+
+- **Failed promotion gate** with the correct instrument at last: the gate
+  can now see both conventions' defects against neutral ground truth.
+
+Learning:
+
+- The incumbent is not a gold standard; it is merely incumbent. Promotion
+  gates refereed by ground truth measure both sides.
+- Silhouette supervision must disambiguate occupied vs vacated pixels —
+  symmetric union targets teach symmetric erasure.
+
+Plan change:
+
+- Next spike: occupied/vacated disambiguation in the pixel-label path
+  (separate channels or vacated-only targets at the factual endpoint),
+  reconstruction convention v2, then THIS gate rerun unchanged. Tracker
+  remains telemetry-only.
+
+Evidence:
+
+- `docs/wp5-tracker-training-2026-08-16.md`
+- `experiments/lolo1-wp5/functional-gate-report.json`
+
 ## 5. Platform and cost learnings
 
 ### 5.1 RunPod for emulator branching
