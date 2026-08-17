@@ -2134,6 +2134,61 @@ Evidence:
 - runs `entity-v330-…-e1-control-off-d12`,
   `entity-v331-…-e1-treatment-selection-d12`
 
+### 4.46 The planner had stopped searching entirely — archive growth self-suppresses the gate
+
+What was found:
+
+- Read-only telemetry analysis for the search-scheduling design
+  (`docs/wp8-search-scheduling-design-2026-08-17.md`): across
+  **v327–v331 the planner's own machinery ran ZERO option searches**. The
+  single search in each run is the resume audit at decision 0 — which
+  executes *before* the removal configuration exists.
+- Cause, measured: the stagnation path's deferral gate defers whenever
+  any archive branch carries a frontier flag. All three stagnation
+  instants (d2/d5/d8) deferred with 9/4/3 global archive frontiers. The
+  planner's own archive growth suppresses its search gate. The remaining
+  decisions never reach the block at all (navigation-recovery grace).
+- Contrast: v325 — the run that reached `(12,11)` — ran **two**
+  planner-initiated searches (d5, d8), and its final approach steps were
+  ordinary commits, not searches.
+- Related structural find: commit-time archive constructions never set
+  `tracked_world_state_signature`, so hold-gated restore supply at the E1
+  root is capped at the four decision-0 audit branches (max cell
+  `(9,8)`).
+
+Classification:
+
+- **Engineering/behavioral defect of the incumbent planner**, discovered
+  while designing around it. §4.45's "hypotheses are passengers" has a
+  deeper cause: in these runs there was almost nothing to be a passenger
+  ON.
+
+Learning:
+
+- A capability layer can be starved by a gate that looks unrelated. The
+  E1 result would have been mysterious without this enumeration — and no
+  amount of hypothesis-side tuning could have fixed it.
+- Search frequency is now a first-class planner-health metric to report
+  per run, not an implicit assumption.
+
+Plan change:
+
+- E3 targets the navigation path (budget-neutral, steers the commit
+  ladder that actually moves the agent) rather than the search path;
+  a search-request mechanism is deferred to E4 with a forced-search
+  control arm, since granting searches breaks matched budgets.
+- **E3-pre first** (one 16-decision authority-off run): confirm the
+  `(12,11)` discriminator still discriminates in the extended window. If
+  the control collects the heart at 16 decisions, E3 as designed is
+  cancelled and the discriminator must be re-chosen — a cheap check that
+  can void an expensive experiment.
+- Report search counts in every future native run summary.
+
+Evidence:
+
+- `docs/wp8-search-scheduling-design-2026-08-17.md` §Q1
+- runs v325 (contrast), v327–v331
+
 ## 5. Platform and cost learnings
 
 ### 5.1 RunPod for emulator branching
