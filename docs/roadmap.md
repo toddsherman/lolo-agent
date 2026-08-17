@@ -1594,6 +1594,37 @@ carries its evidence.
    v322–v325 evidence is assisted-track. The `configs/`
    evaluation-partition allocation stands as shipped.
 
+## 18. Amendment — 2026-08-17 (evidence: learnings §4.43, mining §11)
+
+1. **Accessibility preference is near-redundant as a restore ranker.**
+   Zero score-conflicts across 74 decision points in the v322–v328
+   corpus: wherever a certified-improving candidate existed, the
+   baseline novelty/coverage scorer already preferred it. The §17 item-1
+   framing ("the planner preserved a neutral configuration while the
+   valuable one sat unvalued") is corrected — the existing machinery
+   found the removal twice unaided. Accessibility's load-bearing role is
+   therefore as a **hypothesis generator and chain justifier**, not a
+   single-decision ranker.
+2. **Gate 4 re-centred on chaining.** The discriminating question is not
+   "does it prefer the right configuration" (satisfied incidentally) but
+   "can it sustain a preparation across decisions to reach a milestone
+   incidental behavior never reaches". E1's discriminator is the
+   `(12,11)` heart: inside the certified envelope, never collected
+   in-window by v324/v327/v328.
+3. **Gate 6 requires a second manipulation, merging with Gate 2.** The
+   remaining Room 3 hearts `(8,4)` and `(9,12)` lie OUTSIDE the 24-cell
+   envelope the removal opens. Room 3 completion therefore needs a
+   chained second configuration change — exactly Gate 2's "two
+   consecutive manipulations". Plan them as one experiment line.
+4. **Gate design is a first-class deliverable.** Every failure of
+   2026-08-16/17 was caught by measurement quality, and several were
+   measurement defects: mask-irrelevant bits, a class-mix-sensitive
+   false-positive bound falsified at design time, replication-vs-function
+   confusion, ablation roots without conflict, a window semantics that
+   would have self-voided. Budget design effort for a gate equal to the
+   capability it gates; require of every gate an instrument that can
+   contradict it.
+
 Amended next sequence: (a) Gate 3 repetition run; (b) WP8-lite preference
 ablation; (c) WP2 multi-track correspondence with the endpoint-relative
 contract; (d) WP3 including the removal-chain gate; (e) WP5 spike and
