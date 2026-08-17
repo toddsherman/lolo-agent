@@ -94,3 +94,26 @@ on Room 3 frames (out-of-distribution for the training corpus). Tracker
 stays telemetry-only. Redesigned mask-sensitive gate required before any
 promotion; OOD evaluation against counterfactual ground truth from
 v322–v326 telemetry queued.
+
+### Tracker v3 — coverage-closure results (appended 2026-08-16)
+
+Tier-2 corpus (labels v3: 18,358 roots / 84,546 arms; +6,384 Room 3
+arms). Training gates all pass (held-out AUC 0.9994, IoU 0.7393,
+uncertainty correlation +0.51); held-in evaluation unchanged (AUC 0.9987,
+IoU 0.768 — no forgetting). Room 3 re-evaluation (v322/v323/v325 ground
+truth; no longer clean OOD for the two collected states — disclosed):
+
+| state | v2 hit/AUC | v3 hit/AUC/IoU |
+|---|---|---|
+| object-present (v322) | 0.000 / 0.440 | **1.000 / 1.000 / 0.928** |
+| pre-push (v323) | 0.001 / 0.446 | **0.946 / 0.996 / 0.799** |
+| object-removed (v325) | 0.833 / 0.865 | 0.162 / 0.937 / 0.133 |
+
+Reading: closure is state-local and immediate where collection covered the
+palette; v325's ground truth spans the opened east region (columns 8–12)
+which the d7-rooted strict explorer never visited, so its frames remain
+uncovered. (v325's v2 "hit 0.833" was against blob-like masks — v3's
+sharper masks expose the true gap; AUC rose 0.865→0.937 regardless.)
+Next data increment: east-region collection from v325 decision snapshots
+(d2 in-band pre-heart; d4 post-heart east), then labels v4 → tracker v4.
+Report: `experiments/lolo1-wp5/tracker-v3-room3-report.json`.
