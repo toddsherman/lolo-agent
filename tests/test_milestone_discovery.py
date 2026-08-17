@@ -757,3 +757,655 @@ class ReportDeterminismTests(unittest.TestCase):
         second = {"c": {"x": 1, "y": 0}, "a": [1, 2], "b": 1}
         self.assertEqual(canonical_json(first), canonical_json(second))
         self.assertEqual(content_digest(first), content_digest(second))
+
+
+# ---------------------------------------------------------------------------
+# WP9a v2 redesign additions (append-only): section-4.33 mechanisms.
+# Synthetic arrays and event dicts only; no telemetry is read.
+# Preregistration: docs/milestone-scoring-v2-2026-08-16.md.
+# ---------------------------------------------------------------------------
+
+from lolo_agent.milestone_discovery import (
+    VALENCE_BASIS_DELAYED_DIVERGENCE,
+    cell_distance,
+    discover_milestones,
+    discover_milestones_v2,
+    escape_divergence_cells,
+    extract_component_event,
+    extract_component_events,
+    score_events_v2,
+)
+from lolo_agent.milestone_discovery_run import (
+    _escape_flags,
+    _escape_lookback,
+    assemble_run_pairs_v2,
+    build_report_v2,
+)
+
+
+def v2_pair(
+    root,
+    factual,
+    control=None,
+    successors=(),
+    history=(),
+    escape_lookback=None,
+    decision: int = 1,
+    action: str = "action-0",
+) -> MatchedEndpointPair:
+    return MatchedEndpointPair(
+        provenance=provenance(decision=decision, action=action),
+        root=tuple(root),
+        factual=tuple(factual),
+        control=None if control is None else tuple(control),
+        successors=tuple(tuple(successor) for successor in successors),
+        history=tuple(tuple(reference) for reference in history),
+        escape_lookback=escape_lookback,
+    )
+
+
+def flash_arrays():
+    """Terminal-transient fixture arrays (64 cells, death-reset shaped)."""
+
+    early = (0,) * 64                              # pre-event configuration
+    flash = tuple(9 if i < 60 else 0 for i in range(64))   # event root
+    respawn = tuple(2 if i < 60 else 0 for i in range(64))  # event endpoint
+    resumed = (0,) * 63 + (1,)                     # successor near `early`
+    return early, flash, respawn, resumed
+
+
+class CellDistanceTests(unittest.TestCase):
+    def test_distance_counts_differing_cells(self) -> None:
+        self.assertEqual(cell_distance((0, 1, 2), (0, 9, 2)), 1)
+        self.assertEqual(cell_distance((0, 0), (1, 1)), 2)
+        with self.assertRaises(ValueError):
+            cell_distance((0,), (0, 1))
+
+    def test_escape_divergence_cells(self) -> None:
+        root = (0, 0, 0, 0)
+        control = (9, 9, 9, 0)
+        factual = (0, 0, 5, 0)
+        # Cells 0 and 1: control changed, factual kept root. Cell 2:
+        # both changed (not an escape). Cell 3: unchanged everywhere.
+        self.assertEqual(escape_divergence_cells(root, factual, control), 2)
+
+
+class V2ConfigValidationTests(unittest.TestCase):
+    def test_new_fields_validated(self) -> None:
+        with self.assertRaises(ValueError):
+            MilestoneScoreConfig(negative_divergence_threshold=0.0)
+        with self.assertRaises(ValueError):
+            MilestoneScoreConfig(rewind_transient_floor=0)
+        with self.assertRaises(ValueError):
+            MilestoneScoreConfig(rewind_proximity_ceiling=-1)
+        with self.assertRaises(ValueError):
+            MilestoneScoreConfig(
+                rewind_transient_floor=8, rewind_proximity_ceiling=8
+            )
+        with self.assertRaises(ValueError):
+            MilestoneScoreConfig(escape_cell_minimum=0)
+        with self.assertRaises(ValueError):
+            MilestoneScoreConfig(divergence_lookback=0)
+
+    def test_defaults_are_preregistered_values(self) -> None:
+        config = MilestoneScoreConfig()
+        self.assertEqual(config.negative_divergence_threshold, 0.5)
+        self.assertEqual(config.rewind_transient_floor, 16)
+        self.assertEqual(config.rewind_proximity_ceiling, 8)
+        self.assertEqual(config.escape_cell_minimum, 8)
+        self.assertEqual(config.divergence_lookback, 8)
+
+
+class ComponentExtractionTests(unittest.TestCase):
+    """Requirement 1: per-component censoring semantics."""
+
+    def test_mixed_changed_cells_yield_dependent_component(self) -> None:
+        # The entity-v141 d7 mechanism: a real change (cells 1, 2) inside
+        # the same diff as concurrent autonomous cells (10, 11) that the
+        # matched control reproduces.
+        root = (0,) * 16
+        factual = tuple(
+            5 if i in (1, 2) else (7 if i in (10, 11) else 0)
+            for i in range(16)
+        )
+        control = tuple(7 if i in (10, 11) else 0 for i in range(16))
+        v1_event = extract_event(v2_pair(root, factual, control))
+        assert v1_event is not None
+        self.assertIsNone(v1_event.action_dependent)  # v1 censors the event
+        v2_event = extract_component_event(v2_pair(root, factual, control))
+        assert v2_event is not None
+        self.assertIs(v2_event.action_dependent, True)
+        self.assertEqual(v2_event.changed_cells, ((1, 0, 5), (2, 0, 5)))
+        self.assertEqual(v2_event.autonomous_cells, ((10, 0, 7), (11, 0, 7)))
+        self.assertEqual(v2_event.ambiguous_cells, ())
+
+    def test_component_signature_ignores_autonomous_cells(self) -> None:
+        root = (0,) * 16
+        factual_a = tuple(
+            5 if i in (1, 2) else (7 if i == 10 else 0) for i in range(16)
+        )
+        control_a = tuple(7 if i == 10 else 0 for i in range(16))
+        factual_b = tuple(
+            5 if i in (1, 2) else (3 if i == 12 else 0) for i in range(16)
+        )
+        control_b = tuple(3 if i == 12 else 0 for i in range(16))
+        event_a = extract_component_event(v2_pair(root, factual_a, control_a))
+        event_b = extract_component_event(v2_pair(root, factual_b, control_b))
+        assert event_a is not None and event_b is not None
+        # Different concurrent animation phases, same attributable change:
+        # one signature, where v1 saw two censored signatures.
+        self.assertEqual(event_a.signature, event_b.signature)
+
+    def test_fully_reproduced_change_stays_autonomous(self) -> None:
+        event = extract_component_event(
+            v2_pair((0, 0), (0, 5), control=(0, 5))
+        )
+        assert event is not None
+        self.assertIs(event.action_dependent, False)
+        self.assertEqual(event.changed_cells, ((1, 0, 5),))
+
+    def test_ambiguous_only_change_stays_censored(self) -> None:
+        event = extract_component_event(
+            v2_pair((0, 0), (0, 5), control=(0, 3))
+        )
+        assert event is not None
+        self.assertIsNone(event.action_dependent)
+        self.assertEqual(event.ambiguous_cells, ((1, 0, 5),))
+
+    def test_missing_control_stays_censored(self) -> None:
+        event = extract_component_event(v2_pair((0, 0), (0, 5)))
+        assert event is not None
+        self.assertIsNone(event.action_dependent)
+
+    def test_component_reversion_uses_component_cells_only(self) -> None:
+        root = (0, 0, 0)
+        factual = (0, 5, 7)     # cell 1 dependent, cell 2 autonomous
+        control = (0, 0, 7)
+        successor = (9, 0, 7)   # component cell back at root; autonomous not
+        event = extract_component_event(
+            v2_pair(root, factual, control, successors=(successor,))
+        )
+        assert event is not None
+        self.assertIs(event.reverted, True)
+
+    def test_mixed_event_censored_by_v1_scores_under_v2(self) -> None:
+        # End-to-end requirement-1 fixture: the same pair corpus scores
+        # zero under v1 (event-level censoring) and positive under v2.
+        root = (0,) * 16
+        factual = tuple(
+            5 if i in (1, 2) else (7 if i in (10, 11) else 0)
+            for i in range(16)
+        )
+        control = tuple(7 if i in (10, 11) else 0 for i in range(16))
+        successor = tuple(
+            5 if i in (1, 2) else (1 if i == 15 else 0) for i in range(16)
+        )
+        target = v2_pair(root, factual, control, successors=(successor,))
+        background = [
+            v2_pair(
+                (9,) + (0,) * 15,
+                (8,) + (0,) * 15,
+                control=(9,) + (0,) * 15,
+                successors=((8,) + (0,) * 14 + (1,),),
+                decision=d,
+            )
+            for d in range(2, 5)
+        ]
+        pairs = [target] + background
+        pool = seen_pool_from_pairs(pairs)
+        v1_report = discover_milestones(pairs, pool)
+        v2_report = discover_milestones_v2(pairs, pool)
+        v2_target = v2_report.scores[0]
+        self.assertGreater(v2_target.score, 0.0)
+        self.assertEqual(v2_target.valence, VALENCE_POSITIVE)
+        self.assertEqual(v2_target.occurrences, 1)
+        v1_scores_for_target = [
+            s
+            for s in v1_report.scores
+            if any(p.decision == 1 for p in s.provenance)
+        ]
+        self.assertEqual(len(v1_scores_for_target), 1)
+        self.assertEqual(v1_scores_for_target[0].score, 0.0)
+
+
+class DelayedDivergenceValenceTests(unittest.TestCase):
+    """Requirement 3: delayed-divergence negative valence."""
+
+    def negative_pairs(self):
+        early, flash, respawn, resumed = flash_arrays()
+        terminal = v2_pair(
+            flash,
+            respawn,
+            control=respawn,          # both arms show the change
+            successors=(resumed,),    # far from flash, near `early`
+            history=(early,),
+        )
+        background = [
+            v2_pair(
+                (3,) * 64,
+                (3,) * 63 + (4,),
+                control=(3,) * 64,
+                successors=((3,) * 62 + (5, 4),),
+                history=((3,) * 64,),
+                decision=d,
+            )
+            for d in range(2, 5)
+        ]
+        return [terminal] + background
+
+    def test_rewound_flag_requires_transient_and_proximity(self) -> None:
+        early, flash, respawn, resumed = flash_arrays()
+        event = extract_component_event(
+            v2_pair(
+                flash,
+                respawn,
+                control=respawn,
+                successors=(resumed,),
+                history=(early,),
+            )
+        )
+        assert event is not None
+        self.assertIs(event.rewound, True)
+        # Without a nearby history array the same successor is not rewound.
+        no_history = extract_component_event(
+            v2_pair(flash, respawn, control=respawn, successors=(resumed,))
+        )
+        assert no_history is not None
+        self.assertIs(no_history.rewound, False)
+        # A successor near the event root never crosses the transient floor.
+        near_root = tuple(9 if i < 59 else 0 for i in range(64))
+        ordinary = extract_component_event(
+            v2_pair(
+                flash,
+                respawn,
+                control=respawn,
+                successors=(near_root,),
+                history=(early,),
+            )
+        )
+        assert ordinary is not None
+        self.assertIs(ordinary.rewound, False)
+
+    def test_action_independent_terminal_classifies_negative(self) -> None:
+        # The v1 miss: at the fatal commit both arms show the change, so
+        # v1 saw a large persistent novel change and classified POSITIVE.
+        pairs = self.negative_pairs()
+        pool = seen_pool_from_pairs(pairs)
+        v1_scores = score_events(extract_events(pairs), pool)
+        v1_terminal = next(
+            s for s in v1_scores if s.provenance[0].decision == 1
+        )
+        self.assertEqual(v1_terminal.valence, VALENCE_POSITIVE)
+        v2_scores = score_events_v2(extract_component_events(pairs), pool)
+        v2_terminal = next(
+            s for s in v2_scores if s.provenance[0].decision == 1
+        )
+        self.assertEqual(v2_terminal.valence, VALENCE_NEGATIVE)
+        self.assertEqual(
+            v2_terminal.valence_basis, VALENCE_BASIS_DELAYED_DIVERGENCE
+        )
+        self.assertEqual(v2_terminal.negative_divergence_rate, 1.0)
+        self.assertEqual(v2_terminal.rewound_occurrences, 1)
+        self.assertEqual(v2_terminal.score, 0.0)  # autonomous: never ranked
+
+    def test_dependent_terminal_also_classifies_negative(self) -> None:
+        early, flash, respawn, resumed = flash_arrays()
+        pairs = [
+            v2_pair(
+                flash,
+                respawn,
+                control=flash,        # control stayed: directly caused
+                successors=(resumed,),
+                history=(early,),
+            )
+        ]
+        scores = score_events_v2(extract_component_events(pairs))
+        self.assertEqual(scores[0].valence, VALENCE_NEGATIVE)
+
+    def test_censored_dependence_needs_escape_evidence(self) -> None:
+        early, flash, respawn, resumed = flash_arrays()
+        censored = v2_pair(
+            flash, respawn, successors=(resumed,), history=(early,)
+        )
+        scores = score_events_v2(extract_component_events([censored]))
+        self.assertNotEqual(scores[0].valence, VALENCE_NEGATIVE)
+        with_escape = v2_pair(
+            flash,
+            respawn,
+            successors=(resumed,),
+            history=(early,),
+            escape_lookback=True,
+        )
+        scores = score_events_v2(extract_component_events([with_escape]))
+        self.assertEqual(scores[0].valence, VALENCE_NEGATIVE)
+        self.assertEqual(
+            scores[0].valence_basis, VALENCE_BASIS_DELAYED_DIVERGENCE
+        )
+
+    def test_novel_transient_without_rewind_stays_positive(self) -> None:
+        # Floor-clear shape: large autonomous transient whose successors
+        # are far from every pre-event configuration.
+        early, flash, respawn, _resumed = flash_arrays()
+        new_floor = tuple(6 if i < 60 else 0 for i in range(64))
+        pairs = [
+            v2_pair(
+                flash,
+                respawn,
+                control=respawn,
+                successors=(new_floor,),
+                history=(early,),
+            )
+        ]
+        scores = score_events_v2(extract_component_events(pairs))
+        self.assertEqual(scores[0].valence, VALENCE_POSITIVE)
+
+
+class V2RunnerFixtureTests(unittest.TestCase):
+    """Requirement 2: restore-robust successor windows (runner level)."""
+
+    R1 = (0, 0, 0, 0)
+    E1 = (0, 9, 0, 0)
+    N1 = (0, 0, 0, 1)
+    ARCH = (5, 5, 5, 5)
+    X = (5, 5, 5, 6)
+    Y = (0, 9, 0, 7)
+    OB1 = (0, 9, 2, 0)
+    OB2 = (0, 9, 3, 0)
+
+    def events_restore_and_return(self):
+        seq = [0]
+
+        def event(name, **fields):
+            seq[0] += 1
+            row = {"event": name, "seq": seq[0], "attempt": 1}
+            row.update(fields)
+            return row
+
+        return [
+            event(
+                "decision_started",
+                decision=1,
+                frame="f-r1",
+                visual_signature=hexsig(self.R1),
+            ),
+            event(
+                "branch_verified",
+                decision=1,
+                action="up",
+                action_frames=16,
+                branch_id="d1-b1",
+                frame="f-e1",
+                visual_signature=hexsig(self.E1),
+            ),
+            event(
+                "branch_verified",
+                decision=1,
+                action="noop",
+                action_frames=16,
+                branch_id="d1-b2",
+                frame="f-n1",
+                visual_signature=hexsig(self.N1),
+            ),
+            event(
+                "decision_committed",
+                decision=1,
+                action="up",
+                action_frames=16,
+                frame="f-e1",
+                visual_signature=hexsig(self.E1),
+                restored_archive=False,
+            ),
+            event(
+                "decision_committed",
+                decision=2,
+                action="right",
+                action_frames=16,
+                frame="f-arch",
+                visual_signature=hexsig(self.ARCH),
+                restored_archive=True,
+            ),
+            event(
+                "decision_started",
+                decision=3,
+                frame="f-arch",
+                visual_signature=hexsig(self.ARCH),
+            ),
+            event(
+                "decision_committed",
+                decision=3,
+                action="down",
+                action_frames=16,
+                frame="f-x",
+                visual_signature=hexsig(self.X),
+                restored_archive=False,
+            ),
+            event(
+                "decision_committed",
+                decision=4,
+                action="left",
+                action_frames=16,
+                frame="f-e1",
+                visual_signature=hexsig(self.E1),
+                restored_archive=True,
+            ),
+            event(
+                "decision_started",
+                decision=5,
+                frame="f-e1",
+                visual_signature=hexsig(self.E1),
+            ),
+            event(
+                "decision_committed",
+                decision=5,
+                action="right",
+                action_frames=16,
+                frame="f-y",
+                visual_signature=hexsig(self.Y),
+                restored_archive=False,
+            ),
+        ]
+
+    def events_restore_without_return(self):
+        rows = self.events_restore_and_return()
+        rows = [
+            row
+            for row in rows
+            if not (
+                row.get("decision") in (4, 5)
+            )
+        ]
+        seq = max(row["seq"] for row in rows)
+        rows.append(
+            {
+                "event": "state_saved",
+                "seq": seq + 1,
+                "attempt": 1,
+                "state_id": "state-e1",
+                "frame": "f-e1",
+            }
+        )
+        rows.append(
+            {
+                "event": "human_prior_option_branch_verified",
+                "seq": seq + 2,
+                "attempt": 1,
+                "decision": 3,
+                "source_state_id": "state-e1",
+                "path": ["down"],
+                "durations": [16],
+                "frame": "f-ob1",
+                "visual_signature": hexsig(self.OB1),
+            }
+        )
+        rows.append(
+            {
+                "event": "human_prior_option_branch_verified",
+                "seq": seq + 3,
+                "attempt": 1,
+                "decision": 3,
+                "source_state_id": "state-e1",
+                "path": ["up"],
+                "durations": [16],
+                "frame": "f-ob2",
+                "visual_signature": hexsig(self.OB2),
+            }
+        )
+        return rows
+
+    def pair_by_branch(self, result, branch_id):
+        for candidate in result.pairs:
+            if candidate.provenance.branch_id == branch_id:
+                return candidate
+        raise AssertionError(f"no pair {branch_id}")
+
+    def test_v1_window_truncates_at_restore(self) -> None:
+        reduction = reduce_run_events(
+            self.events_restore_and_return(), "fixture-run"
+        )
+        result = assemble_run_pairs(reduction)
+        pair = self.pair_by_branch(result, "d1-b1")
+        self.assertEqual(pair.successors, ())  # the v325/v326 mechanism
+
+    def test_v2_window_skips_restores_and_resumes_on_return(self) -> None:
+        reduction = reduce_run_events(
+            self.events_restore_and_return(), "fixture-run"
+        )
+        result = assemble_run_pairs_v2(reduction)
+        pair = self.pair_by_branch(result, "d1-b1")
+        # The restore excursion (ARCH lineage) is skipped, not truncating:
+        # the window resumes at the commit rooted back on the event's
+        # lineage and never contains the foreign-lineage arrays.
+        self.assertEqual(pair.successors, (self.Y,))
+        self.assertEqual(
+            result.counters["v2_lineage_successor_windows"], 1
+        )
+        # History and escape bookkeeping ride along on windowed pairs.
+        self.assertIn(self.R1, pair.history)
+        self.assertIs(pair.escape_lookback, False)
+
+    def test_v2_window_falls_back_to_branch_followups(self) -> None:
+        reduction = reduce_run_events(
+            self.events_restore_without_return(), "fixture-run"
+        )
+        v1_result = assemble_run_pairs(reduction)
+        v1_pair = self.pair_by_branch(v1_result, "d1-b1")
+        self.assertEqual(v1_pair.successors, ())  # v1 return-censors
+        result = assemble_run_pairs_v2(reduction)
+        pair = self.pair_by_branch(result, "d1-b1")
+        self.assertEqual(pair.successors, (self.OB1, self.OB2))
+        self.assertGreaterEqual(
+            result.counters["v2_fallback_successor_windows"], 1
+        )
+
+    def test_v2_committed_signature_is_component_signature(self) -> None:
+        reduction = reduce_run_events(synthetic_run_events(), "fixture-run")
+        result = assemble_run_pairs_v2(reduction)
+        # Decision 1: UP1 differs from ROOT1 at cells 1 (dependent) and 3
+        # (reproduced by the NOOP control). The v2 committed signature must
+        # be the dependent component's, not the full-diff probe's.
+        component_event = extract_component_event(
+            MatchedEndpointPair(
+                provenance=EventProvenance(
+                    "x", 1, "b", "up", 16, source="telemetry"
+                ),
+                root=ROOT1,
+                factual=UP1,
+                control=NOOP1,
+            )
+        )
+        assert component_event is not None
+        self.assertEqual(
+            result.committed_signatures[(1, 1)], component_event.signature
+        )
+        full_probe = extract_event(
+            MatchedEndpointPair(
+                provenance=EventProvenance(
+                    "x", 1, "b", "up", 16, source="telemetry"
+                ),
+                root=ROOT1,
+                factual=UP1,
+            )
+        )
+        assert full_probe is not None
+        self.assertNotEqual(
+            result.committed_signatures[(1, 1)], full_probe.signature
+        )
+
+    def test_v2_scoring_is_deterministic_under_input_order(self) -> None:
+        reduction = reduce_run_events(
+            self.events_restore_and_return(), "fixture-run"
+        )
+        result = assemble_run_pairs_v2(reduction)
+        forward = score_events_v2(
+            extract_component_events(result.pairs), result.pool_signatures
+        )
+        backward = score_events_v2(
+            extract_component_events(tuple(reversed(result.pairs))),
+            result.pool_signatures,
+        )
+        self.assertEqual(
+            [(s.signature, s.score, s.valence) for s in forward],
+            [(s.signature, s.score, s.valence) for s in backward],
+        )
+
+
+class EscapeFlagTests(unittest.TestCase):
+    def escape_events(self):
+        seq = [0]
+        root = (0,) * 16
+        control = tuple(9 if i < 10 else 0 for i in range(16))
+        factual = (0,) * 15 + (0,)
+
+        def event(name, **fields):
+            seq[0] += 1
+            row = {"event": name, "seq": seq[0], "attempt": 1}
+            row.update(fields)
+            return row
+
+        return [
+            event(
+                "decision_started",
+                decision=1,
+                frame="f-r",
+                visual_signature=hexsig(root),
+            ),
+            event(
+                "branch_verified",
+                decision=1,
+                action="up",
+                action_frames=16,
+                branch_id="d1-b1",
+                frame="f-f",
+                visual_signature=hexsig(factual),
+            ),
+            event(
+                "branch_verified",
+                decision=1,
+                action="noop",
+                action_frames=16,
+                branch_id="d1-b2",
+                frame="f-c",
+                visual_signature=hexsig(control),
+            ),
+        ]
+
+    def test_escape_flag_and_lookback(self) -> None:
+        reduction = reduce_run_events(self.escape_events(), "fixture-run")
+        config = MilestoneScoreConfig()
+        flags = _escape_flags(reduction, config)
+        self.assertEqual(flags, {(1, 1): True})
+        self.assertIs(_escape_lookback(flags, 1, 1, 8), True)
+        self.assertIs(_escape_lookback(flags, 1, 5, 8), True)
+        self.assertIs(_escape_lookback(flags, 1, 9, 8), None)
+        self.assertIs(_escape_lookback(flags, 2, 1, 8), None)
+
+    def test_small_avoided_change_is_not_an_escape(self) -> None:
+        rows = self.escape_events()
+        small_control = (0,) * 12 + (9,) * 4  # 4 cells < minimum 8
+        for row in rows:
+            if row.get("frame") == "f-c":
+                row["visual_signature"] = hexsig(small_control)
+        reduction = reduce_run_events(rows, "fixture-run")
+        flags = _escape_flags(reduction, MilestoneScoreConfig())
+        self.assertEqual(flags, {(1, 1): False})
+        self.assertIs(_escape_lookback(flags, 1, 1, 8), False)

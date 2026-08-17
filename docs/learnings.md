@@ -1592,6 +1592,59 @@ Evidence:
   results)
 - `experiments/lolo1-wp5/mask-sensitive-gate-v2-report.json`
 
+### 4.36 WP9a v2: valence solved, separation falsified again — rethink
+
+What was tried:
+
+- The §4.33 redesign (per-component censoring, restore-robust
+  lineage-filtered windows, delayed-divergence valence), preregistered in
+  `docs/milestone-scoring-v2-2026-08-16.md` and rescored once (report
+  digest `898676b5…`, byte-identical rerun; v1 still reproduces
+  `424bb775…`).
+
+Result:
+
+- **Life-loss negative valence 14/14 PASS** (v1: 0/14) — all via delayed
+  divergence, 10 of 14 from runs never inspected at design time. Both v1
+  failure mechanisms individually repaired (dependence rates 1.00;
+  fallback windows engage).
+- **Heart separation fails again**: 15/47 = 0.319 vs the 0.80 gate
+  (v1: 0.149). New dominant mechanism, instance-verified: reset
+  bleed-through — window-scoped rewind marks any occurrence whose window
+  crosses a later terminal reset, and per-signature valence over merged
+  component classes lets a handful of rewound windows flip whole
+  collection classes negative (28 of 32 residual failures; one class of
+  176 occurrences decided by a single evaluable window). Not
+  threshold-tunable: per-signature valence trades the negative gate
+  against the positive gate on the same axis.
+
+Classification:
+
+- **Falsified at the measured gate, second time** — WP9 step 1 demotes
+  from redesign to RETHINK. The valence mechanism is validated; the
+  aggregation structure is the falsified part.
+
+Learning:
+
+- Delayed factual-vs-control divergence is the correct terminal-valence
+  signal (generalizes out of design sample).
+- Rewind evidence must anchor to the event's own component cells, and
+  valence must be occurrence-scoped with signature aggregation used only
+  for ranking — class-level valence is structurally unable to satisfy
+  both gates.
+
+Plan change:
+
+- WP9 step 1 paused pending the rethink (occurrence-scoped valence +
+  component-anchored rewind); no third rescore until that redesign is
+  preregistered. WP9's schedule position is unchanged — this work remains
+  ahead of need.
+
+Evidence:
+
+- `docs/milestone-scoring-v2-2026-08-16.md`
+- `experiments/lolo1-wp5/milestone-scoring-v2-report.json`
+
 ## 5. Platform and cost learnings
 
 ### 5.1 RunPod for emulator branching
