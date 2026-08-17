@@ -1695,6 +1695,58 @@ Evidence:
 - `docs/wp5-tracker-training-2026-08-16.md`
 - `experiments/lolo1-wp5/functional-gate-report.json`
 
+### 4.38 Occupied/vacated disambiguation kills displacement erasure; in-place erasure remains
+
+What was tried:
+
+- The §4.37 spike (preregistered; report digest `7d1e5703…`,
+  byte-identical rerun): occupied-only silhouette targets via a
+  detector-free sibling-agreement rule (two different displacements
+  agreeing on local content certifies revealed scene), vacated pixels as
+  weighted negatives, convention v2 with undilated anchor, functional
+  gate rerun unchanged.
+
+Result:
+
+- **FAIL / NO-PROMOTE overall — hypothesis confirmed where it applied**:
+  detection roughly doubled (0.30–0.45 → 0.68–0.78), masks sprite-sized,
+  first-ever learned-only detections (58/34/36 per corpus that the
+  incumbent misses); bit (b) passes at v322 (0.975) and reaches
+  mean-parity elsewhere; bit (c) widened to 0.985–0.998 vs assisted
+  0.72–0.77.
+- Remaining failure class, instance-verified on 750 misses: **in-place
+  erasure** — blocked/contact arms where nothing vacates, so occupied
+  masking still covers the pose-change evidence in both endpoints
+  (factual/control mask IoU median 0.95).
+
+Classification:
+
+- **Failed promotion gate**, second mechanism isolated. The label-semantics
+  program is exhausted: in-place changes are inside the region a correct
+  controllable mask must cover, so no silhouette refinement can expose
+  them under the current detection quantity.
+
+Learning:
+
+- Detection currently asks "does the world outside the mask differ?" —
+  for in-place effects the answer is structurally no under any correct
+  mask. The quantity itself must change (e.g., compare masked-region
+  content across matched endpoints as a separate channel), and that is a
+  conventions change requiring its own preregistered gate, not a tuning
+  step.
+
+Plan change:
+
+- Next: preregister the detection-quantity v2 design (masked-region
+  differential channel alongside the outside-mask signature), rerun the
+  functional gate with the new quantity scored separately so the change
+  is auditable. Tracker/head remain telemetry-only.
+
+Evidence:
+
+- `docs/wp5-tracker-training-2026-08-16.md`
+- `experiments/lolo1-wp5/functional-gate-v2-report.json`
+
 ## 5. Platform and cost learnings
 
 ### 5.1 RunPod for emulator branching

@@ -26,6 +26,20 @@ Two subcommands:
     grid (one grid unit per pixel) makes the gate's own unchanged helpers
     recover the reconstructed pixel mask at the pinned 0.5 threshold.
 
+``functional-gate``
+    Reruns the WP5-final FUNCTIONAL promotion gate
+    (``lolo_agent.functional_mask_gate``) UNCHANGED -- same three
+    preregistered bits, same thresholds, same ground-truth extraction,
+    same corpora -- via the gate module's own ``build_conventions``,
+    ``score_corpus`` and ``build_report``.  The only driver-side
+    differences are the head checkpoint (the occupied/vacated v2 head by
+    default), the report path, and an honest provenance description of
+    the reconstruction convention actually applied (the gate module's
+    static ``MASK_SOURCE`` string describes the v1 convention; the
+    convention itself travels with the head checkpoint and is applied by
+    the unchanged predictor composition).  No gate quantity, threshold,
+    or corpus changes.
+
 Lineage note: the ``gate`` subcommand imports the gate instrument, which
 is assisted-coupled by design (its mattering-frame detector uses the
 recorded assisted mask as evaluation ground truth), so THIS module is
@@ -67,8 +81,15 @@ from .controllable_tracker import (
 from .counterfactual_labels import open_strict_store
 from .ensemble_world_model import split_sequence_runs
 # Evaluation-instrument imports (assisted-coupled BY DESIGN; used only by
-# the ``gate`` subcommand, never by training): the unchanged
-# mask-sensitive gate scorer and the substitution replay's pinned loader.
+# the ``gate`` and ``functional-gate`` subcommands, never by training):
+# the unchanged mask-sensitive gate scorer, the unchanged functional gate
+# scorer, and the substitution replay's pinned loader.
+from .functional_mask_gate import (
+    DEFAULT_CORPORA as FUNCTIONAL_GATE_CORPORA,
+    build_conventions as functional_build_conventions,
+    build_report as functional_build_report,
+    score_corpus as functional_score_corpus,
+)
 from .mask_sensitive_gate import (
     DEFAULT_CHECKPOINT as GATE_TRACKER_CHECKPOINT,
     DEFAULT_CORPORA as GATE_CORPORA,
@@ -77,10 +98,18 @@ from .mask_sensitive_gate import (
 )
 from .neural_world_model import choose_torch_device
 from .pixel_mask_head import (
+    ANCHOR_CELL_DILATION,
+    ANCHOR_CELL_DILATION_V2,
+    ANCHOR_CELL_PROBABILITY_THRESHOLD,
     CHECKPOINT_ARCHITECTURE,
     EXCLUDED_INPUTS,
     PERSISTENT_INPUTS,
+    PIXEL_MASK_PROBABILITY_THRESHOLD,
     REWARD_TRACK,
+    SILHOUETTE_HALO_DILATION,
+    TARGET_SEMANTICS,
+    TARGET_SEMANTICS_OCCUPIED_V2,
+    TARGET_SEMANTICS_UNION_V1,
     PixelMaskHead,
     PixelSilhouettePredictor,
     attach_cell_probabilities,
@@ -101,12 +130,33 @@ from .tracker_substitution_replay import (
 
 DEFAULT_HEAD_CHECKPOINT = "experiments/lolo1-wp5/pixel-mask-head-v1.pt"
 DEFAULT_GATE_REPORT = "experiments/lolo1-wp5/mask-sensitive-gate-v2-report.json"
+DEFAULT_HEAD_CHECKPOINT_V2 = "experiments/lolo1-wp5/pixel-mask-head-v2.pt"
+DEFAULT_FUNCTIONAL_GATE_REPORT = (
+    "experiments/lolo1-wp5/functional-gate-v2-report.json"
+)
 
 MASK_SOURCE = (
     "reconstructed-pixel-silhouette: frozen tracker v4 cell anchor "
     "(threshold 0.5, dilation 1 cell) + pixel_mask_head positives "
     "(threshold 0.5) + Chebyshev halo dilation 3"
 )
+
+
+def mask_source_description(
+    target_semantics: str, anchor_cell_dilation: int
+) -> str:
+    """Honest mask-source provenance for the convention actually applied."""
+
+    return (
+        "reconstructed-pixel-silhouette: frozen tracker v4 cell anchor "
+        f"(threshold {ANCHOR_CELL_PROBABILITY_THRESHOLD}, dilation "
+        f"{anchor_cell_dilation} cells) + pixel_mask_head positives "
+        f"(threshold {PIXEL_MASK_PROBABILITY_THRESHOLD}, "
+        f"{target_semantics} silhouette targets) + Chebyshev halo "
+        f"dilation {SILHOUETTE_HALO_DILATION}; mask pixels and reference "
+        "slot recovered through the unchanged substitution-replay "
+        "helpers at the pinned 0.5 threshold"
+    )
 SUBSTITUTION_MECHANISM = (
     "lolo_agent.mask_sensitive_gate.score_corpus and build_report run "
     "unchanged; the predictor returns a pixel-resolution prediction "
@@ -140,10 +190,25 @@ def _train(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         parser.error("--validation-modulus must be at least two")
     if args.learning_rate <= 0.0:
         parser.error("--learning-rate must be positive")
-    if args.positive_weight <= 0.0 or args.residual_weight <= 0.0:
+    if (
+        args.positive_weight <= 0.0
+        or args.residual_weight <= 0.0
+        or args.vacated_weight <= 0.0
+    ):
         parser.error("pixel loss weights must be positive")
     if args.wall_clock_ceiling <= 0.0:
         parser.error("--wall-clock-ceiling must be positive")
+    if args.target_semantics not in TARGET_SEMANTICS:
+        parser.error(f"unknown target semantics: {args.target_semantics}")
+    # The reconstruction convention is coupled to the label semantics and
+    # travels with the checkpoint: union-v1 heads pin the v1 convention
+    # (anchor dilation 1), occupied-v2 heads pin convention v2 (anchor
+    # dilation 0).  Not a tunable flag -- both pairings are preregistered.
+    anchor_cell_dilation = (
+        ANCHOR_CELL_DILATION_V2
+        if args.target_semantics == TARGET_SEMANTICS_OCCUPIED_V2
+        else ANCHOR_CELL_DILATION
+    )
 
     started = time.monotonic()
     torch.manual_seed(args.seed)
@@ -179,10 +244,18 @@ def _train(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         validation_cells, args.max_validation_arms, args.seed + 1
     )
     training, training_statistics = pixel_examples_from_store(
-        store, records, training_cells, root_batch_size=args.root_batch_size
+        store,
+        records,
+        training_cells,
+        root_batch_size=args.root_batch_size,
+        target_semantics=args.target_semantics,
     )
     validation, validation_statistics = pixel_examples_from_store(
-        store, records, validation_cells, root_batch_size=args.root_batch_size
+        store,
+        records,
+        validation_cells,
+        root_batch_size=args.root_batch_size,
+        target_semantics=args.target_semantics,
     )
     if not training or not validation:
         parser.error("pixel target derivation produced an empty split")
@@ -194,7 +267,10 @@ def _train(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     )
     if tracker.checkpoint_digest != tracker_digest:
         raise SystemExit("cell-map attachment changed frozen tracker parameters")
-    targets_digest = pixel_targets_digest(list(training) + list(validation))
+    targets_digest = pixel_targets_digest(
+        list(training) + list(validation),
+        target_semantics=args.target_semantics,
+    )
 
     with torch.random.fork_rng():
         torch.manual_seed(args.seed)
@@ -224,6 +300,7 @@ def _train(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
                 seed=args.seed + epoch,
                 positive_weight=args.positive_weight,
                 residual_weight=args.residual_weight,
+                vacated_weight=args.vacated_weight,
             )
         )
         completed_epochs += 1
@@ -247,6 +324,8 @@ def _train(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         backbone_parameter_digest=backbone_digest,
         cell_columns=columns,
         cell_rows=rows,
+        target_semantics=args.target_semantics,
+        anchor_cell_dilation=anchor_cell_dilation,
     )
     if checkpoint_digest != frozen_digest:
         raise SystemExit("freezing or checkpointing changed head parameters")
@@ -254,11 +333,15 @@ def _train(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     residual_separated = after.residual_pixels == 0 or (
         after.mean_target_probability > after.mean_residual_probability
     )
+    vacated_separated = after.vacated_pixels == 0 or (
+        after.mean_target_probability > after.mean_vacated_probability
+    )
     gate_passed = (
         after.loss < before.loss
         and after.roc_auc > before.roc_auc
         and after.mean_target_probability > after.mean_background_probability
         and residual_separated
+        and vacated_separated
     )
     metrics = {
         "version": 1,
@@ -277,8 +360,15 @@ def _train(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         },
         "pixel_targets": {
             "content_sha256": targets_digest,
+            "target_semantics": args.target_semantics,
             "training": training_statistics,
             "validation": validation_statistics,
+        },
+        "reconstruction_convention": {
+            "anchor_cell_threshold": ANCHOR_CELL_PROBABILITY_THRESHOLD,
+            "anchor_cell_dilation": anchor_cell_dilation,
+            "pixel_threshold": PIXEL_MASK_PROBABILITY_THRESHOLD,
+            "halo_dilation": SILHOUETTE_HALO_DILATION,
         },
         "grid": {"columns": columns, "rows": rows},
         "frame_geometry": {
@@ -307,6 +397,8 @@ def _train(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
             "hidden_size": args.hidden_size,
             "positive_weight": args.positive_weight,
             "residual_weight": args.residual_weight,
+            "vacated_weight": args.vacated_weight,
+            "target_semantics": args.target_semantics,
             "validation_modulus": args.validation_modulus,
             "max_training_arms": args.max_training_arms,
             "max_validation_arms": args.max_validation_arms,
@@ -336,6 +428,11 @@ def _train(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
                 (
                     "higher mean probability on silhouette pixels than "
                     "residual pixels when residual pixels exist"
+                ),
+                (
+                    "higher mean probability on silhouette pixels than "
+                    "vacated pixels when vacated pixels exist (vacuous "
+                    "under union-v1 targets)"
                 ),
             ],
         },
@@ -407,6 +504,72 @@ def _gate(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     return 0
 
 
+def _functional_gate(
+    args: argparse.Namespace, parser: argparse.ArgumentParser
+) -> int:
+    """Rerun the unchanged WP5-final functional gate with a pinned head.
+
+    Everything scored -- ground-truth extraction, the three bits, all
+    thresholds -- is the gate module's own unchanged code
+    (``build_conventions`` + ``score_corpus`` + ``build_report``).  The
+    reconstruction convention is whatever the head checkpoint pins (the
+    loader restores it onto the head and the predictor applies it); this
+    driver only corrects the static provenance strings to describe that
+    convention honestly and adds the pinned semantics fields.
+    """
+
+    learned, assisted, provenance = functional_build_conventions(
+        Path(args.tracker_checkpoint),
+        Path(args.backbone),
+        Path(args.head_checkpoint),
+    )
+    _head, head_provenance = load_pixel_mask_head_checkpoint(
+        Path(args.head_checkpoint), device="cpu", frozen=True
+    )
+    provenance.update(
+        {
+            "pixel_mask_head_target_semantics": head_provenance[
+                "target_semantics"
+            ],
+            "pixel_mask_head_anchor_cell_dilation": head_provenance[
+                "anchor_cell_dilation"
+            ],
+            "mask_source": mask_source_description(
+                head_provenance["target_semantics"],
+                head_provenance["anchor_cell_dilation"],
+            ),
+        }
+    )
+    results = [
+        functional_score_corpus(Path(run_dir), learned, assisted)
+        for run_dir in args.corpora
+    ]
+    report = functional_build_report(results, provenance)
+    report_path = Path(args.report)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
+        json.dumps(report, sort_keys=True, indent=1) + "\n", encoding="utf-8"
+    )
+    summary = {
+        "gate": report["result"]["gate"],
+        "verdict": report["result"]["verdict"],
+        "failing_mechanisms": report["result"]["failing_mechanisms"],
+        "per_corpus": {
+            run_id: {
+                "bit_a": gate["bit_a_detection"]["passed"],
+                "bit_b": gate["bit_b_stability"]["passed"],
+                "bit_c": gate["bit_c_preservation"]["passed"],
+                "passed": gate["passed"],
+            }
+            for run_id, gate in report["result"]["per_corpus"].items()
+        },
+        "content_digest": report["content_digest"],
+        "report": str(args.report),
+    }
+    print(json.dumps(summary, indent=1, sort_keys=True))
+    return 0
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -436,6 +599,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     train.add_argument("--hidden-size", type=int, default=32)
     train.add_argument("--positive-weight", type=float, default=8.0)
     train.add_argument("--residual-weight", type=float, default=4.0)
+    train.add_argument(
+        "--vacated-weight",
+        type=float,
+        default=8.0,
+        help=(
+            "loss weight on explicitly vacated pixels under occupied-v2 "
+            "targets (inert under union-v1, which has no vacated pixels)"
+        ),
+    )
+    train.add_argument(
+        "--target-semantics",
+        choices=list(TARGET_SEMANTICS),
+        default=TARGET_SEMANTICS_UNION_V1,
+        help=(
+            "pixel target semantics: union-v1 (the original vacated+"
+            "occupied union silhouette) or occupied-v2 (occupied pixels "
+            "only, vacated pixels as explicit negatives; pins "
+            "reconstruction convention v2 in the checkpoint)"
+        ),
+    )
     train.add_argument("--seed", type=int, default=17)
     train.add_argument("--wall-clock-ceiling", type=float, default=2100.0)
 
@@ -458,9 +641,36 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     gate.add_argument("--backbone", default=DEFAULT_BACKBONE)
     gate.add_argument("--report", default=DEFAULT_GATE_REPORT)
 
+    functional = commands.add_parser(
+        "functional-gate",
+        help=(
+            "rerun the unchanged WP5-final functional promotion gate "
+            "with a pinned pixel head checkpoint (occupied-v2 by default)"
+        ),
+    )
+    functional.add_argument(
+        "--corpus",
+        action="append",
+        dest="corpora",
+        default=None,
+        help="probe corpus run directory (repeatable)",
+    )
+    functional.add_argument(
+        "--head-checkpoint", default=DEFAULT_HEAD_CHECKPOINT_V2
+    )
+    functional.add_argument(
+        "--tracker-checkpoint", default=GATE_TRACKER_CHECKPOINT
+    )
+    functional.add_argument("--backbone", default=DEFAULT_BACKBONE)
+    functional.add_argument("--report", default=DEFAULT_FUNCTIONAL_GATE_REPORT)
+
     arguments = parser.parse_args(argv)
     if arguments.command == "train":
         return _train(arguments, parser)
+    if arguments.command == "functional-gate":
+        if arguments.corpora is None:
+            arguments.corpora = list(FUNCTIONAL_GATE_CORPORA)
+        return _functional_gate(arguments, parser)
     if arguments.corpora is None:
         arguments.corpora = list(GATE_CORPORA)
     return _gate(arguments, parser)

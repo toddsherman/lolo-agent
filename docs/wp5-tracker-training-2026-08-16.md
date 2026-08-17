@@ -714,3 +714,279 @@ disambiguation, revisit the anchor dilation and halo as part of a
 convention v2 — extent constants are convention parameters and may
 only change with the convention version, never tuned against this
 gate's corpora between runs.
+
+### Occupied/vacated disambiguation spike — preregistration (§4.37 plan-change; added before execution)
+
+Basis: learnings §4.37 — the functional gate failed via SYMMETRIC
+ERASURE: the union vacated∪occupied silhouette target teaches the pixel
+head to cover the whole GT component in BOTH endpoints, zeroing the
+factual-vs-control difference exactly where the effect lives (bit (a)),
+and the resulting all-or-nothing extent swings drive most bit-(b)
+flips.  This spike is §4.37's licensed path (a)+(b): occupied-only
+label semantics in the pixel path, reconstruction convention v2, then
+THIS gate rerun unchanged.  Everything below is fixed now, before the
+v2 training run and before any gate execution; the implementation is
+additive in `lolo_agent/pixel_mask_head.py` (new target mode +
+convention v2) and `lolo_agent/pixel_mask_train.py` (new flags +
+functional-gate driver), unit-tested on synthetic fixtures only at
+preregistration time (52 tests, including the moved-sprite split, the
+transformation-in-place and removal edge cases, determinism, and the
+convention-v2 checkpoint/predictor plumbing).
+
+**Label semantics v2 (`occupied-v2`; detector-free).**  At the FACTUAL
+endpoint frame the training target is the OCCUPIED silhouette only —
+the pixels where the controllable region IS in that frame.  The split
+rule, applied inside each v1 corroborated controllable component
+(`split_occupied_vacated`):
+
+> A component pixel `p` is VACATED at the factual endpoint iff some
+> corroborating sibling arm (different primitive action, non-empty
+> changed-pixel set — the exact eligibility rule the corroboration
+> count already uses) ALSO changed `p`, AND the full 3×3 pixel
+> neighbourhood of `p` (clipped at frame bounds;
+> `OCCUPIED_SPLIT_NEIGHBORHOOD_RADIUS` = 1) is byte-identical between
+> the two arms' factual endpoint frames.  OCCUPIED = component ∖
+> VACATED; pixels with no sibling evidence default to occupied (the
+> destination-region case).
+
+Why this is the temporal direction rule: two different actions displace
+the controllable sprite differently, so they cannot both place the same
+sprite patch at `p` — nine-byte agreement between their factual
+endpoints certifies the local content as action-invariant, i.e. the
+revealed scene without the sprite, so the factual frame shows
+background at `p` (vacated).  A pixel the sprite occupies at the
+factual endpoint disagrees with every sibling that moved the sprite
+elsewhere.  Pinned edge-case behaviour (each with a unit-test fixture):
+a pure move splits into destination silhouette (occupied) and revealed
+origin (vacated) up to a conservative one-pixel occupied seam where a
+3×3 window straddles another arm's sprite; a transformation in place is
+fully occupied at the same cells; a removal has NO occupied pixels at
+the source; factual-pose-transparent pixels (bounding-box pixels
+showing background through the sprite) classify vacated, which is
+correct occupied-silhouette semantics because the displayed bytes are
+scene content.  Vacated pixels become explicitly weighted hard
+negatives; residual pixels are unchanged from v1; arms whose occupied
+silhouette is empty are excluded and counted
+(`empty_occupied_arms`), mirroring v1's empty-mask exclusion.
+
+Design-phase evidence (training corpus only — the gate corpora were
+never touched): on a deterministic 40-root stride sample of the pinned
+v4 label corpus (195 labeled arms), the rule yields occupied/component
+pixel fraction 0.60 mean; on moving arms the occupied-minus-vacated
+centroid points along the arm's action direction 124 / 6 / 65
+(along / opposed / neutral-or-N/A), with the opposed and neutral cases
+concentrated at blocked or short-displacement arms where direction is
+undefined (pose-change splits); 0/155 non-empty components lose all
+occupied pixels, though 2 duration-16 arms retain only a single seam
+pixel because their destination sprite fell into the uncorroborated
+residual (origin-only components; the disclosed
+corroboration-granularity limit, inherited from v1 where those same
+destination pixels were already residual hard negatives — verified on
+`legacy-segment:cycle-000011` group 668 up/16: component rows 128–142,
+residual destination block rows 113–127).  The
+single-pixel-equality variant of the rule was rejected at design time:
+it mislabels opaque sprite pixels that coincidentally match the
+revealed background byte (11 direction-opposed arms vs 6 for the
+neighbourhood rule on the same sample).
+
+**Training run (fixed now; v1 budgets unchanged).**  Same corpus,
+loader, split, and budgets as the v1 spike preregistration: labels
+`wp5-labels-full-v4.jsonl` (manifest `ee8d4f8e…`, digest-verified) +
+`experiments/lolo1-medium/dataset`; run-held-out hash-stable split
+(modulus 5, seeds 17/18), caps 6,000 training / 1,500 validation arms,
+20 epochs, batch 16, lr 1e-3, positive weight 8.0, residual weight 4.0,
+MPS, internal wall-clock ceiling 2,100 s; frozen tracker v4
+(`b2fdd8ba…`) and backbone (`642d66ed…`) with digest checks.  New,
+preregistered: `--target-semantics occupied-v2` and vacated-negative
+weight 8.0 (`--vacated-weight`) — the vacated pixels are exactly the
+pixels the v1 head demonstrably fires on, so a false positive on a
+vacated pixel is priced equal to a false negative on an occupied pixel
+(the positive weight's mirror; fixed a priori, not tuned — one
+preregistered run).  Same architecture (19,713 parameters; no
+ensemble).  Checkpoint to
+`experiments/lolo1-wp5/pixel-mask-head-v2.pt`, pinning additionally the
+target semantics and the reconstruction convention (below); the v2
+pixel-target corpus digest uses its own prefix and pins the vacated
+sets, so v1/v2 corpora can never alias.
+
+**Training gates (fixed now).**  The v1 spike's four
+untrained-baseline gates unchanged — (1) held-out per-pixel loss,
+(2) pixel ROC AUC, (3) silhouette-above-background mean probability,
+(4) silhouette-above-residual when residual pixels exist — plus one
+v2-specific gate: (5) mean probability on occupied silhouette pixels
+above vacated pixels when vacated pixels exist (the disambiguation the
+spike exists to deliver).  Reported, not gated: precision/recall/IoU at
+0.5, Brier vs constant, the vacated-pixel mean probability.
+`strict_lineage` checkpoint audit must be clean; the head module must
+keep linting assisted-free.
+
+**Reconstruction convention v2 (pinned now, before any gate run).**
+Anchor cell threshold 0.5 (unchanged), ANCHOR DILATION 0 (reduced from
+1), head pixel threshold 0.5 (unchanged), Chebyshev halo 3 (unchanged —
+still the documented assisted-convention halo constant, mirrored by
+value).  Rationale, recorded before execution: the v1 dilation existed
+so the anchor could span the union silhouette (origin plus
+destination); occupied-only targets need only the occupied sprite,
+whose pixels lie in cells the tracker's own union-labelled training
+targets already cover — measured on the training corpus (60-root
+stride sample, 238 arms, never the gate corpora), the undilated
+0.5-anchor contains 99.75% of occupied target pixels and fully
+contains 235/238 arms (dilation 1: 100% both), and §4.37's bit-(a)
+mechanism explicitly names the anchor dilation as an erasure
+amplifier.  The halo is kept because bit (c) PASSED with it and it is a
+recorded convention constant, not a fitted parameter.  The convention
+version travels with the head checkpoint (`target_semantics`,
+`anchor_cell_dilation`) and is restored onto the head at load, so the
+unchanged gate composition applies convention v2 automatically and a
+v2-supervised head can never be silently reconstructed under the v1
+convention.  Constants pinned by unit tests; no post-hoc tuning of any
+threshold, dilation, or halo after seeing real-corpus results.
+
+**Gate rerun (preregistered).**  Rerun the WP5-final FUNCTIONAL gate
+UNCHANGED — `lolo_agent.functional_mask_gate`'s own
+`build_conventions` + `score_corpus` + `build_report`, same three bits,
+same thresholds (0.5 mask probability, 0.08 appearance L1, 0.95
+agreement rate, minimum 50, Chebyshev-1 adjacency), same ground-truth
+extraction, same three probe corpora (v322/v323/v325), same verdict
+rule (PROMOTE-to-shadow iff bits (a) and (b) pass with bit (c) not
+regressing below assisted, on all three corpora) — with only the
+learned convention's pinned head checkpoint substituted
+(`pixel-mask-head-v2.pt`).  The driver is
+`python -m lolo_agent.pixel_mask_train functional-gate`, which loads
+the pinned artifacts (repeating the digest cross-checks), lets the
+unchanged predictor apply the checkpoint-pinned convention, corrects
+only the static provenance strings to describe the applied convention
+honestly, and calls the gate module's own scorer; no gate code is
+modified.  One preregistered scoring run, CPU, deterministic report to
+`experiments/lolo1-wp5/functional-gate-v2-report.json` (the unchanged
+gate's own digest scheme), plus a byte-identical determinism rerun to
+a scratch path (reported).  Honest outcome either way: PASS →
+recommend shadow-promotion of the learned masking convention with
+mask-divergence telemetry (engineering-internal, reversible, claim
+boundary unmoved per §4.35); FAIL → name the failing mechanism per
+corpus and bit against v1's numbers.
+
+### Pixel-mask head v2 — training results (appended 2026-08-16)
+
+**All five preregistered training gates PASS.**  Run exactly as
+preregistered (6,000/1,500 arms, 20 epochs completed, MPS, 694 s
+wall-clock — ceiling not hit; no deviations).  Checkpoint
+`experiments/lolo1-wp5/pixel-mask-head-v2.pt`, parameter sha256
+`d486693181be83d010dd0d43a42f88d4a3988fd0d9fb5e0d87cd4d205fefad10`,
+pinning labels manifest `ee8d4f8e…`, v2 pixel-target corpus digest
+`d74acb6f…` (v2 prefix, vacated sets pinned), tracker v4 `b2fdd8ba…`,
+backbone `642d66ed…`, target semantics `occupied-v2`, anchor cell
+dilation 0; frozen-digest checks passed; `strict_lineage` checkpoint
+audit clean (assisted=False, zero violations); head module still lints
+assisted-free.
+
+Target derivation: 5,990 of 6,000 selected training arms produced a
+non-empty occupied silhouette (10 `empty_occupied_arms` excluded —
+0.17%, the disclosed origin-only large-displacement class; 0 in
+validation; 0 empty union silhouettes anywhere); all pixel/cell
+cross-checks held.  Held-out prevalence 0.24% occupied, with 168,026
+vacated and 20,671 residual pixels as explicit negatives.
+
+| quantity (held-out, 92.2M pixels) | untrained baseline | trained v2 | v1 (union) |
+|---|---|---|---|
+| per-pixel loss | 0.7297 | **0.00317** | 0.00859 |
+| pixel ROC AUC | 0.7512 | **0.99945** | 0.99843 |
+| Brier (constant 0.00241) | 0.2683 | **0.00090** | 0.00292 |
+| precision / recall @0.5 | 0.0024 / 1.0 | **0.686 / 0.960** | 0.500 / 0.932 |
+| IoU @0.5 | 0.0024 | **0.667** | 0.482 |
+| mean p: occupied / residual / background | ~0.518 each | 0.883 / 0.714 / 0.0011 | 0.828 / 0.738 / 0.0036 |
+| mean p: vacated | 0.518 | **0.053** | n/a (in target) |
+
+Reading: the disambiguation the spike exists to deliver is delivered —
+occupied pixels fire at 0.883 while vacated pixels are suppressed to
+0.053 (16.7x separation; under v1's union target these same pixels WERE
+positives).  Gate 5 (occupied above vacated) passes with a wide margin,
+and every v1 axis improved as a side effect (IoU 0.482 → 0.667 at
+higher recall).  Metrics sidecar:
+`experiments/lolo1-wp5/pixel-mask-head-v2.metrics.json`.
+
+### WP5-final functional gate v2 (occupied-v2 head, convention v2) — results (appended 2026-08-16, after one preregistered run)
+
+**FAIL on all three corpora — NO-PROMOTE.**  Report
+`experiments/lolo1-wp5/functional-gate-v2-report.json`, content digest
+`7d1e5703b07ac8d2b713ff41161bbec6f73188f13faca674f84f488086d910b1`,
+byte-identical on the preregistered determinism rerun (scratch path,
+file sha256 equal).  No preregistration deviations: the gate module ran
+unchanged through its own `build_conventions`/`score_corpus`/
+`build_report` (driver `pixel_mask_train functional-gate`), ground
+truth identical to v1 (measurement counts match v1 exactly:
+1,175/1,563/1,750 detection, 1,069/2,151/2,129 stability,
+6,101/12,680/9,031 preservation), signature and track-state views
+agreed on 100% of detection measurements, every bit cleared the
+50-measurement floor.
+
+| corpus | (a) GT-detect v1 → v2 (assisted) | given-assisted v1 → v2 | (b) stability v1 → v2 (assisted) | (c) preserve v1 → v2 (assisted) | bits |
+|---|---|---|---|---|---|
+| v322 object-present | 0.302 → **0.743** (0.884) | 0.342 → 0.784 | 0.766 → **0.975 PASS** (0.964) | 0.983 → **0.998** (0.720) | a FAIL; b,c PASS |
+| v323 pre-push | 0.447 → **0.782** (0.940) | 0.471 → 0.809 | 0.820 → **0.936** (0.970) | 0.970 → **0.985** (0.742) | a,b FAIL; c PASS |
+| v325 object-removed | 0.353 → **0.678** (0.936) | 0.375 → 0.703 | 0.766 → **0.943** (0.961) | 0.965 → **0.989** (0.769) | a,b FAIL; c PASS |
+
+What moved, and what the residual mechanism is:
+
+1. **The v1 mechanism — SYMMETRIC ERASURE OF DISPLACEMENTS — is
+   resolved.**  Detection roughly doubled on every corpus; the learned
+   mask is now sprite-sized (mean 423–471 px vs v1's 637–721; assisted
+   859–916 multi-modal), learned-vs-assisted mask IoU rose to 0.43–0.49
+   mean (v1: 0.36–0.42), and for the first time the learned convention
+   detects GT manipulations the incumbent misses (58/34/36 per corpus;
+   assisted-given-learned dropped from ~1.0 to 0.93–0.97 — the learned
+   detections are no longer a near-strict subset).
+2. **Bit (a) residual — IN-PLACE ERASURE, instance-verified on 250
+   sampled misses per corpus:** 90–92% of misses have full learned-mask
+   coverage of every GT component cell block in BOTH endpoints, and the
+   misses are overwhelmingly in-place arms — the factual and control
+   learned masks nearly coincide (mask IoU ≥ 0.8 on 250/250, 241/250,
+   218/250 sampled misses; median 0.95).  These are blocked/contact
+   arms where the player does not displace: occupied@factual equals
+   occupied@control, so an occupied-only mask (plus halo 3) still
+   blankets the pose-change/contact component that IS the ground-truth
+   effect.  This is the degenerate case occupied/vacated
+   disambiguation cannot reach by construction — when nothing vacates,
+   there is nothing to disambiguate.  The assisted convention detects
+   only 76–86% of these same sampled misses itself (its rates on the
+   full corpora are 0.88–0.94, partly via its own frame-to-frame
+   silhouette variance leaving differing residues).
+3. **Bit (b) is a tail phenomenon now:** learned stability L1 mean
+   0.0145–0.0214, at or near the assisted convention's 0.0135–0.0156
+   (v1: 0.051–0.066); max 0.29–0.31 (v1: 0.35–0.46).  v322 passes
+   outright at 0.975; v323/v325 miss the 0.95 bar by 1.4/0.7 points on
+   residual whole-pool placement flips at anchor/halo boundaries.
+4. **Bit (c) strictly widened:** learned preservation 0.985–0.998 vs
+   assisted 0.720–0.769 — the occupied-only target plus the undilated
+   anchor reduced neighbour-cell spill further (v1 learned:
+   0.965–0.983).  The absorption advantage over the incumbent is now
+   1.5–28x fewer violations.
+
+Reported alongside (not gated): v323 empty learned reconstructions rose
+29 → 47 of 1,308 unique factual endpoints (the known empty-anchor gap
+plus more frames where no head pixel clears 0.5 inside the now-smaller
+anchor; 68/80 factual/control detection frames explicitly unmasked);
+v322/v325 have zero empty masks.
+
+Consequence: per the preregistered criterion the learned masking
+convention is again NOT adopted; tracker v4 + pixel head v2 stay
+telemetry-only.  The label-semantics hypothesis of §4.37 is
+CONFIRMED — occupied/vacated disambiguation removed the displacement
+erasure it was designed to remove, moved every gated axis toward or
+past the incumbent, and produced the first learned-only detections —
+but the gate exposes a second, previously masked failure class:
+in-place manipulations, where the effect lives entirely under the
+sprite's unmoved footprint and ANY convention that masks the
+controllable region at both endpoints hides it from the planner's
+existing signature quantities.  Paths this measurement licenses next
+(each requiring its own preregistration, then THIS gate rerun
+unchanged): (a) an in-place-aware detection path — the downstream
+quantities, not the mask, are what erase unmoved-footprint evidence,
+so this is a §4.35-style explicitly gated convention change on the
+detection quantities (e.g. scoring the masked-region residue itself),
+never a silent mask tweak; (b) the bit-(b) tail (halo-boundary
+placement flips) may close with probe-distribution strict collection
+(the three-cycle recipe) without any convention change; (c) if pose
+change under an unmoved footprint is deemed out of the manipulation
+claim's scope, that scope change must be preregistered and priced,
+not assumed.

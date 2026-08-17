@@ -40,6 +40,49 @@ of the vacated and occupied silhouettes across one action, so the target
 blurs by up to one displacement step; the appearance-conditioned head is
 expected to resolve that blur because vacated pixels look like background.
 
+Label semantics v2: occupied/vacated disambiguation (learnings 4.37)
+--------------------------------------------------------------------
+
+The v1 union target taught SYMMETRIC ERASURE: the head fires on both
+endpoints of a displacement, so the reconstruction covers the whole
+ground-truth component in the factual AND the control frame and the
+factual-versus-control difference vanishes exactly where the effect
+lives (the WP5-final functional gate's bit-(a) failing mechanism).  The
+v2 target (``TARGET_SEMANTICS_OCCUPIED_V2``) is the OCCUPIED silhouette
+only: the pixels where the controllable region IS at the factual
+endpoint.  Derivation stays detector-free -- the temporal direction rule
+uses only counterfactual structure:
+
+    A changed pixel ``p`` of a controllable component is VACATED at the
+    factual endpoint iff some corroborating sibling arm (a different
+    primitive action with a non-empty changed-pixel set) ALSO changed
+    ``p`` and the full 3x3 pixel neighbourhood of ``p`` (clipped to the
+    frame, ``OCCUPIED_SPLIT_NEIGHBORHOOD_RADIUS`` = 1) is byte-identical
+    between the two arms' factual endpoints.  OCCUPIED is the component
+    minus VACATED.
+
+Why this is the direction rule: two different actions displace the
+controllable sprite differently, so they cannot both place the same
+sprite patch at ``p`` -- nine-byte agreement between their factual
+endpoints certifies that the local content at ``p`` is action-invariant,
+i.e. the revealed scene without the sprite, so the factual frame shows
+background there (vacated).  Conversely a pixel the sprite occupies at
+the factual endpoint disagrees with any sibling that moved the sprite
+elsewhere (occupied; pixels with no sibling evidence default to
+occupied, which is the destination-region case).  Consequences, pinned
+by unit tests: a pure move splits the component into the destination
+silhouette (occupied) and the revealed origin (vacated) up to a
+conservative one-pixel occupied seam where a 3x3 window straddles
+another arm's sprite; a transformation in place is fully occupied (the
+transformed appearance differs from every moved sibling's revealed
+background); a removal has no occupied pixels at the source (the factual
+and every moved sibling's endpoint agree on the revealed scene); pixels
+whose factual pose is transparent (showing background through the
+sprite's bounding box) classify as vacated, which is correct for
+occupied-silhouette semantics because the displayed bytes are scene
+content.  Vacated pixels become explicitly weighted hard negatives in
+training; residual pixels are unchanged from v1.
+
 Reconstruction convention (fixed here, before any gate run)
 -----------------------------------------------------------
 
@@ -53,6 +96,22 @@ region -- tracker-v4 cells at or above
 radius of the recorded assisted masking convention (a fixed public
 parameter of that convention; no assisted code participates here).  An
 empty tracker anchor yields an empty mask.
+
+Reconstruction convention v2 (pinned with the v2 label semantics,
+before any v2 gate run): identical except the anchor dilation is
+``ANCHOR_CELL_DILATION_V2`` (0) -- the undilated 0.5-thresholded
+tracker cells.  Rationale, recorded at preregistration time: the v1
+dilation existed so the anchor could span the union silhouette
+(origin plus destination); the occupied-only target needs only the
+occupied sprite, whose pixels lie in cells the tracker's own
+(union-labelled) training targets already cover -- measured on the
+training corpus (never the gate corpora), the undilated anchor contains
+99.75% of occupied target pixels (dilation 1: 100%) -- and the
+functional gate's bit-(a) mechanism names the anchor dilation as an
+amplifier of blanket erasure.  The convention version travels with the
+head checkpoint (``target_semantics`` / ``anchor_cell_dilation``), so a
+v2-supervised head is never silently reconstructed under the v1
+convention.
 
 Strict lineage: this module references no assisted perception symbol;
 inputs are pixels, actions, action durations, and duration-matched
@@ -131,7 +190,17 @@ ANCHOR_CELL_PROBABILITY_THRESHOLD = 0.5
 ANCHOR_CELL_DILATION = 1
 SILHOUETTE_HALO_DILATION = 3
 
+# Label-semantics and reconstruction-convention v2 constants (learnings
+# 4.37 plan-change; see the module docstring).  Pinned before any v2
+# training or gate execution and enforced by the unit tests.
+TARGET_SEMANTICS_UNION_V1 = "union-v1"
+TARGET_SEMANTICS_OCCUPIED_V2 = "occupied-v2"
+TARGET_SEMANTICS = (TARGET_SEMANTICS_UNION_V1, TARGET_SEMANTICS_OCCUPIED_V2)
+OCCUPIED_SPLIT_NEIGHBORHOOD_RADIUS = 1
+ANCHOR_CELL_DILATION_V2 = 0
+
 _PIXEL_TARGET_DIGEST_PREFIX = b"lolo-pixel-mask-targets-v1:"
+_PIXEL_TARGET_DIGEST_PREFIX_V2 = b"lolo-pixel-mask-targets-v2:"
 
 
 # ---------------------------------------------------------------------------
@@ -235,9 +304,79 @@ def pixel_difference(first: Frame, second: Frame) -> FrozenSet[Pixel]:
     return frozenset(changed)
 
 
+def pixel_neighborhood_equal(
+    first: Frame,
+    second: Frame,
+    x: int,
+    y: int,
+    radius: int = OCCUPIED_SPLIT_NEIGHBORHOOD_RADIUS,
+) -> bool:
+    """Byte-exact equality of one clipped square pixel neighbourhood."""
+
+    if (first.width, first.height, first.channels) != (
+        second.width,
+        second.height,
+        second.channels,
+    ):
+        raise ValueError("cannot compare neighbourhoods across geometries")
+    if radius < 0:
+        raise ValueError("neighbourhood radius must be non-negative")
+    channels = first.channels
+    row_bytes = first.width * channels
+    x_start = max(0, x - radius) * channels
+    x_end = (min(first.width - 1, x + radius) + 1) * channels
+    for row in range(max(0, y - radius), min(first.height, y + radius + 1)):
+        offset = row * row_bytes
+        if (
+            first.pixels[offset + x_start : offset + x_end]
+            != second.pixels[offset + x_start : offset + x_end]
+        ):
+            return False
+    return True
+
+
+def split_occupied_vacated(
+    component_pixels: Iterable[Pixel],
+    factual: Frame,
+    siblings: Sequence[Tuple[AbstractSet[Pixel], Frame]],
+    *,
+    radius: int = OCCUPIED_SPLIT_NEIGHBORHOOD_RADIUS,
+) -> Tuple[FrozenSet[Pixel], FrozenSet[Pixel]]:
+    """Occupied/vacated split of one controllable component (semantics v2).
+
+    ``siblings`` holds ``(changed_pixels, factual_endpoint)`` for every
+    corroborating sibling arm (different primitive action, non-empty
+    changed-pixel set) -- the same eligibility rule the corroboration
+    count uses.  A pixel is VACATED iff some sibling also changed it and
+    the clipped ``(2*radius+1)``-square factual neighbourhood is
+    byte-identical between the two arms' endpoints (two different
+    actions agreeing on local content certify it as the revealed scene
+    without the sprite); every other component pixel is OCCUPIED,
+    including pixels with no sibling evidence (the destination-region
+    default).  See the module docstring for the rule's derivation and
+    its pinned edge-case behaviour.
+    """
+
+    pixels = frozenset(component_pixels)
+    vacated: Set[Pixel] = set()
+    for pixel in pixels:
+        for changed, sibling_factual in siblings:
+            if pixel in changed and pixel_neighborhood_equal(
+                factual, sibling_factual, pixel[0], pixel[1], radius
+            ):
+                vacated.add(pixel)
+                break
+    return pixels - vacated, frozenset(vacated)
+
+
 @dataclass(frozen=True)
 class PixelArmLabel:
-    """Pixel-granularity pseudo-label (or inherited censoring) for one arm."""
+    """Pixel-granularity pseudo-label (or inherited censoring) for one arm.
+
+    ``occupied_pixels`` / ``vacated_pixels`` partition
+    ``controllable_pixels`` under the v2 occupied/vacated split; both are
+    empty unless the label was derived with ``occupied_split=True``.
+    """
 
     action: str
     duration: int
@@ -250,6 +389,8 @@ class PixelArmLabel:
     controllable_components: Tuple[Tuple[Pixel, ...], ...]
     controllable_pixels: Tuple[Pixel, ...]
     residual_pixels: Tuple[Pixel, ...]
+    occupied_pixels: Tuple[Pixel, ...] = ()
+    vacated_pixels: Tuple[Pixel, ...] = ()
 
 
 def _eligible_record_arms(
@@ -280,6 +421,7 @@ def label_pixel_root(
     frames: Mapping[str, Frame],
     *,
     selected: Optional[AbstractSet[Tuple[str, int]]] = None,
+    occupied_split: bool = False,
 ) -> Tuple[PixelArmLabel, ...]:
     """Pixel-granularity labels for one verified cell-label record.
 
@@ -288,13 +430,16 @@ def label_pixel_root(
     cross-checked against the record's coarse cells and corroborating-arm
     count, failing loudly on any mismatch.  ``selected`` optionally
     restricts the emitted arms (sibling changed-pixel sets are still
-    computed for corroboration).
+    computed for corroboration).  ``occupied_split`` additionally
+    partitions each labeled arm's controllable pixels into occupied and
+    vacated under the v2 temporal direction rule.
     """
 
     columns = int(record["columns"])
     rows = int(record["rows"])
     eligible = _eligible_record_arms(record)
     changed: Dict[Tuple[str, int], FrozenSet[Pixel]] = {}
+    endpoints: Dict[Tuple[str, int], Frame] = {}
     geometry: Optional[Tuple[int, int]] = None
     for arm, control_digest in eligible:
         endpoint = frames[str(arm["endpoint_digests"][0])]
@@ -303,9 +448,9 @@ def label_pixel_root(
             geometry = (endpoint.width, endpoint.height)
         elif geometry != (endpoint.width, endpoint.height):
             raise ValueError("label root mixes frame geometries")
-        changed[(str(arm["action"]), int(arm["duration"]))] = pixel_difference(
-            endpoint, control
-        )
+        key = (str(arm["action"]), int(arm["duration"]))
+        endpoints[key] = endpoint
+        changed[key] = pixel_difference(endpoint, control)
     labels: List[PixelArmLabel] = []
     for arm in record["arms"]:
         key = (str(arm["action"]), int(arm["duration"]))
@@ -377,6 +522,19 @@ def label_pixel_root(
             {pixel for component in controllable_components for pixel in component}
         )
         residual_pixels = sorted(arm_changed.difference(controllable_pixels))
+        occupied_pixels: Tuple[Pixel, ...] = ()
+        vacated_pixels: Tuple[Pixel, ...] = ()
+        if occupied_split and controllable_pixels:
+            siblings = tuple(
+                (changed[sibling_key], endpoints[sibling_key])
+                for sibling_key in sorted(changed)
+                if sibling_key[0] != key[0] and changed[sibling_key]
+            )
+            occupied, vacated = split_occupied_vacated(
+                controllable_pixels, endpoints[key], siblings
+            )
+            occupied_pixels = tuple(sorted(occupied))
+            vacated_pixels = tuple(sorted(vacated))
         labels.append(
             PixelArmLabel(
                 action=key[0],
@@ -390,6 +548,8 @@ def label_pixel_root(
                 controllable_components=controllable_components,
                 controllable_pixels=tuple(controllable_pixels),
                 residual_pixels=tuple(residual_pixels),
+                occupied_pixels=occupied_pixels,
+                vacated_pixels=vacated_pixels,
             )
         )
     return tuple(labels)
@@ -437,7 +597,14 @@ def load_label_records(
 
 @dataclass(frozen=True)
 class PixelMaskExample:
-    """One labeled arm prepared for pixel-silhouette training."""
+    """One labeled arm prepared for pixel-silhouette training.
+
+    Under ``TARGET_SEMANTICS_UNION_V1`` the target is the full
+    controllable silhouette and ``vacated_pixels`` is empty; under
+    ``TARGET_SEMANTICS_OCCUPIED_V2`` the target is the occupied
+    silhouette only and ``vacated_pixels`` carries the explicit vacated
+    negatives.
+    """
 
     source_run_id: str
     group: int
@@ -453,6 +620,7 @@ class PixelMaskExample:
     residual_pixels: Tuple[Pixel, ...]
     frame: Optional[Frame] = None
     cell_probabilities: Optional[Tuple[Tuple[float, ...], ...]] = None
+    vacated_pixels: Tuple[Pixel, ...] = ()
 
     @property
     def sort_key(self) -> Tuple[str, int, str, str, int]:
@@ -487,7 +655,8 @@ def pixel_examples_from_store(
     selected: Sequence[ControllableArmExample],
     *,
     root_batch_size: int = 256,
-) -> Tuple[List[PixelMaskExample], Dict[str, int]]:
+    target_semantics: str = TARGET_SEMANTICS_UNION_V1,
+) -> Tuple[List[PixelMaskExample], Dict[str, Any]]:
     """Build pixel training examples for already-selected labeled arms.
 
     ``selected`` is the run-held-out, deterministically sampled arm list
@@ -495,11 +664,18 @@ def pixel_examples_from_store(
     derives the pixel silhouette target of each selected arm and attaches
     the decoded endpoint frame.  Arms whose pixel-level corroborated
     silhouette is empty are excluded (they carry no pixel localization
-    evidence), mirroring the cell trainer's empty-mask exclusion.
+    evidence), mirroring the cell trainer's empty-mask exclusion.  Under
+    ``TARGET_SEMANTICS_OCCUPIED_V2`` the target is the occupied silhouette
+    with vacated pixels attached as explicit negatives, and arms whose
+    occupied silhouette is empty (removal-shaped arms) are additionally
+    excluded and counted.
     """
 
     if root_batch_size <= 0:
         raise ValueError("root batch size must be positive")
+    if target_semantics not in TARGET_SEMANTICS:
+        raise ValueError(f"unknown target semantics: {target_semantics!r}")
+    occupied_mode = target_semantics == TARGET_SEMANTICS_OCCUPIED_V2
     index = record_index(records)
     by_root: Dict[Tuple[str, int, str], List[ControllableArmExample]] = {}
     for example in sorted(selected, key=lambda item: item.sort_key):
@@ -508,6 +684,7 @@ def pixel_examples_from_store(
     root_keys = sorted(by_root)
     examples: List[PixelMaskExample] = []
     empty_pixel_mask_arms = 0
+    empty_occupied_arms = 0
     for start in range(0, len(root_keys), root_batch_size):
         batch_keys = root_keys[start : start + root_batch_size]
         digests: Set[str] = set()
@@ -524,7 +701,9 @@ def pixel_examples_from_store(
             arm_keys = {
                 (item.action, item.duration) for item in by_root[key]
             }
-            labels = label_pixel_root(record, frames, selected=arm_keys)
+            labels = label_pixel_root(
+                record, frames, selected=arm_keys, occupied_split=occupied_mode
+            )
             labelled = {
                 (label.action, label.duration): label for label in labels
             }
@@ -537,6 +716,9 @@ def pixel_examples_from_store(
                     )
                 if not label.controllable_pixels:
                     empty_pixel_mask_arms += 1
+                    continue
+                if occupied_mode and not label.occupied_pixels:
+                    empty_occupied_arms += 1
                     continue
                 frame = frames[item.endpoint_digest]
                 examples.append(
@@ -551,39 +733,66 @@ def pixel_examples_from_store(
                         height=frame.height,
                         columns=int(record["columns"]),
                         rows=int(record["rows"]),
-                        target_pixels=label.controllable_pixels,
+                        target_pixels=(
+                            label.occupied_pixels
+                            if occupied_mode
+                            else label.controllable_pixels
+                        ),
                         residual_pixels=label.residual_pixels,
                         frame=frame,
+                        vacated_pixels=(
+                            label.vacated_pixels if occupied_mode else ()
+                        ),
                     )
                 )
-    statistics = {
+    statistics: Dict[str, Any] = {
         "selected_arms": len(selected),
         "roots": len(root_keys),
         "examples": len(examples),
         "empty_pixel_mask_arms": empty_pixel_mask_arms,
+        "empty_occupied_arms": empty_occupied_arms,
+        "target_semantics": target_semantics,
     }
     return examples, statistics
 
 
-def pixel_targets_digest(examples: Sequence[PixelMaskExample]) -> str:
-    """Deterministic content digest over a pixel-target corpus."""
+def pixel_targets_digest(
+    examples: Sequence[PixelMaskExample],
+    *,
+    target_semantics: str = TARGET_SEMANTICS_UNION_V1,
+) -> str:
+    """Deterministic content digest over a pixel-target corpus.
 
-    digest = hashlib.sha256(_PIXEL_TARGET_DIGEST_PREFIX)
+    The v1 digest is byte-for-byte the spike's original scheme; the v2
+    digest uses its own prefix and additionally pins the vacated-negative
+    sets, so v1 and v2 corpora can never alias.
+    """
+
+    if target_semantics not in TARGET_SEMANTICS:
+        raise ValueError(f"unknown target semantics: {target_semantics!r}")
+    occupied_mode = target_semantics == TARGET_SEMANTICS_OCCUPIED_V2
+    digest = hashlib.sha256(
+        _PIXEL_TARGET_DIGEST_PREFIX_V2
+        if occupied_mode
+        else _PIXEL_TARGET_DIGEST_PREFIX
+    )
     for example in sorted(examples, key=lambda item: item.sort_key):
-        line = "|".join(
-            (
-                example.source_run_id,
-                str(example.group),
-                example.root_digest,
-                example.action,
-                str(example.duration),
-                example.endpoint_digest,
-                f"{example.width}x{example.height}",
-                ";".join(f"{x},{y}" for x, y in sorted(example.target_pixels)),
-                ";".join(f"{x},{y}" for x, y in sorted(example.residual_pixels)),
+        fields = [
+            example.source_run_id,
+            str(example.group),
+            example.root_digest,
+            example.action,
+            str(example.duration),
+            example.endpoint_digest,
+            f"{example.width}x{example.height}",
+            ";".join(f"{x},{y}" for x, y in sorted(example.target_pixels)),
+            ";".join(f"{x},{y}" for x, y in sorted(example.residual_pixels)),
+        ]
+        if occupied_mode:
+            fields.append(
+                ";".join(f"{x},{y}" for x, y in sorted(example.vacated_pixels))
             )
-        )
-        digest.update(line.encode("utf-8"))
+        digest.update("|".join(fields).encode("utf-8"))
         digest.update(b"\n")
     return digest.hexdigest()
 
@@ -682,6 +891,7 @@ class PixelTrainingMetrics:
     target_probability: float
     residual_probability: float
     background_probability: float
+    vacated_probability: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -703,13 +913,15 @@ class PixelMaskValidationReport:
     mean_target_probability: float
     mean_residual_probability: float
     mean_background_probability: float
+    vacated_pixels: int = 0
+    mean_vacated_probability: float = 0.0
 
 
 def _pixel_batch(
     examples: Sequence[PixelMaskExample],
     device: Union[torch.device, str],
-) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
-    """Frames, cell maps, silhouette targets, and residual masks."""
+) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+    """Frames, cell maps, silhouette targets, residual and vacated masks."""
 
     if not examples:
         raise ValueError("a pixel batch requires at least one example")
@@ -730,16 +942,20 @@ def _pixel_batch(
     )
     targets = torch.zeros((len(examples), height, width), dtype=frames.dtype)
     residual = torch.zeros_like(targets)
+    vacated = torch.zeros_like(targets)
     for index, example in enumerate(examples):
         for x, y in example.target_pixels:
             targets[index, y, x] = 1.0
         for x, y in example.residual_pixels:
             residual[index, y, x] = 1.0
+        for x, y in example.vacated_pixels:
+            vacated[index, y, x] = 1.0
     return (
         frames.to(device),
         cell_maps.to(device),
         targets.to(device),
         residual.to(device),
+        vacated.to(device),
     )
 
 
@@ -753,14 +969,21 @@ def train_pixel_mask_head(
     seed: int = 0,
     positive_weight: float = 8.0,
     residual_weight: float = 4.0,
+    vacated_weight: float = 1.0,
 ) -> List[PixelTrainingMetrics]:
-    """Train the refinement head alone; nothing else receives gradients."""
+    """Train the refinement head alone; nothing else receives gradients.
+
+    ``vacated_weight`` prices false positives on explicitly vacated
+    pixels (the v2 occupied/vacated split's hard negatives); at the
+    default 1.0, and whenever examples carry no vacated pixels, the loss
+    is identical to the v1 spike's.
+    """
 
     if not examples:
         raise ValueError("at least one training example is required")
     if epochs <= 0 or batch_size <= 0 or learning_rate <= 0:
         raise ValueError("training parameters must be positive")
-    if positive_weight <= 0 or residual_weight <= 0:
+    if positive_weight <= 0 or residual_weight <= 0 or vacated_weight <= 0:
         raise ValueError("pixel loss weights must be positive")
     head.to(device)
     head.unfreeze()
@@ -771,7 +994,9 @@ def train_pixel_mask_head(
         order = torch.randperm(len(examples), generator=generator).tolist()
         for start in range(0, len(order), batch_size):
             batch = [examples[index] for index in order[start : start + batch_size]]
-            frames, cell_maps, targets, residual = _pixel_batch(batch, device)
+            frames, cell_maps, targets, residual, vacated = _pixel_batch(
+                batch, device
+            )
             logits = head(frames, cell_maps)
             errors = F.binary_cross_entropy_with_logits(
                 logits, targets, reduction="none"
@@ -780,6 +1005,7 @@ def train_pixel_mask_head(
                 1.0
                 + (positive_weight - 1.0) * targets
                 + (residual_weight - 1.0) * residual
+                + (vacated_weight - 1.0) * vacated
             )
             loss = (errors * weights).sum() / weights.sum()
             optimizer.zero_grad(set_to_none=True)
@@ -789,7 +1015,10 @@ def train_pixel_mask_head(
             probabilities = logits.detach().sigmoid()
             target_values = probabilities[targets > 0.5]
             residual_values = probabilities[residual > 0.5]
-            background = probabilities[(targets <= 0.5) & (residual <= 0.5)]
+            vacated_values = probabilities[vacated > 0.5]
+            background = probabilities[
+                (targets <= 0.5) & (residual <= 0.5) & (vacated <= 0.5)
+            ]
             history.append(
                 PixelTrainingMetrics(
                     loss=float(loss.detach().cpu()),
@@ -805,6 +1034,11 @@ def train_pixel_mask_head(
                     ),
                     background_probability=(
                         float(background.mean().cpu()) if background.numel() else 0.0
+                    ),
+                    vacated_probability=(
+                        float(vacated_values.mean().cpu())
+                        if vacated_values.numel()
+                        else 0.0
                     ),
                 )
             )
@@ -855,21 +1089,27 @@ def validate_pixel_mask_head(
     probability_chunks: List[Tensor] = []
     label_chunks: List[Tensor] = []
     residual_chunks: List[Tensor] = []
+    vacated_chunks: List[Tensor] = []
     for start in range(0, len(examples), batch_size):
         batch = examples[start : start + batch_size]
-        frames, cell_maps, targets, residual = _pixel_batch(batch, device)
+        frames, cell_maps, targets, residual, vacated = _pixel_batch(
+            batch, device
+        )
         probabilities = head(frames, cell_maps).sigmoid()
         probability_chunks.append(probabilities.flatten().to("cpu", torch.float32))
         label_chunks.append(targets.flatten().to("cpu") > 0.5)
         residual_chunks.append(residual.flatten().to("cpu") > 0.5)
+        vacated_chunks.append(vacated.flatten().to("cpu") > 0.5)
     probabilities = torch.cat(probability_chunks)
     labels = torch.cat(label_chunks)
     residual_flags = torch.cat(residual_chunks)
+    vacated_flags = torch.cat(vacated_chunks)
     label_values = labels.to(torch.float64)
     probability_values = probabilities.to(torch.float64)
     pixels = int(labels.numel())
     target_pixels = int(labels.sum().item())
     residual_pixels = int(residual_flags.sum().item())
+    vacated_pixels = int(vacated_flags.sum().item())
     prevalence = target_pixels / pixels
     epsilon = 1e-6
     losses = -(
@@ -882,7 +1122,7 @@ def validate_pixel_mask_head(
     true_positive = int((predicted & labels).sum().item())
     predicted_positive = int(predicted.sum().item())
     union = predicted_positive + target_pixels - true_positive
-    background_mask = ~labels & ~residual_flags
+    background_mask = ~labels & ~residual_flags & ~vacated_flags
     return PixelMaskValidationReport(
         examples=len(examples),
         pixels=pixels,
@@ -909,6 +1149,12 @@ def validate_pixel_mask_head(
             if int(background_mask.sum().item())
             else 0.0
         ),
+        vacated_pixels=vacated_pixels,
+        mean_vacated_probability=(
+            float(probabilities[vacated_flags].mean().item())
+            if vacated_pixels
+            else 0.0
+        ),
     )
 
 
@@ -927,8 +1173,17 @@ def save_pixel_mask_head_checkpoint(
     backbone_parameter_digest: str,
     cell_columns: int,
     cell_rows: int,
+    target_semantics: str = TARGET_SEMANTICS_UNION_V1,
+    anchor_cell_dilation: int = ANCHOR_CELL_DILATION,
 ) -> str:
-    """Persist head parameters with every upstream artifact pinned."""
+    """Persist head parameters with every upstream artifact pinned.
+
+    ``target_semantics`` and ``anchor_cell_dilation`` pin the label
+    semantics the head was trained under and the reconstruction
+    convention it must be composed with; loading restores both onto the
+    head so downstream composition cannot silently mix a v2-supervised
+    head with the v1 convention.
+    """
 
     required = {
         "label manifest digest": label_manifest_digest,
@@ -941,6 +1196,10 @@ def save_pixel_mask_head_checkpoint(
             raise ValueError(f"a {name} is required for provenance")
     if cell_columns <= 0 or cell_rows <= 0:
         raise ValueError("cell grid dimensions must be positive")
+    if target_semantics not in TARGET_SEMANTICS:
+        raise ValueError(f"unknown target semantics: {target_semantics!r}")
+    if anchor_cell_dilation < 0:
+        raise ValueError("anchor cell dilation must be non-negative")
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     digest = head.checkpoint_digest
@@ -959,6 +1218,8 @@ def save_pixel_mask_head_checkpoint(
             "pixel_targets_sha256": pixel_targets_sha256,
             "tracker_parameter_sha256": tracker_parameter_digest,
             "backbone_parameter_sha256": backbone_parameter_digest,
+            "target_semantics": target_semantics,
+            "anchor_cell_dilation": int(anchor_cell_dilation),
             "reward_track": REWARD_TRACK,
             "persistent_inputs": list(PERSISTENT_INPUTS),
             "excluded_inputs": list(EXCLUDED_INPUTS),
@@ -995,11 +1256,30 @@ def load_pixel_mask_head_checkpoint(
     head.to(device)
     if frozen:
         head.freeze()
+    # Restore the pinned label semantics and reconstruction convention
+    # onto the head itself: composition sites (the predictor, the gate
+    # drivers) read them from here, so a v2-supervised head can never be
+    # silently reconstructed under the v1 convention.  Checkpoints from
+    # before the v2 spike carry neither key and load as v1.
+    target_semantics = str(
+        checkpoint.get("target_semantics", TARGET_SEMANTICS_UNION_V1)
+    )
+    if target_semantics not in TARGET_SEMANTICS:
+        raise ValueError(f"unknown target semantics: {target_semantics!r}")
+    anchor_cell_dilation = int(
+        checkpoint.get("anchor_cell_dilation", ANCHOR_CELL_DILATION)
+    )
+    if anchor_cell_dilation < 0:
+        raise ValueError("anchor cell dilation must be non-negative")
+    head.target_semantics = target_semantics
+    head.anchor_cell_dilation = anchor_cell_dilation
     return head, {
         "label_manifest_sha256": str(checkpoint["label_manifest_sha256"]),
         "pixel_targets_sha256": str(checkpoint["pixel_targets_sha256"]),
         "tracker_parameter_sha256": str(checkpoint["tracker_parameter_sha256"]),
         "backbone_parameter_sha256": str(checkpoint["backbone_parameter_sha256"]),
+        "target_semantics": target_semantics,
+        "anchor_cell_dilation": anchor_cell_dilation,
         "cell_columns": int(checkpoint["cell_columns"]),
         "cell_rows": int(checkpoint["cell_rows"]),
         "reward_track": str(checkpoint["reward_track"]),
@@ -1098,6 +1378,12 @@ class PixelSilhouettePredictor:
     mask-sensitive gate: the returned prediction carries a per-unit
     probability map -- here at pixel resolution -- and the gate's own
     pinned 0.5 threshold recovers the reconstructed silhouette mask.
+
+    The anchor dilation defaults to the convention the head checkpoint
+    pins (``head.anchor_cell_dilation``, restored by the loader): v1
+    heads reconstruct under the v1 convention (dilation 1), v2 heads
+    under convention v2 (dilation 0).  An explicit
+    ``anchor_cell_dilation`` argument overrides for tests.
     """
 
     def __init__(
@@ -1105,11 +1391,19 @@ class PixelSilhouettePredictor:
         tracker: Any,
         head: PixelMaskHead,
         device: Union[torch.device, str] = "cpu",
+        anchor_cell_dilation: Optional[int] = None,
     ) -> None:
         self.tracker = tracker
         self.head = head.to(device)
         self.head.eval()
         self.device = device
+        if anchor_cell_dilation is None:
+            anchor_cell_dilation = getattr(
+                head, "anchor_cell_dilation", ANCHOR_CELL_DILATION
+            )
+        if anchor_cell_dilation < 0:
+            raise ValueError("anchor cell dilation must be non-negative")
+        self.anchor_cell_dilation = int(anchor_cell_dilation)
 
     def predict(self, frame: Frame) -> PixelMaskPrediction:
         cell_prediction = self.tracker.predict(frame)
@@ -1119,6 +1413,7 @@ class PixelSilhouettePredictor:
             cell_prediction.rows,
             frame.width,
             frame.height,
+            cell_dilation=self.anchor_cell_dilation,
         )
         mask: FrozenSet[Pixel] = frozenset()
         if anchor:

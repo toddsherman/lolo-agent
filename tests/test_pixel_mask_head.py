@@ -21,9 +21,13 @@ from lolo_agent.environment import Action
 from lolo_agent.mask_sensitive_gate import pixel_cell, score_frame
 from lolo_agent.pixel_mask_head import (
     ANCHOR_CELL_DILATION,
+    ANCHOR_CELL_DILATION_V2,
     ANCHOR_CELL_PROBABILITY_THRESHOLD,
+    OCCUPIED_SPLIT_NEIGHBORHOOD_RADIUS,
     PIXEL_MASK_PROBABILITY_THRESHOLD,
     SILHOUETTE_HALO_DILATION,
+    TARGET_SEMANTICS_OCCUPIED_V2,
+    TARGET_SEMANTICS_UNION_V1,
     PixelMaskExample,
     PixelMaskHead,
     PixelMaskPrediction,
@@ -38,9 +42,11 @@ from lolo_agent.pixel_mask_head import (
     pixel_difference,
     pixel_examples_from_store,
     pixel_grid_cell,
+    pixel_neighborhood_equal,
     pixel_targets_digest,
     reconstruct_silhouette_pixels,
     save_pixel_mask_head_checkpoint,
+    split_occupied_vacated,
     train_pixel_mask_head,
     validate_pixel_mask_head,
 )
@@ -737,6 +743,517 @@ class ReconstructionTests(unittest.TestCase):
         self.assertEqual(prediction.mask, frozenset())
         self.assertEqual(
             {value for row in prediction.probabilities for value in row}, {0.0}
+        )
+
+
+# ---------------------------------------------------------------------------
+# Occupied/vacated disambiguation (label semantics v2, learnings 4.37)
+# ---------------------------------------------------------------------------
+
+# Exact expected split for the standard moved-sprite fixture.  The RIGHT
+# and UP factual endpoints differ exactly on RIGHT_DESTINATION and
+# UP_DESTINATION, so a source pixel is vacated unless its 3x3 window
+# touches either destination block: the seam column x=15 (adjacent to the
+# RIGHT destination) and the seam row y=10 (adjacent to the UP
+# destination) stay occupied -- the rule's documented conservative
+# one-pixel seam.
+VACATED_INTERIOR = _block_pixels(8, 15, 11, 20)
+RIGHT_SEAM = frozenset({(15, y) for y in range(10, 20)}) | frozenset(
+    {(x, 10) for x in range(8, 15)}
+)
+# Transformation in place: the sprite recolors without moving.
+TRANSFORM_ENDPOINT = _frame(_block(8, 16, 10, 20, 210))
+# Removal: the sprite disappears; the sibling moves with a two-pixel gap
+# (y0-7) so no 3x3 window of the source block touches the sibling sprite.
+EMPTY_ENDPOINT = _frame({})
+UP_GAP_ENDPOINT = _frame(_block(8, 16, 0, 8))
+
+
+class NeighborhoodEqualityTests(unittest.TestCase):
+    def test_neighborhood_equality_and_clipping(self) -> None:
+        self.assertTrue(pixel_neighborhood_equal(ROOT, ROOT, 0, 0))
+        # (16, 15) is inside the RIGHT destination: the frames differ at
+        # the center, so every radius fails.
+        self.assertFalse(
+            pixel_neighborhood_equal(RIGHT_ENDPOINT, UP_ENDPOINT, 16, 15)
+        )
+        # (5, 5) is background in both frames, but radius 3 reaches the
+        # UP destination at x=8.
+        self.assertTrue(
+            pixel_neighborhood_equal(RIGHT_ENDPOINT, UP_ENDPOINT, 5, 5, 1)
+        )
+        self.assertFalse(
+            pixel_neighborhood_equal(RIGHT_ENDPOINT, UP_ENDPOINT, 5, 5, 3)
+        )
+        # Corner pixels clip instead of raising.
+        self.assertTrue(
+            pixel_neighborhood_equal(ROOT, ROOT, 0, HEIGHT - 1, 2)
+        )
+
+    def test_mismatched_geometry_and_negative_radius_refused(self) -> None:
+        other = Frame(WIDTH, HEIGHT - 10, 1, bytes(WIDTH * (HEIGHT - 10)))
+        with self.assertRaises(ValueError):
+            pixel_neighborhood_equal(ROOT, other, 0, 0)
+        with self.assertRaises(ValueError):
+            pixel_neighborhood_equal(ROOT, ROOT, 0, 0, -1)
+
+
+class OccupiedVacatedSplitTests(unittest.TestCase):
+    def test_preregistered_v2_constants_pinned(self) -> None:
+        self.assertEqual(OCCUPIED_SPLIT_NEIGHBORHOOD_RADIUS, 1)
+        self.assertEqual(ANCHOR_CELL_DILATION_V2, 0)
+        self.assertEqual(TARGET_SEMANTICS_UNION_V1, "union-v1")
+        self.assertEqual(TARGET_SEMANTICS_OCCUPIED_V2, "occupied-v2")
+
+    def test_moved_sprite_splits_into_destination_and_revealed_origin(
+        self,
+    ) -> None:
+        record = _sprite_record()
+        frames = _frames_map(ROOT, RIGHT_ENDPOINT, UP_ENDPOINT)
+        labels = label_pixel_root(record, frames, occupied_split=True)
+        right = {label.action: label for label in labels}["right"]
+        self.assertEqual(
+            set(right.occupied_pixels), RIGHT_DESTINATION | RIGHT_SEAM
+        )
+        self.assertEqual(set(right.vacated_pixels), VACATED_INTERIOR)
+        # The split partitions the controllable silhouette exactly.
+        self.assertEqual(
+            set(right.occupied_pixels) | set(right.vacated_pixels),
+            set(right.controllable_pixels),
+        )
+        self.assertEqual(
+            set(right.occupied_pixels) & set(right.vacated_pixels), set()
+        )
+        # Destination pixels have no sibling evidence and default to
+        # occupied -- the destination-region fallback.
+        self.assertTrue(RIGHT_DESTINATION <= set(right.occupied_pixels))
+
+    def test_split_function_direct_and_deterministic(self) -> None:
+        changed_up = pixel_difference(UP_ENDPOINT, ROOT)
+        occupied, vacated = split_occupied_vacated(
+            SOURCE_PIXELS | RIGHT_DESTINATION,
+            RIGHT_ENDPOINT,
+            ((changed_up, UP_ENDPOINT),),
+        )
+        self.assertEqual(occupied, RIGHT_DESTINATION | RIGHT_SEAM)
+        self.assertEqual(vacated, VACATED_INTERIOR)
+        again = split_occupied_vacated(
+            SOURCE_PIXELS | RIGHT_DESTINATION,
+            RIGHT_ENDPOINT,
+            ((changed_up, UP_ENDPOINT),),
+        )
+        self.assertEqual((occupied, vacated), again)
+
+    def test_transformation_in_place_is_fully_occupied(self) -> None:
+        sequences = (
+            _one_step(ROOT, TRANSFORM_ENDPOINT, Action.RIGHT),
+            _one_step(ROOT, UP_ENDPOINT, Action.UP),
+            _one_step(ROOT, ROOT, Action.NOOP),
+        )
+        record = generate_labels(sequences, columns=COLUMNS, rows=ROWS)[0].payload()
+        frames = _frames_map(ROOT, TRANSFORM_ENDPOINT, UP_ENDPOINT)
+        labels = label_pixel_root(record, frames, occupied_split=True)
+        right = {label.action: label for label in labels}["right"]
+        self.assertEqual(set(right.controllable_pixels), SOURCE_PIXELS)
+        self.assertEqual(set(right.occupied_pixels), SOURCE_PIXELS)
+        self.assertEqual(right.vacated_pixels, ())
+
+    def test_removal_has_no_occupied_pixels_at_the_source(self) -> None:
+        sequences = (
+            _one_step(ROOT, EMPTY_ENDPOINT, Action.RIGHT),
+            _one_step(ROOT, UP_GAP_ENDPOINT, Action.UP),
+            _one_step(ROOT, ROOT, Action.NOOP),
+        )
+        record = generate_labels(sequences, columns=COLUMNS, rows=ROWS)[0].payload()
+        frames = _frames_map(ROOT, EMPTY_ENDPOINT, UP_GAP_ENDPOINT)
+        labels = label_pixel_root(record, frames, occupied_split=True)
+        right = {label.action: label for label in labels}["right"]
+        self.assertEqual(set(right.controllable_pixels), SOURCE_PIXELS)
+        self.assertEqual(right.occupied_pixels, ())
+        self.assertEqual(set(right.vacated_pixels), SOURCE_PIXELS)
+
+    def test_split_disabled_by_default_and_deterministic(self) -> None:
+        record = _sprite_record()
+        frames = _frames_map(ROOT, RIGHT_ENDPOINT, UP_ENDPOINT)
+        plain = label_pixel_root(record, frames)
+        for label in plain:
+            self.assertEqual(label.occupied_pixels, ())
+            self.assertEqual(label.vacated_pixels, ())
+        first = label_pixel_root(record, frames, occupied_split=True)
+        second = label_pixel_root(record, frames, occupied_split=True)
+        self.assertEqual(first, second)
+        for label in first:
+            self.assertEqual(
+                label.occupied_pixels, tuple(sorted(label.occupied_pixels))
+            )
+            self.assertEqual(
+                label.vacated_pixels, tuple(sorted(label.vacated_pixels))
+            )
+
+
+class OccupiedTargetExampleTests(unittest.TestCase):
+    def test_v2_examples_carry_occupied_targets_and_vacated_negatives(
+        self,
+    ) -> None:
+        record = _sprite_record()
+        frames = _frames_map(ROOT, RIGHT_ENDPOINT, UP_ENDPOINT)
+        selected, _statistics = arm_examples_from_records([record])
+        examples, statistics = pixel_examples_from_store(
+            _StubStore(frames),
+            [record],
+            selected,
+            target_semantics=TARGET_SEMANTICS_OCCUPIED_V2,
+        )
+        self.assertEqual(statistics["target_semantics"], "occupied-v2")
+        self.assertEqual(statistics["examples"], 2)
+        self.assertEqual(statistics["empty_occupied_arms"], 0)
+        right = {example.action: example for example in examples}["right"]
+        self.assertEqual(
+            set(right.target_pixels), RIGHT_DESTINATION | RIGHT_SEAM
+        )
+        self.assertEqual(set(right.vacated_pixels), VACATED_INTERIOR)
+        # v1 semantics remain byte-identical to the original spike.
+        v1_examples, v1_statistics = pixel_examples_from_store(
+            _StubStore(frames), [record], selected
+        )
+        v1_right = {example.action: example for example in v1_examples}["right"]
+        self.assertEqual(
+            set(v1_right.target_pixels), SOURCE_PIXELS | RIGHT_DESTINATION
+        )
+        self.assertEqual(v1_right.vacated_pixels, ())
+        self.assertEqual(v1_statistics["empty_occupied_arms"], 0)
+
+    def test_empty_occupied_arms_are_excluded_and_counted(self) -> None:
+        sequences = (
+            _one_step(ROOT, EMPTY_ENDPOINT, Action.RIGHT),
+            _one_step(ROOT, UP_GAP_ENDPOINT, Action.UP),
+            _one_step(ROOT, ROOT, Action.NOOP),
+        )
+        record = generate_labels(sequences, columns=COLUMNS, rows=ROWS)[0].payload()
+        frames = _frames_map(ROOT, EMPTY_ENDPOINT, UP_GAP_ENDPOINT)
+        selected, _statistics = arm_examples_from_records([record])
+        examples, statistics = pixel_examples_from_store(
+            _StubStore(frames),
+            [record],
+            selected,
+            target_semantics=TARGET_SEMANTICS_OCCUPIED_V2,
+        )
+        # The removal arm is all-vacated; the UP arm's destination fell
+        # into the uncorroborated residual (the disclosed
+        # corroboration-granularity limit), leaving an origin-only,
+        # all-vacated component.  Both arms are excluded and counted.
+        self.assertEqual(examples, [])
+        self.assertEqual(statistics["empty_occupied_arms"], 2)
+        # The same arm IS a v1 example: the union silhouette is non-empty.
+        v1_examples, _v1_statistics = pixel_examples_from_store(
+            _StubStore(frames), [record], selected
+        )
+        self.assertIn(
+            "right", {example.action for example in v1_examples}
+        )
+
+    def test_unknown_target_semantics_refused(self) -> None:
+        record = _sprite_record()
+        frames = _frames_map(ROOT, RIGHT_ENDPOINT, UP_ENDPOINT)
+        selected, _statistics = arm_examples_from_records([record])
+        with self.assertRaises(ValueError):
+            pixel_examples_from_store(
+                _StubStore(frames),
+                [record],
+                selected,
+                target_semantics="occupied-v3",
+            )
+        with self.assertRaises(ValueError):
+            pixel_targets_digest([], target_semantics="occupied-v3")
+
+    def test_v2_targets_digest_pins_vacated_and_never_aliases_v1(self) -> None:
+        occupied = tuple(sorted(RIGHT_DESTINATION))
+        vacated = tuple(sorted(VACATED_INTERIOR))
+        example = PixelMaskExample(
+            source_run_id="run-a",
+            group=0,
+            root_digest="root",
+            action="right",
+            duration=4,
+            endpoint_digest=RIGHT_ENDPOINT.digest,
+            width=WIDTH,
+            height=HEIGHT,
+            columns=COLUMNS,
+            rows=ROWS,
+            target_pixels=occupied,
+            residual_pixels=(),
+            frame=RIGHT_ENDPOINT,
+            vacated_pixels=vacated,
+        )
+        v1 = pixel_targets_digest([example])
+        v2 = pixel_targets_digest(
+            [example], target_semantics=TARGET_SEMANTICS_OCCUPIED_V2
+        )
+        self.assertNotEqual(v1, v2)
+        self.assertEqual(
+            v2,
+            pixel_targets_digest(
+                [example], target_semantics=TARGET_SEMANTICS_OCCUPIED_V2
+            ),
+        )
+        from dataclasses import replace as dc_replace
+
+        mutated = dc_replace(example, vacated_pixels=vacated[:-1])
+        # The v1 digest ignores vacated pixels (byte-compatible with the
+        # original spike); the v2 digest pins them.
+        self.assertEqual(v1, pixel_targets_digest([mutated]))
+        self.assertNotEqual(
+            v2,
+            pixel_targets_digest(
+                [mutated], target_semantics=TARGET_SEMANTICS_OCCUPIED_V2
+            ),
+        )
+
+
+class VacatedNegativeTrainingTests(unittest.TestCase):
+    def _occupied_examples(self):
+        # Sprite occupies one cell; the tracker cell map fires on the
+        # sprite cell AND an adjacent vacated (background-valued) cell,
+        # mirroring the union-blurred tracker anchor.  The head must
+        # separate them by appearance.
+        examples = []
+        placements = ((1, 1, 2, 1), (2, 2, 1, 2), (1, 0, 2, 0), (2, 1, 1, 1))
+        for index, (column, row, v_column, v_row) in enumerate(placements):
+            x0, x1 = column * 8, column * 8 + 8
+            y0, y1 = row * 10, row * 10 + 10
+            vx0, vx1 = v_column * 8, v_column * 8 + 8
+            vy0, vy1 = v_row * 10, v_row * 10 + 10
+            frame = _frame(_block(x0, x1, y0, y1))
+            examples.append(
+                PixelMaskExample(
+                    source_run_id="run-a" if index % 2 == 0 else "run-b",
+                    group=index,
+                    root_digest="root",
+                    action="right",
+                    duration=4,
+                    endpoint_digest=frame.digest,
+                    width=WIDTH,
+                    height=HEIGHT,
+                    columns=COLUMNS,
+                    rows=ROWS,
+                    target_pixels=tuple(sorted(_block_pixels(x0, x1, y0, y1))),
+                    residual_pixels=(),
+                    frame=frame,
+                    cell_probabilities=_cell_map(
+                        {(column, row): 1.0, (v_column, v_row): 1.0}
+                    ),
+                    vacated_pixels=tuple(
+                        sorted(_block_pixels(vx0, vx1, vy0, vy1))
+                    ),
+                )
+            )
+        return examples
+
+    def test_vacated_pixels_train_as_negatives_and_are_reported(self) -> None:
+        examples = self._occupied_examples()
+        head = _make_head(seed=5)
+        history = train_pixel_mask_head(
+            head,
+            examples,
+            "cpu",
+            epochs=8,
+            batch_size=2,
+            learning_rate=1e-2,
+            seed=7,
+            vacated_weight=8.0,
+        )
+        self.assertTrue(history)
+        self.assertGreaterEqual(history[-1].vacated_probability, 0.0)
+        report = validate_pixel_mask_head(head, examples, "cpu", batch_size=2)
+        self.assertEqual(report.vacated_pixels, 4 * 80)
+        self.assertGreater(
+            report.mean_target_probability, report.mean_vacated_probability
+        )
+
+    def test_default_vacated_weight_reproduces_v1_loss_behavior(self) -> None:
+        # Without vacated pixels the vacated weight is inert: identical
+        # seeds and examples give identical parameters either way.
+        examples = [
+            example
+            for example in self._occupied_examples()
+        ]
+        stripped = [
+            PixelMaskExample(
+                source_run_id=example.source_run_id,
+                group=example.group,
+                root_digest=example.root_digest,
+                action=example.action,
+                duration=example.duration,
+                endpoint_digest=example.endpoint_digest,
+                width=example.width,
+                height=example.height,
+                columns=example.columns,
+                rows=example.rows,
+                target_pixels=example.target_pixels,
+                residual_pixels=example.residual_pixels,
+                frame=example.frame,
+                cell_probabilities=example.cell_probabilities,
+            )
+            for example in examples
+        ]
+        first = _make_head(seed=9)
+        train_pixel_mask_head(
+            first, stripped, "cpu", epochs=2, batch_size=2, seed=11,
+            vacated_weight=1.0,
+        )
+        second = _make_head(seed=9)
+        train_pixel_mask_head(
+            second, stripped, "cpu", epochs=2, batch_size=2, seed=11,
+            vacated_weight=64.0,
+        )
+        self.assertEqual(first.checkpoint_digest, second.checkpoint_digest)
+
+    def test_invalid_vacated_weight_refused(self) -> None:
+        head = _make_head()
+        with self.assertRaises(ValueError):
+            train_pixel_mask_head(
+                head,
+                self._occupied_examples(),
+                "cpu",
+                epochs=1,
+                vacated_weight=0.0,
+            )
+
+
+class ConventionV2CheckpointTests(unittest.TestCase):
+    _PINS = {
+        "label_manifest_digest": "a" * 64,
+        "pixel_targets_sha256": "b" * 64,
+        "tracker_parameter_digest": "c" * 64,
+        "backbone_parameter_digest": "d" * 64,
+    }
+
+    def test_v2_checkpoint_pins_semantics_and_convention(self) -> None:
+        head = _make_head()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "head-v2.pt"
+            save_pixel_mask_head_checkpoint(
+                head,
+                path,
+                cell_columns=COLUMNS,
+                cell_rows=ROWS,
+                target_semantics=TARGET_SEMANTICS_OCCUPIED_V2,
+                anchor_cell_dilation=ANCHOR_CELL_DILATION_V2,
+                **self._PINS,
+            )
+            loaded, provenance = load_pixel_mask_head_checkpoint(path)
+        self.assertEqual(provenance["target_semantics"], "occupied-v2")
+        self.assertEqual(provenance["anchor_cell_dilation"], 0)
+        self.assertEqual(loaded.target_semantics, "occupied-v2")
+        self.assertEqual(loaded.anchor_cell_dilation, 0)
+
+    def test_pre_v2_checkpoints_load_as_union_v1_convention(self) -> None:
+        head = _make_head()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "head-legacy.pt"
+            save_pixel_mask_head_checkpoint(
+                head, path, cell_columns=COLUMNS, cell_rows=ROWS, **self._PINS
+            )
+            payload = torch.load(path, map_location="cpu", weights_only=True)
+            # Simulate a checkpoint written before the v2 spike.
+            del payload["target_semantics"]
+            del payload["anchor_cell_dilation"]
+            torch.save(payload, path)
+            loaded, provenance = load_pixel_mask_head_checkpoint(path)
+        self.assertEqual(provenance["target_semantics"], "union-v1")
+        self.assertEqual(provenance["anchor_cell_dilation"], ANCHOR_CELL_DILATION)
+        self.assertEqual(loaded.anchor_cell_dilation, ANCHOR_CELL_DILATION)
+
+    def test_invalid_semantics_and_dilation_refused_on_save(self) -> None:
+        head = _make_head()
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ValueError):
+                save_pixel_mask_head_checkpoint(
+                    head,
+                    Path(directory) / "head.pt",
+                    cell_columns=COLUMNS,
+                    cell_rows=ROWS,
+                    target_semantics="occupied-v3",
+                    **self._PINS,
+                )
+            with self.assertRaises(ValueError):
+                save_pixel_mask_head_checkpoint(
+                    head,
+                    Path(directory) / "head.pt",
+                    cell_columns=COLUMNS,
+                    cell_rows=ROWS,
+                    anchor_cell_dilation=-1,
+                    **self._PINS,
+                )
+
+
+class ConventionV2PredictorTests(unittest.TestCase):
+    def test_predictor_reads_the_convention_from_the_head(self) -> None:
+        tracker = _StubTracker(
+            _StubCellPrediction(COLUMNS, ROWS, _cell_map({(1, 1): 0.9}))
+        )
+        head = _make_head()
+        head.anchor_cell_dilation = ANCHOR_CELL_DILATION_V2
+        predictor = PixelSilhouettePredictor(tracker, head, device="cpu")
+        self.assertEqual(predictor.anchor_cell_dilation, 0)
+        prediction = predictor.predict(ROOT)
+        undilated_anchor = anchor_pixel_region(
+            _cell_map({(1, 1): 0.9}),
+            COLUMNS,
+            ROWS,
+            WIDTH,
+            HEIGHT,
+            cell_dilation=0,
+        )
+        self.assertEqual(
+            undilated_anchor, cell_pixel_block((1, 1), WIDTH, HEIGHT, COLUMNS, ROWS)
+        )
+        allowed = dilate_pixels(
+            undilated_anchor, WIDTH, HEIGHT, SILHOUETTE_HALO_DILATION
+        )
+        self.assertTrue(prediction.mask <= allowed)
+
+    def test_explicit_dilation_overrides_and_default_stays_v1(self) -> None:
+        tracker = _StubTracker(
+            _StubCellPrediction(COLUMNS, ROWS, _cell_map({(1, 1): 0.9}))
+        )
+        head = _make_head()
+        # A head with no pinned convention keeps the v1 dilation.
+        default_predictor = PixelSilhouettePredictor(tracker, head, device="cpu")
+        self.assertEqual(
+            default_predictor.anchor_cell_dilation, ANCHOR_CELL_DILATION
+        )
+        override = PixelSilhouettePredictor(
+            tracker, head, device="cpu", anchor_cell_dilation=0
+        )
+        self.assertEqual(override.anchor_cell_dilation, 0)
+        with self.assertRaises(ValueError):
+            PixelSilhouettePredictor(
+                tracker, head, device="cpu", anchor_cell_dilation=-1
+            )
+
+
+class FunctionalGateDriverTests(unittest.TestCase):
+    def test_mask_source_description_reports_the_applied_convention(
+        self,
+    ) -> None:
+        from lolo_agent.pixel_mask_train import (
+            DEFAULT_FUNCTIONAL_GATE_REPORT,
+            DEFAULT_HEAD_CHECKPOINT_V2,
+            mask_source_description,
+        )
+
+        description = mask_source_description(TARGET_SEMANTICS_OCCUPIED_V2, 0)
+        self.assertIn("dilation 0 cells", description)
+        self.assertIn("occupied-v2", description)
+        self.assertIn("unchanged substitution-replay helpers", description)
+        self.assertEqual(
+            DEFAULT_HEAD_CHECKPOINT_V2,
+            "experiments/lolo1-wp5/pixel-mask-head-v2.pt",
+        )
+        self.assertEqual(
+            DEFAULT_FUNCTIONAL_GATE_REPORT,
+            "experiments/lolo1-wp5/functional-gate-v2-report.json",
         )
 
 
