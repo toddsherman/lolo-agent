@@ -678,3 +678,445 @@ argmax flips the predicate ever produced on raw telemetry were
 instrument-gap artifacts of the §4.29 signature reset, which the module
 detects, flags, and disqualifies (they vanish under the corrected
 candidate universe).
+
+## 12. E1 preregistration — Gate 4 chain completion (appended 2026-08-17, BEFORE either arm runs)
+
+Governs §7.1 E1 only. Written and committed to this document before
+`entity-v330-…` or `entity-v331-…` executed a single emulator step. Nothing
+in §12.1–§12.7 may be revised after launch; §12.8 is the results section,
+written after both arms complete.
+
+### 12.1 Budget derivation from evidence (§7.1's matched-budget requirement)
+
+The design left `realization_branch_budget` declared but unjustified (§8
+gives wall/event ceilings only). Before preregistering, the parameter was
+traced to its consumption site and sized from the run that actually reached
+the discriminator cell. All measurements below are read-only over stored
+telemetry; zero emulator cost.
+
+**(a) What the parameter actually is.** `realization_branch_budget` is
+consumed at exactly one place in the monolith:
+
+```
+neural_planner.py:11180   relational_hold_slots = min(
+                              self._relational_reach_cells_slot_budget(),   # = branch_budget
+                              max(0, beam_width - len(retained_parent_ids)),
+                              len(relational_hold_candidates))
+```
+
+It is a **per-depth-level parent-reserve slot count** inside the option
+search's beam assembly — *not* a count of verified branches. It applies only
+when (i) `relational_planner_authority == "selection"`
+(`_relational_reach_cells_slot_budget:19801` returns 0 otherwise) and (ii)
+the active hypothesis's realization kind is `reach_cells_under_hold` (hold
+or exploit). The candidate set is built by
+`_relational_hold_reserve_candidates:19812`: option nodes whose
+`tracked_world_state_signature` equals the held signature, no life change,
+no dark transition, **one representative per distinct target player slot**,
+ranked by grid distance to the objective's target cells.
+
+The other two realizations consume no branch budget at all:
+`restore_archive` acts through `_relational_restore_preference:19767` (a 0/1
+key that *leads* the untouched restore key at `:27079`), and
+`reproduce_transition` through a stable partition of entity-frontier
+candidates (`:11134`). `branch_budget` additionally enters the hypothesis
+score only as the subtractive `search_cost = search_cost_per_branch ×
+branch_budget = 0.001 × budget` (`relational_planner.py:762`).
+
+Consequence: the effective per-level slot count is
+`min(budget, beam residual, candidate supply)`. The budget can only bind
+when it is *below* the candidate supply.
+
+**(b) What the traverse that reached `(12,11)` actually cost.** Measured over
+`entity-v325-room3-object-removed-probe-d12` (9,691 verified branches,
+69,809 events):
+
+| Fact | Value |
+| --- | --- |
+| Decisions that ran an option search | d1 (1,947 branches), d5 (6,028), d8 (1,716) — no others |
+| First branch reaching pixel `(192,176)` = cell `(12,11)` | global branch **1,389**, `branch_index` 1,389, **depth 10** (max depth 12), seq 6,463, already carrying `human_prior_collected_heart_slots: [[192,176]]` |
+| `human_prior_option_milestone_settled` for that slot | 2 events, both decision 1 (seqs 12,079 / 12,098), action paths of length 11 and 12 |
+| Committed traverse | d2 = `archive_branch_restored` (`branches_examined: 0`) landing at `(192,160)` = `(12,10)`; d3 = commit at `(192,176)`, `branches_examined: 7`; d4 = collect `[[192,176]]`, `branches_examined: 7` |
+| Verified branches consumed by d2–d4 | **0** — `total branches` is 1,947 at d1's commit and still 1,947 at d4's |
+
+So the traverse cost **1,389 verified branches to first reach the region**,
+inside a 1,947-branch decision-1 search, and **zero** additional branches
+across the three committed decisions that executed it — the committed
+traverse was a replay of options the decision-1 search had already found.
+
+**(c) The supply ceiling that actually binds.** `len(representatives)` in
+`_relational_hold_reserve_candidates` equals the number of distinct
+non-fatal target player slots at a beam level sharing the held signature.
+Measured directly:
+
+| Corpus | Per-level distinct hold-matching representatives |
+| --- | --- |
+| v325 d1 (the search that reached `(12,11)`), depths 1→12 | 3, 5, 7, 9, 11, 10, 11, 13, 13, 11, 7, 5 — **max 13** |
+| v327 (E1 root), removal signature `85fd9014d58deb42` | present only at d1 depth 11 (4 branches / **2** reps) and depth 12 (19 / **3**) |
+| v329 (E1 root, shadow) | d1 depth 12: 19 branches / **3** reps |
+
+**(d) Derivation, and the values fixed for E1.**
+
+- **`relational_exploit_budget = 48`** (the `NeuralPlanningConfig` default,
+  the value v329 logged). Derivation: the maximum hold-matching
+  representative supply ever observed at a beam level is 13 (v325's
+  reaching search); 48 is **3.69× that ceiling**, and 16× the supply
+  observed at the E1 root itself. Because the effective slot count is
+  `min(budget, residual, supply)`, 48 is already non-binding everywhere in
+  the corpus and any larger value is provably inert. Sizing it as a
+  multiple of the 1,389-branch traverse cost would be a **unit error** —
+  branches are not beam slots, and the term is hard-capped by
+  `beam_width = 128` regardless. The evidence therefore *confirms* the
+  shadow value rather than changing it; it is fixed here so the
+  confirmation is on the record before the run.
+- **`relational_hold_budget = 8`.** Same unit; ≥2× the 3-representative
+  supply at the E1 root. The hold objective carries an empty `target_cells`
+  tuple (`relational_planner.py:1109`), so its ranking is distance-free and
+  extra slots buy nothing beyond supply coverage.
+- **`relational_establish_budget = 48`.** Structurally inert: the establish
+  realization is `restore_archive`, which consumes no slots. Its only
+  effect is `search_cost = 0.048` inside the hypothesis score. Left at the
+  shadow value so establish and exploit carry an identical search-cost
+  term and the chain ordering is unchanged.
+- **`relational_decision_budget = 4`.** Positive evidence from v325: the
+  committed traverse from the removal configuration to collection spanned
+  **3** committed decisions (d2 restore → d3 reach → d4 collect); 4 covers
+  it with one decision of margin. Explicitly **not** derived from v329's
+  `budget_exhausted` at d7 — per learnings §4.44 that termination is the
+  expected telemetry-mode null and carries no information about budget
+  sizing.
+- **`relational_max_queue = 4`** — unchanged; v329 proposed 2 chains total.
+
+None of these are CLI-settable (`neural_run.py` exposes only
+`--relational-planner-authority`); they are the module defaults, so the run
+commands in §12.3 realize exactly the values derived here. Both arms carry
+identical values; the control never reads them (`authority = off`).
+
+**(e) A preregistered power limitation, disclosed now, not after scoring.**
+The reserve family that consumes `exploit_branch_budget` executes only
+inside an option search. At the E1 root every conforming run to date —
+v327, v328, v329 — ran the option search **exactly once, at decision 1**
+(12,232 verified branches), then emitted `human_prior_option_search_deferred`
+at decisions 2, 5 and 8 and committed d2–d8 by restore/replay with
+`branches_examined` of 0 or 7. In v329 the exploit hypothesis was active
+d3–d7, a span containing **zero** option searches. If the treatment
+reproduces that search geometry, the exploit's realization seam has no
+execution opportunity and the only relational lever with authority is the
+d2 restore preference (active only while an `establish` hypothesis with
+`restore_archive` realization is live). This is recorded as the named
+mechanism most likely to produce a FAIL, and as the reason the budget
+derivation above cannot be rescued by a larger number. Selection authority
+may still change the d2 restore and hence the downstream search geometry —
+that is precisely the untested question — so this is a power caveat, not a
+prediction, and it does not alter any bit below.
+
+### 12.2 Arms, root, and matched budget
+
+- **Control** — `--relational-planner-authority off`; run id
+  `entity-v330-room3-e1-control-off-d12`.
+- **Treatment** — `--relational-planner-authority selection`; run id
+  `entity-v331-room3-e1-treatment-selection-d12`.
+- The arms differ in **exactly two** things: that flag and `--run-id`. Every
+  other flag, file, and digest is byte-identical, and both arms load the
+  certified record store (`--human-prior-accessibility-records`) with
+  `--human-prior-accessibility-preference-weight 0.0`, so the WP8-lite
+  preference term is **off in both arms** and any behavioural difference is
+  attributable to the relational layer alone.
+- **Root** (identical to §6.1 of the WP8-lite design; all digests
+  re-verified 2026-08-17 against the files on disk):
+  memory `entity-v318-room3-known-push-connected-mask-d2` decision 1 with
+  `--resume-option-search`; physical state the same run's **seq-2026**
+  checkpoint (`goal_milestone_checkpoint_snapshot_stored`, decision 1,
+  `state-00000002`, state sha256
+  `33addc6c7c6828bf13d35ed0666ce7712647a8b614a12e343e96ff87ddcbfb92`;
+  source `events.jsonl` sha256
+  `0bbe1d1571d2d9d02b03e51816acc07a7945ba97256ec6e710ff88c7179b6f83`).
+- **Input digests** (re-verified 2026-08-17, all equal to the v322–v329
+  manifests): host `c03694c5…3e891f3`, core `a3450a09…5a40024886`, ROM
+  `914c6769…3efd059e01`, neural checkpoint `bb7a7a37…284f678b9`,
+  entity-behavior checkpoint `984b83c3…25c7c6aa`, record store
+  `cf01a67aca2b6e8feeab38c0c85520dec2470cba2a5f2257cd817912c204d1fe`.
+- **Matched budget**: `--decisions 8`; wall ceiling **10,800 s per arm**
+  under an external watchdog; one native run at a time, control first; no
+  depth/beam escalation; no rerun on an identical negative result. Observed
+  envelope from this root: 12,232 verified branches, ~30 min, ~79.5k events
+  per run (v327/v328/v329); event expectation ≤ 200k/arm, overrun reported.
+- **Scoring window**: each arm's first **10,000**
+  `human_prior_option_branch_verified` events, applied under the §7.2
+  ruling of the WP8-lite design, restated and inherited verbatim:
+  branch-level quantities are hard-truncated at branch 10,000, and the
+  run's decision-level restore/commit events are in scope **provided the
+  branch in question was verified within the first 10,000 branches**. The
+  strict wall-order reading is rejected for the reason given there — at
+  this root every restore postdates branch 10,000, so it would make the
+  design self-voiding by construction.
+
+### 12.3 Exact command lines (both arms)
+
+```
+.venv/bin/python -m lolo_agent.neural_run \
+  --host build/lolo-libretro-host \
+  --core "/Users/toddsherman/Library/Application Support/RetroArch/cores/nestopia_libretro.dylib" \
+  --rom "Adventures of Lolo.nes" \
+  --checkpoint experiments/platform-benchmarks/m5-real-data-training-sample.pt \
+  --log-root experiments/lolo1-entity-v10/evaluations \
+  --run-id <ARM RUN ID> \
+  --decisions 8 \
+  --action-durations 1,2,4,8,16 \
+  --verify-actions 7 \
+  --archive-capacity 1024 \
+  --archive-max-age 2048 \
+  --behavioral-best-first-archive \
+  --behavioral-edge-coverage-weight 4.0 \
+  --human-prior-hearts \
+  --human-prior-heart-reward 25.0 \
+  --human-prior-all-hearts-reward 75.0 \
+  --human-prior-chest-reward 100.0 \
+  --human-prior-life-loss-penalty 100.0 \
+  --human-prior-best-first-archive \
+  --human-prior-episodic-graph-guidance \
+  --human-prior-goal-exhaustion-frontier-budget 32 \
+  --human-prior-goal-exhaustion-rollback \
+  --human-prior-graph-stagnation-visits 1 \
+  --human-prior-navigation-recovery-grace 2 \
+  --human-prior-option-archive-representatives 80 \
+  --human-prior-option-causal-effect-frontier \
+  --human-prior-option-effect-controllability-depth 2 \
+  --human-prior-option-effect-frontier \
+  --human-prior-option-effect-local-controls \
+  --human-prior-option-effect-phase-offsets 3 \
+  --human-prior-option-effect-probe-limit 16 \
+  --human-prior-option-effect-stability-steps 3 \
+  --human-prior-option-entity-curiosity-reserve 32 \
+  --human-prior-option-entity-curiosity-weight 8.0 \
+  --human-prior-option-entity-frontier \
+  --human-prior-option-entity-inert-penalty-weight 1.0 \
+  --human-prior-option-search-action-frames 16 \
+  --human-prior-option-search-beam-width 128 \
+  --human-prior-option-search-depth 12 \
+  --human-prior-option-search-goal-proximity-reserve 12 \
+  --human-prior-option-search-goal-world-state-reserve 12 \
+  --human-prior-option-search-long-direction-frames 8 \
+  --human-prior-option-search-milestone-reserve 32 \
+  --human-prior-option-search-missing-player-reserve 4 \
+  --human-prior-option-search-position-reserve 16 \
+  --human-prior-option-search-stationary-history 2 \
+  --human-prior-option-search-world-state-reserve 32 \
+  --human-prior-phase-position-novelty \
+  --human-prior-proactive-entity-probe-limit 16 \
+  --anonymous-entity-behavior-checkpoint experiments/lolo1-entity-v10/anonymous-behavior-relational-v2-clean.json \
+  --anonymous-entity-behavior-mode frozen \
+  --resume-run experiments/lolo1-entity-v10/evaluations/entity-v318-room3-known-push-connected-mask-d2 \
+  --resume-decision 1 \
+  --resume-option-search \
+  --resume-state-run experiments/lolo1-entity-v10/evaluations/entity-v318-room3-known-push-connected-mask-d2 \
+  --resume-state-checkpoint-event-seq 2026 \
+  --human-prior-accessibility-records experiments/lolo1-wp5/wp8lite-accessibility-records.json \
+  --human-prior-accessibility-preference-weight 0.0 \
+  --relational-planner-authority <off | selection>
+```
+
+This is v329's flag profile with `telemetry` replaced by the arm value.
+
+### 12.4 The three preregistered bits (fixed; ANY mixed outcome = FAIL)
+
+1. **Deliberate chain.** The treatment emits, in order and with the full
+   `relational_hypothesis_*` score decomposition present at each step:
+   `relational_hypothesis_proposed` carrying an `establish` → `hold` →
+   `exploit` chain with `chain_parent_id` linkage, **before decision 2**;
+   `relational_hypothesis_realized` on the removal-class restore; and
+   `relational_hypothesis_achieved` on the **exploit** hypothesis. The
+   proposal must be logged **before** the realization that collects — i.e.
+   the `relational_hypothesis_proposed` event carrying the exploit's
+   `hypothesis_id` must precede, in sequence order, the
+   `decision_committed` event that collects the milestone.
+2. **Chained consequence.** Within the window, the treatment's committed
+   trajectory collects the milestone heart at cell `(12,11)` / slot
+   `(192,176)` — evidenced by `[192,176]` entering
+   `human_prior_collected_heart_slots` on a `decision_committed` event —
+   and the control does not. If both collect it, the treatment must do so
+   at a **strictly earlier** decision index. The metric is the milestone
+   cell only, never affordance counts. Recorded precedent: neither v324,
+   v327, v328 nor v329 collected it in-window from this root.
+3. **No safety regression.** The treatment records no more
+   `human_prior_life_loss_confirmed` committed decisions than the control
+   within the window.
+
+All three must pass. **ANY mixed outcome = FAIL.** No weight tuning, no
+budget re-sizing, no rerun on an identical negative result. Per §7.1, a
+FAIL keeps WP8 engineering-only and makes the next move a representation
+question (WP2/WP3 integration depth), not a parameter question.
+
+### 12.5 VOID conditions (WP8-lite precedent; a VOID is not evidence)
+
+VOID — disclosed defect, fix the staging, disclose, rerun once:
+
+1. **Config inequality.** Either arm's manifest `planning_config` differs
+   from the other's in any field except `relational_planner_authority`
+   (and the derived `relational_planner_enabled`), or either differs from
+   v329's `planning_config` in any field except those two.
+2. **Records inequality.** The two arms' `verified_accessibility_records_loaded`
+   events do not both report `record_count: 3` with content signatures
+   `15604cb5…` / `37ea410d…` / `47975c94…` and store digest
+   `cf01a67a…`, or the two arms' record digests differ from each other.
+3. **Seeding defect.** No archived branch carrying the removal-class
+   signature `85fd9014d58deb42` exists within the window in **either**
+   arm — the choice the chain depends on never materialises.
+4. **Root defect.** Either manifest's `episodic_resume` block does not
+   record source run `entity-v318-room3-known-push-connected-mask-d2`,
+   `source_decision: 1`, `state_source_checkpoint_event_seq: 2026`, and
+   `state_source_events_sha256: 0bbe1d15…`.
+5. **Budget defect.** Either arm exceeds the 10,800 s wall ceiling and is
+   killed by the watchdog before `run_finished`, or either arm's window is
+   starved (fewer than 10,000 verified branches).
+
+Budget-exhausted non-reach is **censored**, never reported as
+"unreachable" (learnings §2, §4.14).
+
+### 12.6 Scoring procedure and determinism
+
+A single deterministic scorer walks each arm's `events.jsonl` once,
+truncates branch-level quantities at branch 10,000, applies §12.4 verbatim,
+and writes `experiments/lolo1-wp5/e1-gate4-report.json` with a
+canonical-JSON `digest_sha256` over the report body. The scorer is run
+**twice** end to end; both runs must produce byte-identical reports, and
+the digest is recorded in §12.8. The scorer reads only telemetry; it
+contains no arm-specific branches beyond the run ids.
+
+### 12.7 Ownership and what this preregistration does not claim
+
+This section changes no code. `neural_planner.py`, `relational_planner.py`
+and `tmp/` are untouched by the E1 lane. Nothing here claims a strict-track
+result: the certified records are assisted-lineage (§9.5), so a PASS would
+close Gate 4 **on the assisted track only**. E2 remains a separate,
+later experiment against the §11.3 seeded root and is not scored here.
+
+### 12.8 E1 results — **FAIL** (scored 2026-08-17, after both arms completed)
+
+Both arms ran to completion, one at a time, control first, under the §12.2
+watchdog. Neither approached the wall ceiling.
+
+| | Control `entity-v330-room3-e1-control-off-d12` | Treatment `entity-v331-room3-e1-treatment-selection-d12` |
+| --- | --- | --- |
+| Authority | `off` | `selection` |
+| Wall clock | 1,812 s (ceiling 10,800 s) | 1,822 s |
+| Events | 79,477 (= v327/v328 exactly) | 79,493 (= v329 exactly) |
+| Verified branches | 12,232, all in the decision-1 search | 12,232, all in the decision-1 search |
+| Option searches | started d1, completed d1; **deferred at d2, d5, d8** | identical |
+| `frozen_evaluation_audit` | pass | pass |
+
+Report: `experiments/lolo1-wp5/e1-gate4-report.json`, body digest
+`6b6708dbdb53e9d20e1d9d823689049edcc4f036a08d1968b88a1cff630f138e`, file
+sha256 `a2295221ef746714b983590cac25bc162063e8b1e4f294f26b53e492105b0c65`.
+The scorer was run three times end to end; all three reports are
+byte-identical (§12.6 satisfied).
+
+**No VOID condition fired.** V1: the arms' `planning_config` differ in
+exactly `relational_planner_authority` and `relational_planner_enabled`
+(125 fields each), and each differs from v329's only within that same set.
+V2: both arms loaded `record_count: 3` with content signatures
+`15604cb5…`/`37ea410d…`/`47975c94…` at
+`verified_accessibility_weight: 0.0`. V3: 4 removal-signature branches
+verified in-window in each arm, first at branch index **9,419**, and 4
+matching `human_prior_option_archive_added` events in each — the choice
+materialised. V4: both manifests record the v318 source run, decision 1,
+checkpoint seq 2026, events sha `0bbe1d15…`. V5: both runs finished; 12,232
+branches ≥ the 10,000 window; 79.5k events ≤ 200k.
+
+**Bit 1 — deliberate chain: FAIL** (two clauses pass, one fails).
+
+- *Passes*: `relational_hypothesis_proposed` at seq 75,243, **decision 1**
+  (before decision 2), queue `establish → hold → exploit` with correct
+  `chain_parent_id` linkage and the complete
+  `relational_hypothesis_*` decomposition on all three;
+  `relational_hypothesis_realized` on the removal-class restore at seq
+  76,564, decision 2, decomposition complete.
+- *Fails*: **no `relational_hypothesis_achieved` for the exploit
+  hypothesis.** The exploit activated at decision 3 (seq 77,195) and
+  terminated `budget_exhausted` at decision 7 (seq 79,005). A second
+  hold/exploit pair was proposed at decision 8 (option reuse at seq 79,013)
+  and did not resolve before the run ended.
+
+**Bit 2 — chained consequence: FAIL.** Neither arm collected the `(12,11)` /
+`(192,176)` milestone heart within the window. Both arms collected exactly
+the same two hearts at the same decisions: `(96,128)` at d1 and `(128,128)`
+at d3.
+
+**Bit 3 — no safety regression: PASS.** Zero
+`human_prior_life_loss_confirmed` committed decisions in both arms.
+
+**Verdict: FAIL** (§12.4: any mixed outcome = FAIL). No tuning, no rerun.
+
+### 12.9 The mechanism, named
+
+The two arms' committed trajectories are **identical**, state id by state
+id: d1 `state-00012280`, d2 `state-00012256`, d3 `state-00012294`, d4
+`state-00012305`, d5 `state-00012257`, d6 `state-00012317`, d7/d8
+`state-00012322`; restores at d2/d5/d8 to `12256`/`12257`/`12322` in both
+arms; identical actions, plans and committed scores in both console logs.
+The treatment's telemetry differs from the control's by exactly **16
+events** — precisely its 16 `relational_*` events — and its total event
+count equals the telemetry-mode shadow run's to the event. Selection
+authority changed nothing.
+
+Two independent reasons, both now measured rather than inferred:
+
+1. **The exploit's realization seam never had an execution opportunity.**
+   `reach_cells_under_hold` consumes its budget only inside the
+   option-search beam assembly (`neural_planner.py:11180`). The treatment
+   ran the option search exactly once, at decision 1, and deferred it at
+   decisions 2, 5 and 8. The exploit was active from decision 3 to decision
+   7 — a span containing **zero** option searches. Its 48-slot budget was
+   never consulted once. This is exactly the power limitation preregistered
+   in §12.1(e), and it means the `budget_exhausted` termination is a
+   *seam-opportunity* fact, not a budget-size fact: no value of
+   `relational_exploit_budget`, and no value of
+   `relational_decision_budget` within an 8-decision run, could have
+   changed this outcome.
+2. **The one seam that did fire was redundant.** The establish
+   hypothesis's `restore_archive` realization is the only relational lever
+   with authority at a restore, and it is active only while an establish
+   hypothesis is live — i.e. at decision 2 alone (at d5 and d8 the active
+   hypothesis is exploit/hold, so `_relational_restore_preference_active`
+   is false and restore selection is bit-identical by construction). At
+   decision 2 the preference was exercised and the baseline picked the
+   same branch anyway: `state-00012256` carries the removal signature
+   `85fd9014d58deb42`, so the hypothesis preference and the plain frontier
+   key agree. This is learnings §4.43's redundancy finding reproduced one
+   level up — the chain layer inherits it because its only authoritative
+   restore is the same restore WP8-lite already showed to be
+   non-discriminating.
+
+This is a genuinely new negative, not a repeat of §4.44. The shadow run's
+`budget_exhausted` was uninformative by construction (zero authority). Here
+the exploit *held* selection authority for five decisions and still could
+not act, because the authority it holds is expressed through a seam the
+planner's own search schedule never opened. The chain machinery is
+confirmed correct a second time on native state (proposal before execution,
+linkage, realization on the restore, hold achieved at d3, option storage
+and reuse at d8) — Gate 4's "hypothesis logged before execution" criterion
+is mechanically satisfied — but Gate 4's *consequence* criteria remain
+open, and the gap is not in the hypothesis layer's scoring.
+
+### 12.10 Consequence for the plan (no tuning, no rerun)
+
+Per §7.1's outcome rule, a FAIL keeps WP8 engineering-only and makes the
+next move a representation/integration question, not a parameter question.
+The specific, evidence-named next questions, in the order the evidence
+supports:
+
+1. **Search-schedule coupling, not budget size.** A hypothesis with
+   selection authority cannot steer a planner that does not search while it
+   is active. Whether an active `reach_cells_under_hold` objective should
+   be able to *request* an option search — rather than only re-rank the
+   parents of a search the stagnation machinery independently decides to
+   run — is a seam-design question for §4 step 4, and it is the single
+   change this result identifies. It must be designed and preregistered on
+   its own bits, not slipped in as a rerun of E1.
+2. **E2 is unaffected and remains the right next experiment.** Its
+   discriminator is a *restore-instant* disagreement at the §11.3 seeded
+   conflict root, which the decision-2 seam does reach; E1's failure mode
+   is about decisions 3–7, where E2 places no weight.
+3. **Do not re-size `relational_exploit_budget`.** §12.1 fixed it from
+   evidence and §12.9 shows it was never read. Changing it would be tuning
+   against a parameter the run proved inert.

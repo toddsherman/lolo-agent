@@ -2068,6 +2068,72 @@ Evidence:
 - run `entity-v329-room3-relational-shadow-d12`
 - `docs/wp8-relational-planner-design-2026-08-17.md`
 
+### 4.45 E1 FAIL: hypotheses are passengers — they cannot request the search they need
+
+What was tried:
+
+- Experiment E1 (preregistered, design doc §12; report digest
+  `6b6708db…`, scorer byte-identical across three runs and validated
+  against v329 first): control (authority `off`) vs treatment
+  (`selection`), matched budgets, from the v318 pre-push root — does the
+  treatment collect the certified `(12,11)` milestone that four
+  incidental runs never collect in-window, with its chain logged first?
+
+Result:
+
+- **FAIL.** Bit 1 fails (the exploit never achieved; terminated
+  `budget_exhausted` at d7), bit 2 fails (neither arm collected
+  `(12,11)`), bit 3 passes (zero life losses). No VOID condition fired;
+  the arms' committed trajectories are identical state-id by state-id and
+  the treatment's telemetry differs by exactly its 16 relational events.
+
+Mechanism (measured, two parts):
+
+1. **Seam-opportunity, not budget size.** The exploit held selection
+   authority across decisions 3–7, which contained **zero option
+   searches** — and its reserve seam fires only inside an option search.
+   Its budget was never read. The planner commits most decisions from
+   archives and direct selection without searching, so a hypothesis
+   wanting to steer has no lever on those decisions at all.
+2. **Redundancy one level up.** The only seam that did fire — the d2
+   restore preference — was redundant exactly as §4.43 found: the
+   candidate already carried the removal signature.
+
+Classification:
+
+- **Falsified at the measured gate**, with an architectural cause: the
+  relational planner is a *passenger*. It can rank what the search
+  offers, but it cannot cause the search that would realize its
+  objective, nor act on non-search decisions.
+
+Learning:
+
+- Hypothesis-level planning requires **schedule authority**, not just
+  scoring authority. An objective that cannot request an exact search, or
+  express itself through the non-search commit path, cannot steer
+  regardless of how well it is scored or budgeted.
+- Another units lesson: `realization_branch_budget` is a per-depth
+  parent-reserve slot count, not a verified-branch count. Sizing it from
+  traverse cost (1,389 branches) would have been a unit error; the
+  derivation caught it, and the run then proved the budget inert (supply
+  ceiling 2–3 at this root vs 48 allocated).
+
+Plan change:
+
+- Next: design and preregister **search-schedule coupling** — can an
+  active objective request an option search (and/or express a navigation
+  target through the existing control-frontier machinery) — scored on its
+  own bits. Explicitly NOT a budget re-size (proved inert) and NOT a
+  rerun of E1. E2 (conflict root) is unaffected by this failure mode and
+  remains queued.
+
+Evidence:
+
+- `docs/wp8-relational-planner-design-2026-08-17.md` §12
+- `experiments/lolo1-wp5/e1-gate4-report.json`
+- runs `entity-v330-…-e1-control-off-d12`,
+  `entity-v331-…-e1-treatment-selection-d12`
+
 ## 5. Platform and cost learnings
 
 ### 5.1 RunPod for emulator branching

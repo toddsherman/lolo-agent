@@ -1625,6 +1625,30 @@ carries its evidence.
    capability it gates; require of every gate an instrument that can
    contradict it.
 
+## 19. Amendment — 2026-08-17 evening (evidence: learnings §4.45)
+
+**WP8 needs schedule authority, not just scoring authority.** E1 failed
+with an architectural cause: the relational planner can rank what an
+option search offers, but cannot cause a search, and has no lever on the
+decisions that commit without searching (which is most of them — the
+exploit held authority across five consecutive search-free decisions).
+This supersedes §17 item 1's "wire a preference term" framing entirely:
+preference wiring is now twice-measured as insufficient (§4.43 restore
+scalar, §4.45 hypothesis reserve).
+
+Consequences for the plan:
+
+1. WP8's next increment is **objective-driven search scheduling** — an
+   active hypothesis may request an exact search, and/or express its
+   target through the existing control-frontier/navigation machinery —
+   preregistered on its own bits, with the same off/telemetry/selection
+   gating and invariance discipline.
+2. Gate 4's remaining open criteria are unchanged; what changed is the
+   mechanism believed capable of closing them.
+3. Roadmap §7 WP8's implicit assumption — that hypotheses realize
+   through exact search — must state that the planner controls *when*
+   search happens, or the hypothesis layer is inert by construction.
+
 Amended next sequence: (a) Gate 3 repetition run; (b) WP8-lite preference
 ablation; (c) WP2 multi-track correspondence with the endpoint-relative
 contract; (d) WP3 including the removal-chain gate; (e) WP5 spike and
