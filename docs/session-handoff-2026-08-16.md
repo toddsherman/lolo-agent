@@ -167,3 +167,24 @@ review says otherwise:
 Do not: raise beam/depth after failure, retrain returnability on tiny
 negatives, add reward weights, or start broad room training before the
 partition manifest is committed and ratified.
+
+## 7. End-of-day state (2026-08-16 evening)
+
+Suite: 729 tests OK. The loop (Todd's standing directive) is active with
+persistent memory; see the /loop queue in the latest ScheduleWakeup.
+
+- Gate 3 CLOSED (assisted track). WP9 step 1 FALSIFIED as written
+  (learnings 4.33). WP5 arc complete through the mask-sensitive gate:
+  localization closed across Room 3 (tracker v4), promotion failed on
+  mask RESOLUTION (4.34) - next spike is pixel-mask reconstruction, then
+  rerun the same gate.
+- Landed modules: partitions, object_tracks, counterfactual_labels,
+  strict_lineage, milestone_discovery(+run), controllable_tracker(+train),
+  tracker_substitution_replay, tracker_ood_eval, mask_sensitive_gate,
+  accessibility, accessibility_preference, object_correspondence,
+  strict_from_assisted_state track.
+- Pending: WP8-lite ablation (planner seam patch prepared in
+  docs/wp8-lite-ablation-design-2026-08-16.md; planner file owned by
+  Todd's still-running fix session); WP9a redesign (4.33 requirements);
+  pixel-mask reconstruction spike; Todd's two external fix sessions
+  unreported at day end.
