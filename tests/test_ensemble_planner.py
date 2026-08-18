@@ -21484,3 +21484,260 @@ class RelationalTerminalStepDecideTests(unittest.TestCase):
                         == "relational_ladder_tier_committed"
                     ]
                 )
+
+
+class OptionSearchGridEnv:
+    """A deterministic 8x8 walk, one cell per step, no autonomous motion.
+
+    `PositionGoalPrior` reads the player slot as `(index_of_255, 0)`, so
+    every reachable cell is a distinct player slot and NOOP is a true
+    no-op: the correct local NOOP control for a parent always shows the
+    player exactly where that parent left it.
+    """
+
+    WIDTH = 8
+
+    def __init__(self, start: int = 27) -> None:
+        self.index = start
+        self.start = start
+
+    def reset(self) -> Frame:
+        self.index = self.start
+        return self._frame()
+
+    def step(self, action: Action, frames: int = 1) -> Frame:
+        del frames
+        x, y = self.index % self.WIDTH, self.index // self.WIDTH
+        if action == Action.LEFT:
+            x = max(0, x - 1)
+        elif action == Action.RIGHT:
+            x = min(self.WIDTH - 1, x + 1)
+        elif action == Action.UP:
+            y = max(0, y - 1)
+        elif action == Action.DOWN:
+            y = min(self.WIDTH - 1, y + 1)
+        self.index = y * self.WIDTH + x
+        return self._frame()
+
+    def save_state(self) -> int:
+        return self.index
+
+    def load_state(self, state: int) -> Frame:
+        self.index = state
+        return self._frame()
+
+    def _frame(self) -> Frame:
+        pixels = bytearray(self.WIDTH * self.WIDTH)
+        pixels[self.index] = 255
+        return Frame(self.WIDTH, self.WIDTH, 1, bytes(pixels))
+
+
+class OptionSearchLocalNeutralCacheTests(unittest.TestCase):
+    """The matched NOOP control may never be taken from another parent.
+
+    Learnings section 4.58 recorded that the option search memoised its
+    local NOOP probes on `(id(parent), edge_duration)` — a CPython
+    address — and that removing unrelated code changed the cache hit/miss
+    split, which is only possible if addresses are being reused.  A node
+    is a parent at exactly one depth and is freed as soon as the beam that
+    held it is rebound, so a node allocated at a later depth can be handed
+    the dead parent's address and inherit its cache entry.  The entry it
+    inherits is a NOOP control measured from a *different* state, and
+    every local action-dependence, local milestone and inert-penalty
+    decision for that parent is then made against the wrong baseline.
+    """
+
+    @staticmethod
+    def _agent(depth: int, beam: int):
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        logger = RecordingLogger()
+        agent = VerifiedNeuralAgent(
+            OptionSearchGridEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(
+                    Action.UP,
+                    Action.DOWN,
+                    Action.LEFT,
+                    Action.RIGHT,
+                ),
+                planning_depth=1,
+                action_frames=1,
+                human_prior_heart_reward=1.0,
+                human_prior_best_first_archive=True,
+                human_prior_option_search_depth=depth,
+                human_prior_option_search_beam_width=beam,
+                human_prior_option_search_action_frames=1,
+                visual_stagnation_visits=99,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.goal_prior = PositionGoalPrior()
+        return logger, agent
+
+    @staticmethod
+    def _probed_controls(events):
+        """Every (parent, edge_duration) NOOP probe the search performed.
+
+        `human_prior_option_branch_verified` is emitted once per
+        (parent, action, edge_duration) with no early exit, and it carries
+        the child's full control sequence, so dropping the last control
+        recovers the parent that was probed.
+        """
+
+        probed = set()
+        for event in events:
+            if event["event"] != "human_prior_option_branch_verified":
+                continue
+            path = tuple(event["path"])
+            durations = tuple(event["durations"])
+            probed.add((path[:-1], durations[:-1], durations[-1]))
+        return probed
+
+    @staticmethod
+    def _computed_controls(events):
+        return [
+            (
+                tuple(event["parent_path"]),
+                tuple(event["parent_durations"]),
+                event["action_frames"],
+            )
+            for event in events
+            if event["event"]
+            == "human_prior_option_local_neutral_verified"
+        ]
+
+    def test_local_neutral_key_is_the_parent_control_prefix(self) -> None:
+        node = _HumanPriorOptionNode(
+            state=0,
+            frame=Frame(8, 8, 1, bytes(64)),
+            path=(Action.DOWN, Action.RIGHT),
+            durations=(1, 4),
+            analysis=None,
+            source_signature="s",
+            target_signature="t",
+            score=0.0,
+            depth=2,
+            target_state_visits=0,
+            target_position_visits=0,
+        )
+
+        self.assertEqual(
+            neural_planner._human_prior_option_local_neutral_key(
+                node, 4
+            ),
+            ((Action.DOWN, Action.RIGHT), (1, 4), 4),
+        )
+
+    def test_local_neutral_key_never_aliases_two_control_prefixes(
+        self,
+    ) -> None:
+        """The key must survive the parent it names.
+
+        A freed node's address is reused within one search — the loop
+        below reproduces that reuse directly.  An `id()`-based key would
+        make the resurrected node collide with the dead one; a
+        control-prefix key cannot, because the prefixes differ.
+        """
+
+        frame = Frame(8, 8, 1, bytes(64))
+
+        def make(path, durations):
+            return _HumanPriorOptionNode(
+                state=0,
+                frame=frame,
+                path=path,
+                durations=durations,
+                analysis=None,
+                source_signature="s",
+                target_signature="t",
+                score=0.0,
+                depth=len(path),
+                target_state_visits=0,
+                target_position_visits=0,
+            )
+
+        key = neural_planner._human_prior_option_local_neutral_key
+        dead = make((Action.DOWN,), (1,))
+        dead_address = id(dead)
+        dead_key = key(dead, 1)
+        del dead
+
+        reused = None
+        held = []
+        for step in range(256):
+            node = make((Action.UP, Action.LEFT), (1, step))
+            if id(node) == dead_address:
+                reused = node
+                break
+            held.append(node)
+        self.assertIsNotNone(
+            reused,
+            "CPython did not reuse the freed node address; the aliasing "
+            "hazard this test pins could not be staged",
+        )
+        assert reused is not None
+        self.assertEqual(id(reused), dead_address)
+        self.assertNotEqual(key(reused, 1), dead_key)
+
+    def test_option_search_never_serves_a_cross_parent_noop_control(
+        self,
+    ) -> None:
+        """The regression that section 4.58 predicted, pinned end to end.
+
+        A node is a parent at exactly one depth, and within that depth the
+        only legitimate cache hits are the repeats inside its own action
+        loop.  So every probed (parent, edge_duration) pair must be
+        computed exactly once.  Before the re-key this run served 1-2
+        controls from dead parents, and the count moved between processes.
+        """
+
+        for depth, beam in ((6, 8), (7, 12), (8, 16)):
+            with self.subTest(depth=depth, beam=beam):
+                logger, agent = self._agent(depth, beam)
+                agent._search_human_prior_options()
+                probed = self._probed_controls(logger.events)
+                computed = self._computed_controls(logger.events)
+
+                self.assertTrue(probed)
+                self.assertEqual(len(computed), len(set(computed)))
+                self.assertEqual(set(computed), probed)
+
+    def test_every_served_noop_control_belongs_to_its_own_parent(
+        self,
+    ) -> None:
+        """The consequence, not just the bookkeeping.
+
+        NOOP is a no-op in this fixture, so a correct local control for a
+        parent reports the player in the parent's own cell.  A control
+        inherited from a dead parent reports a different cell, and the
+        local action-dependence measured against it is wrong.
+        """
+
+        logger, agent = self._agent(8, 16)
+        agent._search_human_prior_options()
+
+        def cell_after(path):
+            env = OptionSearchGridEnv()
+            env.reset()
+            for action in path:
+                env.step(action)
+            return (env.index, 0)
+
+        checked = 0
+        for event in logger.events:
+            if event["event"] != "human_prior_option_branch_verified":
+                continue
+            parent_path = tuple(event["path"])[:-1]
+            self.assertEqual(
+                tuple(
+                    event["human_prior_option_local_neutral_player_slot"]
+                ),
+                cell_after(parent_path),
+            )
+            checked += 1
+        self.assertGreater(checked, 100)

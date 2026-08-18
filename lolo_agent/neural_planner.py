@@ -569,6 +569,37 @@ class _HumanPriorOptionNode:
     latest_milestone_depth: Optional[int] = None
 
 
+# Identity of a parent's local NOOP control probe inside one option search.
+_HumanPriorOptionLocalNeutralKey = Tuple[
+    Tuple[Action, ...], Tuple[int, ...], int
+]
+
+
+def _human_prior_option_local_neutral_key(
+    parent: _HumanPriorOptionNode,
+    edge_duration: int,
+) -> _HumanPriorOptionLocalNeutralKey:
+    """Key the matched NOOP control of ``parent`` for ``edge_duration``.
+
+    The option search memoises one NOOP probe per parent per edge duration,
+    because the control does not depend on which action shares that
+    duration.  The key must therefore be equal across a single parent's
+    action loop and distinct everywhere else.
+
+    ``id(parent)`` satisfies neither property safely: it is only unique
+    while the object is alive.  A node is a parent at exactly one depth,
+    and it is freed as soon as the beam that held it is rebound, so a node
+    allocated at a later depth can be given the dead parent's address and
+    inherit its cache entry -- a matched control taken from a different
+    state.  ``(path, durations)`` is the node's complete control sequence
+    from the search root: it is unique per node within one search, it
+    stays valid after the node dies, and it is a field the node already
+    carries.
+    """
+
+    return (parent.path, parent.durations, edge_duration)
+
+
 @dataclass(frozen=True)
 class _HumanPriorEpisodicGraphPlan:
     """Temporary pixel-transition route toward an observed milestone.
@@ -9664,11 +9695,21 @@ class VerifiedNeuralAgent:
         neutral_targets: Dict[
             int, Tuple[Frame, Optional[int], HeartGoalAnalysis]
         ] = {}
+        # Keyed on the parent's control prefix rather than ``id(parent)``.
+        # A CPython address is only unique while the object is alive: a
+        # parent dropped from the beam is freed as soon as ``parents`` is
+        # rebound, its address can be handed to a node allocated at a later
+        # depth, and that node would then be served the dead parent's NOOP
+        # control as its own matched control.  ``(path, durations)`` is the
+        # node's full control sequence from the search root, so it is unique
+        # per node within one search, stable after the node dies, and equal
+        # for exactly the lookups an address key was meant to collapse.
         local_neutral_targets: Dict[
-            Tuple[int, int], Tuple[Frame, Optional[int], HeartGoalAnalysis]
+            _HumanPriorOptionLocalNeutralKey,
+            Tuple[Frame, Optional[int], HeartGoalAnalysis],
         ] = {}
         neutral_events: set[Tuple[int, int]] = set()
-        local_neutral_events: set[Tuple[int, int]] = set()
+        local_neutral_events: set[_HumanPriorOptionLocalNeutralKey] = set()
         try:
             for depth in range(1, maximum_search_depth + 1):
                 if depth > base_search_depth:
@@ -9747,7 +9788,11 @@ class VerifiedNeuralAgent:
                                 env_step_seq=neutral_seq,
                                 **self._frame_fields(neutral_target),
                             )
-                        local_neutral_key = (id(parent), edge_duration)
+                        local_neutral_key = (
+                            _human_prior_option_local_neutral_key(
+                                parent, edge_duration
+                            )
+                        )
                         local_neutral_cached = local_neutral_targets.get(
                             local_neutral_key
                         )
