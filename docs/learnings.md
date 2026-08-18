@@ -2189,6 +2189,57 @@ Evidence:
 - `docs/wp8-search-scheduling-design-2026-08-17.md` §Q1
 - runs v325 (contrast), v327–v331
 
+### 4.47 E3-pre: the discriminator survives at 16 decisions but is visibly dying
+
+What was tried:
+
+- The design's cheap pre-check (`entity-v332-…-e3-pre-control-off-d16`,
+  complete): one 16-decision authority-`off` run to confirm the
+  `(12,11)` discriminator still discriminates in the extended window
+  E3 requires.
+
+Result:
+
+- The control does **not** collect `(12,11)` in 16 decisions — so the
+  discriminator is technically alive. But the trajectory shows it
+  closing: after re-entering the east region at d9 it descends column 12
+  — `(12,7) → (12,8) → (12,9)` — ending **2 cells** from the target and
+  moving directly at it (Chebyshev distance 3 → 2 across d9–d16).
+- Also confirmed: exactly one search, the decision-0 resume audit —
+  §4.46's suppression finding reproduces at 16 decisions.
+
+Classification:
+
+- **Measurement-validity finding.** A matched-budget E3 at 16 decisions
+  would remain formally sound, but a treatment-collects/control-doesn't
+  result would evidence a 2–3 decision *speedup*, not a capability
+  difference — the redundancy pattern of §4.43/§4.45 for a third time,
+  dressed as a Gate 4 pass.
+
+Learning:
+
+- Discriminator validity is a *trend* property, not a binary at one
+  budget. "Control never does X in N steps" must be checked against
+  whether the control is converging on X; a near-miss is a warning, not
+  a margin.
+- The stronger discriminator per roadmap §18 item 3 is the `(8,4)` /
+  `(9,12)` hearts, which lie OUTSIDE the certified envelope and require a
+  **second manipulation** — a capability claim incidental behavior has
+  never demonstrated, rather than a speed claim.
+
+Plan change:
+
+- Definitive extension launched (`entity-v333-…-off-d24`): if the control
+  collects `(12,11)` by 24 decisions the discriminator is dead and E3
+  re-targets to the second-manipulation discriminator; if not, E3 runs at
+  24 decisions with real headroom, and the speedup-vs-capability caveat
+  is preregistered either way.
+
+Evidence:
+
+- run `entity-v332-room3-e3-pre-control-off-d16`
+- `docs/wp8-search-scheduling-design-2026-08-17.md` §Q4
+
 ## 5. Platform and cost learnings
 
 ### 5.1 RunPod for emulator branching
