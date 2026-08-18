@@ -960,6 +960,89 @@ def objective_hold_signature(hypothesis: RelationalHypothesis) -> str:
     )
 
 
+def active_hypothesis(plan: HypothesisPlan) -> Optional[RelationalHypothesis]:
+    """The plan's active hypothesis, or ``None`` when the queue is idle."""
+
+    if not plan.active_id:
+        return None
+    return next(
+        (
+            hypothesis
+            for hypothesis in plan.hypotheses
+            if hypothesis.hypothesis_id == plan.active_id
+        ),
+        None,
+    )
+
+
+def published_target_cells(plan: HypothesisPlan) -> Tuple[Cell, ...]:
+    """Certified target cells the plan's LIVE CHAIN publishes, if any.
+
+    Rule R1 of the lifecycle design (``docs/wp8-lifecycle-design-2026-08-17.md``
+    section 4.4), stated as a plan-level query rather than a per-hypothesis
+    one. :func:`objective_target_cells` asks a single hypothesis what it
+    carries; this asks the *chain* what it is working toward.
+
+    The difference is one measured instant wide. A ``hold_configuration``
+    hypothesis carries an empty target set by construction — its job is to
+    keep a configuration intact *for a dependent successor* — so while a
+    hold is active the chain's objective is present in the queue and
+    unpublished. That is the three-event gap learnings section 4.53
+    measured. Here the hold publishes its successor's cells, and only its
+    successor's: never a sibling chain's, never a hold without a
+    successor, and never a successor whose relational initiation is
+    unsatisfiable on the configuration the chain holds.
+
+    This changes NO lifetime. ``active_decisions``, ``decision_budget``
+    and the budget-exhaustion transition are untouched, and the window is
+    still bounded by chain existence — a violated hold or a collected
+    milestone ends it exactly as before. The chain-parent conjunct of the
+    successor's initiation is supplied by the parent being *active*, which
+    is the whole content of "the chain is live"; every other conjunct is
+    evaluated unchanged. The caller still enforces its own hold predicate
+    against the live verified signature, so a configuration that departed
+    since the last verified transition refuses at the consumer exactly as
+    it does today.
+
+    Returns ``()`` — indistinguishable from "no opinion", so every
+    consumer falls open to its incumbent ordering — with no active
+    hypothesis, with a non-``reach_cells_under_hold`` realization, with an
+    active hold that has no exploit successor, and with a successor whose
+    initiation is unsatisfiable. An active exploit publishes exactly what
+    it publishes today.
+    """
+
+    active = active_hypothesis(plan)
+    if active is None:
+        return ()
+    own = objective_target_cells(active)
+    if own:
+        return own
+    if active.kind is not HypothesisKind.HOLD_CONFIGURATION:
+        return ()
+    if active.realization.kind != REALIZATION_REACH_CELLS_UNDER_HOLD:
+        return ()
+    successor = next(
+        (
+            hypothesis
+            for hypothesis in plan.hypotheses
+            if hypothesis.chain_parent_id == active.hypothesis_id
+            and hypothesis.kind is HypothesisKind.EXPLOIT_CONFIGURATION
+        ),
+        None,
+    )
+    if successor is None:
+        return ()
+    if not initiation_satisfied(
+        successor,
+        active.target_configuration_signature,
+        plan.remaining_milestone_cells,
+        plan.achieved_ids + (active.hypothesis_id,),
+    ):
+        return ()
+    return objective_target_cells(successor)
+
+
 def target_cell_distance(
     target_cells: Sequence[Cell], cell: Optional[Cell]
 ) -> Optional[int]:

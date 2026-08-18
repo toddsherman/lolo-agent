@@ -999,6 +999,28 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--relational-lifecycle",
+        choices=("budget_only", "chain_published", "record_store"),
+        default=NeuralPlanningConfig().relational_lifecycle,
+        help=(
+            "which publication source the WP8 navigation-deposit gate S3 "
+            "reads (docs/wp8-lifecycle-design-2026-08-17.md section 6.3, "
+            "E7): 'budget_only' (the default) keeps today's behavior "
+            "exactly — the gate reads the ACTIVE hypothesis's payload, so "
+            "it is blind while a hold_configuration hypothesis, whose "
+            "payload is empty by construction, is active (learnings "
+            "section 4.53's three-event gap); 'chain_published' is rule "
+            "R1, under which an active hold publishes its successor "
+            "exploit's certified cells to that gate alone, changing no "
+            "budget, no lifetime and no ordering; 'record_store' is the "
+            "section 5.4 attribution arm, which re-derives the same cells "
+            "from the certified record store with no reference to the "
+            "hypothesis machinery and is scored on no bit. Seams S1 and "
+            "S2 read the active hypothesis's payload in every mode. "
+            "Inert at any authority other than 'selection'"
+        ),
+    )
+    parser.add_argument(
         "--relational-decision-budget",
         type=int,
         default=NeuralPlanningConfig().relational_decision_budget,
@@ -2194,6 +2216,7 @@ def main() -> None:
         ),
         relational_planner_authority=args.relational_planner_authority,
         relational_navigation_seams=args.relational_navigation_seams,
+        relational_lifecycle=args.relational_lifecycle,
         relational_decision_budget=args.relational_decision_budget,
     )
     rom_sha256 = sha256_file(args.rom)

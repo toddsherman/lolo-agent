@@ -56,6 +56,7 @@ from .relational_planner import (
     objective_target_cells as relational_objective_target_cells,
     option_key as relational_option_key,
     propose as relational_propose,
+    published_target_cells as relational_published_target_cells,
     record_attempt as relational_record_attempt,
     record_success as relational_record_success,
     target_cell_distance as relational_target_cell_distance,
@@ -110,6 +111,35 @@ RELATIONAL_NAVIGATION_SEAM_MODES = (
 # S3 adds none: it only makes a candidate exist for the already-working
 # S2 key to re-rank (learnings section 4.51).
 RELATIONAL_NAVIGATION_DEPOSIT_MAX_DISTANCE = 1
+# WP8 hypothesis-lifecycle selector
+# (docs/wp8-lifecycle-design-2026-08-17.md sections 4.4 and 6.3, E7).
+# Which publication source seam S3's gate reads. It is scoped to S3 ALONE
+# and deliberately so: S1 (commit ladder) and S2 (target-aware restore
+# key) keep reading the active hypothesis's own payload in every mode, so
+# the treatment's trajectory prefix stays identical to E6's and the single
+# scoreable instant survives (design section 6.6(c)).
+# - "budget_only" (the default) is today's behavior exactly: the gate
+#   reads the ACTIVE hypothesis's payload, so it is blind while a
+#   `hold_configuration` hypothesis — whose payload is empty by
+#   construction — is the active one (learnings section 4.53's
+#   three-event gap).
+# - "chain_published" is rule R1: an active hold publishes its successor
+#   exploit's certified cells to the S3 gate. It changes no lifetime, no
+#   budget and no ordering; it changes which hypothesis's payload the
+#   gate reads.
+# - "record_store" is the design section 5.4 qualification 1 attribution
+#   arm: the gate re-derives the same cells from the certified record
+#   store directly, with NO reference to the propose/score/advance
+#   machinery. The section 5.4 ruling declines it as a Gate 4 candidate —
+#   it is built to be MEASURED, not shipped, and it is scored on no bit.
+RELATIONAL_LIFECYCLE_BUDGET_ONLY = "budget_only"
+RELATIONAL_LIFECYCLE_CHAIN_PUBLISHED = "chain_published"
+RELATIONAL_LIFECYCLE_RECORD_STORE = "record_store"
+RELATIONAL_LIFECYCLE_MODES = (
+    RELATIONAL_LIFECYCLE_BUDGET_ONLY,
+    RELATIONAL_LIFECYCLE_CHAIN_PUBLISHED,
+    RELATIONAL_LIFECYCLE_RECORD_STORE,
+)
 
 
 @dataclass(frozen=True)
@@ -173,6 +203,16 @@ class NeuralPlanningConfig:
     # alone. It is inert at any authority other than "selection", where
     # no seam can fire in the first place.
     relational_navigation_seams: str = "both"
+    # WP8 hypothesis-lifecycle selector
+    # (docs/wp8-lifecycle-design-2026-08-17.md section 6.3, E7). Which
+    # publication source seam S3's deposit gate reads: "budget_only" (the
+    # default, today's behavior exactly — the active hypothesis's own
+    # payload), "chain_published" (rule R1: an active hold publishes its
+    # successor exploit's certified cells), or "record_store" (the
+    # section 5.4 attribution arm, scored on no bit). Scoped to S3 alone:
+    # S1 and S2 read the active hypothesis's payload in every mode. Inert
+    # at any authority other than "selection".
+    relational_lifecycle: str = "budget_only"
     relational_max_queue: int = 4
     relational_establish_budget: int = 48
     relational_hold_budget: int = 8
@@ -869,6 +909,11 @@ class VerifiedNeuralAgent:
             raise ValueError(
                 "relational navigation seams must be one of "
                 f"{RELATIONAL_NAVIGATION_SEAM_MODES}"
+            )
+        if self.config.relational_lifecycle not in RELATIONAL_LIFECYCLE_MODES:
+            raise ValueError(
+                "relational lifecycle must be one of "
+                f"{RELATIONAL_LIFECYCLE_MODES}"
             )
         if self.config.relational_max_queue <= 0:
             raise ValueError("relational max queue must be positive")
@@ -19658,15 +19703,23 @@ class VerifiedNeuralAgent:
     def _relational_emit_hypothesis_event(
         self,
         event_type: str,
-        hypothesis: RelationalHypothesis,
+        hypothesis: Optional[RelationalHypothesis],
         decision: int,
         **fields: Any,
     ) -> None:
+        # ``hypothesis`` is ``None`` only for the E7 section 5.4
+        # attribution arm, whose publication source has no hypothesis by
+        # construction; every other caller passes one and the emitted
+        # field order is unchanged for them.
         self._emit(
             event_type,
             decision=decision,
             authority=self.config.relational_planner_authority,
-            **relational_hypothesis_log_fields(hypothesis),
+            **(
+                relational_hypothesis_log_fields(hypothesis)
+                if hypothesis is not None
+                else {}
+            ),
             **fields,
         )
 
@@ -20006,6 +20059,122 @@ class VerifiedNeuralAgent:
             relational_objective_hold_signature(active),
         )
 
+    def _relational_lifecycle_mode(self) -> str:
+        """The E7 publication-source selector, read from one place."""
+
+        return self.config.relational_lifecycle
+
+    def _relational_record_store_publication(
+        self,
+    ) -> Optional[
+        Tuple[
+            Optional[RelationalHypothesis],
+            Tuple[Tuple[int, int], ...],
+            str,
+        ]
+    ]:
+        """The section 5.4 attribution arm's publication source.
+
+        Deliberately independent of the hypothesis layer: it re-derives
+        `certified_milestone_cells & remaining_milestone_cells` — design
+        section 5.1's "same function of the same two inputs" — from the
+        provenance-checked record store and the goal prior, and references
+        nothing in propose / score / advance. That independence IS the
+        measurement: design section 5.2's falsifiability objection says
+        such a gate would survive deleting the hypothesis layer entirely,
+        and this arm exists so that claim is tested rather than argued
+        (section 5.4 qualification 1). It is scored on **no bit** and the
+        section 5.4 ruling declines it as a Gate 4 candidate.
+
+        Returns ``(None, cells, configuration_signature)``: no hypothesis,
+        because there need not be one — which is exactly the point.
+        """
+
+        signature = (
+            self.current_human_prior_root_object_state
+            .tracked_world_state_signature
+        )
+        records = self.verified_accessibility_records
+        record = (
+            records.get(signature)
+            if signature
+            else getattr(records, "root_record", None)
+        )
+        if record is None or not record.provenance.certified:
+            return None
+        remaining: Tuple[Tuple[int, int], ...] = ()
+        if self.goal_prior is not None:
+            remaining = tuple(
+                sorted(
+                    (slot[0] // 16, slot[1] // 16)
+                    for slot in self.goal_prior.current_slots()
+                )
+            )
+        targets = tuple(
+            sorted(
+                set(
+                    (int(cell[0]), int(cell[1]))
+                    for cell in record.certified_milestone_cells
+                )
+                & set(remaining)
+            )
+        )
+        if not targets:
+            return None
+        return (None, targets, signature)
+
+    def _relational_navigation_deposit_objective(
+        self,
+    ) -> Optional[
+        Tuple[
+            Optional[RelationalHypothesis],
+            Tuple[Tuple[int, int], ...],
+            str,
+        ]
+    ]:
+        """Publication source for seam S3's gate ONLY (E7's selector).
+
+        Seams S1 and S2 keep calling
+        :meth:`_relational_navigation_objective` in every mode, so their
+        behavior is byte-identical to E6's whatever this returns. The
+        per-consumer scoping is the E7 design's key move (section 6.3):
+        widening S2's publication window would lengthen the window in
+        which a proximity-ranked restore key applies (section 7.2), change
+        the restore selection, and destroy the single instant bit 2 is
+        scored on (section 6.6(c)).
+
+        ``budget_only`` — the default — returns exactly what the shared
+        objective returns, so the gate is byte-identical to today.
+        """
+
+        mode = self._relational_lifecycle_mode()
+        if mode == RELATIONAL_LIFECYCLE_BUDGET_ONLY:
+            return self._relational_navigation_objective()
+        if not self._relational_selection_authority():
+            return None
+        if mode == RELATIONAL_LIFECYCLE_RECORD_STORE:
+            return self._relational_record_store_publication()
+        # RELATIONAL_LIFECYCLE_CHAIN_PUBLISHED — rule R1. The active
+        # hypothesis still owns the hold predicate and the telemetry
+        # identity; only the cells may come from its live successor.
+        plan = self.relational_plan
+        if plan is None:
+            return None
+        active = self._relational_active_hypothesis()
+        if (
+            active is None
+            or active.realization.kind != RELATIONAL_REACH_CELLS
+        ):
+            return None
+        targets = relational_published_target_cells(plan)
+        if not targets:
+            return None
+        return (
+            active,
+            targets,
+            relational_objective_hold_signature(active),
+        )
+
     def _relational_navigation_cell(
         self, slot: Optional[Tuple[int, int]]
     ) -> Optional[Tuple[int, int]]:
@@ -20329,7 +20498,7 @@ class VerifiedNeuralAgent:
 
         if not self._relational_navigation_deposit_seam_enabled():
             return None
-        objective = self._relational_navigation_objective()
+        objective = self._relational_navigation_deposit_objective()
         if objective is None:
             return None
         active, targets, hold_signature = objective

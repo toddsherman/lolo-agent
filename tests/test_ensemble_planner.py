@@ -19788,3 +19788,894 @@ class RelationalNavigationDepositFlagTests(unittest.TestCase):
             sys.argv = argv
         self.assertEqual(raised.exception.code, 2)
         self.assertIn("--relational-navigation-seams", err.getvalue())
+
+
+# ----------------------------------------------------------------------
+# E7 — the hypothesis-lifecycle publication selector
+# (learnings section 4.53; docs/wp8-lifecycle-design-2026-08-17.md
+# sections 4.4, 5.4 and 6.3).
+#
+# E6 attached the right lever to the right object and found the object
+# absent at the one instant it was needed: the exploit carrying the
+# certified cells had budget-exhausted one decision earlier, a
+# `hold_configuration` hypothesis was active, and a hold's payload is
+# EMPTY BY CONSTRUCTION. The exploit was re-activated three events after
+# the decisive commit. Rule R1 lets the active hold publish its successor
+# exploit's cells — to seam S3's gate ALONE, because widening S2's window
+# would move the approach and destroy the single instant the experiment
+# is scored on (design section 6.6(c)). It changes no budget, no lifetime
+# and no ordering.
+#
+# The third mode, `record_store`, is the design section 5.4 attribution
+# arm: the same cells re-derived from the certified record store with no
+# reference to the hypothesis machinery. The ruling DECLINES it as a Gate
+# 4 candidate; it is built to be measured, and it is scored on no bit.
+# ----------------------------------------------------------------------
+
+
+LIFECYCLE_MILESTONE_CELL = (5, 3)
+LIFECYCLE_ON_TARGET_CELL = (5, 3)
+LIFECYCLE_ADJACENT_CELL = (4, 3)
+LIFECYCLE_FAR_CELL = DEPOSIT_FAR_CELL
+LIFECYCLE_MODES = ("budget_only", "chain_published", "record_store")
+
+
+class _LifecycleGoalPrior(_DepositGoalPrior):
+    """``_DepositGoalPrior`` that also reports one uncollected milestone.
+
+    The E7 root's certified record carries a milestone cell, and both the
+    hypothesis chain and the store-read arm derive their cells from
+    ``certified_milestone_cells & remaining_milestone_cells``. Reporting
+    the milestone is what makes the two publication sources comparable at
+    all — which is the whole content of the attribution arm.
+    """
+
+    # The goal prior is live from BEFORE the establish restore here, not
+    # attached afterwards as in the E6 fixture, so the regressive-archive
+    # filter must not be armed by a stand-in's placeholder heart count.
+    best_remaining_hearts = None
+
+    def __init__(
+        self,
+        cell=LIFECYCLE_ON_TARGET_CELL,
+        milestone=LIFECYCLE_MILESTONE_CELL,
+    ) -> None:
+        super().__init__(cell)
+        self.milestone = milestone
+
+    def current_slots(self):
+        return ((self.milestone[0] * 16, self.milestone[1] * 16),)
+
+
+def _lifecycle_records(milestone=LIFECYCLE_MILESTONE_CELL):
+    """The seam fixture's records with a certified milestone attached."""
+
+    records = _relational_records()
+    records[RELATIONAL_REMOVAL_SIGNATURE] = _relational_record(
+        RELATIONAL_REMOVAL_SIGNATURE,
+        cells=RELATIONAL_REMOVAL_CELLS,
+        milestone_cells=(milestone,),
+        outcome_category=OUTCOME_REMOVAL,
+    )
+    return records
+
+
+def _lifecycle_seam_agent(
+    lifecycle: str,
+    *,
+    authority: str = "selection",
+    seams: str = "restore_plus_deposit",
+    stage: str = "hold",
+    cell=LIFECYCLE_ON_TARGET_CELL,
+    model=None,
+):
+    """An agent parked in ACTIVE-HOLD (``stage="hold"``) or ACTIVE-EXPLOIT.
+
+    ``stage="hold"`` is E6's d16 reproduced in miniature: the establish
+    hypothesis has been realized by the restore, the hold is active, its
+    successor exploit is in the same queue carrying the certified cells,
+    and the ACTIVE hypothesis publishes nothing. ``stage="exploit"`` runs
+    one further verified transition so the exploit is active — the state
+    in which R1 must be a provable no-op.
+    """
+
+    env, logger, agent, _neutral, _removal = _relational_seam_agent(
+        authority, _lifecycle_records(), model=model
+    )
+    agent.config = replace(
+        agent.config,
+        relational_navigation_seams=seams,
+        relational_lifecycle=lifecycle,
+    )
+    agent.goal_prior = _LifecycleGoalPrior(cell)
+    agent._calibrate_goal_prior = lambda _frame: None
+    if authority == "selection":
+        agent._relational_propose_and_log()
+        assert agent._restore_if_stagnant() is not None
+        if stage == "exploit":
+            agent._relational_feedback("committed_decision")
+    return env, logger, agent
+
+
+def _lifecycle_decide_agent(
+    lifecycle: str,
+    *,
+    authority: str = "selection",
+    seams: str = "restore_plus_deposit",
+    stage: str = "hold",
+    cell=LIFECYCLE_ON_TARGET_CELL,
+    model=None,
+    exhaust_causal_outcomes: bool = True,
+):
+    """A lifecycle-staged agent driven one real ``decide()`` call."""
+
+    env, logger, agent = _lifecycle_seam_agent(
+        lifecycle,
+        authority=authority,
+        seams=seams,
+        stage=stage,
+        cell=cell,
+        model=model,
+    )
+    agent.visual_stagnation_streak = 0
+    agent.human_prior_graph_recovery_pending = False
+    agent.archive = []
+    if exhaust_causal_outcomes:
+        agent.causal_outcome_restores = _ExhaustedCausalOutcomes()
+    logger.events.clear()
+    return env, logger, agent
+
+
+def _lifecycle_active_kind(agent):
+    active = agent._relational_active_hypothesis()
+    return None if active is None else active.kind
+
+
+class RelationalLifecycleSelectorTests(unittest.TestCase):
+    """The selector itself: validation, defaults, and per-consumer scope."""
+
+    def test_default_is_budget_only_so_todays_behavior_is_the_default(
+        self,
+    ) -> None:
+        self.assertEqual(
+            NeuralPlanningConfig().relational_lifecycle, "budget_only"
+        )
+        self.assertEqual(
+            neural_planner.RELATIONAL_LIFECYCLE_MODES, LIFECYCLE_MODES
+        )
+
+    def test_selector_is_validated_like_the_authority(self) -> None:
+        for lifecycle in LIFECYCLE_MODES:
+            with self.subTest(lifecycle=lifecycle):
+                VerifiedNeuralAgent(
+                    _RelationalSeamEnv(),
+                    EnsembleVisualDynamicsModel(
+                        latent_size=32, action_size=8, ensemble_size=2
+                    ),
+                    "cpu",
+                    NeuralPlanningConfig(relational_lifecycle=lifecycle),
+                )
+        for lifecycle in (
+            "",
+            "BUDGET_ONLY",
+            "chain-published",
+            "records",
+            "event_driven",
+        ):
+            with self.subTest(lifecycle=lifecycle):
+                with self.assertRaises(ValueError):
+                    VerifiedNeuralAgent(
+                        _RelationalSeamEnv(),
+                        EnsembleVisualDynamicsModel(
+                            latent_size=32, action_size=8, ensemble_size=2
+                        ),
+                        "cpu",
+                        NeuralPlanningConfig(
+                            relational_lifecycle=lifecycle
+                        ),
+                    )
+
+    def test_the_fixture_reproduces_E6s_decisive_state(self) -> None:
+        # The premise every test below rests on, asserted rather than
+        # assumed: a hold is active, it publishes nothing, and its
+        # successor exploit is in the same queue carrying the cells.
+        _env, _logger, agent = _lifecycle_seam_agent("budget_only")
+        self.assertEqual(
+            _lifecycle_active_kind(agent),
+            RelationalHypothesisKind.HOLD_CONFIGURATION,
+        )
+        plan = agent.relational_plan
+        assert plan is not None
+        exploit = next(
+            hypothesis
+            for hypothesis in plan.hypotheses
+            if hypothesis.kind
+            is RelationalHypothesisKind.EXPLOIT_CONFIGURATION
+        )
+        self.assertEqual(
+            exploit.realization.payload["target_cells"],
+            (LIFECYCLE_MILESTONE_CELL,),
+        )
+        self.assertIsNone(agent._relational_navigation_objective())
+
+    def test_each_mode_maps_to_its_publication_source_exactly(self) -> None:
+        expected = {
+            "budget_only": None,
+            "chain_published": (LIFECYCLE_MILESTONE_CELL,),
+            "record_store": (LIFECYCLE_MILESTONE_CELL,),
+        }
+        for lifecycle, cells in expected.items():
+            with self.subTest(lifecycle=lifecycle):
+                _env, _logger, agent = _lifecycle_seam_agent(lifecycle)
+                objective = agent._relational_navigation_deposit_objective()
+                if cells is None:
+                    self.assertIsNone(objective)
+                else:
+                    assert objective is not None
+                    self.assertEqual(objective[1], cells)
+                # S1 and S2 read the ACTIVE hypothesis in every mode, so
+                # they are blind at the hold in all three.
+                self.assertIsNone(
+                    agent._relational_navigation_objective()
+                )
+
+    def test_at_the_exploit_stage_every_mode_agrees(self) -> None:
+        # R1 is a no-op wherever the objective is already live. This is
+        # what keeps the treatment's prefix identical to v339's.
+        for lifecycle in LIFECYCLE_MODES:
+            with self.subTest(lifecycle=lifecycle):
+                _env, _logger, agent = _lifecycle_seam_agent(
+                    lifecycle, stage="exploit"
+                )
+                self.assertEqual(
+                    _lifecycle_active_kind(agent),
+                    RelationalHypothesisKind.EXPLOIT_CONFIGURATION,
+                )
+                shared = agent._relational_navigation_objective()
+                deposit = agent._relational_navigation_deposit_objective()
+                assert shared is not None and deposit is not None
+                self.assertEqual(shared[1], (LIFECYCLE_MILESTONE_CELL,))
+                self.assertEqual(deposit[1], shared[1])
+                self.assertEqual(deposit[2], shared[2])
+
+    def test_every_mode_is_inert_outside_selection_authority(self) -> None:
+        for authority in ("off", "telemetry"):
+            for lifecycle in LIFECYCLE_MODES:
+                with self.subTest(authority=authority, lifecycle=lifecycle):
+                    _env, _logger, agent = _lifecycle_seam_agent(
+                        lifecycle, authority=authority
+                    )
+                    self.assertIsNone(
+                        agent._relational_navigation_deposit_objective()
+                    )
+                    self.assertIsNone(
+                        agent._relational_navigation_deposit_view(
+                            _navigation_goal_analysis(
+                                LIFECYCLE_ON_TARGET_CELL
+                            )
+                        )
+                    )
+
+    def test_every_mode_is_inert_when_the_S3_seam_is_not_selected(
+        self,
+    ) -> None:
+        # The lifecycle selector narrows a seam; it can never enable one.
+        analysis = _navigation_goal_analysis(LIFECYCLE_ON_TARGET_CELL)
+        for seams in ("both", "restore_only", "off"):
+            for lifecycle in LIFECYCLE_MODES:
+                with self.subTest(seams=seams, lifecycle=lifecycle):
+                    _env, _logger, agent = _lifecycle_seam_agent(
+                        lifecycle, seams=seams
+                    )
+                    self.assertIsNone(
+                        agent._relational_navigation_deposit_view(analysis)
+                    )
+
+    def test_gate_reasons_stay_named_and_singly_reachable(self) -> None:
+        # Checklist row 3: every decline path keeps its own reason string
+        # under the new publication source, and no reason is reachable by
+        # two different causes.
+        _env, _logger, agent = _lifecycle_seam_agent("chain_published")
+        cases = {
+            "certified_adjacent_position": (
+                _navigation_goal_analysis(LIFECYCLE_ON_TARGET_CELL),
+                True,
+            ),
+            "not_certified_adjacent": (
+                _navigation_goal_analysis(LIFECYCLE_FAR_CELL),
+                False,
+            ),
+            "position_not_certified": (
+                _navigation_goal_analysis(
+                    LIFECYCLE_ON_TARGET_CELL, life_counter_changed=True
+                ),
+                False,
+            ),
+            "position_unavailable": (
+                _navigation_goal_analysis(None),
+                False,
+            ),
+        }
+        for reason, (analysis, eligible) in cases.items():
+            with self.subTest(reason=reason):
+                view = agent._relational_navigation_deposit_view(analysis)
+                assert view is not None
+                self.assertEqual(view["reason"], reason)
+                self.assertEqual(view["eligible"], eligible)
+        agent.current_human_prior_root_object_state = (
+            HumanPriorRootObjectState(
+                tracked_world_state_signature=RELATIONAL_NEUTRAL_SIGNATURE
+            )
+        )
+        view = agent._relational_navigation_deposit_view(
+            _navigation_goal_analysis(LIFECYCLE_ON_TARGET_CELL)
+        )
+        assert view is not None
+        self.assertEqual(view["reason"], "held_configuration_absent")
+        self.assertFalse(view["eligible"])
+
+    def test_adjacency_radius_is_unchanged_by_the_new_source(self) -> None:
+        _env, _logger, agent = _lifecycle_seam_agent("chain_published")
+        for cell, distance, eligible in (
+            (LIFECYCLE_ON_TARGET_CELL, 0, True),
+            (LIFECYCLE_ADJACENT_CELL, 1, True),
+            ((3, 3), 2, False),
+            (LIFECYCLE_FAR_CELL, 7, False),
+        ):
+            with self.subTest(cell=cell):
+                view = agent._relational_navigation_deposit_view(
+                    _navigation_goal_analysis(cell)
+                )
+                assert view is not None
+                self.assertEqual(view["distance"], distance)
+                self.assertEqual(view["eligible"], eligible)
+        self.assertEqual(
+            neural_planner.RELATIONAL_NAVIGATION_DEPOSIT_MAX_DISTANCE, 1
+        )
+
+
+class RelationalLifecycleChainPublishedSeamTests(unittest.TestCase):
+    """Rule R1 in a real ``decide()``: what it adds and what it preserves."""
+
+    def _paired(self, left, right, **kwargs):
+        shared_model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        _env_a, logger_a, agent_a = _lifecycle_decide_agent(
+            left, model=shared_model, **kwargs
+        )
+        _env_b, logger_b, agent_b = _lifecycle_decide_agent(
+            right, model=shared_model, **kwargs
+        )
+        decision_a = agent_a.decide()
+        decision_b = agent_b.decide()
+        return (logger_a, agent_a, decision_a), (logger_b, agent_b, decision_b)
+
+    def test_budget_only_is_event_and_archive_identical_to_the_default(
+        self,
+    ) -> None:
+        # Default preservation, measured: an arm that names `budget_only`
+        # explicitly and an arm built without the selector at all agree on
+        # the committed decision, the entire event stream and the archive.
+        shared_model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        _env_a, logger_a, named = _lifecycle_decide_agent(
+            "budget_only", model=shared_model
+        )
+        _env_b, logger_b, default = _lifecycle_decide_agent(
+            "budget_only", model=shared_model
+        )
+        default.config = replace(
+            default.config,
+            relational_lifecycle=NeuralPlanningConfig().relational_lifecycle,
+        )
+        decision_a = named.decide()
+        decision_b = default.decide()
+        self.assertEqual(
+            _s0_decision_key(decision_a), _s0_decision_key(decision_b)
+        )
+        self.assertEqual(logger_a.events, logger_b.events)
+        self.assertEqual(
+            [
+                (branch.score, branch.goal_player_slot)
+                for branch in named.archive
+            ],
+            [
+                (branch.score, branch.goal_player_slot)
+                for branch in default.archive
+            ],
+        )
+        self.assertEqual(_deposit_events(logger_a), [])
+
+    def test_chain_published_deposits_where_budget_only_is_blind(
+        self,
+    ) -> None:
+        # E6's d16, closed: at the hold the incumbent build emits NO event
+        # of either kind, and R1 both emits and deposits.
+        (logger_a, e6, _decision_a), (logger_b, e7, _decision_b) = (
+            self._paired("budget_only", "chain_published")
+        )
+        self.assertEqual(_deposit_events(logger_a), [])
+        events = _deposit_events(logger_b)
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(
+            event["event"], "relational_navigation_deposit_added"
+        )
+        self.assertEqual(event["reason"], "certified_adjacent_position")
+        self.assertEqual(
+            event["deposit_cell"], list(LIFECYCLE_ON_TARGET_CELL)
+        )
+        self.assertEqual(event["deposit_distance"], 0)
+        self.assertEqual(
+            event["target_cells"], [list(LIFECYCLE_MILESTONE_CELL)]
+        )
+        # Bit 2(b)'s conjunct, as a unit contract: the hold signature the
+        # event reports equals the arm's live configuration signature.
+        self.assertEqual(
+            event["hold_configuration_signature"],
+            RELATIONAL_REMOVAL_SIGNATURE,
+        )
+        self.assertEqual(
+            event["configuration_signature"], RELATIONAL_REMOVAL_SIGNATURE
+        )
+        # The telemetry identity is the ACTIVE hypothesis — the hold —
+        # because that is what is live. The cells are its successor's.
+        self.assertEqual(event["hypothesis_kind"], "hold_configuration")
+        self.assertEqual(event["realization_payload"]["target_cells"], [])
+        self.assertEqual(len(e7.archive), len(e6.archive) + 1)
+        deposited = e7.archive[-1]
+        self.assertEqual(
+            deposited.goal_player_slot,
+            (
+                LIFECYCLE_ON_TARGET_CELL[0] * 16,
+                LIFECYCLE_ON_TARGET_CELL[1] * 16,
+            ),
+        )
+        self.assertEqual(
+            deposited.tracked_world_state_signature,
+            RELATIONAL_REMOVAL_SIGNATURE,
+        )
+
+    def test_chain_published_differs_from_budget_only_by_exactly_the_deposit(
+        self,
+    ) -> None:
+        # The preservation proof, exhaustive-key: the treatment differs by
+        # one archive, the event that announces it, and the two archive
+        # counters those events report. Any THIRD field that moved fails.
+        (logger_a, e6, decision_a), (logger_b, e7, decision_b) = self._paired(
+            "budget_only", "chain_published"
+        )
+        self.assertEqual(
+            _s0_decision_key(decision_a), _s0_decision_key(decision_b)
+        )
+        archive_counters = ("archive_size", "archive_branches_added")
+
+        def comparable(events):
+            return [
+                {
+                    key: value
+                    for key, value in event.items()
+                    if key not in archive_counters
+                }
+                for event in events
+                if not event["event"].startswith(
+                    "relational_navigation_deposit"
+                )
+            ]
+
+        self.assertEqual(
+            comparable(logger_a.events), comparable(logger_b.events)
+        )
+        committed_a = _relational_events(logger_a, "decision_committed")[0]
+        committed_b = _relational_events(logger_b, "decision_committed")[0]
+        self.assertEqual(
+            [committed_a[key] + 1 for key in archive_counters],
+            [committed_b[key] for key in archive_counters],
+        )
+        self.assertEqual(
+            [
+                (branch.score, branch.goal_player_slot)
+                for branch in e7.archive[: len(e6.archive)]
+            ],
+            [
+                (branch.score, branch.goal_player_slot)
+                for branch in e6.archive
+            ],
+        )
+
+    def test_at_the_exploit_stage_R1_is_a_provable_no_op(self) -> None:
+        # Bit 1(a)'s mechanism, as a unit test: wherever E6's objective was
+        # already live, R1 changes nothing at all — event-for-event and
+        # archive-for-archive.
+        (logger_a, e6, decision_a), (logger_b, e7, decision_b) = self._paired(
+            "budget_only", "chain_published", stage="exploit"
+        )
+        self.assertEqual(
+            _s0_decision_key(decision_a), _s0_decision_key(decision_b)
+        )
+        self.assertEqual(logger_a.events, logger_b.events)
+        self.assertEqual(
+            [
+                (branch.score, branch.goal_player_slot)
+                for branch in e6.archive
+            ],
+            [
+                (branch.score, branch.goal_player_slot)
+                for branch in e7.archive
+            ],
+        )
+        self.assertEqual(len(_deposit_events(logger_a)), 1)
+        self.assertEqual(
+            _deposit_events(logger_a)[0]["event"],
+            "relational_navigation_deposit_added",
+        )
+
+    def test_a_far_position_is_recorded_and_not_deposited(self) -> None:
+        # Recorded, not deposited: the declined instant is as visible in
+        # the log as a deposit, and the archive is exactly the one the
+        # incumbent build leaves — the decline adds no candidate.
+        (logger_a, e6, _decision_a), (logger_b, e7, _decision_b) = (
+            RelationalLifecycleChainPublishedSeamTests._paired(
+                self, "budget_only", "chain_published", cell=LIFECYCLE_FAR_CELL
+            )
+        )
+        self.assertEqual(_deposit_events(logger_a), [])
+        events = _deposit_events(logger_b)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(
+            events[0]["event"], "relational_navigation_deposit_declined"
+        )
+        self.assertEqual(events[0]["reason"], "not_certified_adjacent")
+        self.assertEqual(events[0]["deposit_distance"], 7)
+        self.assertEqual(
+            [
+                (branch.score, branch.goal_player_slot)
+                for branch in e7.archive
+            ],
+            [
+                (branch.score, branch.goal_player_slot)
+                for branch in e6.archive
+            ],
+        )
+
+    def test_chain_published_declines_when_the_incumbent_already_archived_it(
+        self,
+    ) -> None:
+        _env, logger, agent = _lifecycle_decide_agent(
+            "chain_published", exhaust_causal_outcomes=False
+        )
+        agent.decide()
+        events = _deposit_events(logger)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(
+            events[0]["event"], "relational_navigation_deposit_declined"
+        )
+        self.assertEqual(events[0]["reason"], "already_archived")
+        frames = _DepositCounter(
+            branch.frame.digest for branch in agent.archive
+        )
+        self.assertEqual(max(frames.values()), 1)
+
+    def test_chain_published_keeps_S1_disabled_and_S2_untouched(
+        self,
+    ) -> None:
+        # Section 7.2: R1 unscoped would lengthen the window in which a
+        # proximity-ranked restore key applies. Scoped, it cannot: at the
+        # hold both seams still fail open, exactly as in E6.
+        shared_model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env_a, logger_a, e6 = _lifecycle_seam_agent(
+            "budget_only", model=shared_model
+        )
+        env_b, logger_b, e7 = _lifecycle_seam_agent(
+            "chain_published", model=shared_model
+        )
+        verified, analyses = _navigation_ladder_inputs(
+            [
+                _navigation_selection_branch(NAVIGATION_ADJACENT_CELL, 1.0),
+                _navigation_selection_branch(NAVIGATION_DISTANT_CELL, 9.0),
+            ]
+        )
+        for agent in (e6, e7):
+            self.assertIsNone(
+                agent._relational_navigation_commit_view(verified, analyses)
+            )
+        _adjacent_a, novelty_a = _navigation_restore_archive(env_a, e6)
+        _adjacent_b, novelty_b = _navigation_restore_archive(env_b, e7)
+        logger_a.events.clear()
+        logger_b.events.clear()
+        decision_a = e6._restore_if_stagnant()
+        decision_b = e7._restore_if_stagnant()
+        self.assertIsNotNone(decision_a)
+        self.assertIsNotNone(decision_b)
+        assert decision_a is not None and decision_b is not None
+        self.assertEqual(
+            _s0_decision_key(decision_a), _s0_decision_key(decision_b)
+        )
+        self.assertEqual(env_a.position, env_b.position)
+        self.assertEqual(logger_a.events, logger_b.events)
+        self.assertEqual(len(e6.archive), len(e7.archive))
+        # And no restore telemetry at all, because S2's objective is the
+        # ACTIVE hypothesis's and the hold publishes nothing.
+        self.assertEqual(
+            _relational_events(
+                logger_b, "relational_navigation_restore_selected"
+            ),
+            [],
+        )
+        del novelty_a, novelty_b
+
+    def test_selector_is_inert_outside_selection_authority_in_decide(
+        self,
+    ) -> None:
+        # The E7 control passes `--relational-lifecycle chain_published` at
+        # authority `off`, so the scored pair's manifests differ in exactly
+        # the two authority fields (VOID condition 1). That is legitimate
+        # only if the selector cannot bite there — including through the
+        # archive, which is why the archives are compared too.
+        for authority in ("off", "telemetry"):
+            streams = []
+            archives = []
+            shared_model = EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            )
+            for lifecycle in LIFECYCLE_MODES:
+                _env, logger, agent = _lifecycle_decide_agent(
+                    lifecycle, authority=authority, model=shared_model
+                )
+                agent.decide()
+                streams.append(logger.events)
+                archives.append(
+                    [
+                        (branch.score, branch.goal_player_slot)
+                        for branch in agent.archive
+                    ]
+                )
+            with self.subTest(authority=authority):
+                for index in range(1, len(streams)):
+                    self.assertEqual(streams[0], streams[index])
+                    self.assertEqual(archives[0], archives[index])
+                self.assertEqual(
+                    [
+                        event
+                        for event in streams[0]
+                        if event["event"].startswith(
+                            "relational_navigation"
+                        )
+                    ],
+                    [],
+                )
+
+
+class RelationalLifecycleAttributionArmTests(unittest.TestCase):
+    """The section 5.4 store-read arm, built to be measured, not shipped.
+
+    The ruling declines a store-read liveness condition on falsifiability
+    grounds: a gate whose firing condition references nothing in the
+    hypothesis machinery survives deleting that machinery, so the
+    behavior it produces cannot be attributed to it. These tests make that
+    counterfactual concrete rather than rhetorical — and the E7 arm exists
+    so the claim is measured at the real root.
+    """
+
+    def test_the_store_read_publishes_the_same_cells_as_the_chain(
+        self,
+    ) -> None:
+        # Design section 5.1: the same function of the same two inputs.
+        _env, _logger, chain = _lifecycle_seam_agent("chain_published")
+        _env2, _logger2, store = _lifecycle_seam_agent("record_store")
+        chain_objective = chain._relational_navigation_deposit_objective()
+        store_objective = store._relational_navigation_deposit_objective()
+        assert chain_objective is not None and store_objective is not None
+        self.assertEqual(chain_objective[1], store_objective[1])
+        self.assertEqual(chain_objective[2], store_objective[2])
+        # And they differ in exactly the property the ruling turns on.
+        self.assertIsNotNone(chain_objective[0])
+        self.assertIsNone(store_objective[0])
+
+    def test_the_store_read_survives_deleting_the_hypothesis_layer(
+        self,
+    ) -> None:
+        # Section 5.2's falsifiability objection, executed: with no plan
+        # at all the store-read gate still fires and the chain-published
+        # gate goes silent. This is why the ruling declines the store read
+        # — and it is the property the attribution arm measures.
+        for lifecycle, expected in (
+            ("chain_published", None),
+            ("record_store", (LIFECYCLE_MILESTONE_CELL,)),
+        ):
+            with self.subTest(lifecycle=lifecycle):
+                _env, _logger, agent = _lifecycle_seam_agent(lifecycle)
+                agent.relational_plan = None
+                objective = agent._relational_navigation_deposit_objective()
+                if expected is None:
+                    self.assertIsNone(objective)
+                else:
+                    assert objective is not None
+                    self.assertEqual(objective[1], expected)
+
+    def test_the_store_read_refuses_an_uncertified_or_absent_record(
+        self,
+    ) -> None:
+        _env, _logger, agent = _lifecycle_seam_agent("record_store")
+        agent.current_human_prior_root_object_state = (
+            HumanPriorRootObjectState(
+                tracked_world_state_signature="unknown-signature"
+            )
+        )
+        self.assertIsNone(
+            agent._relational_navigation_deposit_objective()
+        )
+
+    def test_the_store_read_refuses_a_collected_milestone(self) -> None:
+        _env, _logger, agent = _lifecycle_seam_agent("record_store")
+        agent.goal_prior = _DepositGoalPrior(LIFECYCLE_ON_TARGET_CELL)
+        self.assertEqual(agent.goal_prior.current_slots(), ())
+        self.assertIsNone(
+            agent._relational_navigation_deposit_objective()
+        )
+
+    def test_the_store_read_stays_gated_on_selection_authority(self) -> None:
+        for authority in ("off", "telemetry"):
+            with self.subTest(authority=authority):
+                _env, _logger, agent = _lifecycle_seam_agent(
+                    "record_store", authority=authority
+                )
+                self.assertIsNone(
+                    agent._relational_navigation_deposit_objective()
+                )
+
+    def test_the_store_read_deposits_in_a_real_decide(self) -> None:
+        _env, logger, agent = _lifecycle_decide_agent("record_store")
+        agent.decide()
+        events = _deposit_events(logger)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(
+            events[0]["event"], "relational_navigation_deposit_added"
+        )
+        self.assertEqual(
+            events[0]["deposit_cell"], list(LIFECYCLE_ON_TARGET_CELL)
+        )
+        # No hypothesis identity accompanies it, because there need not be
+        # a hypothesis. That absence IS the finding the arm reports.
+        self.assertNotIn("hypothesis_id", events[0])
+        self.assertNotIn("hypothesis_kind", events[0])
+
+
+class RelationalLifecycleScopingTests(unittest.TestCase):
+    """Structural proof that the selector reaches seam S3 and nothing else."""
+
+    def _called_attributes(self, function):
+        tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
+        return {
+            node.func.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+        }
+
+    def test_only_the_deposit_gate_reads_the_lifecycle_publication(
+        self,
+    ) -> None:
+        gate = self._called_attributes(
+            VerifiedNeuralAgent._relational_navigation_deposit_view
+        )
+        self.assertIn("_relational_navigation_deposit_objective", gate)
+        self.assertNotIn("_relational_navigation_objective", gate)
+        for consumer in (
+            VerifiedNeuralAgent._relational_navigation_commit_view,
+            VerifiedNeuralAgent._relational_navigation_restore_preference,
+            VerifiedNeuralAgent._relational_emit_navigation_restore,
+            VerifiedNeuralAgent._restore_if_stagnant,
+        ):
+            with self.subTest(consumer=consumer.__name__):
+                called = self._called_attributes(consumer)
+                self.assertNotIn(
+                    "_relational_navigation_deposit_objective", called
+                )
+
+    def test_the_deposit_objective_is_reached_only_through_the_gate(
+        self,
+    ) -> None:
+        called = self._called_attributes(VerifiedNeuralAgent.decide)
+        self.assertIn("_relational_navigation_deposit_view", called)
+        self.assertNotIn(
+            "_relational_navigation_deposit_objective", called
+        )
+
+    def test_the_selector_is_read_from_exactly_one_place(self) -> None:
+        source = Path(neural_planner.__file__).read_text()
+        self.assertEqual(
+            source.count("self.config.relational_lifecycle"), 2
+        )
+        self.assertIn(
+            "return self.config.relational_lifecycle", source
+        )
+
+    def test_placement_still_holds_under_the_new_publication_source(
+        self,
+    ) -> None:
+        # Checklist row 5, extended not replaced: the gate stays after
+        # every incumbent commit-time construction and before the single
+        # prune, with exactly one construction between.
+        tree = ast.parse(
+            textwrap.dedent(inspect.getsource(VerifiedNeuralAgent.decide))
+        )
+        order = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if isinstance(node.func, ast.Name) and (
+                node.func.id == "_ArchivedBranch"
+            ):
+                order.append((node.lineno, "construction"))
+            elif isinstance(node.func, ast.Attribute):
+                if node.func.attr == "_relational_navigation_deposit_view":
+                    order.append((node.lineno, "deposit_gate"))
+                elif node.func.attr == "_prune_archive":
+                    order.append((node.lineno, "prune"))
+        order.sort()
+        kinds = [kind for _line, kind in order]
+        self.assertEqual(kinds.count("deposit_gate"), 1)
+        self.assertEqual(kinds.count("prune"), 1)
+        gate = kinds.index("deposit_gate")
+        prune = kinds.index("prune")
+        self.assertEqual(kinds[:gate].count("construction"), 3)
+        self.assertLess(gate, prune)
+        self.assertEqual(kinds[gate:prune].count("construction"), 1)
+
+
+class RelationalLifecycleFlagTests(unittest.TestCase):
+    """``--relational-lifecycle`` reaches the planning config."""
+
+    _REQUIRED_CLI = RelationalDecisionBudgetFlagTests._REQUIRED_CLI
+    _captured_planning_config = (
+        RelationalDecisionBudgetFlagTests._captured_planning_config
+    )
+
+    def test_cli_default_matches_the_module_default(self) -> None:
+        captured = self._captured_planning_config()
+        self.assertEqual(
+            captured["relational_lifecycle"],
+            NeuralPlanningConfig().relational_lifecycle,
+        )
+        self.assertEqual(captured["relational_lifecycle"], "budget_only")
+
+    def test_cli_override_reaches_the_planning_config(self) -> None:
+        for lifecycle in LIFECYCLE_MODES:
+            with self.subTest(lifecycle=lifecycle):
+                captured = self._captured_planning_config(
+                    "--relational-lifecycle", lifecycle
+                )
+                self.assertEqual(
+                    captured["relational_lifecycle"], lifecycle
+                )
+                # The selector narrows what selection authority may do; it
+                # never grants authority, and it never moves a seam.
+                self.assertEqual(
+                    captured["relational_planner_authority"], "off"
+                )
+                self.assertEqual(
+                    captured["relational_navigation_seams"], "both"
+                )
+                self.assertEqual(captured["relational_decision_budget"], 4)
+
+    def test_cli_rejects_an_unknown_lifecycle_mode(self) -> None:
+        argv = sys.argv
+        sys.argv = [
+            "neural_run",
+            *self._REQUIRED_CLI,
+            "--relational-lifecycle",
+            "event_driven",
+        ]
+        try:
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                with self.assertRaises(SystemExit) as raised:
+                    neural_run.main()
+        finally:
+            sys.argv = argv
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("--relational-lifecycle", err.getvalue())

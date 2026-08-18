@@ -1704,6 +1704,38 @@ Consequences:
    state transitions. A layer with an independent clock will
    misalign — four times measured.
 
+## 22. Amendment — 2026-08-18 (evidence: learnings §4.54) — REWRITE TRIGGER A FIRED
+
+E7 fired the preregistered rewrite trigger: bits 1–3 PASS, bit 4 FAIL,
+`void: false`. The deposit fired at the decisive instant, the restore key
+selected it, the agent deliberately returned itself to one cell from the
+certified milestone — and never stepped onto it. The failure is now
+*inside* the P5 commit ladder, which has no tier referencing a target
+cell.
+
+Consequences, binding:
+
+1. **The bolt-on program is closed.** Five levers, five distinct named
+   mechanisms (§4.43 redundancy, §4.45/§4.46 no opportunity, §4.50 supply
+   starvation, §4.51 candidate absent, §4.53 objective absent), and now a
+   missing actuator. No sixth seam.
+2. **WP8's next deliverable is a planner rewrite**, scoped as narrowly as
+   the evidence licenses: a commit-ladder tier able to take the final step
+   onto an adjacent certified milestone under hold, with the same
+   authority gating, invariance discipline, and preregistration the seams
+   used. E8 (R3) is superseded as a priority.
+3. **Q3 ruling scope-corrected.** The unscored attribution arm was
+   trajectory-identical to the treatment (`deposit_events_without_a_
+   hypothesis: 14`, identical 85,601 event counts). The ruling's
+   principle stands — a standing rule cannot decline, so it cannot
+   evidence choosing — but its empirical support at this root does not.
+   No Gate 4 claim may cite E7 as evidence that hypothesis-driven
+   planning produced the behavior.
+4. **§5 invariant added**: before building a capability layer, identify
+   the actuator that will execute its final step, and verify that
+   actuator exists. Four levers were built above an actuator that was
+   never checked for.
+
 Amended next sequence: (a) Gate 3 repetition run; (b) WP8-lite preference
 ablation; (c) WP2 multi-track correspondence with the endpoint-relative
 contract; (d) WP3 including the removal-chain gate; (e) WP5 spike and

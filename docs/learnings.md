@@ -2622,6 +2622,86 @@ Evidence:
 - `experiments/lolo1-wp5/e6-gate4-report.json`
 - runs `entity-v338-…-off-d24`, `entity-v339-…-deposit-d24`
 
+### 4.54 E7: every preparation step works, and the agent cannot take the last one — REWRITE TRIGGER A
+
+What was tried:
+
+- E7 (preregistered §10.4; report digest `3a69a5b7…`, scorer byte-identical
+  twice and validated against v338/v339 first, `void: false`): R1 — an
+  active hold hypothesis publishes its successor exploit's certified
+  cells to the S3 deposit gate only. Three arms: control (`off`),
+  treatment (`chain_published`), and an UNSCORED attribution arm
+  (`record_store`).
+
+Result — **FAIL**, bits 1/2/3/5 PASS, bit 4 FAIL:
+
+- **Bit 1 PASS** — supply and prefix intact.
+- **Bit 2 PASS** — at d16 `relational_navigation_deposit_added` fired at
+  cell `(12,10)`, distance 1, `state-00012381`, hold signature
+  `85fd9014…`: the deposit E6 could not make.
+- **Bit 3 PASS** — at d17 the restore reported `differs: true` with 7
+  hold-matching candidates and **selected the deposited `(12,10)`** over
+  a baseline `(10,7)` at distance 6. The agent deliberately returned
+  itself to one cell from the milestone; at d18 it declined `(10,7)`
+  again for `(12,7)`.
+- **Bit 4 FAIL** — `(12,11)`/`(192,176)` collected by neither arm.
+  Treatment held distance 1 at **both** d16 and d17 (the control touched
+  it once, at d17, by accident) and then departed: 4, 5, 6.
+
+**REWRITE TRIGGER A FIRES** (preregistered §7.3): bits 1–3 pass with the
+outcome failing ⇒ the failure has moved *inside* the P5 commit ladder,
+which contains no tier referencing a target cell. Every step of
+deliberate preparation now works — propose, log before acting, establish,
+hold, deposit the valuable position, restore to it against novelty's
+preference — and the agent has no expression for stepping onto an
+adjacent certified milestone.
+
+**The attribution arm cuts against the Q3 ruling, and that is recorded
+here as the §5.4 duty requires**:
+`trajectory_identical_to_treatment: true`, with
+`deposit_events_without_a_hypothesis: 14` and identical event counts
+(85,601 both). The store-read standing rule produced the *same
+trajectory* as the hypothesis-scoped mechanism. The falsifiability
+argument I endorsed — that under a store read one could delete
+`relational_planner.py` with no behavioral change — is now empirically
+demonstrated **at this root**: hypothesis scoping bought nothing
+observable. The ruling's *principle* survives (a standing rule still
+cannot decline, so it cannot evidence choosing); its *empirical* support
+at this root does not.
+
+Classification:
+
+- **Falsified at the measured gate**, fifth Gate 4 lever, and the first
+  to fire a preregistered rewrite trigger rather than a new mechanism
+  hypothesis.
+
+Learning:
+
+- The bolt-on program has reached its natural end. Five levers, five
+  distinct named mechanisms, and the residue is now a missing *tier*
+  in the incumbent commit ladder — not a scoring, lifecycle, supply, or
+  candidate problem.
+- A capability can be fully assembled and still not fire if the final
+  actuator does not exist. Everything upstream of "step onto the goal"
+  was built and verified; nothing expresses that step.
+- Honest scope note: the attribution result means E7 cannot be cited as
+  evidence that *hypothesis-driven* planning did the work here.
+
+Plan change:
+
+- Trigger A's declared consequence: plan a **planner rewrite** — a commit
+  ladder with a tier that can take the final step onto an adjacent
+  certified milestone under hold — NOT another bolt-on lever. E8 (R3) is
+  superseded as a priority; the ladder is the object now.
+
+Evidence:
+
+- `docs/wp8-lifecycle-design-2026-08-17.md` §10.4, §11
+- `experiments/lolo1-wp5/e7-gate4-report.json` (digest `3a69a5b7…`)
+- runs `entity-v340-…-control-off-d24`,
+  `entity-v341-…-treatment-published-d24`,
+  `entity-v342-…-standingrule-store-d24`
+
 ## 5. Platform and cost learnings
 
 ### 5.1 RunPod for emulator branching

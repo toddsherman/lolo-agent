@@ -1067,3 +1067,439 @@ code reading that bit 1(a) is designed to falsify in run.
 7. Only then: E8 (R3) if warranted, or E4 (search request with a
    forced-search control), or the §7.3 rewrite — whichever the triggers
    select.
+
+---
+
+## 10. E7 preregistration addendum (appended BEFORE any arm ran)
+
+**Ordering discipline.** This section is appended after the §6.9 checklist
+was green and **before the first arm was launched**, exactly as the E3/E5/E6
+addenda were (§9 item 4). Everything below §10.9 is preregistration;
+§11 holds the results and was empty when the control started.
+
+### 10.1 What was built, and what was deliberately not
+
+**Built: R1 only, scoped to the S3 deposit gate**, exactly as §4.6 item 2
+and §6.3 specify.
+
+- **Pure module** (`lolo_agent/relational_planner.py`, +83 lines):
+  `active_hypothesis(plan)` and `published_target_cells(plan)`. The latter
+  is the plan-level query §4.4 names. It returns the active hypothesis's
+  own cells whenever it has any (so an active exploit is untouched); it
+  returns the *successor exploit's* cells when the active hypothesis is a
+  `hold_configuration` whose direct dependent exploit exists and whose
+  relational initiation is satisfiable; and it returns `()` in every other
+  case. The successor's chain-parent conjunct is supplied by the parent
+  being **active** — that is the whole content of "the chain is live" —
+  and every other conjunct of `initiation_satisfied` is evaluated
+  unchanged against the configuration the chain holds and the plan's
+  current `remaining_milestone_cells`.
+- **Monolith** (`lolo_agent/neural_planner.py`): a new selector
+  `NeuralPlanningConfig.relational_lifecycle` (default `budget_only`),
+  validated beside the authority and the seam selector; a new
+  `_relational_navigation_deposit_objective()` that resolves the
+  publication source **for seam S3 alone**; a new
+  `_relational_record_store_publication()` for the §5.4 attribution arm;
+  and a one-call substitution inside
+  `_relational_navigation_deposit_view()`. `_relational_emit_hypothesis_event`
+  now accepts `Optional[RelationalHypothesis]`, because the attribution
+  arm's publication has no hypothesis by construction — which is the
+  property that arm exists to measure.
+- **CLI** (`lolo_agent/neural_run.py`): `--relational-lifecycle`, choices
+  `budget_only | chain_published | record_store`, default `budget_only`.
+
+**Not built, and why — the design's ruling, not the implementer's
+judgement:**
+
+- **R2 (event coverage)** is *not* in E7. §4.4 R2 records that it has
+  **zero measured effect at this root** (both E6 arms recorded zero
+  life-loss commits and the goal-exhaustion rollback did not fire in the
+  window) and states in terms that "bundling a change with no expected
+  effect into an experiment whose bit 1 is trajectory-prefix identity is
+  pure downside". §4.6 item 1 sequences it as a separate landing. E7's own
+  section (§6.3) names exactly one treatment and it is R1. R2 is therefore
+  **deferred, not skipped**, and the §9 item 1 sequencing debt is recorded
+  here explicitly: R2 must land alone, with its own invariance evidence
+  and its own control-invariance report, before it is claimed.
+- **R3 (progress-conditioned expiry)** is held back by §4.6 item 3 (it is
+  E8's treatment, conditional on E7's bits). Its §6.6(f) offline contrast
+  is computed below at zero emulator cost, because it is a **precondition
+  for E8** and the design requires it before E7 runs.
+- **R4 (immediate re-arm)** is ruled **inadmissible alone** by §4.5 and
+  §4.4 R4 ("Recommendation: do not build R4 for E7"). Not built.
+
+### 10.2 The seam, per consumer
+
+| Mode | S3 deposit gate reads | S1 commit tier | S2 restore key |
+| --- | --- | --- | --- |
+| `budget_only` (**default**) | active hypothesis payload | active hypothesis payload | active hypothesis payload |
+| `chain_published` (**E7 treatment**) | **the plan's live chain** (R1) | active hypothesis payload — unchanged | active hypothesis payload — unchanged |
+| `record_store` (**arm 3, unscored**) | `verified_accessibility_records` ∩ remaining milestones, with no reference to propose / score / advance | active hypothesis payload — unchanged | active hypothesis payload — unchanged |
+
+The per-consumer scoping is enforced **structurally**, not by convention:
+`RelationalLifecycleScopingTests` parses the AST of
+`_relational_navigation_deposit_view`, `_relational_navigation_commit_view`,
+`_relational_navigation_restore_preference`,
+`_relational_emit_navigation_restore` and `_restore_if_stagnant` and asserts
+that exactly one of them reads the lifecycle publication and the rest read
+the shared objective. Mutation M4 below is precisely "publish to S1/S2 as
+well", and it is killed.
+
+### 10.3 Arms, run ids, and command lines
+
+| Arm | Authority | `--relational-lifecycle` | Run id | Scored? |
+| --- | --- | --- | --- | --- |
+| **Control** | `off` | `chain_published` | `entity-v340-room3-e7-control-off-d24` | Yes — runs **first** |
+| **Treatment** | `selection` | `chain_published` | `entity-v341-room3-e7-treatment-published-d24` | Yes |
+| **Attribution (standing-rule) arm** | `selection` | `record_store` | `entity-v342-room3-e7-standingrule-store-d24` | **No bits.** §5.4 qualification 1 |
+
+Command line: §11.3 of `docs/wp8-search-scheduling-design-2026-08-17.md`
+**verbatim**, with the run id varied, `--relational-navigation-seams
+restore_plus_deposit` added (all three arms, as in E6), and one new flag:
+
+```
+  --relational-navigation-seams restore_plus_deposit        (ALL arms)
+  --relational-lifecycle chain_published                    (scored pair)
+  --relational-lifecycle record_store                       (arm 3 only)
+  --relational-planner-authority <off | selection>
+  --relational-decision-budget 12                           (UNCHANGED — a
+                                                             changed value
+                                                             here is a VOID)
+```
+
+The scored pair's `planning_config` differs in **exactly two** fields —
+`relational_planner_authority` and `relational_planner_enabled` — as in
+E3/E5/E6. Both pass `relational_lifecycle: "chain_published"`, which is
+legitimate only because the selector is provably inert at authority `off`:
+unit-tested (`test_every_mode_is_inert_outside_selection_authority`,
+`test_selector_is_inert_outside_selection_authority_in_decide`, the latter
+comparing archives as well as event streams) and cross-version proven
+(§10.7 row 6), never assumed.
+
+- **Root**: identical to v333–v339 — memory
+  `entity-v318-room3-known-push-connected-mask-d2` decision 1 with
+  `--resume-option-search`; physical state the same run's seq-2026
+  checkpoint, `state_source_events_sha256 0bbe1d15…9b6f83`.
+- **Ceilings**: 10,800 s wall per arm under an external watchdog; one
+  native run at a time; event ceiling 200k/arm.
+- **Scoring window**: the first 24 committed decisions.
+
+**Input digests, re-verified on disk today and equal to the v338/v339
+manifests**: host `c03694c5…3e891f3`, core `a3450a09…5a40024886`, ROM
+`914c6769…3efd059e01`, neural checkpoint `bb7a7a37…284f678b9`,
+entity-behavior checkpoint `984b83c3…25c7c6aa`, record store
+`cf01a67aca2b6e8feeab38c0c85520dec2470cba2a5f2257cd817912c204d1fe`,
+resume-source events `0bbe1d1571d2d9d02b03e51816acc07a7945ba97256ec6e710ff88c7179b6f83`.
+
+**HEAD at preregistration `96027a9`** (the commit that added this
+document; `git diff --stat 7982871 HEAD -- lolo_agent/ tests/` is empty, so
+every §1–§8 code anchor is valid as written). Working tree clean except
+the five owned files of this change and the unrelated untracked `tmp/`,
+which is not an input to any arm:
+
+```
+e3422aa0…  lolo_agent/relational_planner.py   (+83)
+05dcc0f4…  lolo_agent/neural_planner.py       (+175)
+6d162246…  lolo_agent/neural_run.py           (+23)
+76d7fe5e…  tests/test_relational_planner.py   (+249)
+6f21897a…  tests/test_ensemble_planner.py     (+891)
+```
+
+### 10.4 The five preregistered bits (fixed; **ANY mixed outcome = FAIL**)
+
+§6.4 verbatim. Restated here so the scorer has one source, with the two
+clarifications the implementation forces — both fixed **before** the run.
+
+**Bit 1 — SUPPLY AND PREFIX.** All three conjuncts.
+
+- **(a)** The treatment's committed state ids for **d1–d15** equal
+  **v339's** exactly.
+- **(b)** The control's 24 committed state ids reproduce **v338's**
+  exactly, and v338 ≡ v336 ≡ v334 ≡ v333 is re-verified and reported.
+- **(c)** Archive geography not narrowed: `treatment_min_column <=
+  control_min_column` **and** `treatment_max_column >= control_max_column`,
+  with the columns-6–12 / 44-vs-43 reference reported alongside, and S3
+  deposits counted separately as well as inside the total.
+
+*Clarification 1, fixed now.* Bit 1(a) is a **trajectory** identity, not a
+log identity. R1 makes the S3 gate *evaluate* at instants where E6's gate
+returned `None` and emitted nothing, so the treatment is **predicted** to
+carry strictly more `relational_navigation_deposit_declined` telemetry
+than v339 before d16. Reading v339's own trace, exactly one such instant
+exists in the prefix: **d3**, where the hold `edb1503d…` was active with
+its successor exploit carrying `[[12,11]]` in the same queue and the
+committed cell was `(8,8)`, Manhattan 7 — a `not_certified_adjacent`
+decline. Extra declined telemetry at d3 is **predicted, not a bit-1
+failure**; a *changed committed state id* at any of d1–d15 is a bit-1
+failure. This prediction is itself reported as a scored-adjacent
+invariant: if d3 carries no decline, R1 did not fire where the code
+reading says it must, and that is reported.
+
+*Clarification 2, fixed now.* d16's committed state id is **also**
+predicted equal to v339's, because the deposit happens after the commit is
+chosen. It is reported as an invariant, not scored inside bit 1(a), whose
+window §6.4 fixes at d1–d15.
+
+**Bit 2 — PUBLICATION AT THE DECISIVE INSTANT.** Both conjuncts.
+
+- **(a)** At the treatment's first committed decision with Manhattan
+  distance ≤ 1 to `(12,11)` under the hold signature, the S3 gate emits an
+  event of **either** kind. A decline with a named reason passes (a).
+- **(b)** That event is `relational_navigation_deposit_added`, with
+  `deposit_distance <= 1` and its `hold_configuration_signature` equal to
+  both the objective's hold signature and the arm's
+  `configuration_signature` at that instant.
+
+**Bit 3 — CANDIDATE REACHABLE.** The deposited branch appears in a later
+restore's eligible set: some `relational_navigation_restore_selected`
+after the deposit reports the deposited cell among the arm's archive with
+`hold_matching_candidates` strictly greater than E6 recorded at the
+corresponding instant, **or** the deposit is itself selected. §15.6(d)'s
+`recovery_distinct` blind spot is re-declared: a position deposited at `d`
+is invisible to a restore at `d+1` while the agent still stands on it, so
+E7 may need the **second** restore after the deposit. A bit-3 failure
+attributable to `recovery_distinct` is reported as an
+**archive-eligibility** finding, naming the filter from the arm's own
+telemetry — never as a near miss.
+
+**Bit 4 — OUTCOME.** Within 24 decisions the treatment collects `(12,11)` /
+`(192,176)` (evidenced by `[192,176]` entering
+`human_prior_collected_heart_slots` on a `decision_committed`) and the
+control does not. If both collect it, bit 4 FAILS.
+
+**Bit 5 — SAFETY.** The treatment records no more
+`human_prior_life_loss_confirmed` committed decisions than the control.
+
+All five must pass. **ANY mixed outcome = FAIL.** No weight tuning, no
+budget re-sizing, no radius re-sizing, no rerun on an identical negative
+result. `budget_exhausted` or `hold_violated` termination of the exploit
+is a **FAIL input, not a VOID** — and under R1 it is expected at d15 and
+is not supposed to matter, which is the whole hypothesis.
+
+**Reported invariants (not bits):** hold integrity; per-arm
+verified-branch counts; per-arm option-search counts (completed and
+deferred); the S2 exercised-difference counts and the full
+`hold_matching_candidates` series; the full deposit series with reasons;
+Chebyshev and Manhattan traces for v336–v339 and all three E7 arms side by
+side; and — per §5.4 — **the attribution arm's trajectory diff against the
+treatment's**.
+
+### 10.5 VOID conditions (a VOID is not evidence)
+
+§6.7 verbatim, with the selector field named in V1:
+
+1. **Config inequality** — the scored pair's `planning_config` differ in
+   any field except `relational_planner_authority` and
+   `relational_planner_enabled`. Both must report
+   `relational_lifecycle: "chain_published"`,
+   `relational_navigation_seams: "restore_plus_deposit"` and
+   `relational_decision_budget: 12`.
+2. **Records inequality** — both arms `record_count: 3`, signatures
+   `15604cb5…`/`37ea410d…`/`47975c94…`, store digest `cf01a67a…`, at
+   `verified_accessibility_weight: 0.0`.
+3. **Seeding defect** — no archived branch carrying `85fd9014d58deb42`
+   within the window in either arm.
+4. **Root defect** — either manifest's `episodic_resume` block does not
+   record source run `entity-v318-room3-known-push-connected-mask-d2`,
+   `source_decision: 1`, `state_source_checkpoint_event_seq: 2026`,
+   `state_source_events_sha256: 0bbe1d15…`.
+5. **Budget defect** — either arm exceeds the 10,800 s wall ceiling and is
+   killed before `run_finished`; or the arms' verified-branch counts
+   differ by more than 1%.
+6. **Control-invariance defect** — the control's 24 committed state ids do
+   not reproduce v338's exactly. **A crashed arm is VOID, not FAIL.**
+7. **Standing-rule contamination** — the attribution arm's presence
+   changes nothing about the scored pair. The arms are run **sequentially,
+   one native run at a time**, into separate log roots, and the scorer
+   demonstrates the scored pair's inputs are byte-identical to what they
+   would be without arm 3 by showing that no arm-3 artefact is an input to
+   either scored arm.
+
+Budget-exhausted non-reach is **censored**, never "unreachable".
+
+### 10.6 Honest power note, fixed before the run
+
+- **There is no sampling variance.** Runs are deterministic; "power" here
+  means opportunity count.
+- **Bit 2's opportunity count is exactly ONE.** From v339's measured
+  Manhattan trace `9 7 7 6 8 9 10 6 5 6 4 5 4 3 2 1 4 5 6 6 7 6 6 6`,
+  exactly one committed decision — **d16, distance 1, cell `(12,10)`** —
+  is inside the radius-1 gate. The nearest others are d15 at distance 2
+  and d17 at distance 4, both outside; widening the radius is forbidden
+  and would supply nothing new. **E7's central bit rests on a single
+  instant.**
+- **Therefore the dominant FAIL mode is opportunity destruction**, and the
+  design is built to avoid it: R1 is scoped to S3 alone, and R2 and R3 are
+  held back. **Pre-declared: if bit 1(a) fails, the reading is "liveness
+  widened the intervention window and moved the approach" — a FAIL with a
+  named mechanism, not a VOID, and not grounds for re-scoping and
+  re-running.** It is also §7.3 **trigger B**.
+- **Bit 4's opportunity count is also small and is not improved by more
+  decisions.** The treatment was moved off the target at d17 with seven
+  decisions remaining and never returned. E7 does not raise
+  `--decisions` and must not.
+- **What a PASS cannot show**: that the planner can cause a search (E4),
+  that R3 is validated, or that a second manipulation is possible.
+
+### 10.7 The §6.9 invariance checklist — all nine rows, green before the run
+
+1. **Pure-module tests** — `tests/test_relational_planner.py::ChainPublicationTests`
+   (12 tests): `published_target_cells` returns `()` with no active
+   hypothesis, with a non-`reach_cells_under_hold` realization, with an
+   active hold that has **no** exploit successor, with a successor whose
+   initiation is unsatisfiable (milestone collected), and with a departed
+   configuration; returns the successor's cells otherwise; an active
+   exploit publishes exactly what it publishes today; the plan comes from
+   the **real** state machine (`propose` → `advance`), not a hand-built
+   fixture; identical inputs give byte-identical, canonical output; the
+   chain's hold signature is shared by hold and successor; and the query
+   provably mutates no lifetime (`active_decisions`, `achieved_ids`, queue
+   and every `decision_budget` unchanged across the call).
+2. **Selector mapping** — `RelationalLifecycleSelectorTests` (9 tests):
+   the default is `budget_only`; all three values construct and junk
+   values (`""`, `"BUDGET_ONLY"`, `"chain-published"`, `"records"`,
+   `"event_driven"`) raise; each mode maps to its exact publication source
+   per consumer, with S1/S2 blind at the hold in **all three**; at the
+   exploit stage all three agree; every mode is inert at authority
+   `off`/`telemetry` and inert when the S3 seam is not selected.
+3. **Named refusal reasons** — `test_gate_reasons_stay_named_and_singly_reachable`
+   walks all five decline paths under the new source
+   (`certified_adjacent_position`, `not_certified_adjacent`,
+   `position_not_certified`, `position_unavailable`,
+   `held_configuration_absent`), each reachable by exactly one cause; the
+   radius is re-pinned at 1.
+4. **Real-`decide()` seam tests** — `RelationalLifecycleChainPublishedSeamTests`
+   (8 tests) and `RelationalLifecycleAttributionArmTests` (6 tests), on a
+   fixture that reproduces E6's decisive state in miniature (hold active,
+   successor exploit in the same queue, active payload empty — asserted,
+   not assumed). `budget_only` is event-for-event and archive-for-archive
+   identical to the un-selectored build; `chain_published` deposits where
+   `budget_only` emits nothing, and differs from it by **exactly** one
+   archive, one event, and the two archive counters those events report —
+   an exhaustive-key comparison, so any third field that moved would fail;
+   **at the exploit stage R1 is a provable no-op** (event-for-event and
+   archive-for-archive), which is bit 1(a)'s mechanism; S1 stays
+   structurally absent and S2's restore is bit-identical; the far-position
+   decline, the `already_archived` decline, and inertness at
+   `off`/`telemetry` across all three modes (archives compared too) are
+   each exercised.
+5. **AST anchor-drift placement** — the §15.1 test extended, not replaced:
+   exactly one deposit gate, after all three incumbent commit-time
+   `_ArchivedBranch` constructions, before the single `_prune_archive`,
+   with exactly one construction between; plus the new scoping assertions
+   (§10.2) and a check that the selector is read from exactly one place.
+6. **Cross-version byte-identity against HEAD `96027a9`** (the pre-E7
+   planner), a paired harness over a real `decide()` across **all four
+   seam values × all three authorities — 12 arms**. Pre-E7 = E7 in every
+   row:
+
+   | authority | `both` | `restore_only` | `restore_plus_deposit` | `off` |
+   | --- | --- | --- | --- | --- |
+   | `off` | `a66d7e2ea3a8d62b` | `a66d7e2ea3a8d62b` | `a66d7e2ea3a8d62b` | `a66d7e2ea3a8d62b` |
+   | `telemetry` | `08b61d6bd2429325` | `08b61d6bd2429325` | `08b61d6bd2429325` | `08b61d6bd2429325` |
+   | `selection` | `cadf52ea815a479c` | `87a6f6f8fb1bebf0` | `fc018351ed960bc1` | `87a6f6f8fb1bebf0` |
+
+   Each digest covers the committed decision, the entire event stream and
+   the archive (score, goal slot, configuration signature, frame digest).
+7. **Mutation testing, six mutations, all killed** (kill counts against
+   the full suite):
+
+   | # | Mutation | Kills |
+   | --- | --- | --- |
+   | M1 | selector forced to `chain_published` regardless of config | **11** |
+   | M2 | `successor is None` guard removed (a hold with no successor publishes) | **2** (both by error, which is the guard doing its job) |
+   | M3 | the "is this hold's dependent" filter removed (another chain's cells) | **1** |
+   | M4 | published to S1/S2 as well as S3 | **2** (5 test failures) |
+   | M5 | the deposit gate's hold-signature check removed | **2** |
+   | M6 | the event emitted without appending the archive | **4** |
+
+   M3 initially **survived** and is recorded as such: the module defends
+   the queue-side filter and the successor's own chain-parent conjunct
+   independently, and the first version of the foreign-chain test
+   re-parented onto a *never-achieved* id, which the second defense
+   refused anyway. The test was strengthened to re-parent onto an
+   **already-achieved** hypothesis — where only the queue-side filter can
+   refuse — and M3 is now killed. The weakness was in the test, not the
+   rule; it is reported because a surviving mutant that is quietly fixed
+   is exactly the kind of thing this checklist exists to catch.
+8. **In-vivo control invariance** — VOID condition 6, plus bit 1(a)'s
+   stronger treatment-prefix equality against v339. Scored in §11.
+9. **Strict-lineage linter** — `python -m lolo_agent.strict_lineage
+   lolo_agent/relational_planner.py` reports `assisted: false`, zero
+   findings. The pure module additionally exposes **no** selector token
+   (`relational_lifecycle`, `budget_only`, `chain_published`,
+   `record_store`) and **no** reference to
+   `verified_accessibility_records` — asserted by
+   `test_module_exposes_no_lifecycle_selector`, so the store-read arm
+   structurally cannot originate in the pure module.
+
+**Full suite: 1,127 tests OK, 4 skipped** (1,085 + 4 before this change,
+plus 42 new). **No pre-existing test changed.**
+
+### 10.8 Health-check rule (learnings §4.52), fixed before the run
+
+- The process is `python -m lolo_agent.neural_run` — **underscores, module
+  form**. A hyphenated `pgrep` pattern can never match and its silence is
+  not evidence of death. **Health is checked by the run's own telemetry
+  only**: monotone growth of `events.jsonl` and arrival at the expected
+  seq milestones.
+- The first `decision_committed` lands at seq ≈ **75,742** in every arm of
+  this family. **Zero committed decisions at 6k events is on-profile, not
+  a death.**
+- Two signals that share an author are not corroboration.
+- **A crashed arm is VOID, not FAIL** (VOID 6), so no diagnosis under time
+  pressure can convert an operational failure into evidence.
+
+### 10.9 Scorer
+
+A single deterministic scorer walks each arm's `events.jsonl` once, applies
+§10.4 verbatim, and writes `experiments/lolo1-wp5/e7-gate4-report.json`
+with a canonical-JSON `digest_sha256` over the body (digest field
+excluded). Run end-to-end **twice**; both reports must be byte-identical.
+**It is validated against v338 and v339 first**: it must reproduce §16's
+verdicts exactly — the 12 declined-deposit instants with reasons, the zero
+deposits, the columns-6–12 geography with 44/43 deposits, the 8 restore
+instants with 2 differing, the `hold_matching_candidates` series
+`1,3,3,6,6,5,4,3`, and the "never collected `(192,176)`" reading.
+
+Distance metrics: **Chebyshev** for the §4.47/§4.48-comparable traces,
+**Manhattan** for the mechanism's own `deposit_distance` /
+`selected_distance`. Bit 2(b) is scored on the mechanism's own Manhattan
+figures as emitted; bit 4 is metric-free.
+
+### 10.10 The §6.6(f) R3 offline contrast — computed before E7 ran
+
+Zero emulator cost, from v339's recorded telemetry alone, as §6.6(f) and
+§9 item 2 require. The simulator reproduces the measured exploit lifecycle
+first (activation at the end of d3, one `advance` per decision, terminal
+`budget_exhausted` at d15 — exactly 12 transitions, matching the run) and
+then re-runs it with R3's conjunct (b) added, `K = 2`, budget unchanged at
+12.
+
+| Model | Decisions on which the exploit objective is live |
+| --- | --- |
+| Count budget (**measured**, v339) | 4–15, **17–24** (dead at 16) |
+| R3 (budget 12 + conjunct (b)) | 4–18, **20–24** (dead at 19) |
+| `--relational-decision-budget 24` (the prohibited re-size) | 4–24 |
+
+- **(i) R3 extends beyond the count budget at exactly one decision: d16** —
+  which is precisely the decisive instant. R3 would have reached E7's
+  outcome by a different route, as §4.4 predicted.
+- **(ii) R3 ends the objective earlier than the count budget at exactly
+  one decision: d19** (m d17=4 → d18=5 → d19=6, two strict increases).
+  **(ii) is non-empty, so R3 is not a re-size at this root and §6.6(f)'s
+  E8 precondition is met.**
+- **Correction to §4.4 R3 item 3, recorded rather than quietly dropped.**
+  The design asserted that "R3 and the re-size differ in behavior at ten
+  of twenty-four decisions in the measured trace". Under the rule *as
+  literally stated* they differ at **one** decision (d19), not ten: the
+  re-size keeps the objective alive continuously from d4, and R3 differs
+  from it only where conjunct (b) fires. §4.4's own worked example
+  ("expires the exploit at d20") is likewise off by one — the two strict
+  increases complete at d19. The two-sidedness claim survives; its
+  **magnitude does not**, and E8's design must not quote the ten.
+- **Declared limit.** This is a counterfactual over a *recorded* trace.
+  R3's liveness at d16 would itself have changed behavior (the S3 gate
+  would have fired), so the post-d16 trace under a real R3 arm would not
+  be v339's. The contrast is therefore evidence about the *rule's shape*,
+  not a prediction of an R3 arm's trajectory.

@@ -1,7 +1,7 @@
 import ast
 import json
 import unittest
-from dataclasses import fields as dataclass_fields
+from dataclasses import fields as dataclass_fields, replace as dataclass_replace
 from pathlib import Path
 
 from lolo_agent.accessibility_preference import (
@@ -56,6 +56,8 @@ from lolo_agent.relational_planner import (
     option_initiation_satisfied,
     option_key,
     propose,
+    published_target_cells,
+    active_hypothesis,
     target_cell_distance,
     record_attempt,
     record_success,
@@ -1401,6 +1403,251 @@ class NavigationDepositContractTests(unittest.TestCase):
         )
         self.assertLess(departed, held_far)
         self.assertEqual(departed[0], 0)
+
+
+class ChainPublicationTests(unittest.TestCase):
+    """E7 rule R1 (lifecycle design section 4.4; checklist section 6.9 row 1).
+
+    Learnings section 4.53 measured the gap this closes: at the one instant
+    the mechanism was needed, a ``hold_configuration`` hypothesis was
+    active, its payload is empty by construction, and the exploit carrying
+    the certified cells sat in the same queue three events away from being
+    activated. :func:`published_target_cells` asks the *chain* what it is
+    working toward instead of asking one hypothesis what it carries.
+
+    Every refusal path in the checklist gets its own test, and the rule is
+    proven to change no lifetime: the plans below are produced by the
+    untouched state machine, and ``active_decisions`` is asserted to be
+    exactly what ``advance`` left behind.
+    """
+
+    def plan_with_active_hold(self, remaining=(MILESTONE_CELL,)):
+        """The real state machine's ACTIVE-HOLD state, not a hand-built one."""
+
+        plan = propose_default()
+        establish = by_kind(plan, HypothesisKind.ESTABLISH_CONFIGURATION)
+        self.assertEqual(plan.active_id, establish.hypothesis_id)
+        result = advance(
+            plan,
+            summary(CANDIDATE_SIGNATURE, remaining=remaining),
+        )
+        self.assertEqual(result.outcome, ADVANCE_HYPOTHESIS_ACHIEVED)
+        hold = by_kind(result.plan, HypothesisKind.HOLD_CONFIGURATION)
+        self.assertEqual(result.plan.active_id, hold.hypothesis_id)
+        return result.plan
+
+    def test_active_hold_publishes_its_successor_exploits_cells(self) -> None:
+        plan = self.plan_with_active_hold()
+        hold = by_kind(plan, HypothesisKind.HOLD_CONFIGURATION)
+        exploit = by_kind(plan, HypothesisKind.EXPLOIT_CONFIGURATION)
+        # The measured defect, as a contract: the ACTIVE hypothesis
+        # publishes nothing, and the chain publishes the certified cells
+        # that were present and unpublished the whole time.
+        self.assertEqual(objective_target_cells(hold), ())
+        self.assertEqual(objective_target_cells(exploit), (MILESTONE_CELL,))
+        self.assertEqual(published_target_cells(plan), (MILESTONE_CELL,))
+        # And the cells are the successor's own, byte-for-byte.
+        self.assertEqual(
+            published_target_cells(plan), objective_target_cells(exploit)
+        )
+
+    def test_publication_changes_no_lifetime(self) -> None:
+        # Section 4.5's admissibility argument, asserted rather than
+        # restated: R1 is not a budget re-arm. The budget, the counter and
+        # the termination condition are untouched by the query, and the
+        # query is a pure read.
+        plan = self.plan_with_active_hold()
+        before = (
+            plan.active_decisions,
+            plan.achieved_ids,
+            tuple(h.hypothesis_id for h in plan.hypotheses),
+            tuple(
+                h.termination.decision_budget for h in plan.hypotheses
+            ),
+        )
+        published_target_cells(plan)
+        after = (
+            plan.active_decisions,
+            plan.achieved_ids,
+            tuple(h.hypothesis_id for h in plan.hypotheses),
+            tuple(
+                h.termination.decision_budget for h in plan.hypotheses
+            ),
+        )
+        self.assertEqual(before, after)
+        self.assertEqual(plan.active_decisions, 0)
+
+    def test_no_active_hypothesis_publishes_nothing(self) -> None:
+        plan = dataclass_replace(self.plan_with_active_hold(), active_id=None)
+        self.assertIsNone(active_hypothesis(plan))
+        self.assertEqual(published_target_cells(plan), ())
+
+    def test_a_non_reach_realization_publishes_nothing(self) -> None:
+        # The establish stage restores or reproduces; it holds no
+        # configuration and names no cells, so the chain query is as
+        # silent as the per-hypothesis one.
+        plan = propose_default()
+        establish = by_kind(plan, HypothesisKind.ESTABLISH_CONFIGURATION)
+        self.assertEqual(plan.active_id, establish.hypothesis_id)
+        self.assertNotEqual(
+            establish.realization.kind, REALIZATION_REACH_CELLS_UNDER_HOLD
+        )
+        self.assertEqual(published_target_cells(plan), ())
+
+    def test_a_hold_without_an_exploit_successor_publishes_nothing(
+        self,
+    ) -> None:
+        plan = self.plan_with_active_hold()
+        exploit = by_kind(plan, HypothesisKind.EXPLOIT_CONFIGURATION)
+        without = dataclass_replace(
+            plan,
+            hypotheses=tuple(
+                hypothesis
+                for hypothesis in plan.hypotheses
+                if hypothesis.hypothesis_id != exploit.hypothesis_id
+            ),
+        )
+        self.assertEqual(published_target_cells(without), ())
+
+    def test_an_unsatisfiable_successor_publishes_nothing(self) -> None:
+        # The milestone was collected while the hold was active: the
+        # exploit's own initiation refuses, so the chain refuses. This is
+        # the boundary that keeps the publication window bounded by the
+        # chain's own predicate rather than by a counter.
+        plan = self.plan_with_active_hold(remaining=())
+        exploit = by_kind(plan, HypothesisKind.EXPLOIT_CONFIGURATION)
+        hold = by_kind(plan, HypothesisKind.HOLD_CONFIGURATION)
+        self.assertTrue(
+            exploit.initiation.requires_uncollected_certified_milestone
+        )
+        self.assertFalse(
+            initiation_satisfied(
+                exploit,
+                CANDIDATE_SIGNATURE,
+                plan.remaining_milestone_cells,
+                plan.achieved_ids + (hold.hypothesis_id,),
+            )
+        )
+        self.assertEqual(published_target_cells(plan), ())
+
+    def test_a_departed_configuration_publishes_nothing(self) -> None:
+        # A successor whose configuration relation no longer holds is
+        # unsatisfiable for the same reason the hold itself would be
+        # violated at the next verified transition.
+        plan = self.plan_with_active_hold()
+        hold = by_kind(plan, HypothesisKind.HOLD_CONFIGURATION)
+        departed = dataclass_replace(
+            plan,
+            hypotheses=tuple(
+                hypothesis
+                if hypothesis.hypothesis_id != hold.hypothesis_id
+                else dataclass_replace(
+                    hypothesis,
+                    target_configuration_signature="departed-signature",
+                )
+                for hypothesis in plan.hypotheses
+            ),
+        )
+        self.assertEqual(published_target_cells(departed), ())
+
+    def test_another_chains_cells_are_never_published(self) -> None:
+        # The successor must be THIS hold's dependent. A queue that
+        # happens to contain a second chain's exploit publishes nothing
+        # through the first chain's hold.
+        #
+        # Two re-parentings, because the module defends this twice and the
+        # cases are not equivalent. Re-parenting onto an ALREADY-ACHIEVED
+        # hypothesis is the sharp one: the successor's own
+        # chain-parent-verified conjunct is then satisfied, so only the
+        # queue-side "is this hold's dependent" filter can refuse — and it
+        # must.
+        plan = self.plan_with_active_hold()
+        hold = by_kind(plan, HypothesisKind.HOLD_CONFIGURATION)
+        establish = by_kind(plan, HypothesisKind.ESTABLISH_CONFIGURATION)
+        exploit = by_kind(plan, HypothesisKind.EXPLOIT_CONFIGURATION)
+        self.assertEqual(hold.hypothesis_id, exploit.chain_parent_id)
+        self.assertIn(establish.hypothesis_id, plan.achieved_ids)
+
+        def reparented(parent_id):
+            return dataclass_replace(
+                plan,
+                hypotheses=tuple(
+                    hypothesis
+                    if hypothesis.hypothesis_id != exploit.hypothesis_id
+                    else dataclass_replace(
+                        hypothesis, chain_parent_id=parent_id
+                    )
+                    for hypothesis in plan.hypotheses
+                ),
+            )
+
+        sibling = reparented(establish.hypothesis_id)
+        self.assertTrue(
+            initiation_satisfied(
+                by_kind(sibling, HypothesisKind.EXPLOIT_CONFIGURATION),
+                CANDIDATE_SIGNATURE,
+                sibling.remaining_milestone_cells,
+                sibling.achieved_ids + (hold.hypothesis_id,),
+            )
+        )
+        self.assertEqual(published_target_cells(sibling), ())
+        self.assertEqual(
+            published_target_cells(reparented("some-other-hypothesis")), ()
+        )
+
+    def test_an_active_exploit_publishes_exactly_what_it_publishes_today(
+        self,
+    ) -> None:
+        # R1 is a no-op wherever the objective is already live, which is
+        # what keeps the E7 treatment's trajectory prefix identical to
+        # E6's (design section 6.6(c)).
+        plan = self.plan_with_active_hold()
+        result = advance(plan, summary(CANDIDATE_SIGNATURE))
+        self.assertEqual(result.outcome, ADVANCE_HYPOTHESIS_ACHIEVED)
+        exploit = by_kind(result.plan, HypothesisKind.EXPLOIT_CONFIGURATION)
+        self.assertEqual(result.plan.active_id, exploit.hypothesis_id)
+        self.assertEqual(
+            published_target_cells(result.plan),
+            objective_target_cells(exploit),
+        )
+        self.assertEqual(published_target_cells(result.plan), (MILESTONE_CELL,))
+
+    def test_publication_is_canonical_and_deterministic(self) -> None:
+        plan = self.plan_with_active_hold()
+        reads = {published_target_cells(plan) for _ in range(8)}
+        self.assertEqual(len(reads), 1)
+        cells = published_target_cells(plan)
+        self.assertEqual(list(cells), sorted(set(cells)))
+
+    def test_the_hold_signature_is_the_chains_own(self) -> None:
+        # The consumer's hold predicate reads the ACTIVE hypothesis's
+        # signature, and the chain shares one: publishing the successor's
+        # cells cannot smuggle in a different configuration.
+        plan = self.plan_with_active_hold()
+        hold = by_kind(plan, HypothesisKind.HOLD_CONFIGURATION)
+        exploit = by_kind(plan, HypothesisKind.EXPLOIT_CONFIGURATION)
+        self.assertEqual(
+            objective_hold_signature(hold), objective_hold_signature(exploit)
+        )
+        self.assertEqual(objective_hold_signature(hold), CANDIDATE_SIGNATURE)
+
+    def test_module_exposes_no_lifecycle_selector(self) -> None:
+        # The selector lives entirely in the consuming planner, exactly as
+        # the seam selector does: this module publishes the same thing
+        # either way, so a mode cannot change WHAT is published, only WHO
+        # reads it. And the store-read arm must be unable to originate
+        # here at all (design section 5.4).
+        import lolo_agent.relational_planner as module
+
+        source = Path(module.__file__).read_text()
+        for token in (
+            "relational_lifecycle",
+            "budget_only",
+            "chain_published",
+            "record_store",
+            "verified_accessibility_records",
+        ):
+            self.assertNotIn(token, source, token)
 
 
 if __name__ == "__main__":
