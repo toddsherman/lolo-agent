@@ -2546,6 +2546,16 @@ Learning:
   run's own telemetry (event growth, expected seq milestones) over
   external pattern matching.
 
+**Addendum (2026-08-18, E8) — the mirror image.** An E8 monitor matched
+its *own* `pgrep -f "lolo_agent.neural_run"` pattern in the process
+table, so it could never report a run gone: it called a finished run
+stalled. Where §4.52 made a healthy run look dead, this made a dead run
+look alive. The general rule beneath both: **two readings that share an
+author are one signal, not two.** The corrected monitor uses
+`kill -0 $PID` against the launcher-recorded PID, which shares no author
+with the run's telemetry — so liveness and event growth are genuinely
+independent.
+
 ### 4.53 E6: the right lever on the right object, dead by three events
 
 What was tried:
