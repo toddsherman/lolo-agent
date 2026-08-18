@@ -18,6 +18,33 @@ It is infrastructure and a baseline, not yet a claim that all 50 rooms are
 solved. The model boundary is designed so a neural latent world model can
 replace the baseline without changing the information available to the agent.
 
+### What you can and cannot reproduce from this repository
+
+Read this before trying to rerun anything. The code, the plan of record, and
+the full negative-results log are all here. **The evidence behind the
+empirical claims is not.**
+
+- **The ROM is not included and never will be.** `Adventures of Lolo` is a
+  commercial 1989 game; `*.nes` is gitignored by design. You need your own
+  legally obtained copy, plus a libretro Nestopia core, for any command that
+  touches the emulator.
+- **Run telemetry, datasets, and checkpoints are not included.** `experiments/`,
+  `runs/`, and `checkpoints/` are gitignored because they are tens of
+  gigabytes. The docs cite paths inside them (report digests, event logs,
+  per-decision traces) as the evidence for specific claims. Those citations
+  are provenance records for the machine the campaign ran on, not files you
+  will find in a clone.
+- **What this means for the claims.** Every empirical result below should be
+  read as *reported and internally audited*, not as *independently
+  reproducible from this repository alone*. The falsification record in
+  [docs/learnings.md](docs/learnings.md) is the honest part of the record: it
+  includes four occasions where the project disproved its own earlier claims.
+- **What does run from a clean clone:** the test suite
+  (`python3 -m unittest discover -s tests`, which skips the ML and
+  emulator-dependent modules unless their extras and fixtures are present)
+  and the evaluator-hidden puzzle environment used in tests, which needs no
+  ROM.
+
 ## Current status
 
 Acceptance gates are defined in [docs/roadmap.md](docs/roadmap.md) §12. Their
