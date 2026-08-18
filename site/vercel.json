@@ -4,6 +4,10 @@
     {
       "source": "/lolo-og.png",
       "headers": [{ "key": "Cache-Control", "value": "public, max-age=604800, immutable" }]
+    },
+    {
+      "source": "/lolo-hero.webp",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=604800, immutable" }]
     }
   ]
 }

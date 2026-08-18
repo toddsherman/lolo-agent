@@ -3,26 +3,27 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Adventures of Lolo Agent</title>
+<title>Adventures of Lolo Agent: Twenty-one runs to one heart</title>
 <meta name="description" content="An agent that learns NES Adventures of Lolo from pixels, a controller and save states alone, with no rules, object names, solutions or demonstrations. Field notes on what failed, four times the project proved itself wrong, and the one heart it finally collected.">
 <meta name="author" content="Todd Sherman">
 <link rel="canonical" href="https://www.todd.sh/lolo">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%95%B9%EF%B8%8F%3C/text%3E%3C/svg%3E">
 <meta property="og:type" content="article">
 <meta property="og:site_name" content="todd.sh">
-<meta property="og:title" content="Adventures of Lolo Agent">
+<meta property="og:title" content="Adventures of Lolo Agent: Twenty-one runs to one heart">
 <meta property="og:description" content="An agent that learns NES Adventures of Lolo from pixels, a controller and save states alone, with no rules, object names, solutions or demonstrations. Field notes on what failed, four times the project proved itself wrong, and the one heart it finally collected.">
 <meta property="og:url" content="https://www.todd.sh/lolo">
 <meta property="og:image" content="https://www.todd.sh/lolo/lolo-og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Rooms of Adventures of Lolo captured from the emulator used in this project">
+<meta property="og:image:alt" content="A paper-cut Lolo crossing a puzzle board toward a heart, following branching experiment traces">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Adventures of Lolo Agent">
+<meta name="twitter:title" content="Adventures of Lolo Agent: Twenty-one runs to one heart">
 <meta name="twitter:description" content="An agent that learns NES Adventures of Lolo from pixels, a controller and save states alone, with no rules, object names, solutions or demonstrations. Field notes on what failed, four times the project proved itself wrong, and the one heart it finally collected.">
 <meta name="twitter:image" content="https://www.todd.sh/lolo/lolo-og.png">
-<meta name="theme-color" content="#f6f1e6" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#141110" media="(prefers-color-scheme: dark)">
+<meta name="twitter:image:alt" content="A paper-cut Lolo crossing a puzzle board toward a heart, following branching experiment traces">
+<meta name="theme-color" content="#F4F1EA" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1D1C19" media="(prefers-color-scheme: dark)">
 <style>
 /* minimal reset: the artifact host supplied one, a plain web server does not */
 *,*::before,*::after{box-sizing:border-box}
@@ -31,125 +32,199 @@ img,svg,canvas{max-width:100%}
 </style>
 <style>
 :root{
-  --paper:#f6f1e6; --surface:#fffdf8; --sunk:#ece4d4;
-  --ink:#1b1410; --ink-2:#5c5044; --ink-3:#8b7e6d;
-  --rule:#d8cdb8;
-  --accent:#b71e7b;      /* the hearts */
-  --entity:#2f7000;      /* the manipulated object */
-  --probe:#155fd9;       /* measurement */
-  --fail:#a3320f;
-  --grid-void:#e4dbc8; --grid-wall:#c8b99c; --grid-floor:#fbf6ea;
+  --paper:#F4F1EA; --paper-deep:#E9E4D9; --surface:#F4F1EA; --sunk:#E9E4D9;
+  --ink:#1D1C19; --ink-2:#5F5B54; --ink-3:#5F5B54; --stone:#8D887E;
+  --rule:#D4CEC2; --accent:#B64832; --entity:#B58A43; --probe:#31566B;
+  --fail:#B64832; --grid-void:#E9E4D9; --grid-wall:#D4CEC2; --grid-floor:#F4F1EA;
+  --sans:Arial,Helvetica,sans-serif;
   --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
-  --serif:"Iowan Old Style","Charter","Bitstream Charter",Georgia,Cambria,serif;
-  --measure:66ch;
+  --serif:Georgia,"Times New Roman",serif; --measure:66ch;
 }
 @media (prefers-color-scheme:dark){
   :root:not([data-theme="light"]){
-    --paper:#0e0b08; --surface:#161009; --sunk:#0a0705;
-    --ink:#f2e9da; --ink-2:#b3a48e; --ink-3:#7d7061;
-    --rule:#302518;
-    --accent:#ff5cb0; --entity:#5fbe1a; --probe:#5b9bff; --fail:#ff7a4d;
-    --grid-void:#171009; --grid-wall:#3a2c18; --grid-floor:#241a10;
+    --paper:#1D1C19; --paper-deep:#272520; --surface:#272520; --sunk:#151411;
+    --ink:#F4F1EA; --ink-2:#D4CEC2; --ink-3:#D4CEC2; --stone:#8D887E;
+    --rule:#5B5750; --accent:#D17A67; --entity:#D0AD70; --probe:#7D9AAA;
+    --fail:#D17A67; --grid-void:#1D1C19; --grid-wall:#5B5750; --grid-floor:#272520;
   }
 }
-:root[data-theme="dark"]{
-  --paper:#0e0b08; --surface:#161009; --sunk:#0a0705;
-  --ink:#f2e9da; --ink-2:#b3a48e; --ink-3:#7d7061;
-  --rule:#302518;
-  --accent:#ff5cb0; --entity:#5fbe1a; --probe:#5b9bff; --fail:#ff7a4d;
-  --grid-void:#171009; --grid-wall:#3a2c18; --grid-floor:#241a10;
-}
 *{box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:56px}
 body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--serif);
   font-size:18px;line-height:1.62;-webkit-font-smoothing:antialiased}
 .wrap{max-width:var(--measure);margin:0 auto;padding:0 24px}
-.bleed{max-width:1100px;margin:0 auto;padding:0 24px}
-h1,h2,h3,.mono,.eyebrow,figcaption,table,.chip,button,select,label{font-family:var(--mono)}
-h1{font-size:clamp(2.1rem,5.4vw,3.5rem);line-height:1.04;letter-spacing:-.035em;
-  font-weight:600;margin:0 0 .5em;text-wrap:balance}
-h2{font-size:1.35rem;letter-spacing:-.02em;font-weight:600;margin:0 0 .6em;text-wrap:balance}
-h3{font-size:1rem;letter-spacing:.01em;font-weight:600;margin:2em 0 .4em;color:var(--ink)}
+.bleed{max-width:1100px;margin:0 auto;padding-left:24px;padding-right:24px}
+.skip-link{position:fixed;z-index:120;top:6px;left:8px;padding:6px 10px;background:#F4F1EA;
+  color:#1D1C19;font:700 11px/1 var(--sans);letter-spacing:.08em;text-transform:uppercase;
+  transform:translateY(-180%)}
+.skip-link:focus{transform:none;outline:2px solid #1D1C19;outline-offset:2px}
+.todd-bar{position:sticky;top:0;z-index:90;height:40px;background:#F4F1EA;
+  border-bottom:1px solid #D4CEC2;display:flex;align-items:center;padding:0 20px}
+.todd-bar a{color:#1D1C19;text-decoration:none;font:600 11px/40px var(--sans);
+  letter-spacing:.14em;text-transform:uppercase}
+.todd-bar a:hover{color:#B64832}
+.todd-bar a:focus-visible{outline:2px solid #1D1C19;outline-offset:3px}
+h1,h2{font-family:var(--serif)}
+h3,.mono,figcaption,table,.chip,button,select,label,.contents,.stat span{font-family:var(--sans)}
+h1{font-size:clamp(2.8rem,6.6vw,5.7rem);line-height:.94;letter-spacing:-.055em;
+  font-weight:400;margin:0 0 .28em;text-wrap:balance}
+h2{font-size:clamp(1.75rem,3.5vw,2.6rem);line-height:1.08;letter-spacing:-.035em;
+  font-weight:400;margin:0 0 .65em;text-wrap:balance}
+h3{font-size:.78rem;line-height:1.3;letter-spacing:.11em;text-transform:uppercase;
+  font-weight:700;margin:2.5em 0 .65em;color:var(--ink)}
 p{margin:0 0 1.15em}
-a{color:var(--accent)}
-.eyebrow{font-size:.7rem;letter-spacing:.18em;text-transform:uppercase;color:var(--ink-3);
-  margin:0 0 1.1em}
-section{padding:clamp(48px,7vw,96px) 0;border-top:1px solid var(--rule)}
-section:first-of-type{border-top:0}
+a{color:var(--accent);text-underline-offset:.16em;text-decoration-thickness:1px}
+a:hover{text-decoration-thickness:2px}
+.project-hero{padding-top:clamp(48px,8vw,104px);padding-bottom:clamp(46px,7vw,88px)}
+.hero-grid{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(320px,.95fr);gap:clamp(32px,6vw,76px);align-items:center}
+.hero-copy{max-width:650px}
+.thesis{font-size:clamp(1.3rem,2.5vw,2rem);line-height:1.25;font-style:italic;
+  color:var(--accent);margin:0 0 1.1rem}
 .lede{font-size:1.22rem;line-height:1.5;color:var(--ink-2)}
+.hero-art{margin:0;border:1px solid var(--rule);background:var(--paper-deep);padding:10px}
+.hero-art img{display:block;width:100%;height:auto}
+.hero-art figcaption{border-left:0;padding-left:0;margin-bottom:0}
+section{padding:clamp(52px,7vw,96px) 0;border-top:1px solid var(--rule)}
+.results{padding-top:clamp(38px,5vw,64px);padding-bottom:clamp(38px,5vw,64px);
+  background:var(--paper-deep)}
+.results-head{display:grid;grid-template-columns:minmax(0,.65fr) minmax(280px,1.35fr);
+  gap:clamp(24px,5vw,64px);align-items:start}
+.results-head h2{margin:0}
+.results-head p{margin:0;color:var(--ink-2)}
+.contents{padding-top:22px;padding-bottom:22px;border-top:1px solid var(--rule)}
+.contents strong{display:block;font-size:.67rem;letter-spacing:.14em;text-transform:uppercase;margin-bottom:.65rem}
+.contents ol{display:flex;flex-wrap:wrap;gap:.35rem 1.2rem;list-style:none;margin:0;padding:0}
+.contents a{color:var(--ink-2);font-size:.78rem;text-decoration-thickness:1px}
+.contents a:hover{color:var(--accent)}
 .note{max-width:60ch;margin:2.6rem 0 .4rem;padding:.1rem 0 .1rem 1.15rem;
   border-left:2px solid var(--accent);font-size:1.06rem;line-height:1.62;color:var(--ink)}
-.note p{margin:0 0 .68em} .note p:last-of-type{margin-bottom:0}
+.note p{margin:0 0 .68em}.note p:last-of-type{margin-bottom:0}
 .small{font-size:.92rem;color:var(--ink-2)}
 figure{margin:2rem 0}
-figcaption{font-size:.76rem;line-height:1.5;color:var(--ink-3);margin-top:.7rem;
+figcaption{font-size:.78rem;line-height:1.5;color:var(--ink-2);margin-top:.7rem;
   padding-left:.9rem;border-left:2px solid var(--rule)}
-.scroll{overflow-x:auto}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
 table{width:100%;border-collapse:collapse;font-size:.78rem;font-variant-numeric:tabular-nums}
-th,td{text-align:left;padding:.55rem .7rem;border-bottom:1px solid var(--rule);vertical-align:top}
-th{font-size:.66rem;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);font-weight:600}
-.chip{display:inline-block;font-size:.62rem;letter-spacing:.08em;text-transform:uppercase;
-  padding:.16em .5em;border:1px solid currentColor;border-radius:2px;white-space:nowrap}
-.c-fail{color:var(--fail)} .c-pass{color:var(--entity)} .c-mixed{color:var(--probe)}
+th,td{text-align:left;padding:.72rem .7rem;border-bottom:1px solid var(--rule);vertical-align:top}
+th{font-size:.68rem;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-2);font-weight:700}
+.chip{display:inline-block;font-size:.66rem;letter-spacing:.08em;text-transform:uppercase;
+  padding:.2em .55em;border:1px solid currentColor;border-radius:2px;white-space:nowrap}
+.c-fail{color:var(--fail)}.c-pass{color:var(--entity)}.c-mixed{color:var(--probe)}
 .stat-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:1px;
   background:var(--rule);border:1px solid var(--rule);margin:2rem 0}
-/* the scoreboard has five tiles: at full width they form one row, and the last
-   tile spans whatever remains rather than sitting alone beside dead space */
-#scoreboard{grid-template-columns:repeat(auto-fit,minmax(190px,1fr))}
+#scoreboard{grid-template-columns:repeat(auto-fit,minmax(190px,1fr));margin-bottom:1.25rem}
 #scoreboard .stat:last-child{grid-column:auto}
-@media (max-width:1010px){#scoreboard .stat:last-child{grid-column:1/-1}}
-.stat{background:var(--surface);padding:1rem 1.1rem}
-.stat b{display:block;font-family:var(--mono);font-size:1.7rem;letter-spacing:-.03em;
-  line-height:1;margin-bottom:.35rem;font-variant-numeric:tabular-nums}
-.stat span{font-family:var(--mono);font-size:.66rem;letter-spacing:.08em;text-transform:uppercase;
-  color:var(--ink-3);line-height:1.35;display:block}
+.stat{background:var(--surface);padding:1.15rem}
+.stat b{display:block;font-family:var(--mono);font-size:1.85rem;letter-spacing:-.03em;
+  line-height:1;margin-bottom:.45rem;font-variant-numeric:tabular-nums}
+.stat span{font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--ink-2);line-height:1.35;display:block;font-weight:700}
 .frames{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:1.4rem}
 .frames img{width:100%;image-rendering:pixelated;display:block;border:1px solid var(--rule)}
 .frames figcaption{border-left:0;padding-left:0}
 .panel{background:var(--surface);border:1px solid var(--rule);padding:1.2rem}
 .controls{display:flex;flex-wrap:wrap;gap:.6rem;align-items:center;margin-bottom:1rem}
-select,button{font-size:.76rem;padding:.42rem .6rem;background:var(--surface);color:var(--ink);
-  border:1px solid var(--rule);border-radius:2px;cursor:pointer}
+select,button{min-height:44px;min-width:44px;font-size:.78rem;padding:.65rem .8rem;
+  background:var(--surface);color:var(--ink);border:1px solid var(--ink-2);border-radius:2px;cursor:pointer}
 button:hover,select:hover{border-color:var(--accent)}
-button:focus-visible,select:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-input[type=range]{accent-color:var(--accent);flex:1;min-width:130px}
-.readout{font-family:var(--mono);font-size:.72rem;color:var(--ink-2);
+button:focus-visible,select:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
+input[type=range]{accent-color:var(--accent);flex:1;min-width:130px;min-height:44px}
+.readout{font-family:var(--mono);font-size:.76rem;color:var(--ink-2);
   font-variant-numeric:tabular-nums;display:flex;gap:1.1rem;flex-wrap:wrap;margin-top:.7rem}
 .readout b{color:var(--ink);font-weight:600}
-.legend{display:flex;gap:1rem;flex-wrap:wrap;font-family:var(--mono);font-size:.68rem;
+.legend{display:flex;gap:1rem;flex-wrap:wrap;font-family:var(--sans);font-size:.74rem;
   color:var(--ink-2);margin-top:.8rem}
 .legend i{display:inline-block;width:10px;height:10px;margin-right:.35rem;vertical-align:-1px}
 .two{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:2rem}
 blockquote{margin:1.6rem 0;padding:.2rem 0 .2rem 1.1rem;border-left:3px solid var(--accent);
   font-style:italic;color:var(--ink-2)}
-del{color:var(--ink-3);text-decoration-color:var(--fail)}
-ul{padding-left:1.1rem} li{margin-bottom:.5em}
-footer{border-top:1px solid var(--rule);padding:2.6rem 0 4rem;color:var(--ink-3);font-size:.8rem}
-#lightbox{position:fixed;inset:0;z-index:50;background:rgba(12,9,6,.96);
-  display:flex;flex-direction:column;align-items:stretch;
-  padding:clamp(10px,1.6vw,26px);cursor:zoom-out;overflow:hidden}
+del{color:var(--ink-2);text-decoration-color:var(--fail)}
+ul{padding-left:1.1rem}li{margin-bottom:.5em}
+footer{border-top:1px solid var(--rule);padding:2.6rem 0 4rem;color:var(--ink-2);font-size:.84rem}
+.zoom-button{display:block;width:100%;padding:0;min-height:0;border:1px solid var(--rule);
+  background:none;cursor:zoom-in}
+.zoom-button img{width:100%;height:auto;image-rendering:pixelated;display:block}
+#lightbox{position:fixed;inset:0;z-index:110;background:rgba(29,28,25,.98);color:#F4F1EA;
+  display:grid;grid-template-rows:auto minmax(0,1fr) auto;gap:12px;padding:16px;overflow:hidden}
 #lightbox[hidden]{display:none}
-/* min-height:0 lets this flex child shrink below its content, which is what
-   allows the image to be measured against the viewport rather than overflow it */
-#lbinner{flex:1 1 auto;min-height:0;display:flex;align-items:center;justify-content:center}
-#lightbox img{width:100%;height:100%;object-fit:contain;image-rendering:pixelated;display:block}
-#lbhint{flex:0 0 auto;margin:.9rem 0 0;text-align:center;font-family:var(--mono);
-  font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:#a99b88}
-@media (max-width:900px){#lightbox{cursor:default}}
-@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+.lbbar{display:flex;justify-content:space-between;align-items:center;gap:1rem}
+#lbtitle{margin:0;font:700 11px/1.3 var(--sans);letter-spacing:.12em;text-transform:uppercase}
+#lbclose{background:#F4F1EA;color:#1D1C19;border-color:#F4F1EA}
+#lbclose:hover{background:#B64832;color:#F4F1EA;border-color:#B64832}
+#lbviewport{min-height:0;overflow:auto;display:flex;align-items:center;justify-content:center;
+  overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
+#lightbox img{width:100%;height:100%;object-fit:contain;image-rendering:pixelated;display:block;max-width:100%}
+#lbhint{margin:0;text-align:center;font:700 11px/1.4 var(--sans);letter-spacing:.08em;
+  text-transform:uppercase;color:#D4CEC2}
+@media (max-width:1010px){#scoreboard .stat:last-child{grid-column:1/-1}}
+@media (max-width:760px){
+  .bleed,.wrap{padding-left:18px;padding-right:18px}
+  .hero-grid,.results-head{grid-template-columns:1fr}
+  .hero-art{order:2}
+  .contents ol{display:grid;grid-template-columns:1fr 1fr;gap:.5rem 1rem}
+  #lbviewport{justify-content:flex-start}
+  #lightbox img{width:1200px;max-width:none;height:auto;object-fit:initial}
+}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{animation:none!important;transition:none!important}}
 </style>
 </head>
 <body>
 
-<div class="bleed" style="padding-top:clamp(40px,7vw,84px)">
-  <p class="eyebrow">Field notes · an interaction-only agent</p>
-  <h1>Adventures of Lolo Agent</h1>
-  <p class="lede" style="max-width:62ch">An agent that gets pixels, a controller, and save states. No rules,
-  no object names, no solutions, no demonstrations. Two days of experiments on a single room. This is
-  the honest ledger: what failed, why each thing failed differently, and the four times the project
-  proved itself wrong.</p>
-</div>
+<a class="skip-link" href="#main-content">Skip to article</a>
+<header class="todd-bar">
+  <nav aria-label="Todd dot sh"><a href="https://www.todd.sh/">← todd.sh</a></nav>
+</header>
 
-<section><div class="bleed">
+<main id="main-content">
+<article>
+<header class="project-hero bleed">
+  <div class="hero-grid">
+    <div class="hero-copy">
+      <h1>Adventures of Lolo Agent</h1>
+      <p class="thesis">Twenty-one runs to one heart.</p>
+      <p class="lede">An agent that gets pixels, a controller, and save states. No rules,
+      no object names, no solutions, no demonstrations. Two days of experiments on a single room. This is
+      the honest ledger: what failed, why each thing failed differently, and the four times the project
+      proved itself wrong.</p>
+    </div>
+    <figure class="hero-art">
+      <img src="lolo-hero.webp" width="1586" height="992"
+        alt="A paper-cut Lolo crossing a puzzle board toward a heart along branching experiment traces">
+      <figcaption>A paper model of the problem: many traces, one target, and a room that still is not solved.</figcaption>
+    </figure>
+  </div>
+</header>
+
+<section class="results" aria-labelledby="ledger-title"><div class="bleed">
+  <div class="results-head">
+    <h2 id="ledger-title">The honest ledger</h2>
+    <p>The best run collected three of five hearts and never opened the chest. Six runs reached the
+    target heart, but only one intervention produced the intended final step, and a simpler standing
+    rule reproduced it.</p>
+  </div>
+  <div class="stat-row" id="scoreboard"></div>
+  <p class="small">The one passing result has since been re-confirmed on the fixed code path, in a
+  preregistered pair of runs that both completed: the treatment collected the heart at decision 17 as
+  predicted, the control never did, and neither lost a life. Everything below is the <em>assisted</em>
+  track, meaning the agent uses pixel detectors for the player and hearts as development scaffolding.
+  The strict interaction-only claim, which is the actual research goal, has no object-centric evidence
+  yet. That gap is the single most important caveat on this page.</p>
+</div></section>
+
+<nav class="contents bleed" aria-label="On this page">
+  <strong>On this page</strong>
+  <ol>
+    <li><a href="#game">The game</a></li>
+    <li><a href="#claim">The claim</a></li>
+    <li><a href="#room">The room</a></li>
+    <li><a href="#method">The method</a></li>
+    <li><a href="#results">The failures</a></li>
+    <li><a href="#corrections">Corrections</a></li>
+    <li><a href="#next">What comes next</a></li>
+  </ol>
+</nav>
+
+<section id="game"><div class="bleed">
   <div class="wrap" style="padding:0">
   <h2>First, the game</h2>
   <p><em>Adventures of Lolo</em> is one of those core memory games for me. I would argue it is the best
@@ -188,7 +263,7 @@ footer{border-top:1px solid var(--rule);padding:2.6rem 0 4rem;color:var(--ink-3)
   </div>
 </div></section>
 
-<section><div class="bleed">
+<section id="claim"><div class="bleed">
   <div class="wrap" style="padding:0">
   <h2>The claim, and why it is hard</h2>
   <p>The agent may use four things: rendered RGB frames, controller actions and durations, opaque
@@ -213,19 +288,9 @@ footer{border-top:1px solid var(--rule);padding:2.6rem 0 4rem;color:var(--ink-3)
   every cheap objective: frame-level prediction, distance-to-goal, and raw novelty all report progress
   while the agent goes nowhere. Each of those was tried here, and each is in the failure list below.</p>
   </div>
-  <div class="stat-row" id="scoreboard"></div>
-  <div class="wrap" style="padding:0">
-  <p class="small">The one passing result has since been re-confirmed on the fixed code path, in a
-  preregistered pair of runs that both completed: the treatment collected the heart at decision 17 as
-  predicted, the control never did, and neither lost a life. It is included here. Everything below is
-  the <em>assisted</em> track, meaning the agent uses pixel detectors for
-  the player and hearts as development scaffolding. The strict interaction-only claim, which is the
-  actual research goal, has no object-centric evidence yet. That gap is the single most important
-  caveat on this page.</p>
-  </div>
 </div></section>
 
-<section><div class="bleed">
+<section id="room"><div class="bleed">
   <h2>The room</h2>
   <div class="wrap" style="padding:0">
   <p>One room, seen by the agent as pixels. The map below is derived from the frames themselves, using a
@@ -242,8 +307,8 @@ footer{border-top:1px solid var(--rule);padding:2.6rem 0 4rem;color:var(--ink-3)
       <div class="controls" aria-hidden="true" style="visibility:hidden">
         <button type="button" tabindex="-1">7</button></div>
       <div id="map"></div>
-      <p class="small" style="margin-top:1rem">Room 3 on the 16&times;15 coarse grid. Hearts in magenta,
-      the manipulable object at its home cell in green, the chest, and the one genuinely static
+      <p class="small" style="margin-top:1rem">Room 3 on the 16&times;15 coarse grid. Hearts in signal red,
+      the manipulable object at its home cell in ochre, the chest in blue, and the one genuinely static
       obstruction.</p>
     </div>
     <div>
@@ -259,7 +324,7 @@ footer{border-top:1px solid var(--rule);padding:2.6rem 0 4rem;color:var(--ink-3)
   </div>
 </div></section>
 
-<section><div class="wrap">
+<section id="method"><div class="wrap">
   <h2>Why save states change the problem</h2>
   <p>A save state is a complete snapshot of the console's memory. You can restore one and the machine
   continues exactly as it was, every time. That gives this setting something almost no learning
@@ -300,7 +365,7 @@ footer{border-top:1px solid var(--rule);padding:2.6rem 0 4rem;color:var(--ink-3)
   </ul>
 </div></section>
 
-<section><div class="wrap">
+<section id="run-setup"><div class="wrap">
   <h2>How this was actually run</h2>
   <p>All of it on one laptop. An Apple Silicon MacBook Pro, no cloud, no cluster, nothing rented.</p>
   <p>The game runs in a <strong>headless emulator</strong>, meaning an emulator with no window and no
@@ -328,7 +393,7 @@ footer{border-top:1px solid var(--rule);padding:2.6rem 0 4rem;color:var(--ink-3)
   real-data training benchmark came back at 0.196 times local speed. The laptop won.</p>
 </div></section>
 
-<section><div class="bleed">
+<section id="replay"><div class="bleed">
   <h2>Watch a run</h2>
   <div class="wrap" style="padding:0">
   <p>Each experiment replayed as its committed trajectory through the room. The markers are the moments
@@ -348,7 +413,7 @@ footer{border-top:1px solid var(--rule);padding:2.6rem 0 4rem;color:var(--ink-3)
   </div>
 </div></section>
 
-<section><div class="bleed">
+<section id="results"><div class="bleed">
   <h2>What did not work</h2>
   <div class="wrap" style="padding:0">
   <p>Here is every completed run at once. Each panel is one run, and the line is how far the agent was
@@ -389,7 +454,7 @@ footer{border-top:1px solid var(--rule);padding:2.6rem 0 4rem;color:var(--ink-3)
   </div>
 </div></section>
 
-<section><div class="wrap">
+<section id="corrections"><div class="wrap">
   <h2>Four times the project proved itself wrong</h2>
   <p>These are the entries worth reading, because each was a conclusion already written down, already
   acted on, and then falsified by the project's own measurement.</p>
@@ -432,7 +497,7 @@ footer{border-top:1px solid var(--rule);padding:2.6rem 0 4rem;color:var(--ink-3)
   alive.</p>
 </div></section>
 
-<section><div class="wrap">
+<section id="promise"><div class="wrap">
   <h2>What shows promise</h2>
   <h3>Accessibility as a measured quantity</h3>
   <p>The strongest positive result. Removing an object from the room was shown, under a certified
@@ -454,7 +519,7 @@ footer{border-top:1px solid var(--rule);padding:2.6rem 0 4rem;color:var(--ink-3)
   <p>Plain search at depth 24&ndash;36 did things the entire planning apparatus could not do at depth 12.</p>
 </div></section>
 
-<section><div class="wrap">
+<section id="next"><div class="wrap">
   <h2>Where this goes</h2>
   <p>The immediate queue is short and ordered by what could invalidate what. The first item is now done:
   the one passing result has been re-confirmed on the fixed code path, so it no longer rests on a
@@ -505,7 +570,7 @@ footer{border-top:1px solid var(--rule);padding:2.6rem 0 4rem;color:var(--ink-3)
   </div>
 </div></section>
 
-<section><div class="wrap">
+<section id="sources"><div class="wrap">
   <h2>Terms, and where to read more</h2>
   <p>A short glossary of everything technical on this page, in the order it tends to matter.</p>
   <div class="scroll"><table>
@@ -554,6 +619,8 @@ footer{border-top:1px solid var(--rule);padding:2.6rem 0 4rem;color:var(--ink-3)
       Why writing the success condition down first is the load-bearing habit on this page.</li>
   </ul>
 </div></section>
+</article>
+</main>
 
 <footer><div class="wrap">
   <p class="mono" style="font-size:.72rem">Room 3 · 29 native runs · 3 of 5 hearts · chest never opened ·
@@ -623,23 +690,37 @@ const cssv=(n)=>getComputedStyle(document.documentElement).getPropertyValue(n).t
   const fig=document.getElementById('allrooms-fig');
   const src=`data:image/png;base64,${a.b64}`;
   document.getElementById('allrooms').innerHTML=
-    `<button id="roomszoom" title="Click to enlarge"
-       style="display:block;width:100%;padding:0;border:1px solid var(--rule);background:none;cursor:zoom-in">
+    `<button id="roomszoom" class="zoom-button" type="button"
+       aria-label="Open a zoomable view of all ${a.captured} rooms" aria-describedby="allrooms-cap">
       <img src="${src}" alt="Contact sheet of ${a.captured} rooms of Adventures of Lolo"
-        style="width:100%;image-rendering:pixelated;display:block"></button>`;
+        width="2640" height="1390"></button>`;
   const lb=document.createElement('div');
-  lb.id='lightbox'; lb.hidden=true; lb.tabIndex=-1;
-  lb.innerHTML=`<div id="lbinner"><img src="${src}" alt="All ${a.captured} rooms, enlarged"></div>
-    <p id="lbhint">click anywhere, or press Escape, to close</p>`;
+  lb.id='lightbox'; lb.hidden=true;
+  lb.setAttribute('role','dialog');lb.setAttribute('aria-modal','true');
+  lb.setAttribute('aria-labelledby','lbtitle');lb.setAttribute('aria-describedby','lbhint');
+  lb.innerHTML=`<div class="lbbar"><p id="lbtitle">All ${a.captured} rooms</p>
+      <button id="lbclose" type="button">Close</button></div>
+    <div id="lbviewport" tabindex="0"><img src="${src}" alt="All ${a.captured} rooms, enlarged"></div>
+    <p id="lbhint">Scroll to inspect the room grid. Press Escape to close.</p>`;
   document.body.appendChild(lb);
+  const closeButton=document.getElementById('lbclose');
   let lastFocus=null;
   function open_(){lastFocus=document.activeElement;lb.hidden=false;
-    document.body.style.overflow='hidden';lb.focus()}
+    document.body.style.overflow='hidden';closeButton.focus()}
   function close_(){lb.hidden=true;document.body.style.overflow='';
     if(lastFocus)lastFocus.focus()}
   document.getElementById('roomszoom').addEventListener('click',open_);
-  lb.addEventListener('click',close_);
-  document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!lb.hidden)close_()});
+  closeButton.addEventListener('click',close_);
+  lb.addEventListener('click',e=>{if(e.target===lb)close_()});
+  document.addEventListener('keydown',e=>{
+    if(lb.hidden)return;
+    if(e.key==='Escape'){close_();return}
+    if(e.key!=='Tab')return;
+    const focusable=[...lb.querySelectorAll('button,[tabindex="0"]')];
+    const first=focusable[0],last=focusable[focusable.length-1];
+    if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus()}
+    else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus()}
+  });
   document.getElementById('allrooms-cap').textContent=a.caption||'';
   fig.hidden=false;
 })();
@@ -707,7 +788,8 @@ function walkRoute(a,b){
               ['reach','67 cells · actually reachable']];
   let cur='base';
   const ctl=document.getElementById('covctl');
-  ctl.innerHTML=sets.map(([k,l],i)=>`<button data-k="${k}" aria-pressed="${i===0}">${k==='base'?'7':k==='removed'?'24':'67'}</button>`).join('');
+  ctl.innerHTML=sets.map(([k,l],i)=>`<button type="button" data-k="${k}" aria-label="${l}"
+    aria-pressed="${i===0}">${k==='base'?'7':k==='removed'?'24':'67'}</button>`).join('');
   const box=document.getElementById('cov');
   function draw(){
     box.innerHTML='';
@@ -763,7 +845,7 @@ function walkRoute(a,b){
   const ctl=document.getElementById('playctl');
   ctl.innerHTML=`<select id="runsel" aria-label="Choose a run">`+
     runs.map((r,i)=>`<option value="${i}">${r.id} · ${r.fam||''}${r.got?' · reached the heart':''}</option>`).join('')+
-    `</select><button id="playbtn">Play</button>
+    `</select><button id="playbtn" type="button">Play</button>
      <input type="range" id="scrub" min="0" value="0" aria-label="Decision">`;
   const box=document.getElementById('play'), out=document.getElementById('playout');
   const spark=document.getElementById('playspark');
