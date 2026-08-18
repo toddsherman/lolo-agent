@@ -2950,6 +2950,74 @@ Evidence:
 - `docs/gate2-second-manipulation-design-2026-08-18.md`
 - v303 seq 26910; v344 d19/d20; 353-run Room 3 census
 
+### 4.58 R-B removed and confirmed redundant — plus a latent `id()`-keyed cache hazard
+
+What was tried:
+
+- Remove R-B (the certified-cell conjunct in two ladder positions) and
+  rerun E8's treatment with **R-A alone**
+  (`entity-v346-room3-e8b-ra-only-d24`; report digest `087d2e58…`,
+  scorer byte-identical twice and validated 34/34 against v344/v343
+  first). Bit 2 — byte-identity to v344 — was pre-declared as the real
+  test, since §9.4 predicts it and divergence would falsify the
+  redundancy finding.
+
+Result — **PASS, `void: false`, byte-identity held**:
+
+- All 24 committed state ids equal v344's in order, both sha
+  `f56bf2f7…`, `first_divergence: null`. d17 collects `(12,11)` with the
+  same `['down','a','a']` @ `[16,1,2]`, reward 25.0. Zero life losses.
+  Archive columns still a superset of the control's — §4.50 did not
+  recur.
+- **§9.4 is now demonstrated, not inferred**: at d17 Tier 7 fired
+  *unaided* with no R-B conjunct anywhere in the tree. E8's PASS
+  attributes to R-A alone without relying on the instrument that
+  produced the claim.
+- Suite 1,155 OK; coverage inverted rather than deleted, and the
+  pre-existing test E8 had weakened is restored to its original anchor.
+
+**The more important finding — a latent correctness hazard.** The run
+differed from v344 by 6 events (149,976 vs 149,982), all at d19 depth 5.
+Traced, not assumed: the option search memoizes NOOP probes on
+`(id(parent), edge_duration)` — **a CPython address**. Removing ~100
+lines moved heap layout, so the cache hit/miss split changed; misses
+recompute identically, hence byte-identical trajectories. But an
+`id()`-keyed *live* cache can serve a **stale entry** if an address is
+reused mid-search. No run is known to be wrong. That is luck, not
+design.
+
+Classification:
+
+- **Confirmation** for R-B's removal; **latent defect** for the cache
+  key, affecting the matched-NOOP control machinery that the project's
+  entire causal methodology rests on.
+
+Learning:
+
+- A "0 of 15 effect" claim produced by an instrument should still be
+  confirmed by *removing* the thing. Here it held; had it not, the
+  instrument itself would have been the story.
+- Identity-keyed caches are unsafe wherever the keyed object can be
+  freed and its address reused. This one sits under matched-control
+  comparison — the foundation of every causal claim in §4.26–§4.57 — so
+  it is worth auditing even though no incorrect result is known.
+- The 6-event delta was diagnosed rather than waved off as jitter; that
+  is what surfaced the hazard.
+
+Plan change:
+
+- Audit the `id()`-keyed NOOP probe cache: can a freed parent's address
+  be reused within one search? If yes, determine whether any recorded
+  result could have consumed a stale control, and re-key on a stable
+  identifier. This precedes R1 — a correctness question under the
+  causal methodology outranks a reachability measurement.
+
+Evidence:
+
+- `docs/wp8-commit-ladder-design-2026-08-18.md` §10
+- `experiments/lolo1-wp5/e8b-ra-only-report.json`
+- run `entity-v346-room3-e8b-ra-only-d24`
+
 ## 5. Platform and cost learnings
 
 ### 5.1 RunPod for emulator branching
