@@ -978,6 +978,19 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--relational-decision-budget",
+        type=int,
+        default=NeuralPlanningConfig().relational_decision_budget,
+        help=(
+            "decisions a proposed relational hypothesis may stay active "
+            "before it is retired; this is the hypothesis scope, not a "
+            "beam/branch budget, and it consumes no beam slots "
+            "(docs/wp8-search-scheduling-design-2026-08-17.md section "
+            "6.4(e): the navigation experiment needs at least 12, the "
+            "module default of 4 retired the hypothesis at decision 7)"
+        ),
+    )
+    parser.add_argument(
         "--human-prior-episodic-graph-guidance",
         action="store_true",
         help=(
@@ -1559,6 +1572,8 @@ def main() -> None:
             "--human-prior-accessibility-preference-weight must be finite "
             "and non-negative"
         )
+    if args.relational_decision_budget <= 0:
+        parser.error("--relational-decision-budget must be positive")
     if args.human_prior_option_archive_representatives <= 0:
         parser.error(
             "--human-prior-option-archive-representatives must be positive"
@@ -2157,6 +2172,7 @@ def main() -> None:
             args.relational_planner_authority != "off"
         ),
         relational_planner_authority=args.relational_planner_authority,
+        relational_decision_budget=args.relational_decision_budget,
     )
     rom_sha256 = sha256_file(args.rom)
     resume_metadata = None

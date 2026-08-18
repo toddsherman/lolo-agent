@@ -18237,3 +18237,463 @@ class RelationalNavigationDecideInvarianceTests(unittest.TestCase):
             decision_without.branches_examined,
         )
         self.assertEqual(logger_with.events, logger_without.events)
+
+
+import ast
+import contextlib
+import inspect
+import io
+import sys
+import textwrap
+from types import SimpleNamespace as _CliNamespace
+
+from lolo_agent import neural_run
+from lolo_agent.relational_planner import (
+    RelationalPlannerConfig as _RelationalPlannerConfig,
+)
+
+
+class _S0CapturedConfig(Exception):
+    """Sentinel: the run harness built its planning config."""
+
+
+# Telemetry keys that exist *because* a commit-time archive carries the
+# root object track.  They are additive instrument output, never score
+# inputs, so the S0 invariance comparison strips them and requires every
+# other key to match to the bit.
+S0_ADDITIVE_TELEMETRY_KEYS = (
+    "anonymous_object_track_cells",
+    "anonymous_object_track_current_cell",
+    "anonymous_object_track_confirmed_source_cell",
+    "anonymous_object_track_confirmed_destination_cell",
+    "anonymous_object_track_confirmed_world_effect_signature",
+)
+
+S0_ROOT_SIGNATURE = "s0-root-configuration"
+S0_LATER_SIGNATURE = "s0-later-configuration"
+
+
+def _s0_root_object_state(signature: str = S0_ROOT_SIGNATURE):
+    """A populated root track, as a resume seed or a restore leaves it."""
+
+    return replace(
+        ObjectTrackSet.empty().to_root_object_state(),
+        tracked_world_effect_cells=((7, 6),),
+        tracked_world_state_signature=signature,
+        entity_interaction_signature="s0-interaction",
+        entity_interaction_action=Action.RIGHT,
+        entity_interaction_direction=Action.RIGHT,
+        entity_interaction_cell=(6, 6),
+        entity_effect_persisted_in_search=True,
+        entity_effect_persistence_steps=2,
+        confirmed_world_effect_signature="ff00",
+    )
+
+
+def _s0_agent(model, weight=0.0, records=None, signature=S0_ROOT_SIGNATURE):
+    env = UniqueStateEnv()
+    logger = RecordingLogger()
+    agent = VerifiedNeuralAgent(
+        env,
+        model,
+        "cpu",
+        NeuralPlanningConfig(
+            actions=(Action.RIGHT, Action.LEFT),
+            planning_depth=1,
+            action_frames=1,
+            verified_accessibility_weight=weight,
+        ),
+        event_logger=logger,
+    )
+    agent.reset()
+    agent.current_human_prior_root_object_state = _s0_root_object_state(
+        signature
+    )
+    if records is not None:
+        agent.verified_accessibility_records = records
+    return env, logger, agent
+
+
+def _s0_paired_agents(weight=0.0, records=None, signature=S0_ROOT_SIGNATURE):
+    """Two identical agents; the second reproduces the pre-S0 archive.
+
+    ``_root_object_track_branch_fields`` is the single seam every
+    commit-time ``_ArchivedBranch`` construction splats, so returning an
+    empty payload from it reconstructs exactly the archive the planner
+    built before the root track was carried: every carried field falls
+    back to its dataclass default.  The two agents share one model so
+    that model-derived telemetry compares equal.
+    """
+
+    model = EnsembleVisualDynamicsModel(
+        latent_size=32, action_size=8, ensemble_size=2
+    )
+    carried = _s0_agent(model, weight, records, signature)
+    bare = _s0_agent(model, weight, records, signature)
+    bare[2]._root_object_track_branch_fields = lambda: {}
+    return carried, bare
+
+
+def _s0_without_additive_keys(events):
+    return [
+        {
+            key: value
+            for key, value in event.items()
+            if key not in S0_ADDITIVE_TELEMETRY_KEYS
+        }
+        for event in events
+    ]
+
+
+def _s0_decision_key(decision):
+    return (
+        decision.action,
+        decision.action_frames,
+        decision.score,
+        decision.planned_path,
+        decision.planned_durations,
+        decision.branches_examined,
+        decision.restored_archive,
+    )
+
+
+class CommitTimeArchiveConfigurationSignatureTests(unittest.TestCase):
+    """S0, docs/wp8-search-scheduling-design-2026-08-17.md section 5.1.
+
+    Hold-gated restore supply (section 6.4(c)) reads
+    ``_ArchivedBranch.tracked_world_state_signature``; a commit-time
+    archive that leaves it empty is invisible to that gate, which is what
+    caps supply at the resume-audit branches (learnings section 4.46).
+    """
+
+    def test_every_commit_time_construction_carries_the_root_track(
+        self,
+    ) -> None:
+        """Anchor-drift-proof: assert the seam, not the line number."""
+
+        tree = ast.parse(
+            textwrap.dedent(inspect.getsource(VerifiedNeuralAgent.decide))
+        )
+        constructions = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_ArchivedBranch"
+        ]
+        self.assertEqual(len(constructions), 3)
+        for construction in constructions:
+            splatted = {
+                keyword.value.func.attr
+                for keyword in construction.keywords
+                if keyword.arg is None
+                and isinstance(keyword.value, ast.Call)
+                and isinstance(keyword.value.func, ast.Attribute)
+            }
+            self.assertIn("_root_object_track_branch_fields", splatted)
+        self.assertIn(
+            "tracked_world_state_signature",
+            VerifiedNeuralAgent._root_object_track_branch_fields(
+                _CliNamespace(
+                    current_human_prior_root_object_state=(
+                        _s0_root_object_state()
+                    )
+                )
+            ),
+        )
+
+    def test_commit_time_archives_supply_hold_gated_restore_candidates(
+        self,
+    ) -> None:
+        (_env, _logger, carried), (_bare_env, _bare_logger, bare) = (
+            _s0_paired_agents()
+        )
+
+        for _ in range(6):
+            carried.decide()
+            bare.decide()
+
+        self.assertTrue(carried.archive)
+        self.assertEqual(len(carried.archive), len(bare.archive))
+        self.assertEqual(
+            {
+                branch.tracked_world_state_signature
+                for branch in carried.archive
+            },
+            {S0_ROOT_SIGNATURE},
+        )
+        self.assertEqual(
+            {
+                branch.tracked_world_state_signature
+                for branch in bare.archive
+            },
+            {""},
+        )
+        # The supply the hold gate can actually see.
+        self.assertEqual(
+            len(carried._relational_archive_candidate_views()),
+            len(carried.archive),
+        )
+        self.assertEqual(bare._relational_archive_candidate_views(), ())
+
+    def test_populated_signature_leaves_decisions_and_events_unchanged(
+        self,
+    ) -> None:
+        """Invariance at the E3 configuration: authority off, weight 0.0."""
+
+        (_env, logger, carried), (_bare_env, bare_logger, bare) = (
+            _s0_paired_agents(weight=0.0)
+        )
+        self.assertEqual(
+            carried.config.relational_planner_authority, "off"
+        )
+        self.assertEqual(carried.config.verified_accessibility_weight, 0.0)
+
+        carried_decisions = [carried.decide() for _ in range(6)]
+        bare_decisions = [bare.decide() for _ in range(6)]
+
+        self.assertEqual(
+            [_s0_decision_key(item) for item in carried_decisions],
+            [_s0_decision_key(item) for item in bare_decisions],
+        )
+        self.assertEqual(
+            _s0_without_additive_keys(logger.events),
+            _s0_without_additive_keys(bare_logger.events),
+        )
+        self.assertEqual(
+            [
+                carried._archive_frontier_score(branch)
+                for branch in carried.archive
+            ],
+            [
+                bare._archive_frontier_score(branch)
+                for branch in bare.archive
+            ],
+        )
+        self.assertEqual(
+            {
+                carried._archive_verified_accessibility_bonus(branch)[0]
+                for branch in carried.archive
+            },
+            {0.0},
+        )
+
+    def test_populated_signature_is_inert_while_the_root_still_holds(
+        self,
+    ) -> None:
+        """Positive weight, records keyed by the carried signature.
+
+        A commit-time archive inherits the root configuration verbatim,
+        so the preference term compares a certified record against
+        itself and is structurally zero however large the weight is.
+        """
+
+        records = {
+            S0_ROOT_SIGNATURE: _relational_record(S0_ROOT_SIGNATURE),
+        }
+        (_env, logger, carried), (_bare_env, bare_logger, bare) = (
+            _s0_paired_agents(weight=3.0, records=records)
+        )
+
+        carried_decisions = [carried.decide() for _ in range(6)]
+        bare_decisions = [bare.decide() for _ in range(6)]
+
+        self.assertEqual(
+            {
+                carried._archive_verified_accessibility_bonus(branch)[0]
+                for branch in carried.archive
+            },
+            {0.0},
+        )
+        self.assertEqual(
+            [_s0_decision_key(item) for item in carried_decisions],
+            [_s0_decision_key(item) for item in bare_decisions],
+        )
+        self.assertEqual(
+            _s0_without_additive_keys(logger.events),
+            _s0_without_additive_keys(bare_logger.events),
+        )
+
+    def test_populated_signature_scores_once_the_root_moves_on(
+        self,
+    ) -> None:
+        """The one place the carried field is score-bearing, named.
+
+        E3 runs at ``verified_accessibility_weight: 0.0`` (design VOID
+        condition 2), where the short-circuit in
+        ``_archive_verified_accessibility_bonus`` makes this
+        unreachable; at a positive weight the carried signature is a
+        genuine score input once the current root configuration differs
+        from it, and this test pins exactly that boundary.
+        """
+
+        records = {
+            S0_ROOT_SIGNATURE: _relational_record(
+                S0_ROOT_SIGNATURE, cells=RELATIONAL_REMOVAL_CELLS
+            ),
+            S0_LATER_SIGNATURE: _relational_record(
+                S0_LATER_SIGNATURE, cells=RELATIONAL_BASE_CELLS
+            ),
+        }
+        for weight, expect_equal in ((0.0, True), (3.0, False)):
+            with self.subTest(weight=weight):
+                (_env, _logger, carried), (_bare_env, _bare, bare) = (
+                    _s0_paired_agents(weight=weight, records=records)
+                )
+                for _ in range(3):
+                    carried.decide()
+                    bare.decide()
+                for agent in (carried, bare):
+                    agent.current_human_prior_root_object_state = replace(
+                        agent.current_human_prior_root_object_state,
+                        tracked_world_state_signature=S0_LATER_SIGNATURE,
+                    )
+                carried_scores = [
+                    carried._archive_frontier_score(branch)
+                    for branch in carried.archive
+                ]
+                bare_scores = [
+                    bare._archive_frontier_score(branch)
+                    for branch in bare.archive
+                ]
+                self.assertEqual(carried_scores == bare_scores, expect_equal)
+
+
+class RelationalDecisionBudgetFlagTests(unittest.TestCase):
+    """docs/wp8-search-scheduling-design-2026-08-17.md section 6.4(e).
+
+    The hypothesis *scope* (how long a hypothesis may stay active) must
+    be settable from the run harness so the navigation experiment can
+    raise it to at least 12; it is not a branch budget and consumes no
+    beam slots.
+    """
+
+    _REQUIRED_CLI = (
+        "--host",
+        "h",
+        "--core",
+        "c",
+        "--rom",
+        "r",
+        "--checkpoint",
+        "k",
+    )
+
+    def _captured_planning_config(self, *extra):
+        """Run the harness far enough to capture the built config."""
+
+        captured = {}
+        real_config = neural_run.NeuralPlanningConfig
+        real_loader = neural_run.load_ensemble_checkpoint
+
+        def capture(**kwargs):
+            if not kwargs:
+                # argparse defaults construct the bare config.
+                return real_config()
+            captured.update(kwargs)
+            raise _S0CapturedConfig()
+
+        neural_run.NeuralPlanningConfig = capture
+        neural_run.load_ensemble_checkpoint = (
+            lambda *args, **kwargs: (
+                _CliNamespace(checkpoint_digest="digest"),
+                1,
+            )
+        )
+        argv = sys.argv
+        sys.argv = ["neural_run", *self._REQUIRED_CLI, *extra]
+        try:
+            neural_run.main()
+        except _S0CapturedConfig:
+            pass
+        finally:
+            neural_run.NeuralPlanningConfig = real_config
+            neural_run.load_ensemble_checkpoint = real_loader
+            sys.argv = argv
+        return captured
+
+    def test_module_default_is_four_and_reaches_the_relational_config(
+        self,
+    ) -> None:
+        self.assertEqual(NeuralPlanningConfig().relational_decision_budget, 4)
+        agent = VerifiedNeuralAgent(
+            UniqueStateEnv(),
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.RIGHT, Action.LEFT),
+                planning_depth=1,
+                relational_decision_budget=12,
+            ),
+        )
+        self.assertEqual(
+            agent._relational_config(),
+            _RelationalPlannerConfig(
+                max_queue=4,
+                establish_branch_budget=48,
+                hold_branch_budget=8,
+                exploit_branch_budget=48,
+                decision_budget=12,
+            ),
+        )
+
+    def test_planner_rejects_a_non_positive_decision_budget(self) -> None:
+        for budget in (0, -1):
+            with self.subTest(budget=budget):
+                with self.assertRaises(ValueError):
+                    VerifiedNeuralAgent(
+                        UniqueStateEnv(),
+                        EnsembleVisualDynamicsModel(
+                            latent_size=32, action_size=8, ensemble_size=2
+                        ),
+                        "cpu",
+                        NeuralPlanningConfig(
+                            relational_decision_budget=budget
+                        ),
+                    )
+
+    def test_cli_default_matches_the_module_default(self) -> None:
+        captured = self._captured_planning_config()
+        self.assertEqual(
+            captured["relational_decision_budget"],
+            NeuralPlanningConfig().relational_decision_budget,
+        )
+
+    def test_cli_override_reaches_the_planning_config(self) -> None:
+        captured = self._captured_planning_config(
+            "--relational-decision-budget", "12"
+        )
+        self.assertEqual(captured["relational_decision_budget"], 12)
+        # The exploit branch budget is deliberately untouched
+        # (design section 12.10 item 3).
+        self.assertEqual(
+            captured.get(
+                "relational_exploit_budget",
+                NeuralPlanningConfig().relational_exploit_budget,
+            ),
+            48,
+        )
+
+    def test_cli_rejects_a_non_positive_decision_budget(self) -> None:
+        for budget in ("0", "-3"):
+            with self.subTest(budget=budget):
+                argv = sys.argv
+                sys.argv = [
+                    "neural_run",
+                    *self._REQUIRED_CLI,
+                    "--relational-decision-budget",
+                    budget,
+                ]
+                try:
+                    with contextlib.redirect_stderr(io.StringIO()) as err:
+                        with self.assertRaises(SystemExit) as raised:
+                            neural_run.main()
+                finally:
+                    sys.argv = argv
+                self.assertEqual(raised.exception.code, 2)
+                self.assertIn(
+                    "--relational-decision-budget must be positive",
+                    err.getvalue(),
+                )

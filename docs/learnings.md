@@ -2151,10 +2151,17 @@ What was found:
 - Contrast: v325 — the run that reached `(12,11)` — ran **two**
   planner-initiated searches (d5, d8), and its final approach steps were
   ordinary commits, not searches.
-- Related structural find: commit-time archive constructions never set
+- ~~Related structural find: commit-time archive constructions never set
   `tracked_world_state_signature`, so hold-gated restore supply at the E1
   root is capped at the four decision-0 audit branches (max cell
-  `(9,8)`).
+  `(9,8)`).~~ **CORRECTED 2026-08-17** (see §4.49): this was already
+  fixed by `6a8488a` (the merged worktree fix) before this entry was
+  written. The claim came from an AST/grep false negative — the fields
+  are passed via a `**` dict splat, invisible to a keyword-name scan —
+  and from design-doc line anchors captured against a file that already
+  contained the seam. Measured supply on v333 telemetry is 52 of 56
+  commit-time archives carrying the signature (4 → 56, a 14× increase),
+  not 4.
 
 Classification:
 
@@ -2297,6 +2304,64 @@ Evidence:
 
 - run `entity-v333-room3-e3-pre-control-off-d24` (d17 commit seq 82868,
   d18 restore seq 83289)
+
+### 4.49 A stale precondition, a 14× supply, and a frozen-signature risk
+
+What was tried:
+
+- Landing E3's two preconditions: S0 (commit-time archives carrying the
+  tracked configuration signature) and a `--relational-decision-budget`
+  flag.
+
+Result:
+
+- **S0 needed no change — it was already landed** by `6a8488a`, the
+  worktree fix merged this afternoon. §4.46's bullet and the design's
+  §5.1/§6.4(c) rows are stale; corrected in place above. Two causes: a
+  `**`-splat invisible to keyword-name scanning, and design anchors
+  captured against a file that already had the seam.
+- **Supply measured, not assumed**: reconstructing v333's archive
+  lineage offline gives 52 of 56 commit-time archives carrying the
+  removal signature — supply 4 → 56, and all nine restores land on
+  hold-matching branches. §6.4(c)'s "restore drag" FAIL mode does not
+  apply.
+- Invariance proven at both weight settings; the one score-bearing
+  boundary (root moved to a different certified configuration while
+  archives carry the older one: bonus 12.0 vs 0.0 at weight 3.0) is
+  short-circuited at weight 0.0, which is E3's setting.
+- **New risk, recorded not patched**: the carried signature is *frozen,
+  not recomputed* — the root track state is assigned at only five sites
+  and never advanced by an ordinary committed decision, so an archive
+  claims the configuration as of the last restore. Changing that is
+  score-bearing at weight > 0 and needs its own gate.
+
+Classification:
+
+- **Process finding** (a stale precondition nearly cost a preparatory
+  build) plus a **measured supply result** and a **disclosed latent
+  risk**.
+
+Learning:
+
+- Verify preconditions against the code at HEAD, not against design-doc
+  anchors — anchors rot, and `**`-splat passing defeats name scans.
+  "Confirmed missing" earlier today was itself a measurement error.
+- The frozen-signature risk is low for E3 specifically: the held
+  configuration is the *removal*, where the manipulated object no longer
+  exists to move — so a mid-run configuration change is implausible. It
+  is preregistered as a caveat rather than assumed away, and archives
+  emitting their signature would make it directly auditable in vivo.
+
+Plan change:
+
+- E3 proceeds: 24 decisions, `--relational-decision-budget 12`,
+  accessibility weight 0.0, with the frozen-signature caveat and the
+  decision-1 empty-seed blind spot both declared before running.
+
+Evidence:
+
+- `lolo_agent/neural_planner.py:13750` `_root_object_track_branch_fields`
+- run `entity-v333-…-off-d24` (offline lineage reconstruction)
 
 ## 5. Platform and cost learnings
 
