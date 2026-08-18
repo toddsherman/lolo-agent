@@ -119,39 +119,38 @@ blockquote{margin:1.6rem 0;padding:.2rem 0 .2rem 1.1rem;border-left:3px solid va
 del{color:var(--ink-3);text-decoration-color:var(--fail)}
 ul{padding-left:1.1rem} li{margin-bottom:.5em}
 footer{border-top:1px solid var(--rule);padding:2.6rem 0 4rem;color:var(--ink-3);font-size:.8rem}
+#lightbox{position:fixed;inset:0;z-index:50;background:rgba(12,9,6,.94);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  padding:24px;cursor:zoom-out;overflow:auto}
+#lightbox[hidden]{display:none}
+#lbinner{max-width:100%;overflow:auto}
+#lightbox img{display:block;image-rendering:pixelated;max-width:none;width:1320px;
+  max-height:none;border:1px solid var(--rule)}
+#lbhint{flex:0 0 auto;margin:1rem 0 0;font-family:var(--mono);font-size:.68rem;
+  letter-spacing:.08em;text-transform:uppercase;color:#a99b88}
+@media (max-width:900px){#lightbox img{width:100%}#lightbox{cursor:default}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 </head>
 <body>
 
 <div class="bleed" style="padding-top:clamp(40px,7vw,84px)">
-  <p class="eyebrow">Field notes · Adventures of Lolo · an interaction-only agent</p>
-  <h1>Twenty-one runs to one heart</h1>
+  <p class="eyebrow">Field notes · an interaction-only agent</p>
+  <h1>Adventures of Lolo Agent</h1>
   <p class="lede" style="max-width:62ch">An agent that gets pixels, a controller, and save states. No rules,
   no object names, no solutions, no demonstrations. Two days of experiments on a single room. This is
   the honest ledger: what failed, why each thing failed differently, and the four times the project
   proved itself wrong.</p>
-  <figure>
-    <div id="wall"></div>
-    <figcaption>Every completed run, as its distance to one heart at <span class="mono">(12,11)</span>
-    over committed decisions. The floor of each panel is 0, meaning the agent is standing on the heart. Twenty-one runs
-    starting from the same checkpoint never touch it; four eventually do, and two more reach it from a
-    different starting configuration where the object had already been removed. The room is not solved:
-    the best run collects 3 of 5 hearts and has never opened the chest.</figcaption>
-  </figure>
-
-  <div class="note">
-    <p><em>Adventures of Lolo</em> is one of those core memory games for me. I would argue it is the best
-    puzzle game on the NES after Tetris.</p>
-    <p>So this started from affection rather than from a benchmark. I wanted to know whether something
-    could work these rooms out the way I once did, without being handed any of what I already know.</p>
-  </div>
 </div>
 
 <section><div class="bleed">
   <div class="wrap" style="padding:0">
   <h2>First, the game</h2>
-  <p><em>Adventures of Lolo</em> is a 1989 NES puzzle game by HAL Laboratory, the studio that would
+  <p><em>Adventures of Lolo</em> is one of those core memory games for me. I would argue it is the best
+  puzzle game on the NES after Tetris. So this started from affection rather than from a benchmark. I
+  wanted to know whether something could work these rooms out the way I once did, without being handed
+  any of what I already know.</p>
+  <p>It is a 1989 NES puzzle game by HAL Laboratory, the studio that would
   later make Kirby. You are Lolo, a blue ball with a face, working through fifty single-screen rooms to
   rescue Lala from the Great Devil. Nothing scrolls. Nothing is timed. There are no reflexes involved.</p>
   <p>Each room states its goal the same way. Collect every heart framer on the screen, which opens a
@@ -187,11 +186,22 @@ footer{border-top:1px solid var(--rule);padding:2.6rem 0 4rem;color:var(--ink-3)
   <h2>The claim, and why it is hard</h2>
   <p>The agent may use four things: rendered RGB frames, controller actions and durations, opaque
   save/load capabilities, and the pixel-observed consequences of its own actions. It may not receive
-  game rules, object names, level solutions, ROM memory, demonstrations, or solution videos. Internally
-  an object is <span class="mono">track-17</span>; the data contracts have no field for
-  <span class="mono">push</span>, <span class="mono">enemy</span>, or <span class="mono">egg</span>.</p>
+  game rules, object names, level solutions, ROM memory, demonstrations, or solution videos.</p>
+  <p>That restriction is enforced by the shape of the code, not by good intentions. An <em>object</em>
+  here is just a patch of pixels the agent noticed moving together and decided to keep watching. It has
+  no name, because nothing ever told it there is such a thing as a block or a monster. It gets a serial
+  number instead, so the seventeenth thing it started following is <span class="mono">track-17</span>
+  and nothing more. A <em>data contract</em> is the fixed set of fields one part of the program is
+  allowed to hand another, rather like the blanks on a form. Those forms have no blank labelled
+  <span class="mono">push</span>, <span class="mono">enemy</span>, or <span class="mono">egg</span>, so
+  even a component that somehow worked out what an egg was would have nowhere to write it down.</p>
   <p>The target is stronger than finishing fifty rooms: solve held-out rooms with the learned parameters
-  <em>frozen</em>, then attempt the sequel with them still frozen.</p>
+  <em>frozen</em>, then attempt the sequel with them still frozen. Frozen means the numbers inside the
+  model stop changing. During training those numbers are adjusted after every mistake; freezing them
+  locks the model as it stands, so it faces the new rooms with only what it already understood. This
+  matters because a model allowed to keep learning on the test can simply memorise its way through, and
+  you learn nothing about whether it grasped anything general. A room it has never seen, attempted
+  without further tuning, is the honest version of the question.</p>
   <p>The preparation structure described above is what makes this hard to reward. It is invisible to
   every cheap objective: frame-level prediction, distance-to-goal, and raw novelty all report progress
   while the agent goes nowhere. Each of those was tried here, and each is in the failure list below.</p>
@@ -213,13 +223,16 @@ footer{border-top:1px solid var(--rule);padding:2.6rem 0 4rem;color:var(--ink-3)
   </div>
   <figure class="frames" id="frames"></figure>
   <div class="two" style="margin-top:2.4rem;align-items:start">
-    <figure style="margin:0">
-      <div id="map"></div>
-      <figcaption>Room 3 on the 16&times;15 coarse grid. Hearts in magenta, the manipulable object at
-      its home cell in green, the chest, and the one genuinely static obstruction.</figcaption>
-    </figure>
     <div>
-      <h3>Three sets of cells</h3>
+      <h3 style="margin-top:0">What is in the room</h3>
+      <p class="small">Everything the agent has to work with, and the one thing it never got.</p>
+      <div id="map"></div>
+      <p class="small" style="margin-top:1rem">Room 3 on the 16&times;15 coarse grid. Hearts in magenta,
+      the manipulable object at its home cell in green, the chest, and the one genuinely static
+      obstruction.</p>
+    </div>
+    <div>
+      <h3 style="margin-top:0">Three sets of cells</h3>
       <p class="small">The whole campaign turns on the difference between these.</p>
       <div class="controls" id="covctl"></div>
       <div id="cov"></div>
@@ -304,6 +317,10 @@ footer{border-top:1px solid var(--rule);padding:2.6rem 0 4rem;color:var(--ink-3)
   <div class="wrap" style="padding:0">
   <p>Each experiment replayed as its committed trajectory through the room. The markers are the moments
   the telemetry flagged: an archive restore, a deposit, the one collection.</p>
+  <p class="small">What the telemetry stores is the cell the agent occupied at each committed decision,
+  not every step in between. The connecting line is therefore reconstructed: a shortest walkable route
+  between consecutive recorded positions, so it stays on floor the agent could actually stand on. Trust
+  the marked positions, and read the line between them as plausible rather than observed.</p>
   </div>
   <div class="panel" style="margin-top:1.6rem">
     <div class="controls" id="playctl"></div>
@@ -315,8 +332,21 @@ footer{border-top:1px solid var(--rule);padding:2.6rem 0 4rem;color:var(--ink-3)
   </div>
 </div></section>
 
-<section><div class="wrap">
+<section><div class="bleed">
   <h2>What did not work</h2>
+  <div class="wrap" style="padding:0">
+  <p>Here is every completed run at once. Each panel is one run, and the line is how far the agent was
+  from a particular heart as the run went on.</p>
+  </div>
+  <figure>
+    <div id="wall"></div>
+    <figcaption>Every completed run, as its distance to one heart at <span class="mono">(12,11)</span>
+    over committed decisions. The floor of each panel is 0, meaning the agent is standing on the heart. Twenty-one runs
+    starting from the same checkpoint never touch it; four eventually do, and two more reach it from a
+    different starting configuration where the object had already been removed. The room is not solved:
+    the best run collects 3 of 5 hearts and has never opened the chest.</figcaption>
+  </figure>
+  <div class="wrap" style="padding:0">
   <p>The interesting part is not that things failed but that each failed for a <em>different, nameable</em>
   reason. Five separate mechanisms were built to make the planner prefer a prepared configuration.</p>
   <div class="scroll"><table id="levers"></table></div>
@@ -340,6 +370,7 @@ footer{border-top:1px solid var(--rule);padding:2.6rem 0 4rem;color:var(--ink-3)
   mask could satisfy, the incumbent's own defects included. Replacing it with a functional gate, refereed
   by detector-free ground truth rather than by the incumbent, revealed that the incumbent itself misses
   6&ndash;12% of real manipulations.</p>
+  </div>
 </div></section>
 
 <section><div class="wrap">
@@ -424,6 +455,32 @@ footer{border-top:1px solid var(--rule);padding:2.6rem 0 4rem;color:var(--ink-3)
   precondition, it is exactly what stopped anyone re-measuring the budget once the representation finally
   existed.</p>
   <blockquote>Was Gate 4 measuring a planning capability, or measuring depth 12?</blockquote>
+
+  <h3>Questions I would like other people to think about</h3>
+  <p>These are the ones this campaign could not settle, phrased so they apply well beyond this game.</p>
+  <ul>
+    <li><strong>How do you tell preparation from luck, without a rule book?</strong> The behaviour worth
+    rewarding here is doing something now whose only payoff arrives several moves later. Every cheap
+    objective tried, prediction error, distance to the goal, raw novelty, scored the preparation the same
+    as an accident that happened to land in the same place.</li>
+    <li><strong>When a lever changes nothing, how do you find out quickly?</strong> Five separate
+    mechanisms were built here and each failed for its own reason, but the expensive part was never the
+    building, it was the days between shipping one and learning it had never fired. Ship every lever with
+    an instrument that records what the system would have done without it.</li>
+    <li><strong>How much of what looks like a reasoning failure is a budget?</strong> Twice on this page a
+    conclusion about the agent's competence turned out to be a statement about how deep it was allowed to
+    search. The uncomfortable version: if raising a limit dissolves your result, was there a result.</li>
+    <li><strong>What is the honest unit of progress?</strong> Scoring against internal gates rather than
+    against the game let the project look busy for two days while the room stayed unsolved. Whatever your
+    equivalent of the room is, it is worth checking that your metric still moves when it does.</li>
+    <li><strong>Can a hand-built detector ever be removed later?</strong> Every result on this page uses
+    pixel detectors as scaffolding, added to make progress and intended to come out. They have not come
+    out. I would like to know whether anyone has managed that transition cleanly, or whether scaffolding
+    of this kind is load-bearing the moment you lean on it.</li>
+    <li><strong>How should negative results like these be published?</strong> Most of the value here is in
+    the failures and the four self-corrections, none of which fit the shape of a paper with a headline
+    number. The file the project actually ran on was a log of things that turned out not to be true.</li>
+  </ul>
 
   <div class="note">
     <p>This experiment has been relatively costly, expending all my max-plan tokens on multiple services.
@@ -548,9 +605,25 @@ const cssv=(n)=>getComputedStyle(document.documentElement).getPropertyValue(n).t
 (function(){
   const a=D.allrooms; if(!a||!a.b64)return;
   const fig=document.getElementById('allrooms-fig');
+  const src=`data:image/png;base64,${a.b64}`;
   document.getElementById('allrooms').innerHTML=
-    `<img src="data:image/png;base64,${a.b64}" alt="Contact sheet of ${a.captured} rooms of Adventures of Lolo"
-      style="width:100%;image-rendering:pixelated;display:block;border:1px solid var(--rule)">`;
+    `<button id="roomszoom" title="Click to enlarge"
+       style="display:block;width:100%;padding:0;border:1px solid var(--rule);background:none;cursor:zoom-in">
+      <img src="${src}" alt="Contact sheet of ${a.captured} rooms of Adventures of Lolo"
+        style="width:100%;image-rendering:pixelated;display:block"></button>`;
+  const lb=document.createElement('div');
+  lb.id='lightbox'; lb.hidden=true; lb.tabIndex=-1;
+  lb.innerHTML=`<div id="lbinner"><img src="${src}" alt="All ${a.captured} rooms, enlarged"></div>
+    <p id="lbhint">click anywhere, or press Escape, to close</p>`;
+  document.body.appendChild(lb);
+  let lastFocus=null;
+  function open_(){lastFocus=document.activeElement;lb.hidden=false;
+    document.body.style.overflow='hidden';lb.focus()}
+  function close_(){lb.hidden=true;document.body.style.overflow='';
+    if(lastFocus)lastFocus.focus()}
+  document.getElementById('roomszoom').addEventListener('click',open_);
+  lb.addEventListener('click',close_);
+  document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!lb.hidden)close_()});
   document.getElementById('allrooms-cap').textContent=a.caption||'';
   fig.hidden=false;
 })();
@@ -569,8 +642,31 @@ function gridSVG(target,opts){
 }
 function mark(svg,cs,c,fill,r){svg.appendChild(el('circle',{cx:c[0]*cs+cs/2,cy:c[1]*cs+cs/2,
   r:r||cs*.3,fill}))}
+/* Telemetry records the cell at each committed decision, not every step between them.
+   Joining those with a straight line drew paths through walls and water. This walks the
+   passable set instead, so the drawn route is one Lolo could actually have taken. It is a
+   reconstruction of the between-decision movement, not a recording of it. */
+function walkRoute(a,b){
+  const k=c=>c[0]+','+c[1];
+  if(k(a)===k(b))return [a];
+  const prev=new Map([[k(a),null]]), q=[a];
+  while(q.length){
+    const cur=q.shift();
+    if(k(cur)===k(b))break;
+    for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+      const n=[cur[0]+dx,cur[1]+dy];
+      if(n[0]<0||n[1]<0||n[0]>15||n[1]>14)continue;
+      if(!PASS.has(k(n))||prev.has(k(n)))continue;
+      prev.set(k(n),cur); q.push(n);
+    }
+  }
+  if(!prev.has(k(b)))return [a,b];          /* unreachable: fall back, never silently drop */
+  const out=[]; let cur=b;
+  while(cur){out.unshift(cur);cur=prev.get(k(cur))}
+  return out;
+}
 (function(){
-  const {svg,cs}=gridSVG(null,{cell:22,label:'Room 3 map'});
+  const {svg,cs}=gridSVG(null,{cell:20,label:'Room 3 map'});
   D.hearts.forEach(h=>mark(svg,cs,h.cell,h.status==='collected'?'var(--ink-3)':'var(--accent)',cs*.28));
   mark(svg,cs,D.entity.home,'var(--entity)',cs*.3);
   svg.appendChild(el('rect',{x:D.green[0]*cs+3,y:D.green[1]*cs+3,width:cs-6,height:cs-6,
@@ -600,7 +696,7 @@ function mark(svg,cs,c,fill,r){svg.appendChild(el('circle',{cx:c[0]*cs+cs/2,cy:c
   const box=document.getElementById('cov');
   function draw(){
     box.innerHTML='';
-    const {svg,cs}=gridSVG(null,{cell:18,label:'Coverage set'});
+    const {svg,cs}=gridSVG(null,{cell:20,label:'Coverage set'});
     const S=new Set((D.cov[cur]||[]).map(key));
     S.forEach(s=>{const [x,y]=s.split(',').map(Number);
       svg.appendChild(el('rect',{x:x*cs,y:y*cs,width:cs,height:cs,fill:'var(--probe)',opacity:.42}))});
@@ -665,8 +761,12 @@ function mark(svg,cs,c,fill,r){svg.appendChild(el('circle',{cx:c[0]*cs+cs/2,cy:c
     S.forEach(s=>{const [x,y]=s.split(',').map(Number);
       svg.appendChild(el('rect',{x:x*cs,y:y*cs,width:cs,height:cs,fill:'var(--probe)',opacity:.12}))});
     D.hearts.forEach(h=>mark(svg,cs,h.cell,h.status==='collected'?'var(--ink-3)':'var(--accent)',cs*.22));
-    let d='';
-    r.traj.slice(0,step+1).forEach((c,j)=>{d+=(j?'L':'M')+(c[0]*cs+cs/2)+' '+(c[1]*cs+cs/2)});
+    let d='', pts=[];
+    r.traj.slice(0,step+1).forEach((c,j)=>{
+      if(j===0){pts.push(c);return}
+      walkRoute(r.traj[j-1],c).slice(1).forEach(q=>pts.push(q));
+    });
+    pts.forEach((c,j)=>{d+=(j?'L':'M')+(c[0]*cs+cs/2)+' '+(c[1]*cs+cs/2)});
     svg.appendChild(el('path',{d,fill:'none',stroke:'var(--ink-2)','stroke-width':2,
       'stroke-linejoin':'round','stroke-linecap':'round',opacity:.55}));
     const c=r.traj[Math.min(step,r.traj.length-1)];
