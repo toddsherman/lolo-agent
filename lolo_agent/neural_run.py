@@ -1022,14 +1022,10 @@ def main() -> None:
     )
     parser.add_argument(
         "--relational-terminal-step",
-        choices=(
-            "off",
-            "decline_restore",
-            "decline_restore_and_certified_tier",
-        ),
+        choices=("off", "decline_restore"),
         default=NeuralPlanningConfig().relational_terminal_step,
         help=(
-            "which WP8 terminal-step rules selection authority may use "
+            "which WP8 terminal-step rule selection authority may use "
             "(docs/wp8-commit-ladder-design-2026-08-18.md sections 3.1 "
             "and 5.2, E8): 'off' (the default) keeps today's behavior "
             "byte-identically and emits nothing; 'decline_restore' is "
@@ -1041,13 +1037,13 @@ def main() -> None:
             "all (learnings section 4.55: at v341 d17/d18 the commit "
             "ladder was never entered — branches_examined 0, zero "
             "verified branches — and d17's restore selected the state "
-            "the agent already occupied); "
-            "'decline_restore_and_certified_tier' adds rule R-B, which "
-            "the design gated behind precondition P2 and P2 licensed, "
-            "relaxing Tier 7's position-novelty interlock ONLY for "
-            "branches collecting an uncollected certified milestone "
-            "cell. Adds no tier, no term and no weight, and is inert at "
-            "any authority other than 'selection' and with seam S3 off"
+            "the agent already occupied). Adds no tier, no term and no "
+            "weight, and is inert at any authority other than "
+            "'selection' and with seam S3 off. A third value, "
+            "'decline_restore_and_certified_tier', carried rule R-B and "
+            "was REMOVED: E8's own counterfactual instrument measured it "
+            "changing the committed tier at zero of fifteen expansion "
+            "decisions (design section 9.4, roadmap section 24 item 3)"
         ),
     )
     parser.add_argument(

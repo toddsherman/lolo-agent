@@ -1163,3 +1163,350 @@ target.
 - **Assisted track throughout.** Certified records come from the player-anchored
   hold instrument (`certified_hold` provenance). No strict claim is made or
   implied; WP5's shadow campaign remains the strict path.
+
+---
+
+# 10. R-B removal and R-A-only confirmation (E8b)
+
+**Date**: 2026-08-18
+**Planner HEAD at removal**: `05b3127` ("Resolve E8's attribution against the
+result"), working tree. `neural_planner.py` **29,449 lines** after the removal
+(29,575 before). Line anchors in this section are valid **at that working tree
+only** — §6.1's warning still binds, and the tests below pin positions relative
+to named neighbours rather than to numbers.
+**Trigger**: §9.4 ("**R-A alone is sufficient. R-B did nothing.** … **R-B should
+not be carried forward on E8's evidence.**"), learnings §4.56, roadmap §24 item
+3 ("**R-B is unshipped-in-effect and should be REMOVED**: it changed nothing at
+15 of 15 expansion decisions. An R-A-only confirmation costs nothing
+(`decline_restore` already exists). Carrying a lever with no measured effect
+violates the counterfactual discipline that caught it.").
+
+## 10.1 What was removed, with anchors
+
+R-B was the certified-cell conjunct in **two** ladder positions (§8.3's
+correction), plus the selector value, helpers and telemetry that fed them.
+Every one is gone; nothing was left behind "in case".
+
+| # | What | Where it was (pre-removal `neural_planner.py`) | State now |
+| --- | --- | --- | --- |
+| 1 | Selector value `decline_restore_and_certified_tier` and the constant `RELATIONAL_TERMINAL_STEP_DECLINE_RESTORE_AND_CERTIFIED_TIER` | `:173–180` | Gone. `RELATIONAL_TERMINAL_STEP_MODES == ("off", "decline_restore")` at `:179–182` |
+| 2 | `_relational_certified_tier_enabled()` — R-B's selector predicate | `:19641–19654` | Gone |
+| 3 | `_relational_certified_milestone_branches()` — the conjunct itself | `:20717–20762` | Gone |
+| 4 | **Tier 7's computation interlock**, relaxed `else` branch | `:23805–23828` | Restored to the pre-E8 expression, `known_goal_fallback_choice = (… if known_goal_branches and human_prior_semantic_frontier_choice is None else None)` at `:23729–23742` |
+| 5 | **Tier 6's guard conjunct**, `and not relational_certified_milestone_branches` | `:24325–24335` | Restored to the bare `elif human_prior_semantic_frontier_choice is not None:` at `:24212` |
+| 6 | The `_first_tier(skip_certified)` counterfactual and the fields `ladder_tier_would_have_committed_without_R_B{,_index}`, `relational_certified_milestone_branches`, `certified_milestone_collecting_branches_present` | `:24092–24143` | Gone. The `relational_ladder_tier_committed` event survives with `ladder_tier_committed{,_index}` and the branch counts (`:24103`) |
+| 7 | CLI choice `decline_restore_and_certified_tier` on `--relational-terminal-step` | `neural_run.py:1025–1029` | Gone; the flag now accepts `off` \| `decline_restore` and **rejects the retired value with exit code 2** |
+
+**Verified mechanically, not by eye**: items 4 and 5 are byte-identical to the
+same regions at `42e4bd0~1` (the last commit before E8's code landed), compared
+programmatically. Item 6's event is kept deliberately — roadmap §24 item 4 made
+"every lever ships with a counterfactual instrument" a standing invariant, and
+R-A's counterfactual (`incumbent_restore_state_id` / `_cell` / `_distance` /
+`_is_self_restore`) is untouched. What is dropped is only the counterfactual
+that has lost its referent: with R-B gone,
+`ladder_tier_would_have_committed_without_R_B` would be trivially equal to
+`ladder_tier_committed` at every decision, which is a counterfactual in name
+only and worse than none, because a later reader could cite it as evidence.
+
+**What was NOT touched.** R-A is exactly as E8 shipped it: the
+`_relational_terminal_step_view()` predicate (`:20656`), the guard inside
+`_restore_if_stagnant` placed after `branch = max(restore_eligible, …)` and
+**before** `self.archive.remove(branch)` (`:28252` guard, `:28326` removal), the
+scoping to `recovery_reason == "human_prior_graph_stagnation"`, the four named
+refusal reasons, the `relational_terminal_step_gate` event and every redundancy
+field. Authority gating (`_relational_selection_authority()`), seam-S3
+dependence and the `off` default are unchanged. `relational_planner.py` is still
+untouched and the strict-lineage linter still reports **zero findings**.
+
+**Test coverage was INVERTED, not deleted.** Where a test asserted R-B's
+presence, its successor asserts the tier logic is the pre-E8 one:
+
+| Removed test | Replacement | What the replacement asserts |
+| --- | --- | --- |
+| `RelationalCertifiedTierTests.test_the_tier_six_guard_yields_only_to_the_conjunct` | `RelationalCertifiedTierRemovedTests.test_tier_seven_interlock_is_the_pre_e8_expression` | Tier 7's fallback is `None` again, with no relaxed branch and no `certified` token in the region |
+| — (same test, second half) | `…test_tier_six_guard_carries_no_conjunct` | The novelty guard is the bare `elif` and `relational_certified_milestone_branches` appears nowhere in the file |
+| `…test_conjunct_is_empty_for_every_pre_e8_configuration`, `…test_conjunct_selects_only_certified_milestone_collections`, `…test_blast_radius_is_zero_where_no_milestone_branch_exists` | `…test_the_conjunct_helper_is_removed_not_merely_unused` | Both helpers are absent from the agent and `_relational_certified` appears nowhere in the source — a helper left behind is a lever that can be re-wired by accident |
+| — (new) | `RelationalTerminalStepSelectorTests.test_the_removed_r_b_value_is_rejected_like_any_unknown_mode` | The retired selector value raises `ValueError`, and the constant is gone |
+| — (new) | `RelationalTerminalStepDecideTests.test_the_r_b_counterfactual_field_is_gone_with_the_rule` | The four R-B telemetry fields are absent, and R-A's own counterfactual field is still present |
+| — (new) | `RelationalTerminalStepCliTests.test_cli_rejects_an_unknown_terminal_step_mode` (extended) | A command line copied verbatim from E8's treatment arm now **fails at argparse** rather than quietly running R-A and being reported as R-A-plus-R-B |
+
+**One pre-existing test changed, and it was changed back.**
+`RelationalNavigationLadderPlacementTests.test_tier_sits_below_milestone_
+collection_and_above_novelty` had its Tier-6 anchor weakened by E8 (§8.5 records
+this) to the guard's stable head. It is restored to the full pre-E8 line
+`elif human_prior_semantic_frontier_choice is not None:` — byte-identical to
+`42e4bd0~1` modulo an explanatory comment. The anchor is now itself the
+assertion that the guard carries no conjunct, so the test is strictly stronger
+than the E8 version and identical in meaning to the pre-E8 one. **No
+pre-existing test lost meaning.**
+
+**Suite**: **1,155 OK, 4 skipped** (was 1,154 OK, 4 skipped). Net +1: four R-B
+tests removed, five removal-inversion tests added. The count went *up* because
+R-B's removal is asserted in more places than R-B's presence was.
+
+## 10.2 PREREGISTRATION — written and committed to before the arm ran
+
+*Nothing in §10.2–§10.6 may be revised after the run starts.*
+
+### 10.2.1 One arm, and the control is deliberately NOT re-run
+
+| Arm | Run id | Authority | `--relational-terminal-step` | Runs? |
+| --- | --- | --- | --- | --- |
+| Treatment | `entity-v346-room3-e8b-ra-only-d24` | `selection` | `decline_restore` | **Yes — the only run** |
+| Control | `entity-v343-room3-e8-control-off-d24` | `off` | `off` | **NO — v343 is REUSED** |
+
+**The control-reuse decision, stated explicitly rather than assumed.** v343 is
+complete (`status: complete`, 85,594 events, `run_finished`), was scored under
+§8's preregistration with `void: false`, and its 24 committed state ids
+reproduce v340's exactly, extending the chain
+**v333 ≡ v334 ≡ v336 ≡ v338 ≡ v340 ≡ v343**. R-B removal cannot change the
+control by construction: at authority `off` the terminal-step selector is
+`off`, `_relational_terminal_step_gate_enabled()` returns `False`, the ladder
+regions are byte-identical to pre-E8, and this is asserted offline by
+`RelationalTerminalStepInvarianceTests`. Re-running it would buy a re-derivation
+of a chain already six runs long at the cost of 33 minutes of emulator time and
+one more chance to introduce an operational defect.
+
+**Consequently there is no control bit and no control VOID rule.** A v343
+mismatch is **impossible by construction, not a bit**: v343's events are on
+disk and unchanged, so the scorer reads them, not a fresh run. If the scorer's
+re-read of v343 ever disagreed with §9's numbers, that would be a **scorer
+defect or a corrupted artefact** — an operational fault to fix before scoring,
+never evidence about R-B. It is recorded as `control_reused: true` with v343's
+own digest on the face of the report.
+
+### 10.2.2 Configuration — v344's manifest, one field changed
+
+Command line: `docs/wp8-search-scheduling-design-2026-08-17.md` §11.3 verbatim,
+plus `--relational-navigation-seams restore_plus_deposit`,
+`--relational-lifecycle chain_published`, `--relational-planner-authority
+selection`, and **`--relational-terminal-step decline_restore`**. Every other
+field is copied from v344's manifest:
+
+| Field | v344 (E8 treatment) | v346 (E8b) |
+| --- | --- | --- |
+| `relational_planner_authority` | `selection` | `selection` |
+| `relational_planner_enabled` | `true` | `true` |
+| `relational_navigation_seams` | `restore_plus_deposit` | `restore_plus_deposit` |
+| `relational_lifecycle` | `chain_published` | `chain_published` |
+| **`relational_terminal_step`** | **`decline_restore_and_certified_tier`** | **`decline_restore`** |
+| `relational_decision_budget` | 12 | 12 |
+| `verified_accessibility_weight` | 0.0 | 0.0 |
+| `requested_decisions` | 24 | 24 |
+| Root | `entity-v318-room3-known-push-connected-mask-d2`, `source_decision: 1`, `state_source_checkpoint_event_seq: 2026`, `state_source_events_sha256: 0bbe1d15…` | identical |
+| Records | `record_count: 3`, `15604cb5…`/`37ea410d…`/`47975c94…` | identical |
+
+`relational_terminal_step` is the **only** permitted difference, and after the
+removal `decline_restore` is the only non-`off` value that exists.
+
+### 10.2.3 The bits (fixed; **ANY mixed outcome = FAIL**)
+
+**Bit 1 — THE COLLECTION STILL HAPPENS, AT THE SAME INSTANT.** The treatment
+collects the milestone at `(192,176)` by stepping `(12,10) → (12,11)` at **d17**,
+exactly as v344 did. Scored from the run's own telemetry: d17's
+`decision_committed` reports the cell `(12,11)`, and a `branch_verified` event
+at d17 drops `[192,176]` from `human_prior_target_hearts` with
+`milestone_reward: 25.0`. A collection at a *different* decision is a bit-1
+FAIL, not a partial pass.
+
+**Bit 2 — BYTE-IDENTITY TO v344. THIS IS THE REAL TEST.** The treatment's 24
+committed state ids reproduce v344's **exactly**, in order:
+
+```
+state-00012280 state-00012256 state-00012294 state-00012305 state-00012257
+state-00012317 state-00012322 state-00012305 state-00012335 state-00012345
+state-00012344 state-00012355 state-00012363 state-00012354 state-00012371
+state-00012381 state-00012390 state-00012390 state-00021371 state-00020464
+state-00022642 state-00022656 state-00022649 state-00022664
+```
+
+sha256 over the canonical JSON array of that sequence:
+`f56bf2f73ee2c2983671bd9731e3317a07a493d60d8c469176793b2a0ebd9148`.
+
+**Stated plainly, because it is the point of the experiment**: §9.4 measured
+R-B changing the committed tier at **0 of 15** expansion decisions, so §9.4
+*predicts byte-identity*. R-A-only must be trajectory-identical to E8's
+treatment. **If it is NOT, that falsifies §9.4's redundancy finding and is the
+headline result** — it would mean R-B was doing something the in-run
+counterfactual instrument missed, that E8's attribution of the PASS to R-A
+alone is unsupported, that learnings §4.56's "R-A alone is sufficient" and
+roadmap §24 item 3's removal order both rest on a broken instrument, and that
+the §4.43 redundancy detector this campaign built has a blind spot. A divergence
+is therefore **not** a reason to restore R-B; it is a reason to reopen §9.4 and
+to audit the counterfactual instrument itself. It would be reported as the
+finding, above bits 1 and 3, whatever they read.
+
+A weaker corroborating quantity is recorded but **is not a bit**: v344 emitted
+149,982 events to v346's expected count. Event totals may differ by the R-B
+telemetry fields that no longer exist, and by nothing else; a difference there
+is expected and carries no information about the trajectory.
+
+**Bit 3 — NO LIFE-LOSS REGRESSION.** `human_prior_life_losses == 0` in the
+treatment, matching v343's and v344's zero. P1 (life-loss recovery) and P4
+(goal-exhaustion rollback) unmodified and un-suppressed; no
+`position_not_certified` deposit.
+
+**Readings fixed in advance:**
+
+- **All three PASS** ⇒ R-B's removal is confirmed harmless and E8's result is
+  attributable to R-A alone on direct evidence rather than on an in-run
+  counterfactual. This is the expected outcome and it is a **confirmation, not a
+  new capability claim**: every §9.7/§9.9 limitation carries over unchanged, and
+  in particular **no Gate 4 claim may cite E8 or E8b as evidence that
+  hypothesis-driven planning produced the behaviour.**
+- **Bit 2 FAIL** ⇒ the headline, per above. §9.4 is reopened; R-B is *not*
+  restored on this evidence.
+- **Bit 2 PASS with bit 1 FAIL** ⇒ incoherent (identical state ids imply an
+  identical trajectory) and diagnosed as a scorer defect, not a result.
+
+### 10.2.4 VOID conditions (a VOID is not evidence)
+
+1. **Config inequality** — the treatment's `planning_config` differs from
+   v344's in any field except `relational_terminal_step`.
+2. **Records inequality** — not `record_count: 3` with
+   `15604cb5…`/`37ea410d…`/`47975c94…`, or `verified_accessibility_weight != 0.0`.
+3. **Root defect** — the manifest's `episodic_resume` block does not record
+   `entity-v318-room3-known-push-connected-mask-d2`, `source_decision: 1`,
+   `state_source_checkpoint_event_seq: 2026`, `state_source_events_sha256:
+   0bbe1d15…`.
+4. **Budget defect** — the arm exceeds the 10,800 s wall ceiling and is killed
+   before `run_finished`.
+5. **Selector defect** — the manifest does not report
+   `relational_terminal_step: decline_restore`, or the run was launched from a
+   tree still carrying R-B.
+6. **Crash** — a crashed arm is **VOID, not FAIL**.
+
+Budget-exhausted non-reach is **censored**, never "unreachable".
+
+### 10.2.5 Health-check rule (learnings §4.52 **and its 2026-08-18 addendum**)
+
+§4.52's addendum is the operative one here, because it records this campaign's
+*own* monitor calling a finished run stalled: the monitor's `pgrep -f
+"lolo_agent.neural_run"` matched **its own process** in the table, so it could
+never report a run gone. The general rule beneath both incidents: **two readings
+that share an author are one signal, not two.**
+
+- The run is launched **detached** (`setsid`-equivalent, `nohup`, stdout/stderr
+  to a log), so stopping the wrapper cannot orphan or kill it.
+- **The launcher records the PID.** Liveness is `kill -0 $PID` against that
+  recorded PID. **No `pgrep` pattern is used**, precisely because a pattern
+  broad enough to match the run is broad enough to match the monitor.
+- Progress is the run's own telemetry: monotone growth of `events.jsonl`. That
+  and `kill -0` share no author, so they are genuinely two signals.
+- The first `decision_committed` lands at seq ≈ **75,742** in every arm of this
+  family; **zero committed decisions at 6k events is on-profile, not a death.**
+- Watchdog **10,800 s**. Observed envelope for v344 (the same configuration):
+  **57 minutes**, 149,982 events.
+
+### 10.2.6 Scoring
+
+One deterministic scorer walks the treatment's `events.jsonl` once and v343's
+once, applies §10.2.3 verbatim, and writes
+`experiments/lolo1-wp5/e8b-ra-only-report.json` with a canonical-JSON
+`digest_sha256` over the body. Run end-to-end **twice**; both reports
+byte-identical. Distances: **Chebyshev** for §4.47/§4.48-comparable traces,
+**Manhattan** for the mechanism's own gate distances. The scorer re-derives
+v344's reference state-id sequence from v344's events rather than trusting the
+literal above, and reports both.
+
+## 10.3 E8b RESULTS — **PASS**, and §9.4 is confirmed by direct evidence
+
+**Date**: 2026-08-18. **Report**:
+`experiments/lolo1-wp5/e8b-ra-only-report.json`, `digest_sha256:
+087d2e5879b79be2670b867df16c3d0c3edbfa787115aa1e2f479a4948dcc3f4`,
+byte-identical across two end-to-end scorer runs. Scorer **validated against
+v344/v343 first — 34/34 checks**, reproducing §9's numbers exactly, including
+§9.4's "R-B changed the committed tier at 0 of 15". **`void: false`** on all six
+VOID rules. Run: `entity-v346-room3-e8b-ra-only-d24`, 149,976 events, 24
+committed decisions, **3,464 s** wall against the 10,800 s ceiling, launched
+detached and monitored by `kill -0` against the launcher-recorded PID (the
+watchdog exited on the run's own exit; it never fired).
+
+### 10.3.1 Bits
+
+| Bit | Verdict | Evidence |
+| --- | --- | --- |
+| **1 collection at the same instant** | **PASS** | d17 commits cell `(12,11)`; the single collecting branch is **`['down','a','a']` @ `[16,1,2]`**, `milestone_reward: 25.0`. Collections at exactly `[17]`, as v344 |
+| **2 byte-identity to v344** | **PASS** | All 24 committed state ids equal, in order. Both sha256 `f56bf2f73ee2c2983671bd9731e3317a07a493d60d8c469176793b2a0ebd9148`. `first_divergence: null` |
+| **3 no life-loss regression** | **PASS** | 0 life losses (v344 0, v343 0); no `position_not_certified` deposit; P1/P4 unmodified |
+
+**Bit 2 is the result.** §9.4 predicted byte-identity and byte-identity is what
+happened, to the state id. **§9.4's redundancy finding is not falsified — it is
+confirmed by a direct experiment rather than by an in-run counterfactual.** E8's
+PASS is attributable to **R-A alone** on evidence that no longer depends on
+trusting the instrument that produced the claim. R-B removal is therefore
+behaviour-preserving in the only way that matters.
+
+### 10.3.2 Everything else reproduced too, including the §4.50 instrument
+
+| Quantity | v346 (R-A only) | v344 (R-A + R-B) | v343 (control) |
+| --- | --- | --- | --- |
+| Chebyshev trace | `6,4,4,3,4,5,5,3,3,4,3,4,4,3,2,1,`**`0,0,0`**`,5,6,6,5,6` | **identical** | `…,2,1,4,5,…` (never 0) |
+| Manhattan trace | `9,7,7,6,8,9,10,6,5,6,4,5,4,3,2,1,`**`0,0,0`**`,10,11,10,10,11` | **identical** | — |
+| Archive geography columns | `6,7,8,9,10,11,12` | `6,7,8,9,10,11,12` | `6,8,9,10,11,12` |
+| Archive branches added | 43 | 43 | 44 |
+| Seam S3 deposits | 1, d16, `(12,10)`, `state-00012381` | identical | — |
+| Commit-path verified branches | 105 | 105 | 105 |
+| Option searches | `{completed: 2, deferred: 9}` | identical | `{completed: 1, deferred: 9}` |
+| Terminal-step gate evaluations | 5; declines at d5/d8/d11/d14, **fires at d17** | identical | none emitted |
+| Tier committed at d17 | `human_prior_known_milestone_fallback` (**Tier 7**) | same | — |
+
+**§4.50 did not recur**, again and in the generous direction: the treatment's
+archive columns remain a **superset** of the control's. §3.3(3)'s abandon
+condition is not met.
+
+**§9.4's mechanism is re-observed directly.** At d17 Tier 7 fired **unaided**,
+with the frontier choice `None` and with no R-B conjunct in the tree at all.
+That is precisely §9.4's explanation of why R-B was redundant, now demonstrated
+rather than inferred: R-A hands d17 back to expansion, there is no unvisited
+semantic frontier, and Tier 7 wins on its own. The `relational_terminal_step_
+gate` at d17 again reads `eligible: true`, cell `(12,10)`, distance 1,
+`restore_suppressed: true`, `incumbent_restore_state_id: state-00012381`,
+**`incumbent_restore_is_self_restore: true`** — the incumbent would once more
+have restored to the state the agent was already standing in.
+
+### 10.3.3 The one difference, localized rather than waved away
+
+The treatment emitted **149,976** events against v344's **149,982** — a delta of
+**6**. It is **not a bit**, and §10.2.3's prose about "R-B telemetry fields" was
+imprecise, so the real cause was traced rather than assumed:
+
+- **Localization**: the delta is *entirely* at **decision 19, depth 5** — 2
+  fewer `human_prior_option_local_neutral_verified` with their matching 2
+  `env_step` and 2 `state_loaded`. Every other event type and every other
+  decision is equal, d1's option search included (2,224 in both).
+- **Mechanism**: that option search memoizes its NOOP probes on
+  `local_neutral_key = (id(parent), edge_duration)` — a **CPython object
+  address**. Removing R-B's ~100 lines changes heap layout, so `id(parent)`
+  values differ between the two processes and the cache hit/miss split moves. On
+  a miss the probe is **recomputed identically**, and the companion set only
+  suppresses duplicate telemetry, so no computed value changes. That is exactly
+  why the committed trajectory is byte-identical.
+- **Precedent**: §9.1 already recorded this class of jitter — v345 was
+  `trajectory_identical_to_treatment: true` yet counted 149,981 events against
+  v344's 149,982. Event-count jitter between trajectory-identical arms is a
+  known property of this pipeline, and R-B is not on the option-search path.
+- **Honest residual**: the mechanism is identified and the delta is confined to
+  telemetry and recomputation, but the exact `id()` sequence was not
+  reconstructed. It is reported as a residual, not as fully explained. A
+  separate latent hazard is noted in passing and is **out of scope here**:
+  keying a live cache on `id()` can in principle serve a stale entry if an
+  address is reused within one search.
+
+### 10.3.4 What this does and does not establish
+
+- **Does**: R-B is removed, the ladder is the pre-E8 one, and the agent still
+  takes the terminal step at d17 on a byte-identical trajectory. Roadmap §24
+  item 3 is discharged. The §4.43 redundancy detector that caught R-B in-run is
+  vindicated by an independent run.
+- **Does NOT**: this is a **confirmation, not a new capability claim.** Every
+  §9.7 and §9.9 limitation carries over verbatim. In particular, **no Gate 4
+  claim may cite E8 or E8b as evidence that hypothesis-driven planning, rather
+  than a standing rule, produced this behaviour** — v345 was
+  `trajectory_identical_to_treatment` and also collected at d17, so attribution
+  has now failed in both experiments that tested it. Assisted track throughout.
+  **n = 1**, deterministic, one root, one family. `(12,11)`/`(192,176)` remains
+  **retired** as a discriminator under §5.7 condition 1; E8b re-uses it only to
+  confirm reproduction and it may not be cited as fresh discriminating evidence.
+- **The control was not re-run**, by design (§10.2.1). v343 is reused and its
+  reuse is stated on the face of the report.

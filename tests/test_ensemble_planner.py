@@ -17961,13 +17961,13 @@ class RelationalNavigationLadderPlacementTests(unittest.TestCase):
         detour = source.index(
             "elif human_prior_navigation_detour_choice is not None:"
         )
-        # E8 rule R-B added a conjunct to this guard (the certified
-        # milestone branches stand the novelty tier aside), so the anchor
-        # is the guard's stable head rather than the whole line. The
-        # ORDERING invariant this test exists for is unchanged.
+        # E8 rule R-B briefly added a conjunct to this guard; the
+        # counterfactual instrument refuted R-B at 15 of 15 expansion
+        # decisions (design section 9.4) and it was removed, so the
+        # anchor is the whole pre-E8 guard line again — which is itself
+        # the assertion that the guard carries no conjunct.
         frontier = source.index(
-            "                human_prior_semantic_frontier_choice "
-            "is not None\n"
+            "elif human_prior_semantic_frontier_choice is not None:"
         )
         self.assertLess(goal, navigation)
         self.assertLess(navigation, detour)
@@ -20687,10 +20687,10 @@ class RelationalLifecycleFlagTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# E8 — the WP8 terminal-step rules R-A and R-B
-# (docs/wp8-commit-ladder-design-2026-08-18.md sections 3.1, 4.1 and 5.1).
+# E8 — the WP8 terminal-step rule R-A
+# (docs/wp8-commit-ladder-design-2026-08-18.md sections 3.1, 4.1, 5.1 and 10).
 #
-# The measured failure these repair is NOT a ranking one. Learnings section
+# The measured failure R-A repairs is NOT a ranking one. Learnings section
 # 4.55's recon found the P5 commit ladder was never ENTERED at the decisive
 # instant: at v341 d17 and d18 — the only two decisions in the whole E-series
 # that BEGIN one cell from the certified milestone — `decide()` returned early
@@ -20701,9 +20701,18 @@ class RelationalLifecycleFlagTests(unittest.TestCase):
 # runs, none beginning at distance <= 1).
 #
 # R-A therefore sits at the restore/expansion bifurcation one level ABOVE the
-# ladder, and R-B — licensed by precondition P2, which answered TRUE offline —
-# adds a conjunct to Tier 7's interlock. Neither adds a tier, a term, or a
-# weight, and both are off by default.
+# ladder. It adds no tier, no term and no weight, and is off by default.
+#
+# E8 also shipped rule R-B, a certified-cell conjunct on Tier 6's guard and
+# Tier 7's computation interlock. Its own counterfactual instrument refuted
+# it — the committed tier equalled the without-R-B tier at ALL FIFTEEN
+# expansion decisions, d17 included, because once R-A handed d17 back to
+# expansion the frontier choice was `None` and Tier 7 fired unaided (design
+# section 9.4, learnings section 4.56, roadmap section 24 item 3). R-B and its
+# selector value are REMOVED. The tests below therefore assert the ladder is
+# the PRE-E8 one — that the conjuncts are absent from both positions and that
+# no selector value can reach them — rather than merely dropping the coverage
+# that pinned them.
 # ---------------------------------------------------------------------------
 
 
@@ -20752,7 +20761,7 @@ def _terminal_step_agent(
 
 
 class RelationalTerminalStepSelectorTests(unittest.TestCase):
-    """The E8 selector: off | decline_restore | +certified_tier."""
+    """The E8 selector: off | decline_restore, and nothing else."""
 
     def test_default_is_off_so_todays_behavior_is_the_default(self) -> None:
         self.assertEqual(
@@ -20760,11 +20769,7 @@ class RelationalTerminalStepSelectorTests(unittest.TestCase):
         )
 
     def test_selector_is_validated_like_the_authority(self) -> None:
-        for mode in (
-            "off",
-            "decline_restore",
-            "decline_restore_and_certified_tier",
-        ):
+        for mode in ("off", "decline_restore"):
             with self.subTest(mode=mode):
                 VerifiedNeuralAgent(
                     _RelationalSeamEnv(),
@@ -20786,16 +20791,52 @@ class RelationalTerminalStepSelectorTests(unittest.TestCase):
                         NeuralPlanningConfig(relational_terminal_step=mode),
                     )
 
+    def test_the_removed_r_b_value_is_rejected_like_any_unknown_mode(
+        self,
+    ) -> None:
+        # R-B's selector value is not merely unused, it is gone: design
+        # section 9.4 measured R-B changing the committed tier at zero of
+        # 15 expansion decisions, and roadmap section 24 item 3 ruled that
+        # carrying a lever with no measured effect violates the
+        # counterfactual discipline that caught it. A stale command line
+        # must fail loudly rather than silently run something else.
+        import lolo_agent.neural_planner as neural_planner_module
+
+        self.assertEqual(
+            neural_planner_module.RELATIONAL_TERMINAL_STEP_MODES,
+            ("off", "decline_restore"),
+        )
+        self.assertFalse(
+            hasattr(
+                neural_planner_module,
+                "RELATIONAL_TERMINAL_STEP_DECLINE_RESTORE_AND_CERTIFIED_TIER",
+            )
+        )
+        with self.assertRaises(ValueError):
+            VerifiedNeuralAgent(
+                _RelationalSeamEnv(),
+                EnsembleVisualDynamicsModel(
+                    latent_size=32, action_size=8, ensemble_size=2
+                ),
+                "cpu",
+                NeuralPlanningConfig(
+                    relational_terminal_step=(
+                        "decline_restore_and_certified_tier"
+                    )
+                ),
+            )
+
     def test_helpers_map_every_mode_and_authority_exactly(self) -> None:
-        # R-A rides on both non-off values; R-B rides on the second alone.
+        # R-A rides on the single non-off value, and only under selection
+        # authority. There is no second helper any more: R-B's selector
+        # predicate was removed with the rule.
         expected = {
-            ("off", "selection"): (False, False),
-            ("decline_restore", "selection"): (True, False),
-            ("decline_restore_and_certified_tier", "selection"): (True, True),
-            ("decline_restore", "telemetry"): (False, False),
-            ("decline_restore_and_certified_tier", "off"): (False, False),
+            ("off", "selection"): False,
+            ("decline_restore", "selection"): True,
+            ("decline_restore", "telemetry"): False,
+            ("decline_restore", "off"): False,
         }
-        for (mode, authority), (gate, tier) in expected.items():
+        for (mode, authority), gate in expected.items():
             with self.subTest(mode=mode, authority=authority):
                 _env, _logger, agent = _terminal_step_agent(
                     mode, authority=authority
@@ -20803,8 +20844,8 @@ class RelationalTerminalStepSelectorTests(unittest.TestCase):
                 self.assertEqual(
                     agent._relational_terminal_step_gate_enabled(), gate
                 )
-                self.assertEqual(
-                    agent._relational_certified_tier_enabled(), tier
+                self.assertFalse(
+                    hasattr(agent, "_relational_certified_tier_enabled")
                 )
 
 
@@ -21057,108 +21098,65 @@ class RelationalTerminalStepRestoreTests(unittest.TestCase):
             self.assertNotIn("terminal_step", source[start:end], method)
 
 
-class RelationalCertifiedTierTests(unittest.TestCase):
-    """Rule R-B: the certified-cell conjunct on Tier 7's interlock."""
+class RelationalCertifiedTierRemovedTests(unittest.TestCase):
+    """Rule R-B is GONE and the ladder is the pre-E8 one.
 
-    def _branches(self, collected_cells):
-        rows = []
-        for index, cells in enumerate(collected_cells):
-            item, analysis = _navigation_selection_branch(
-                DEPOSIT_ADJACENT_CELL, float(index)
-            )
-            rows.append(
-                (
-                    item,
-                    replace(
-                        analysis,
-                        collected=tuple(
-                            (cell[0] * 16, cell[1] * 16) for cell in cells
-                        ),
-                        heart_reward=25.0,
-                        total_reward=25.0,
-                    ),
-                )
-            )
-        return _navigation_ladder_inputs(rows)
+    This class is the successor to `RelationalCertifiedTierTests`, which
+    pinned R-B's conjunct in Tier 6's guard and Tier 7's computation
+    interlock. Design section 9.4 measured R-B changing the committed
+    tier at ZERO of 15 expansion decisions and roadmap section 24 item 3
+    ordered its removal, so the coverage is INVERTED rather than deleted:
+    every property those tests asserted about R-B's presence has a
+    counterpart here asserting the pre-E8 tier logic is back.
+    """
 
-    def test_conjunct_is_empty_for_every_pre_e8_configuration(self) -> None:
-        rows, analyses = self._branches([[DEPOSIT_ON_TARGET_CELL]])
-        cases = (
-            {"terminal_step": "off"},
-            {"terminal_step": "decline_restore"},
-            {
-                "terminal_step": "decline_restore_and_certified_tier",
-                "authority": "off",
-            },
-            {
-                "terminal_step": "decline_restore_and_certified_tier",
-                "authority": "telemetry",
-            },
-        )
-        for case in cases:
-            with self.subTest(**case):
-                _env, _logger, agent = _terminal_step_agent(**case)
-                self.assertEqual(
-                    agent._relational_certified_milestone_branches(
-                        rows, analyses
-                    ),
-                    [],
-                )
-
-    def test_conjunct_selects_only_certified_milestone_collections(
-        self,
-    ) -> None:
-        rows, analyses = self._branches(
-            [[DEPOSIT_ON_TARGET_CELL], [], [DEPOSIT_FAR_CELL]]
-        )
-        _env, _logger, agent = _terminal_step_agent(
-            "decline_restore_and_certified_tier"
-        )
-        selected = agent._relational_certified_milestone_branches(
-            rows, analyses
-        )
-        self.assertEqual(selected, [rows[0]])
-        self.assertEqual(len(rows), 3)
-
-    def test_blast_radius_is_zero_where_no_milestone_branch_exists(
-        self,
-    ) -> None:
-        # Design section 3.1 requires this be asserted as a test rather than
-        # assumed. Measured offline across all three E7 arms: 105
-        # commit-path verified branches, a `milestone_reward > 0` branch at
-        # exactly two of the fifteen expansion decisions per arm (d1 and
-        # d3), and both already committed via Tier 7 with the frontier
-        # choice `None`. At the other thirteen the conjunct is empty by
-        # construction, so R-B cannot reorder them.
-        rows, analyses = self._branches([[], []])
-        _env, _logger, agent = _terminal_step_agent(
-            "decline_restore_and_certified_tier"
-        )
-        self.assertEqual(
-            agent._relational_certified_milestone_branches(rows, analyses),
-            [],
-        )
-
-    def test_the_tier_six_guard_yields_only_to_the_conjunct(self) -> None:
-        # Relaxing the `:23577` computation interlock alone would be a
-        # provable no-op, because the `elif` cascade reaches the novelty
-        # tier first. Both halves are pinned here so a future edit that
-        # removes one is caught.
+    def _source(self) -> str:
         import lolo_agent.neural_planner as neural_planner_module
 
-        source = Path(neural_planner_module.__file__).read_text()
-        guard = source.index(
-            "                human_prior_semantic_frontier_choice "
-            "is not None\n"
+        return Path(neural_planner_module.__file__).read_text()
+
+    def test_tier_seven_interlock_is_the_pre_e8_expression(self) -> None:
+        # Was: `test_the_tier_six_guard_yields_only_to_the_conjunct`, which
+        # pinned `if relational_certified_milestone_branches` inside the
+        # interlock. Tier 7's fallback is `None` again, with no relaxed
+        # branch of any kind, so the tier is computed exactly when the
+        # frontier choice is `None` and never otherwise.
+        source = self._source()
+        interlock = source.index("known_goal_fallback_choice = (")
+        end = source.index("dynamic_control_choice = None", interlock)
+        body = source[interlock:end]
+        self.assertIn(
+            "if known_goal_branches\n"
+            "                and human_prior_semantic_frontier_choice is None\n"
+            "                else None\n",
+            body,
         )
-        yield_conjunct = source.index(
-            "and not relational_certified_milestone_branches", guard
+        self.assertNotIn("certified", body)
+
+    def test_tier_six_guard_carries_no_conjunct(self) -> None:
+        # Was: the second half of the same test. The novelty tier's guard
+        # is a bare `elif` again — it stands aside for nothing.
+        source = self._source()
+        self.assertIn(
+            "elif human_prior_semantic_frontier_choice is not None:", source
         )
-        interlock = source.index(
-            "if relational_certified_milestone_branches", 0
-        )
-        self.assertLess(guard, yield_conjunct)
-        self.assertLess(interlock, guard)
+        self.assertNotIn("relational_certified_milestone_branches", source)
+
+    def test_the_conjunct_helper_is_removed_not_merely_unused(self) -> None:
+        # Was: `test_conjunct_is_empty_for_every_pre_e8_configuration`,
+        # `test_conjunct_selects_only_certified_milestone_collections` and
+        # `test_blast_radius_is_zero_where_no_milestone_branch_exists`, all
+        # three of which called `_relational_certified_milestone_branches`.
+        # A helper left behind is a lever that can be re-wired by accident,
+        # so the method and its selector predicate are both gone.
+        _env, _logger, agent = _terminal_step_agent("decline_restore")
+        for name in (
+            "_relational_certified_milestone_branches",
+            "_relational_certified_tier_enabled",
+        ):
+            with self.subTest(name=name):
+                self.assertFalse(hasattr(agent, name), name)
+        self.assertNotIn("_relational_certified", self._source())
 
 
 class RelationalTerminalStepInvarianceTests(unittest.TestCase):
@@ -21196,10 +21194,7 @@ class RelationalTerminalStepInvarianceTests(unittest.TestCase):
             baseline_decision, baseline_events = self._decide(
                 "off", authority, model
             )
-            for mode in (
-                "decline_restore",
-                "decline_restore_and_certified_tier",
-            ):
+            for mode in ("decline_restore",):
                 with self.subTest(authority=authority, mode=mode):
                     decision, events = self._decide(mode, authority, model)
                     self.assertEqual(decision.action, baseline_decision.action)
@@ -21268,10 +21263,7 @@ class RelationalTerminalStepCliTests(unittest.TestCase):
         self.assertEqual(
             self._captured_config(())["relational_terminal_step"], "off"
         )
-        for mode in (
-            "decline_restore",
-            "decline_restore_and_certified_tier",
-        ):
+        for mode in ("decline_restore",):
             with self.subTest(mode=mode):
                 captured = self._captured_config(
                     ("--relational-terminal-step", mode)
@@ -21290,21 +21282,30 @@ class RelationalTerminalStepCliTests(unittest.TestCase):
                 self.assertEqual(captured["relational_lifecycle"], "budget_only")
 
     def test_cli_rejects_an_unknown_terminal_step_mode(self) -> None:
-        argv = sys.argv
-        sys.argv = [
-            "neural_run",
-            *self._REQUIRED_CLI,
-            "--relational-terminal-step",
+        # R-B's retired value is listed alongside a never-valid one: a
+        # command line copied from E8's treatment arm must fail at argparse
+        # rather than quietly run R-A and be reported as R-A-plus-R-B
+        # (design section 9.4, roadmap section 24 item 3).
+        for mode in (
             "decline_everything",
-        ]
-        try:
-            with contextlib.redirect_stderr(io.StringIO()) as err:
-                with self.assertRaises(SystemExit) as raised:
-                    neural_run.main()
-        finally:
-            sys.argv = argv
-        self.assertEqual(raised.exception.code, 2)
-        self.assertIn("--relational-terminal-step", err.getvalue())
+            "decline_restore_and_certified_tier",
+        ):
+            with self.subTest(mode=mode):
+                argv = sys.argv
+                sys.argv = [
+                    "neural_run",
+                    *self._REQUIRED_CLI,
+                    "--relational-terminal-step",
+                    mode,
+                ]
+                try:
+                    with contextlib.redirect_stderr(io.StringIO()) as err:
+                        with self.assertRaises(SystemExit) as raised:
+                            neural_run.main()
+                finally:
+                    sys.argv = argv
+                self.assertEqual(raised.exception.code, 2)
+                self.assertIn("--relational-terminal-step", err.getvalue())
 
 
 class RelationalTerminalStepDecideTests(unittest.TestCase):
@@ -21336,7 +21337,7 @@ class RelationalTerminalStepDecideTests(unittest.TestCase):
         )
         _navigation_restore_archive(env, control)
         env, treatment_logger, treatment = _terminal_step_agent(
-            "decline_restore_and_certified_tier",
+            "decline_restore",
             player_cell=DEPOSIT_ADJACENT_CELL,
             model=model,
         )
@@ -21385,7 +21386,7 @@ class RelationalTerminalStepDecideTests(unittest.TestCase):
     def test_the_ladder_tier_instrument_runs_on_the_expansion_path(
         self,
     ) -> None:
-        # Section 4.3's redundancy instrument sits inside `decide()`'s
+        # Section 4.3's tier instrument sits inside `decide()`'s
         # 4,500-line commit block and reads ten tier variables. This
         # exercises it on a real expansion decision so a name that drifts
         # out of scope is caught here rather than at the decisive instant of
@@ -21394,7 +21395,7 @@ class RelationalTerminalStepDecideTests(unittest.TestCase):
             latent_size=32, action_size=8, ensemble_size=2
         )
         _env, logger, agent = _terminal_step_agent(
-            "decline_restore_and_certified_tier",
+            "decline_restore",
             player_cell=DEPOSIT_ADJACENT_CELL,
             model=model,
         )
@@ -21412,16 +21413,51 @@ class RelationalTerminalStepDecideTests(unittest.TestCase):
             if event["event"] == "relational_ladder_tier_committed"
         ]
         self.assertEqual(len(tiers), 1)
-        self.assertEqual(
-            tiers[0]["terminal_step_mode"],
-            "decline_restore_and_certified_tier",
+        self.assertEqual(tiers[0]["terminal_step_mode"], "decline_restore")
+        self.assertIn("ladder_tier_committed", tiers[0])
+        self.assertIn("ladder_tier_committed_index", tiers[0])
+
+    def test_the_r_b_counterfactual_field_is_gone_with_the_rule(self) -> None:
+        # The instrument's whole point was that a lever must say what the
+        # incumbent would have done (section 4.3). It did its job: the
+        # without-R-B tier read equal at 15 of 15 expansion decisions
+        # (section 9.4). With R-B removed the field has no referent, and a
+        # field that is trivially equal to `ladder_tier_committed` would be
+        # a counterfactual in name only — worse than none, because a future
+        # reader could cite it as evidence.
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
         )
-        self.assertEqual(tiers[0]["relational_certified_milestone_branches"], 0)
-        # With no certified-milestone branch the counterfactual is the
-        # committed tier: R-B is inert, exactly as section 8.4 measured.
-        self.assertEqual(
-            tiers[0]["ladder_tier_committed"],
-            tiers[0]["ladder_tier_would_have_committed_without_R_B"],
+        _env, logger, agent = _terminal_step_agent(
+            "decline_restore",
+            player_cell=DEPOSIT_ADJACENT_CELL,
+            model=model,
+        )
+        agent.visual_stagnation_streak = 0
+        agent.human_prior_graph_recovery_pending = False
+        agent.archive = []
+        agent.decide()
+        tiers = [
+            event
+            for event in logger.events
+            if event["event"] == "relational_ladder_tier_committed"
+        ]
+        self.assertEqual(len(tiers), 1)
+        for field in (
+            "ladder_tier_would_have_committed_without_R_B",
+            "ladder_tier_would_have_committed_without_R_B_index",
+            "relational_certified_milestone_branches",
+            "certified_milestone_collecting_branches_present",
+        ):
+            with self.subTest(field=field):
+                self.assertNotIn(field, tiers[0])
+        # R-A's own counterfactual instrument — what `_restore_if_stagnant`
+        # would have returned — is untouched and still required.
+        import lolo_agent.neural_planner as neural_planner_module
+
+        self.assertIn(
+            "incumbent_restore_state_id",
+            Path(neural_planner_module.__file__).read_text(),
         )
 
     def test_the_instrument_is_silent_at_every_pre_e8_setting(self) -> None:

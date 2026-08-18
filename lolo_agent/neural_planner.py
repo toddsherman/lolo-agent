@@ -148,35 +148,37 @@ RELATIONAL_LIFECYCLE_MODES = (
 # Chebyshev distance <= 1 from the certified milestone, while all 11
 # adjacent decision-starts are stagnation restores with
 # `branches_examined: 0`. A new ladder tier would therefore have a
-# measured opportunity count of ZERO. R-A and R-B are what this selector
-# turns on instead, and neither adds a tier, a term, or a weight.
+# measured opportunity count of ZERO. R-A is what this selector turns on
+# instead, and it adds no tier, no term, and no weight.
 # - "off" (the default) is today's behavior, byte-identically: every
 #   method below returns a neutral value and emits nothing.
-# - "decline_restore" is rule R-A alone: a stagnation restore is DECLINED
-#   for one decision when the agent's CURRENT position already satisfies
+# - "decline_restore" is rule R-A: a stagnation restore is DECLINED for
+#   one decision when the agent's CURRENT position already satisfies
 #   seam S3's own deposit predicate at Manhattan distance exactly 1, so
 #   `decide()` falls through to `planner.plan(...)` and a candidate set
 #   exists for the unchanged ladder to rank. It is a point predicate, not
 #   a gradient: it is undefined at every other distance, it never orders
 #   two candidates, and it can only decline — never choose (design
 #   section 4.1's mechanical answer to learnings section 4.50).
-# - "decline_restore_and_certified_tier" is R-A plus rule R-B, which the
-#   design gates behind precondition P2. P2 was discharged offline and
-#   answered TRUE: the (192,176)-collecting transition's outcome key is
-#   already in the seeded episodic memory, so such a branch lands in
-#   `known_goal_branches` and is routed to Tier 7, which is interlocked
-#   below position novelty. R-B adds the certified-cell conjunct to that
-#   interlock rather than dropping it: the relaxation applies ONLY to
-#   branches that collect an uncollected certified milestone cell.
+#
+# A third value, "decline_restore_and_certified_tier", carried rule R-B —
+# a certified-cell conjunct on Tier 6's guard and Tier 7's computation
+# interlock. E8 shipped it and its own counterfactual instrument refuted
+# it: `ladder_tier_committed == ladder_tier_would_have_committed_without_
+# R_B` at ALL FIFTEEN expansion decisions, d17 included, because once R-A
+# handed d17 back to expansion there was no unvisited semantic frontier
+# and Tier 7 fired unaided (design section 9.4; learnings section 4.56;
+# roadmap section 24 item 3). R-B is therefore REMOVED, along with its
+# selector value: carrying a lever with no measured effect is exactly
+# what the counterfactual discipline that caught it forbids. The ladder
+# is back to its pre-E8 form, and E8's result is attributable to R-A
+# alone. Design section 10 preregisters and reports the R-A-only
+# confirmation.
 RELATIONAL_TERMINAL_STEP_OFF = "off"
 RELATIONAL_TERMINAL_STEP_DECLINE_RESTORE = "decline_restore"
-RELATIONAL_TERMINAL_STEP_DECLINE_RESTORE_AND_CERTIFIED_TIER = (
-    "decline_restore_and_certified_tier"
-)
 RELATIONAL_TERMINAL_STEP_MODES = (
     RELATIONAL_TERMINAL_STEP_OFF,
     RELATIONAL_TERMINAL_STEP_DECLINE_RESTORE,
-    RELATIONAL_TERMINAL_STEP_DECLINE_RESTORE_AND_CERTIFIED_TIER,
 )
 # The restore recovery reason R-A may decline. The design says "decline a
 # stagnation restore", and the only measured opportunity — v341 d17 — is
@@ -259,13 +261,12 @@ class NeuralPlanningConfig:
     relational_lifecycle: str = "budget_only"
     # WP8 terminal-step selector
     # (docs/wp8-commit-ladder-design-2026-08-18.md sections 3.1 and 5.2,
-    # E8): "off" (the default, today's behavior byte-identically),
-    # "decline_restore" (rule R-A alone), or
-    # "decline_restore_and_certified_tier" (R-A plus rule R-B, which
-    # precondition P2 licensed). Inert at any authority other than
+    # E8): "off" (the default, today's behavior byte-identically) or
+    # "decline_restore" (rule R-A). Inert at any authority other than
     # "selection", and inert unless seam S3 is enabled, because R-A reads
     # S3's own deposit predicate and that predicate is `None` while the
-    # seam is off.
+    # seam is off. The removed third value carried rule R-B (design
+    # section 9.4: zero effect at 15 of 15 expansion decisions).
     relational_terminal_step: str = "off"
     relational_max_queue: int = 4
     relational_establish_budget: int = 48
@@ -19632,25 +19633,7 @@ class VerifiedNeuralAgent:
         return bool(
             self._relational_selection_authority()
             and self.config.relational_terminal_step
-            in (
-                RELATIONAL_TERMINAL_STEP_DECLINE_RESTORE,
-                RELATIONAL_TERMINAL_STEP_DECLINE_RESTORE_AND_CERTIFIED_TIER,
-            )
-        )
-
-    def _relational_certified_tier_enabled(self) -> bool:
-        """Rule R-B selector (commit-ladder design section 3.1).
-
-        Built only because precondition P2 answered TRUE offline: the
-        ``(192,176)``-collecting transition's outcome key is already in
-        the seeded episodic memory, so the collecting branch is
-        ``outcome_known`` and routes to Tier 7 rather than Tier 3.
-        """
-
-        return bool(
-            self._relational_selection_authority()
-            and self.config.relational_terminal_step
-            == RELATIONAL_TERMINAL_STEP_DECLINE_RESTORE_AND_CERTIFIED_TIER
+            == RELATIONAL_TERMINAL_STEP_DECLINE_RESTORE
         )
 
     def _relational_config(self) -> RelationalPlannerConfig:
@@ -20713,53 +20696,6 @@ class VerifiedNeuralAgent:
             and view["distance"] == RELATIONAL_NAVIGATION_DEPOSIT_MAX_DISTANCE
         )
         return view
-
-    def _relational_certified_milestone_branches(
-        self,
-        branches: Sequence[Any],
-        branch_goal_analyses: Dict[int, Optional[HeartGoalAnalysis]],
-    ) -> List[Any]:
-        """Rule R-B's conjunct: branches collecting a certified cell.
-
-        Empty — so Tier 7's interlock is byte-identical to today —
-        outside selection authority, when the terminal-step selector does
-        not name R-B, or when no objective publishes certified target
-        cells. Otherwise it is the subset of ``branches`` whose committed
-        transition collects a milestone slot lying on one of those
-        published cells, which are the certified cells intersected with
-        the milestones still remaining.
-
-        The blast radius was measured offline before the run and is zero
-        off the decisive instant (design section 5.1 P3): across all
-        three E7 arms there are 105 commit-path verified branches, and a
-        ``milestone_reward > 0`` branch exists at exactly two of the 45
-        expansion decisions (d1 and d3 in each arm). At both, Tier 7
-        already committed with the frontier choice ``None``, so the
-        relaxed path cannot reorder them; at the other 13 per arm the
-        subset is empty by construction.
-        """
-
-        if not self._relational_certified_tier_enabled():
-            return []
-        objective = self._relational_navigation_deposit_objective()
-        if objective is None:
-            return []
-        _active, targets, _hold_signature = objective
-        target_cells = set(targets)
-        if not target_cells:
-            return []
-        selected: List[Any] = []
-        for item in branches:
-            analysis = branch_goal_analyses.get(id(item[2]))
-            if analysis is None:
-                continue
-            collected_cells = {
-                self._relational_navigation_cell(slot)
-                for slot in analysis.collected
-            }
-            if collected_cells & target_cells:
-                selected.append(item)
-        return selected
 
     def _relational_reproduce_transition_priority(
         self,
@@ -23784,24 +23720,12 @@ class VerifiedNeuralAgent:
                 )
                 else None
             )
-            # WP8 terminal-step rule R-B (commit-ladder design section
-            # 3.1, licensed by precondition P2). Tier 7 is the tier a
-            # certified-milestone collection lands in whenever its
-            # outcome is already `known` — and P2 measured offline that
-            # the (192,176) transition's outcome key IS in the seeded
-            # episodic memory at this root, so it does. Tier 7 is
-            # interlocked below position novelty twice over: it is not
-            # even COMPUTED unless the frontier choice is `None`, and the
-            # cascade reaches the frontier tier first. R-B relaxes both,
-            # and only for branches that collect an uncollected certified
-            # milestone cell — the conjunct, not a wholesale removal.
-            # Outside the selector this list is empty, both expressions
-            # below reduce to today's, and the ladder is byte-identical.
-            relational_certified_milestone_branches = (
-                self._relational_certified_milestone_branches(
-                    known_goal_branches, branch_goal_analyses
-                )
-            )
+            # Tier 7's computation interlock, in its pre-E8 form. E8's
+            # rule R-B added a certified-cell conjunct here and on Tier
+            # 6's guard below; its own counterfactual instrument then
+            # measured the conjunct changing the committed tier at ZERO
+            # of 15 expansion decisions (design section 9.4), so it was
+            # removed and this expression is the incumbent's again.
             known_goal_fallback_choice = (
                 max(
                     known_goal_branches,
@@ -23812,19 +23736,7 @@ class VerifiedNeuralAgent:
                 )
                 if known_goal_branches
                 and human_prior_semantic_frontier_choice is None
-                else (
-                    max(
-                        relational_certified_milestone_branches,
-                        key=lambda item: (
-                            branch_goal_analyses[
-                                id(item[2])
-                            ].milestone_reward,
-                            item[0],
-                        ),
-                    )
-                    if relational_certified_milestone_branches
-                    else None
-                )
+                else None
             )
             dynamic_control_choice = None
             control_probe_spread = None
@@ -24132,18 +24044,20 @@ class VerifiedNeuralAgent:
             passive_transition = False
             grace_continuation = False
             relational_navigation_applied = False
-            # WP8 terminal-step redundancy instrument (commit-ladder
-            # design section 4.3). Three of five prior levers failed or
-            # nearly failed because the incumbent would have made the
-            # same choice, so E8 must be able to say so from its own
-            # telemetry rather than from an argument made afterwards.
-            # This names the tier that committed at every expansion
-            # decision, and — because rule R-B is a ranking change, and
-            # ranking changes are what learnings section 4.50 taught
-            # suspicion of — the tier that WOULD have committed had R-B
-            # not been built. If they are equal at the decisive instant,
-            # R-B was redundant and the report must say so whatever the
-            # outcome bit reads.
+            # WP8 terminal-step tier instrument (commit-ladder design
+            # section 4.3; roadmap section 24 item 4's standing
+            # invariant). Three of five prior levers failed or nearly
+            # failed because the incumbent would have made the same
+            # choice, so a lever must be able to say what the ladder
+            # actually did from its own telemetry rather than from an
+            # argument made afterwards. It named the committed tier at
+            # every expansion decision alongside the tier that would have
+            # committed without rule R-B — and that counterfactual is
+            # what refuted R-B, reading equal at all fifteen (design
+            # section 9.4). With R-B removed the counterfactual has no
+            # referent and is gone; the committed tier stays, because
+            # design section 10's R-A-only confirmation is scored on
+            # Tier 7 firing unaided at the decisive instant.
             if self._relational_terminal_step_gate_enabled():
                 ladder_tiers = (
                     ("anticipated_transition_observation", 1,
@@ -24177,31 +24091,13 @@ class VerifiedNeuralAgent:
                     ),
                 )
 
-                def _first_tier(skip_certified: bool) -> Tuple[str, int]:
-                    for name, index, choice in ladder_tiers:
-                        if choice is None:
-                            continue
-                        if (
-                            index == 6
-                            and not skip_certified
-                            and relational_certified_milestone_branches
-                        ):
-                            # R-B's yield: the novelty tier stands aside.
-                            continue
-                        if (
-                            index == 7
-                            and skip_certified
-                            and human_prior_semantic_frontier_choice
-                            is not None
-                        ):
-                            # Without R-B, Tier 7 is not computed here.
-                            continue
-                        return name, index
-                    return "ladder_tail", 13
-
-                committed_tier, committed_tier_index = _first_tier(False)
-                counterfactual_tier, counterfactual_tier_index = _first_tier(
-                    True
+                committed_tier, committed_tier_index = next(
+                    (
+                        (name, index)
+                        for name, index, choice in ladder_tiers
+                        if choice is not None
+                    ),
+                    ("ladder_tail", 13),
                 )
                 self._emit(
                     "relational_ladder_tier_committed",
@@ -24210,22 +24106,10 @@ class VerifiedNeuralAgent:
                     terminal_step_mode=self.config.relational_terminal_step,
                     ladder_tier_committed=committed_tier,
                     ladder_tier_committed_index=committed_tier_index,
-                    ladder_tier_would_have_committed_without_R_B=(
-                        counterfactual_tier
-                    ),
-                    ladder_tier_would_have_committed_without_R_B_index=(
-                        counterfactual_tier_index
-                    ),
-                    relational_certified_milestone_branches=len(
-                        relational_certified_milestone_branches
-                    ),
                     known_goal_branches=len(known_goal_branches),
                     positive_goal_branches=len(positive_goal_branches),
                     milestone_goal_branches=len(milestone_goal_branches),
                     verified_branches=len(selection_verified),
-                    certified_milestone_collecting_branches_present=bool(
-                        relational_certified_milestone_branches
-                    ),
                     agent_visible=True,
                     **self._frame_fields(self.frame),
                 )
@@ -24325,17 +24209,7 @@ class VerifiedNeuralAgent:
                     reason="continue_bounded_detour_before_optional_probe",
                     **self._human_prior_fields(selected_analysis),
                 )
-            elif (
-                human_prior_semantic_frontier_choice is not None
-                # WP8 rule R-B's second half. Relaxing the computation
-                # interlock alone would be a provable no-op, because this
-                # `elif` cascade reaches the novelty tier before Tier 7:
-                # at every one of the 13 non-milestone expansion
-                # decisions per E7 arm this list is empty and the guard
-                # is today's exactly; it is non-empty only where a branch
-                # collects an uncollected certified milestone cell.
-                and not relational_certified_milestone_branches
-            ):
+            elif human_prior_semantic_frontier_choice is not None:
                 chosen = human_prior_semantic_frontier_choice
                 selected_analysis = branch_goal_analyses[id(chosen[2])]
                 self._emit(
