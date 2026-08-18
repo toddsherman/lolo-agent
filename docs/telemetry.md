@@ -244,7 +244,15 @@ On the explicitly labelled assisted reward track, semantic archive search adds:
   at v324 decision 8). Branches archived without track state — including
   archives recorded before this fix — keep emitting the keys as null/empty
   and reseed the empty track exactly as before. The values are additive
-  restatements — nothing is recomputed and no existing key changes;
+  restatements — nothing is recomputed and no existing key changes.
+  `anonymous_object_track_cells` is accumulated history, not endpoint
+  configuration: an offline decomposition of the v324 series found five of
+  the six committed cells had physically relaxed to baseline while the set
+  still listed them, and the same set had absorbed transit cells, an
+  autonomous patroller, and a HUD counter cell outside the room
+  (`learnings.md` §4.29). Certifying that a branch held a configuration
+  therefore needs the paired per-branch comparison these keys make
+  possible, not membership of the accumulated set;
 - `--skip-resume-option-archives` is a diagnostic matched-resume control. It
   restores the exact committed emulator state and learned episodic graph but
   deliberately omits uncommitted save-state frontier snapshots, allowing a
@@ -798,6 +806,272 @@ signature, and new known-scene checkpoint. Screen-coordinate coverage,
 persistent-change evidence, and assisted per-room graph counters are reset at
 this boundary; frozen model parameters and reusable learned dynamics are not.
 `summary.json` reports `pixel_novel_rooms_started`.
+
+## Certified accessibility preference
+
+Also on the assisted reward track, `--human-prior-accessibility-records FILE`
+loads a store of certified accessibility records: coarse cells, open frontier
+edges, and milestone cells reached under an explicit configuration-hold
+predicate, never predicted cells and never cells reached by branches that
+departed the configuration (`docs/paired-accessibility-probe-2026-08-16.md`,
+`docs/object-removed-probe-2026-08-16.md`, `learnings.md` §4.28 and §4.30).
+`verified_accessibility_records_loaded` records the file `path`,
+`record_count`, the per-signature `record_content_signatures` map, the
+designated `root_configuration_signature`, and the configured
+`verified_accessibility_weight`. Records load identically whatever the
+weight, so a paired ablation's arms differ in the weight alone
+(`docs/wp8-lite-ablation-design-2026-08-16.md`).
+
+`--human-prior-accessibility-preference-weight` (0.0 by default) multiplies
+the resulting bonus in the archive/restore-selection seams. At 0.0 the record
+store is never consulted and ranking stays bit-identical to the plain
+frontier score. `archive_branch_restored` and the `decision_committed` that
+commits that restore carry:
+
+- `verified_accessibility_bonus`, the weighted value actually added to the
+  archive frontier score, and `verified_accessibility_total_bonus`, the
+  unweighted total;
+- `verified_accessibility_current_source`, the resolution path of the
+  current-side record. `mapped` means the current root object state's
+  tracked world-state signature has a record; `baseline` means the root
+  carries the empty signature — the one value the store structurally cannot
+  key — and the records file designated a root/current baseline record;
+  `missing` means no record, so the comparison refuses to score; `disabled`
+  means the weight is not positive and the store was never read. A non-empty
+  signature without a record resolves to `missing` and never falls back to
+  the baseline. The value is captured before the restore rebinds the root, so
+  the logged path matches the scored comparison;
+- the full component decomposition when both sides are certified:
+  `verified_accessibility_candidate_signature`,
+  `verified_accessibility_current_signature`,
+  `verified_accessibility_scored`,
+  `verified_accessibility_refusal_reason`,
+  `verified_accessibility_new_cells`/`_new_cell_count`/`_new_cell_bonus`,
+  `verified_accessibility_new_frontiers`/`_new_frontier_count`/
+  `_new_frontier_bonus`,
+  `verified_accessibility_new_milestone_cells`/`_new_milestone_count`/
+  `_new_milestone_bonus`,
+  `verified_accessibility_censored_current_only_cells`,
+  `verified_accessibility_excluded_cells`,
+  `verified_accessibility_churn_excluded_frontiers`,
+  `verified_accessibility_confirmed_manipulation_count`, and
+  `verified_accessibility_outcome_category` — one of the anonymous
+  categories `transformation`, `displacement`, `removal`, `expulsion`, or
+  `none`.
+
+Every component is exposed separately so unverified accessibility can never
+be read as an observed improvement. A record whose provenance is not
+`certified_hold` scores exactly zero on either side, with
+`verified_accessibility_scored=false` and the refusal named
+(`candidate_not_certified` or `current_not_certified`); the sanctioned import
+path refuses such a record before it can reach planner state, so those two
+reasons are structurally unreachable for a record loaded from a file, and the
+rule exists to keep the pure comparison safe for any other caller. Frontier
+edges into space that is already certified-reachable are configuration churn
+and appear unscored in `churn_excluded_frontiers`; a cell certified reachable
+in the current configuration but absent from the candidate's set is censored
+into `censored_current_only_cells` and never scores negatively. When either
+side has no record, or the term is disabled, the row carries only
+`verified_accessibility_bonus`, `verified_accessibility_current_source`,
+`verified_accessibility_scored=false`,
+`verified_accessibility_refusal_reason=record_missing_or_disabled`, and
+`verified_accessibility_total_bonus=0.0`, so a comparison that did not happen
+is distinguishable from one that scored zero.
+
+In the recorded ablation pair, every scored row of the control
+(`entity-v327-room3-wp8lite-control-w0-d12`) reports
+`current_source=disabled`; the treatment
+(`entity-v328-room3-wp8lite-treatment-w1-d12`) scored its decision-2 restore
+at 25.0 — 17 newly reachable cells at weight 1, plus the one of them carrying
+observed milestone evidence at weight 8 — with
+`current_source=baseline` and `outcome_category=removal`, and later restores
+report `mapped` with 0.0 once the root had acquired that configuration
+signature (`learnings.md` §4.43). `current_source=missing` is documented from
+the resolver and its tests; no recorded run under `experiments/` contains it,
+because every run so far loaded a store that keyed or baselined every root it
+reached. None of these fields are rolled up into `summary.json` or
+`decisions.csv`; `events.jsonl` is the only source.
+
+## Relational hypothesis planner
+
+`--relational-planner-authority` selects how much authority the WP8
+relational hypothesis planner has
+(`docs/wp8-relational-planner-design-2026-08-17.md`). `off`, the default,
+keeps planner ranking and restore selection bit-identical and emits nothing;
+`telemetry` proposes, logs, and tracks hypotheses with zero selection
+influence; `selection` additionally lets the active hypothesis direct restore
+selection and reserve slots. `--relational-navigation-seams` selects which
+navigation seams `selection` may use — `both` (commit-ladder tier plus
+target-aware restore key), `restore_only`, or `off` — and is inert at any
+other authority. `--relational-decision-budget` bounds how long a proposed
+hypothesis stays active.
+
+Every event in the family records the `authority` it was emitted under, so a
+telemetry-only row can never be mistaken for one that influenced selection.
+
+`relational_hypothesis_proposed` logs the whole queue before any realization
+step executes. It records the current `configuration_signature` and
+`track_set_signature`, `remaining_milestone_cells`, `queue_length`,
+`active_hypothesis_id`, and a `hypotheses` array. Every other event in the
+family flattens one hypothesis row into its top level, so the same keys read
+identically whether they appear nested or flat:
+
+- `hypothesis_id`, `hypothesis_kind` (`establish_configuration`,
+  `hold_configuration`, or `exploit_configuration`), and `chain_parent_id`,
+  which is null for the chain root and otherwise names the hypothesis this
+  one is chained to;
+- `target_configuration_signature` and `target_is_designated_baseline`;
+- the relational initiation predicate —
+  `initiation_configuration_relation` (`differs_from_record` or
+  `maps_to_record`), `initiation_required_record_signature`,
+  `initiation_requires_chain_parent_verified`, and
+  `initiation_requires_uncollected_certified_milestone`. It is
+  signature- and record-relative by construction: no absolute coordinate
+  appears;
+- the termination predicate — `termination_achieved_when`
+  (`configuration_maps_to_record`,
+  `configuration_held_across_verified_transition`, or
+  `certified_target_cell_reached`), `termination_violated_when` (empty or
+  `configuration_departs_record`), and `termination_decision_budget`;
+- the declarative objective the exact option search interprets —
+  `realization_kind` (`restore_archive`, `reach_cells_under_hold`, or
+  `reproduce_transition`), `realization_payload`, and
+  `realization_branch_budget`. Only a `reach_cells_under_hold` payload
+  publishes `target_cells`, and only cells its certified record already
+  carried;
+- the score, every component exposed separately under the
+  `relational_hypothesis_` prefix: `verified_milestone_evidence`,
+  `expected_accessibility_improvement`, `information_gain`,
+  `option_transfer_evidence`, `reversibility_confidence`,
+  `causal_terminal_risk`, `predicted_inert_probability`, `search_cost`,
+  `repeated_experiment_count`, and `total_score`. The accessibility term is
+  the same certified comparison described above and inherits its refusal:
+  `relational_hypothesis_accessibility_scored` and
+  `relational_hypothesis_accessibility_refusal_reason` record when an
+  uncertified record contributed exactly zero.
+
+`relational_hypothesis_activated` marks the hypothesis the planner is
+pursuing; it is emitted once when a proposal takes effect and again whenever
+the state machine promotes a chained successor. The verified-transition
+feedback events — `relational_hypothesis_realized`,
+`relational_hypothesis_achieved`, `relational_hypothesis_terminated`, and a
+feedback-time `relational_hypothesis_activated` — add `transition_kind`
+(`committed_decision` or `archive_restore`), the state machine `outcome`
+(`continue`, `hypothesis_achieved`, `hold_violated`, `budget_exhausted`, or
+`replan`), the post-transition `configuration_signature`,
+`restored_state_id`, and `collected_cells`. A termination additionally
+records `reason`: `achieved`, `hold_violated`, `budget_exhausted`,
+`replanned`, or `contradicted`. Only verified material drives these
+transitions; an exact outcome contradicting the active hypothesis forces a
+replan rather than a silent retry.
+
+`relational_option_stored` and `relational_option_reused` carry an `option`
+payload — `kind`, `target_configuration_signature`,
+`record_content_signature`, the same `initiation` and `termination` blocks,
+`transfer_evidence_count`, and `attempt_count`. The payload has no field that
+could hold a controller sequence or an absolute coordinate, so no macro can
+be minted from one room's trajectory; reuse is re-instantiation from the
+relational conditions, not replay.
+
+Under `selection` authority the navigation seams record what they changed and
+what the incumbent would have done, so redundancy is measurable per decision
+rather than inferred:
+
+- `relational_navigation_choice` and `relational_navigation_declined` cover
+  the commit tier. Both record `hold_configuration_signature`,
+  `target_cells`, `source_cell`, `source_distance`, the objective's preferred
+  branch (`objective_state_id`, `objective_cell`, `objective_distance`), the
+  candidate the incumbent ladder would have committed (`baseline_tier`,
+  `baseline_state_id`, `baseline_cell`, `baseline_distance`), what was
+  actually committed (`committed_state_id`, `committed_distance`),
+  `hold_eligible_branches`, `distance_reducing_branches`, `differs`, and a
+  `reason` — `distance_reducing_branch_preferred`,
+  `outranked_by_incumbent_tier`, `source_cell_unknown`, or
+  `no_distance_reducing_branch`. `differs` is null when either side is
+  absent, and `baseline_tier` is reported as `ladder_tail` with a null
+  `differs` rather than guessed for the side-effecting ladder tail.
+  `relational_navigation_choice` is recorded in the commit-tier runs;
+  `relational_navigation_declined` is documented from the emitter and has not
+  yet appeared in any recorded run;
+- `relational_navigation_restore_selected` covers the restore key. It records
+  `recovery_reason`, `hold_configuration_signature`, `target_cells`, the
+  incumbent-scorer choice (`baseline_state_id`, `baseline_cell`,
+  `baseline_distance`), the selected branch (`selected_state_id`,
+  `selected_cell`, `selected_distance`), `differs`, and the restore supply
+  the key had to work with: `eligible_candidates`,
+  `hold_matching_candidates`, and `distance_resolved_candidates`. That supply
+  is the diagnostic that names the failure mode — a target-aware key can only
+  re-rank archives that already exist (`learnings.md` §4.48, §4.51).
+
+Both distance orderings are tie-breaks inside an already-filtered candidate
+set that dies with the active hypothesis's decision budget, not a distance
+reward on every candidate; a candidate outside the held configuration sorts
+strictly below every candidate inside it, and `human_prior_navigation_reward`
+is unaffected.
+
+Propose-time events and the navigation seams label the decision they are
+about to influence, while the verified-transition feedback events label the
+decision that produced the transition — so an `activated` at decision *n*
+pairs with an `achieved` at decision *n+1* in the recorded chains. None of
+these events are rolled up into `summary.json` or `decisions.csv`.
+
+The shadow run `entity-v329-room3-relational-shadow-d12` recorded the
+three-link chain — establish, hold, exploit — with correct `chain_parent_id`
+linkage, the first observed option reuse, and a committed trajectory
+identical to the incidental runs, as telemetry authority requires
+(`learnings.md` §4.44). The selection-authority runs that followed are the
+measured Gate 4 failures: hypotheses could not request the search they need
+(§4.45, §4.46), commit-tier steering starved the exploration that deposits
+archives (§4.50), and the restore key alone could not hold a position that
+was never an archive candidate (§4.51).
+
+## Partition and lineage audits
+
+Two audit surfaces produced by this campaign build event payloads outside the
+per-run event stream.
+
+`lolo_agent/partitions.py` loads the immutable room allocation from
+`configs/evaluation-partitions.json` (see `protocol.md`) and builds
+`evaluation_partition_loaded` — `partition_manifest_id`,
+`partition_manifest_sha256`, `partition_content_signature`,
+`evaluation_partition`, `partition_game`, `partition_room`,
+`partition_reward_track`, and `partition_update_authority` — plus
+`persistent_artifact_digest_audited`, which records `audit_phase`
+(`cycle_start` or `cycle_end`), the declared `artifact_classes` (neural,
+spatial, entity, and relational; a class with no artifact is recorded with a
+null path rather than omitted), the per-class `artifacts` digests, and a
+canonical `audit_signature` over them. An update attempted from a frozen
+partition raises with the exact `partition_update_rejected` payload —
+`rejected_operation` and `rejection_reason` alongside the partition
+identity — so callers can log the rejection and fail closed.
+`lolo-research-cycle` is the wiring: a plan carrying an
+`evaluation_partition` binding audits the declared artifact inventory at
+cycle start and cycle end and writes the loaded event, both audits,
+`frozen_digests_verified`, and any `violation` into the cycle's `report.json`
+under `evaluation_partition`. They are not written to a run's `events.jsonl`.
+The loader also builds the explicit partition, reward-track, and
+update-authority fields intended for a run's `manifest.json`; no run writer
+consumes them yet.
+
+`lolo_agent/strict_lineage.py` answers, mechanically, whether a module's or
+checkpoint's derivation could have touched the assisted perception surface
+(`docs/direction-review-2026-08-16.md` §3.C): a transitive import of the
+`goal_prior` module or a reference to one of its named player-detector,
+player-mask, or heart/chest/life prototype symbols is decisive, while reading a
+`human_prior`-prefixed telemetry field is advisory evidence that never flips
+the verdict by itself. `StrictLineageReport.to_event()` builds
+`strict_lineage_linted` — `assisted_lineage_detected`, `assisted_modules`,
+`module_count`, `checkpoint_count`, `checkpoint_violation_count`, and a
+deterministic `report_signature`. Run the linter with
+`python3 -m lolo_agent.strict_lineage <paths> [--package-root DIR]
+[--output FILE]`; it writes the full report document, not the event, and
+exits non-zero when any target is assisted-coupled. The event payload has no
+consumer yet.
+
+These three payload shapes are documented from their builders and their
+tests. Unlike every other event family in this document, none of them has yet
+been observed in a recorded run or cycle report under `experiments/`, so
+their field shapes are verified against code only.
 
 ## Unlabelled entity audit
 
