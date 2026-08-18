@@ -1016,3 +1016,150 @@ with 44/43 deposits, `option_searches {completed: 1, deferred: 9}`, and "never
 collected `(192,176)`" — before it is trusted on E8. Distances: **Chebyshev** for
 §4.47/§4.48-comparable traces, **Manhattan** for the mechanism's own gate
 distances.
+
+---
+
+# 9. E8 RESULTS — **PASS**, and the honest qualification that comes with it
+
+**Date**: 2026-08-18. **Report**: `experiments/lolo1-wp5/e8-gate4-report.json`,
+`digest_sha256: 9ab983b3ef6fdc694847a816e0f5298dfcfab1ed91cd4c1f7fbc81face93e71e`,
+byte-identical across two end-to-end scorer runs, scorer validated against
+v340/v341 first (15/15 checks, and it reproduces E7's own `void: false` + FAIL).
+**`void: false`** on all seven VOID rules.
+
+## 9.1 The headline
+
+**At d17 the treatment stepped from `(12,10)` onto `(12,11)` and collected the
+milestone at `(192,176)`.** Nineteen runs at this root had never reached
+distance 0.
+
+| Arm | Run id | Events | Chebyshev trace to `(12,11)` |
+| --- | --- | --- | --- |
+| Control | `entity-v343-…-control-off-d24` | 85,594 | `6,4,4,3,4,5,5,5,3,3,4,3,4,4,3,2,1,4,5,5,5,4,5,6` |
+| Treatment | `entity-v344-…-treatment-terminalstep-d24` | 149,982 | `6,4,4,3,4,5,5,3,3,4,3,4,4,3,2,1,`**`0,0,0`**`,5,6,6,5,6` |
+| Attribution (unscored) | `entity-v345-…-standingrule-store-d24` | 149,981 | identical to the treatment |
+
+Treatment Manhattan: `9,7,7,6,8,9,10,6,5,6,4,5,4,3,2,1,`**`0,0,0`**`,10,11,10,10,11`.
+
+## 9.2 Bits
+
+| Bit | Verdict | Evidence |
+| --- | --- | --- |
+| **1 supply & prefix** | **PASS** | (a) treatment d1–d16 ≡ v341 state-for-state; (b) control ≡ v340 **exactly**, extending v333≡v334≡v336≡v338≡v340≡**v343**; (c) archive columns **widened** 6–12 → 6,**7**,8–12; deposits 43 vs 44 |
+| **2 gate fires** | **PASS** | d17 seq 83097: `eligible: true`, cell `(12,10)`, distance 1, hold `85fd9014d58deb42`, `restore_suppressed: true` |
+| **3 candidate generated** | **PASS** | d17 `branches_examined: 7`; exactly one collecting branch — **`down`, 16 frames**, `milestone_reward: 25.0` (seq 83189) |
+| **4 outcome** | **PASS** | treatment collected at d17; control never |
+| **5 safety** | **PASS** | zero life losses in both scored arms; no `position_not_certified` deposit; P1/P4 unmodified |
+
+**The §2.1 prediction was exact.** Reasoning from d1 and d16, §2.1 said the
+actuator was one 16-frame directional step. The branch that collected is `down`
+at 16 frames. It was never missing and never mis-ranked — **it was never
+generated**, because the ladder was never entered.
+
+## 9.3 The gate's declines are as readable as its fire (§4.3 discharged)
+
+Five stagnation restores were evaluated; **one** was declined:
+
+| d | cell | distance | reason | suppressed | incumbent restore |
+| --- | --- | --- | --- | --- | --- |
+| 5 | (9,8) | 6 | `not_certified_adjacent` | no | (8,7) d8 |
+| 8 | (7,6) | 10 | `not_certified_adjacent` | no | (9,8) d6 |
+| 11 | (10,7) | 6 | `not_certified_adjacent` | no | (11,8) d4 |
+| 14 | (12,7) | 4 | `not_certified_adjacent` | no | (12,8) d3 |
+| **17** | **(12,10)** | **1** | `certified_adjacent_position` | **yes** | **`state-00012381`, (12,10), d1, `is_self_restore: TRUE`** |
+
+**§2.5 is now measured, not inferred.** At d17 the incumbent would again have
+restored to `state-00012381` — *the state the agent was already standing in*.
+R-A's contribution was never "hold the position"; the incumbent was already
+holding it. It was **freeing the decision to act**, which is exactly the
+distinction §4.3 demanded be readable in the log.
+
+## 9.4 R-B was REDUNDANT — reported because §4.3 requires it, not because it helps
+
+`ladder_tier_committed == ladder_tier_would_have_committed_without_R_B` at d17
+(both `human_prior_known_milestone_fallback`, Tier 7), and **R-B changed the tier
+at ZERO of the 15 expansion decisions.**
+
+Why, precisely: P2 was **right** that the collecting branch is `outcome_known`
+and routes to Tier 7. §2.6's *further* inference — that Tier 7 "would have been
+preempted by position novelty" — was true at **d16**, where Tier 6 fired, but
+**false at d17**. Once R-A handed d17 back to expansion there was no unvisited
+semantic frontier, `human_prior_semantic_frontier_choice` was `None`, and Tier 7
+fired unaided exactly as it had at d1 and d3.
+
+**R-A alone is sufficient. R-B did nothing.** Without the §4.3 counterfactual
+instrument this experiment would have credited a lever that provably never
+acted — the §4.43 redundancy failure mode, caught in-run for the first time.
+
+Consequence for the record: E8's result is attributable to **R-A alone**, on the
+strength of the in-run counterfactual at all 15 expansion decisions. A direct
+R-A-only confirmation is available at zero design cost — the selector value
+`decline_restore` already exists — and should be run before R-B is carried
+forward. **R-B should not be carried forward on E8's evidence.**
+
+## 9.5 §4.50 did not recur
+
+The instrument that failed E3 and passed E5/E6/E7 passed again, and in the
+*generous* direction: the treatment's archive columns are `6,7,8,9,10,11,12` —
+a **superset** of the control's `6,8,9,10,11,12`. R-A widened archive geography
+rather than narrowing it. Deposits 43 vs 44, within one. §3.3(3)'s abandon
+condition is not met.
+
+This is the mechanical prediction of §4.1 coming true: a point predicate defined
+only at distance exactly 1 cannot remove the excursions, because it does not
+exist at any distance from which an excursion is still in progress.
+
+## 9.6 Option searches — a reported finding, not a nuisance (§4.46)
+
+Control `{completed: 1, deferred: 9}`; treatment `{completed: 2, deferred: 9}`.
+The extra completion is at **d19 — two decisions AFTER the collection**, and
+d17's own search was still `deferred` with the unchanged reason
+`global_semantic_archive_frontier_available`. **R-A granted no search.** The
+second completion is downstream of the milestone collection, not a cause of it.
+
+## 9.7 THE QUALIFICATION — attribution failed again, exactly as §6.3 warned
+
+**`trajectory_identical_to_treatment: true`.** The standing-rule arm, which
+re-derives the same certified cells from the record store with no reference to
+the propose/score/advance machinery, produced the **identical trajectory** and
+**also collected `(192,176)` at d17**. Event counts 149,981 vs 149,982.
+
+Therefore, on the face of this report and binding on every downstream claim:
+
+> **No Gate 4 claim may cite E8 as evidence that hypothesis-driven planning,
+> rather than a standing rule, produced this behaviour.** §4.54 recorded the
+> same outcome for E7; roadmap §22 consequence 3 already scope-corrected the Q3
+> ruling on that basis. E8 does not repair it and must not be read as repairing
+> it. What E8 establishes is narrower and should be stated in exactly these
+> terms: **the agent can take a final step it has demonstrably prepared for,
+> once the restore bifurcation stops spending that decision on standing still.**
+
+## 9.8 TRIGGER FIRED — §5.7 retirement condition 1
+
+**Bit 4 PASSED, so `(12,11)`/`(192,176)` is a solved instance and RETIRES as a
+discriminator.** All subsequent Gate 4 claims move to `(8,4)`/`(9,12)`, both
+confirmed present in v341's `relational_hypothesis_proposed`
+`remaining_milestone_cells`. Those lie **outside** the certified envelope and
+require a **second manipulation** — a capability incidental behaviour has never
+demonstrated, and a strictly harder claim than the single-manipulation-plus-
+closing one `(12,11)` supported.
+
+Retirement is a **scope change, not a rescue**. It is invoked here on a PASS,
+which is the only clean way to invoke it. Any move to `(8,4)`/`(9,12)` requires
+its own preregistration with its own control-never-does-it evidence at the new
+target.
+
+## 9.9 What this result does NOT show
+
+- **Not** that hypothesis-driven planning did it (§9.7).
+- **Not** that R-B is useful — it provably did nothing (§9.4).
+- **Not** that the planner can cause a search. E4 remains untested; R-A granted
+  no search (§9.6).
+- **Not** a second manipulation, and no claim about one.
+- **n = 1.** The guaranteed opportunity count was exactly one and it was taken.
+  Runs are deterministic, so this is a capability demonstration at one instant
+  at one root, not an estimate with a variance. §7's caveat stands: the census
+  is descriptive of this root and this family.
+- **Assisted track throughout.** Certified records come from the player-anchored
+  hold instrument (`certified_hold` provenance). No strict claim is made or
+  implied; WP5's shadow campaign remains the strict path.

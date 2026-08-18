@@ -2846,10 +2846,17 @@ Classification:
 
 Scope limits — stated before any claim is built on this:
 
-1. **Deliberateness attribution is PENDING** the unscored attribution arm
-   (v345). E7's precedent was `trajectory_identical_to_treatment: true`;
-   if v345 repeats that, E8 evidences the *capability* but not that
-   hypothesis-driven planning produced it.
+1. ~~**Deliberateness attribution is PENDING** the unscored attribution
+   arm (v345).~~ **RESOLVED AGAINST THE RESULT (2026-08-18).** v345 is
+   `trajectory_identical_to_treatment: true` and **also collected at
+   d17**. Per design §6.3, **no Gate 4 claim may cite E8 as evidence
+   that hypothesis-driven planning, rather than a standing rule,
+   produced this.** The attribution arm has now failed twice (E7, E8),
+   so the falsifiability objection behind the Q3 ruling is empirically
+   unsupported at this root in both experiments that tested it.
+   What E8 establishes is narrower and should be stated only this way:
+   *the agent can take a final step it demonstrably prepared for, once
+   the restore bifurcation stops spending that decision standing still.*
 2. Assisted-lineage throughout; not strict-track evidence.
 3. `(12,11)`/`(192,176)` **retires as a discriminator** (§5.7 retirement
    condition 1) — it is now a solved instance.

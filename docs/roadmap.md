@@ -1778,17 +1778,30 @@ Standing:
 1. **Gate 4's outcome criterion is met on the assisted track.** A
    prepared configuration was established, held, and converted into a
    subsequent milestone no incidental run reaches. Its *deliberateness*
-   criterion remains PENDING the attribution arm — if the standing-rule
-   arm is trajectory-identical (as in E7), E8 evidences capability, not
-   hypothesis-driven choice.
+   criterion is **NOT met**: the attribution arm (v345) came back
+   `trajectory_identical_to_treatment: true` and collected at d17 as
+   well, so a standing rule reproduces the behaviour exactly. Attribution
+   has now failed in both experiments that tested it (E7, E8). **No Gate
+   4 claim may cite E8 as evidence of hypothesis-driven choice.** The
+   defensible claim is capability only: the agent can complete a step it
+   prepared for once the restore bifurcation stops consuming that
+   decision.
 2. **`(12,11)` retires as a discriminator**; Gate 4 work moves to
    `(8,4)`/`(9,12)`, which require a **second manipulation** — merging
    with Gate 2 per §18 item 3. New preregistration and fresh
    control-never-does-it evidence required.
-3. **R-B is unshipped-in-effect**: it changed nothing at 15 of 15
-   expansion decisions. Keep it only if a future instance shows it
-   firing; otherwise remove it rather than carry a lever with no measured
-   effect.
+3. **R-B is unshipped-in-effect and should be REMOVED**: it changed
+   nothing at 15 of 15 expansion decisions. An R-A-only confirmation
+   costs nothing (`decline_restore` already exists). Carrying a lever
+   with no measured effect violates the counterfactual discipline that
+   caught it.
+5. **The Q3 ruling now has two failed attribution tests.** The principle
+   (a standing rule cannot decline, so it cannot evidence choosing)
+   stands as reasoning, but nothing measured supports preferring
+   hypothesis-scoped liveness at this root. Any future design that pays
+   complexity for hypothesis scoping must first show an instance where
+   the standing rule and the hypothesis-scoped version *diverge* — that
+   divergence is now a precondition, not an assumption.
 4. **§5 invariant added**: every lever ships with a counterfactual
    instrument recording what the incumbent would have done. R-B would
    have been wrongly credited without one.
