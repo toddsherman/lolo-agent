@@ -171,6 +171,26 @@ sprite tables, or supplied object labels; where a module scores assisted-era
 telemetry it does so as evaluation input only, and `strict_lineage.py` is the
 mechanical check on that boundary.
 
+Run that check on the two object-representation modules and it reports
+`assisted: true`. That is correct and worth stating before you discover it:
+
+```bash
+python3 -m lolo_agent.strict_lineage lolo_agent/object_tracks.py
+# -> "assisted": true, decisive on player_pixel_mask (object_tracks.py:259)
+```
+
+`object_tracks.py` and `object_correspondence.py` accept an injected
+`player_pixel_mask` callable, and `player_pixel_mask` is on the linter's
+`ASSISTED_SYMBOLS` list precisely because it is part of the human-prior
+surface. The coupling is an injected parameter rather than an import, so a
+detector-free substitute can be supplied without touching these modules, but
+that substitute is gated on the WP5 wiring and is **not** wired today. So the
+sentence above is about labels and ROM memory, not about the pixel detector:
+these two modules are assisted-coupled at this commit. The detector-free
+perception modules listed below (`counterfactual_labels.py`,
+`controllable_tracker.py`, `pixel_mask_head.py`) and the measurement modules
+(`accessibility.py`, `relational_planner.py`) all lint clean.
+
 Object representation:
 
 - `object_tracks.py` — anonymous object tracks and transitions, extracted
