@@ -2,6 +2,13 @@ from __future__ import annotations
 
 import unittest
 
+try:  # optional ML extra (imported transitively by the modules below)
+    import torch  # noqa: F401
+except ImportError as exc:  # pragma: no cover - exercised only without the extra
+    raise unittest.SkipTest(
+        "requires the optional 'ml' extra: pip install -e '.[ml]'"
+    ) from exc
+
 from lolo_agent.training_benchmark import benchmark_training
 
 

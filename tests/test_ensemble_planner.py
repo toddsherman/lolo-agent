@@ -1,10 +1,16 @@
 import unittest
+
+try:  # optional ML extra
+    import torch
+except ImportError as exc:  # pragma: no cover - exercised only without the extra
+    raise unittest.SkipTest(
+        "requires the optional 'ml' extra: pip install -e '.[ml]'"
+    ) from exc
 import tempfile
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
-import torch
 
 from lolo_agent.entity_behavior import AnonymousEntityBehaviorModel
 from lolo_agent.ensemble_world_model import (

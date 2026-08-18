@@ -1,10 +1,16 @@
 import tempfile
 import unittest
+
+try:  # optional ML extra
+    import torch
+except ImportError as exc:  # pragma: no cover - exercised only without the extra
+    raise unittest.SkipTest(
+        "requires the optional 'ml' extra: pip install -e '.[ml]'"
+    ) from exc
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Mapping, Tuple
 
-import torch
 
 from lolo_agent import tracker_substitution_replay
 from lolo_agent.controllable_tracker import (

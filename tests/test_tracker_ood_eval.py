@@ -3,6 +3,13 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+
+try:  # optional ML extra
+    import torch
+except ImportError as exc:  # pragma: no cover - exercised only without the extra
+    raise unittest.SkipTest(
+        "requires the optional 'ml' extra: pip install -e '.[ml]'"
+    ) from exc
 from pathlib import Path
 from typing import Dict, Sequence, Tuple
 

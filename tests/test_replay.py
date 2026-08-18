@@ -1,6 +1,13 @@
 import json
 import tempfile
 import unittest
+
+try:  # optional ML extra (imported transitively by the modules below)
+    import torch  # noqa: F401
+except ImportError as exc:  # pragma: no cover - exercised only without the extra
+    raise unittest.SkipTest(
+        "requires the optional 'ml' extra: pip install -e '.[ml]'"
+    ) from exc
 from pathlib import Path
 
 from lolo_agent.environment import Action

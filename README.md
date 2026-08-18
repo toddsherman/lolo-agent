@@ -32,8 +32,25 @@ current standing, with the evidence for each:
   earlier confirmed push as accessibility-*neutral* (§4.28), so manipulation
   value is a measurable property of configurations rather than of
   manipulations as such.
-- **Gate 4 — deliberate preparation: OPEN.** Four interventions have been
-  measured and each failed with a distinct, named mechanism: a
+- **Gate 4 — deliberate preparation: OPEN, on its second criterion.** The
+  gate's *outcome* criterion is now met; its *deliberateness* criterion is
+  not, which is why the gate stays open. Five interventions have been
+  measured. The fifth (E8: decline a restore that would return the agent to
+  the state it already occupies) produced the outcome — at decision 17 the
+  agent stepped `(12,10)` → `(12,11)` and collected the milestone that
+  twenty-one prior runs from the same root never reached. E8c re-confirmed
+  it on the fixed NOOP-cache path (PASS on all three gated bits, `void:
+  false`, no retraction; `docs/wp8-commit-ladder-design-2026-08-18.md` §11).
+  But **no Gate 4 claim may cite E8 as evidence of hypothesis-driven
+  choice**: the unscored attribution arm v345 substituted a standing rule
+  for the hypothesis layer and returned a trajectory-identical run that also
+  collected. Attribution has now failed in both experiments that tested it
+  (E7, E8). What E8 establishes is narrower and should be stated only this
+  way: the agent can take a final step it demonstrably prepared for, once
+  the restore bifurcation stops spending that decision standing still.
+  Assisted track, n = 1, one root; `(12,11)` is retired as a discriminator.
+  The other four interventions each failed with a distinct, named
+  mechanism: a
   verified-accessibility restore preference was behaviorally redundant,
   because the incumbent novelty scorer already chose the same branch
   (§4.43); a hypothesis-directed search reserve had no searches to ride,
@@ -390,10 +407,9 @@ runs identically to the control and only the closing restore is contested
 (§4.50). The seams are inert at any authority other than `selection`. A
 fourth choice, `restore_plus_deposit`, adds a seam that deposits a committed
 position adjacent to a certified milestone cell as an archive so the restore
-key has a candidate to reach (§4.51); it lands with the E6 build and is
-**not yet committed**, so it is not a valid choice at this commit. The
-decision budget
-is hypothesis scope, not beam width, and consumes no beam slots. All four
+key has a candidate to reach (§4.51). It landed with the E6 build and is a
+valid choice at this commit. The decision budget
+is hypothesis scope, not beam width, and consumes no beam slots. All five
 measured Gate 4 interventions are recorded arm by arm in the WP8 design
 notes; none of these settings is promoted.
 

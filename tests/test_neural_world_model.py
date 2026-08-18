@@ -1,6 +1,12 @@
 import unittest
 
-import torch
+try:  # optional ML extra
+    import torch
+except ImportError as exc:  # pragma: no cover - exercised only without the extra
+    raise unittest.SkipTest(
+        "requires the optional 'ml' extra: pip install -e '.[ml]'"
+    ) from exc
+
 
 from lolo_agent.environment import Action
 from lolo_agent.neural_world_model import (

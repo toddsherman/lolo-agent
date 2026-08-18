@@ -1,9 +1,9 @@
 # Lolo agent research and implementation roadmap
 
 Status: active plan of record  
-Last updated: 2026-08-16  
+Last updated: 2026-08-18  
 Primary execution platform: Apple Silicon MacBook Pro (M5)  
-Repository: private `toddsherman/lolo-agent`
+Repository: public `toddsherman/lolo-agent`
 
 Companion evidence and negative-results record: `docs/learnings.md`
 

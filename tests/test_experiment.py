@@ -1,9 +1,15 @@
 import json
 import tempfile
 import unittest
+
+try:  # optional ML extra
+    import torch
+except ImportError as exc:  # pragma: no cover - exercised only without the extra
+    raise unittest.SkipTest(
+        "requires the optional 'ml' extra: pip install -e '.[ml]'"
+    ) from exc
 from pathlib import Path
 
-import torch
 
 from lolo_agent.bootstrap import BootstrapFixture, BootstrapStep
 from lolo_agent.ensemble_world_model import (
