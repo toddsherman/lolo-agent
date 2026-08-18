@@ -92,6 +92,11 @@ th{font-size:.66rem;letter-spacing:.1em;text-transform:uppercase;color:var(--ink
 .c-fail{color:var(--fail)} .c-pass{color:var(--entity)} .c-mixed{color:var(--probe)}
 .stat-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:1px;
   background:var(--rule);border:1px solid var(--rule);margin:2rem 0}
+/* the scoreboard has five tiles: at full width they form one row, and the last
+   tile spans whatever remains rather than sitting alone beside dead space */
+#scoreboard{grid-template-columns:repeat(auto-fit,minmax(190px,1fr))}
+#scoreboard .stat:last-child{grid-column:auto}
+@media (max-width:1010px){#scoreboard .stat:last-child{grid-column:1/-1}}
 .stat{background:var(--surface);padding:1rem 1.1rem}
 .stat b{display:block;font-family:var(--mono);font-size:1.7rem;letter-spacing:-.03em;
   line-height:1;margin-bottom:.35rem;font-variant-numeric:tabular-nums}
@@ -183,7 +188,8 @@ footer{border-top:1px solid var(--rule);padding:2.6rem 0 4rem;color:var(--ink-3)
   </div>
 </div></section>
 
-<section><div class="wrap">
+<section><div class="bleed">
+  <div class="wrap" style="padding:0">
   <h2>The claim, and why it is hard</h2>
   <p>The agent may use four things: rendered RGB frames, controller actions and durations, opaque
   save/load capabilities, and the pixel-observed consequences of its own actions. It may not receive
@@ -206,7 +212,9 @@ footer{border-top:1px solid var(--rule);padding:2.6rem 0 4rem;color:var(--ink-3)
   <p>The preparation structure described above is what makes this hard to reward. It is invisible to
   every cheap objective: frame-level prediction, distance-to-goal, and raw novelty all report progress
   while the agent goes nowhere. Each of those was tried here, and each is in the failure list below.</p>
+  </div>
   <div class="stat-row" id="scoreboard"></div>
+  <div class="wrap" style="padding:0">
   <p class="small">The one passing result has since been re-confirmed on the fixed code path, in a
   preregistered pair of runs that both completed: the treatment collected the heart at decision 17 as
   predicted, the control never did, and neither lost a life. It is included here. Everything below is
@@ -214,6 +222,7 @@ footer{border-top:1px solid var(--rule);padding:2.6rem 0 4rem;color:var(--ink-3)
   the player and hearts as development scaffolding. The strict interaction-only claim, which is the
   actual research goal, has no object-centric evidence yet. That gap is the single most important
   caveat on this page.</p>
+  </div>
 </div></section>
 
 <section><div class="bleed">
@@ -227,6 +236,11 @@ footer{border-top:1px solid var(--rule);padding:2.6rem 0 4rem;color:var(--ink-3)
     <div>
       <h3 style="margin-top:0">What is in the room</h3>
       <p class="small">Everything the agent has to work with, and the one thing it never got.</p>
+      <!-- reserves exactly the height of the coverage buttons opposite, so both
+           grids start on the same line; same class and same inner element, so the
+           two stay matched if the button metrics ever change -->
+      <div class="controls" aria-hidden="true" style="visibility:hidden">
+        <button type="button" tabindex="-1">7</button></div>
       <div id="map"></div>
       <p class="small" style="margin-top:1rem">Room 3 on the 16&times;15 coarse grid. Hearts in magenta,
       the manipulable object at its home cell in green, the chest, and the one genuinely static
@@ -237,6 +251,7 @@ footer{border-top:1px solid var(--rule);padding:2.6rem 0 4rem;color:var(--ink-3)
       <p class="small">The whole campaign turns on the difference between these.</p>
       <div class="controls" id="covctl"></div>
       <div id="cov"></div>
+      <p class="small mono" id="covlab" style="font-size:.68rem;margin-top:.8rem"></p>
       <p class="small" style="margin-top:1rem">The 7-cell and 24-cell sets are <em>certified</em>
       measurements: what a depth-12 search verifiably retained. The 67-cell set is what is actually
       reachable. Mistaking the first for the third cost this project two days.</p>
@@ -692,8 +707,7 @@ function walkRoute(a,b){
               ['reach','67 cells · actually reachable']];
   let cur='base';
   const ctl=document.getElementById('covctl');
-  ctl.innerHTML=sets.map(([k,l],i)=>`<button data-k="${k}" aria-pressed="${i===0}">${k==='base'?'7':k==='removed'?'24':'67'}</button>`).join('')
-    +`<span class="small mono" id="covlab" style="font-size:.68rem"></span>`;
+  ctl.innerHTML=sets.map(([k,l],i)=>`<button data-k="${k}" aria-pressed="${i===0}">${k==='base'?'7':k==='removed'?'24':'67'}</button>`).join('');
   const box=document.getElementById('cov');
   function draw(){
     box.innerHTML='';
