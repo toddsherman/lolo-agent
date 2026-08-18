@@ -1649,6 +1649,34 @@ Consequences for the plan:
    through exact search — must state that the planner controls *when*
    search happens, or the hypothesis layer is inert by construction.
 
+## 20. Amendment — 2026-08-17 night (evidence: learnings §4.50)
+
+**Steering is the wrong shape of intervention; closing is the right one.**
+E3 showed the navigation mechanism working exactly as designed (7 of 20
+instants changed behavior) and making the outcome *worse*: the treatment's
+best approach was distance 3 against the control's 1. Cause: the
+excursions away from a target are what deposit the archive ladder later
+progress climbs — steering narrowed archive geography from columns 6–12
+to 6–8 and every subsequent restore ratcheted westward.
+
+Consequences:
+
+1. **§4.7 generalizes and hardens.** It is not "distance rewards fail" but
+   "any consistent proximity preference fails" — the tie-break-not-reward
+   care taken in the E3 mechanism did not save it. Add to the §5
+   invariants: an intervention that narrows exploration must prove it does
+   not starve the supply that later progress consumes.
+2. **WP8's intervention model changes**: hypotheses should not steer
+   trajectories. They should (a) leave exploration untouched and (b)
+   intervene at *closing instants* — the moments when exploration has
+   already delivered the opportunity and the incumbent scorer would
+   discard it. E5 tests exactly this (S2-only ablation).
+3. Three levers are now measured: restore preference (redundant),
+   search-time reserve (no searches to ride), commit steering (starves
+   supply). The surviving hypothesis is that the planner needs *no new
+   preference at all* — only a veto on discarding a certified-adjacent
+   position.
+
 Amended next sequence: (a) Gate 3 repetition run; (b) WP8-lite preference
 ablation; (c) WP2 multi-track correspondence with the endpoint-relative
 contract; (d) WP3 including the removal-chain gate; (e) WP5 spike and

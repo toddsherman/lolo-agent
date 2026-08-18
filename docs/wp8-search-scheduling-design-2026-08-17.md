@@ -708,3 +708,414 @@ they are reproducible read-only from
 `experiments/lolo1-entity-v10/evaluations/`. The claim that the
 distance-to-certified-cell axis is currently unoccupied is a code reading
 (§3.2, §3.3) that §5.3's telemetry is designed to falsify in run.
+
+---
+
+## 11. E3 preregistration addendum (2026-08-18, **written before either arm ran**)
+
+This section supersedes §6.2/§6.3/§6.4's *provisional* numbers where they
+conflict. It is the scored preregistration. Two rows of §5.1/§6.4 are
+**stale** and are corrected here rather than silently used: §5.1's S0 row
+describes a change that was already landed by `6a8488a` before this design
+was written, and §6.4(c)'s "restore drag" FAIL mode is retired because the
+supply it feared was measured and is 52/56, not 4 (learnings §4.49).
+
+### 11.1 Preconditions, re-verified at preregistration time
+
+| Item | Status |
+| --- | --- |
+| S0 (commit-time archives carry the tracked signature) | landed `6a8488a`; measured supply on v333 = 52/56 commit-time archives |
+| Mechanism (S1 ladder tier, S2 restore key, S3 pure module, S4 telemetry) | landed `7a232a5` |
+| `--relational-decision-budget` | landed; `neural_run.py:981`, default 4, E3 uses 12 |
+| Discriminator | VALIDATED over v323/324/327/328/329/330/331/332/333 — no run has ever collected `(12,11)`/pixel `(192,176)` |
+| HEAD at preregistration | `9d2889e`, working tree clean except untracked `tmp/` (unrelated) |
+
+Input digests, re-verified on disk today (all equal to the v322–v333
+manifests): host `c03694c5…3e891f3`, core `a3450a09…5a40024886`, ROM
+`914c6769…3efd059e01`, neural checkpoint `bb7a7a37…284f678b9`,
+entity-behavior checkpoint `984b83c3…25c7c6aa`, record store
+`cf01a67aca2b6e8feeab38c0c85520dec2470cba2a5f2257cd817912c204d1fe`.
+
+### 11.2 Arms
+
+- **Control** — `--relational-planner-authority off`, run id
+  `entity-v334-room3-e3-control-off-d24`. Runs **first**.
+- **Treatment** — `--relational-planner-authority selection`, run id
+  `entity-v335-room3-e3-treatment-selection-d24`.
+- The arms differ in **exactly two** things: that flag and `--run-id`.
+  Consequently their manifest `planning_config` may differ only in
+  `relational_planner_authority` and `relational_planner_enabled`.
+- Both arms: `--decisions 24`, `--relational-decision-budget 12`,
+  `--human-prior-accessibility-records experiments/lolo1-wp5/wp8lite-accessibility-records.json`,
+  `--human-prior-accessibility-preference-weight 0.0` (records loaded in
+  both arms; the WP8-lite preference term is off in both, so any difference
+  is attributable to the navigation objective alone),
+  `--log-root experiments/lolo1-entity-v10/evaluations`.
+- **Root**: memory `entity-v318-room3-known-push-connected-mask-d2`
+  decision 1 with `--resume-option-search`; physical state the same run's
+  **seq-2026** checkpoint (`state-00000002`, source `events.jsonl` sha256
+  `0bbe1d15…9b6f83`). Identical to v333.
+- **Flag profile**: v333's verbatim (itself v329/v330/v331's profile), i.e.
+  the command line of the relational-planner design §12.3 with
+  `--decisions 24` and `--relational-decision-budget 12` added.
+- **Ceilings**: 10,800 s wall per arm under an external watchdog; one
+  native run at a time. Observed envelope at 24 decisions (v333): ~33 min,
+  85,594 events, 12,232 verified branches.
+- **Scoring window**: the first **24 committed decisions**. Rationale
+  unchanged from §6.2: after d1 no branches are verified at this root, so a
+  branch window would be decided entirely by the resume audit.
+
+### 11.3 Exact command lines
+
+```
+.venv/bin/python -m lolo_agent.neural_run \
+  --host build/lolo-libretro-host \
+  --core "/Users/toddsherman/Library/Application Support/RetroArch/cores/nestopia_libretro.dylib" \
+  --rom "Adventures of Lolo.nes" \
+  --checkpoint experiments/platform-benchmarks/m5-real-data-training-sample.pt \
+  --log-root experiments/lolo1-entity-v10/evaluations \
+  --run-id <ARM RUN ID> \
+  --decisions 24 \
+  --action-durations 1,2,4,8,16 \
+  --verify-actions 7 \
+  --archive-capacity 1024 \
+  --archive-max-age 2048 \
+  --behavioral-best-first-archive \
+  --behavioral-edge-coverage-weight 4.0 \
+  --human-prior-hearts \
+  --human-prior-heart-reward 25.0 \
+  --human-prior-all-hearts-reward 75.0 \
+  --human-prior-chest-reward 100.0 \
+  --human-prior-life-loss-penalty 100.0 \
+  --human-prior-best-first-archive \
+  --human-prior-episodic-graph-guidance \
+  --human-prior-goal-exhaustion-frontier-budget 32 \
+  --human-prior-goal-exhaustion-rollback \
+  --human-prior-graph-stagnation-visits 1 \
+  --human-prior-navigation-recovery-grace 2 \
+  --human-prior-option-archive-representatives 80 \
+  --human-prior-option-causal-effect-frontier \
+  --human-prior-option-effect-controllability-depth 2 \
+  --human-prior-option-effect-frontier \
+  --human-prior-option-effect-local-controls \
+  --human-prior-option-effect-phase-offsets 3 \
+  --human-prior-option-effect-probe-limit 16 \
+  --human-prior-option-effect-stability-steps 3 \
+  --human-prior-option-entity-curiosity-reserve 32 \
+  --human-prior-option-entity-curiosity-weight 8.0 \
+  --human-prior-option-entity-frontier \
+  --human-prior-option-entity-inert-penalty-weight 1.0 \
+  --human-prior-option-search-action-frames 16 \
+  --human-prior-option-search-beam-width 128 \
+  --human-prior-option-search-depth 12 \
+  --human-prior-option-search-goal-proximity-reserve 12 \
+  --human-prior-option-search-goal-world-state-reserve 12 \
+  --human-prior-option-search-long-direction-frames 8 \
+  --human-prior-option-search-milestone-reserve 32 \
+  --human-prior-option-search-missing-player-reserve 4 \
+  --human-prior-option-search-position-reserve 16 \
+  --human-prior-option-search-stationary-history 2 \
+  --human-prior-option-search-world-state-reserve 32 \
+  --human-prior-phase-position-novelty \
+  --human-prior-proactive-entity-probe-limit 16 \
+  --anonymous-entity-behavior-checkpoint experiments/lolo1-entity-v10/anonymous-behavior-relational-v2-clean.json \
+  --anonymous-entity-behavior-mode frozen \
+  --resume-run experiments/lolo1-entity-v10/evaluations/entity-v318-room3-known-push-connected-mask-d2 \
+  --resume-decision 1 \
+  --resume-option-search \
+  --resume-state-run experiments/lolo1-entity-v10/evaluations/entity-v318-room3-known-push-connected-mask-d2 \
+  --resume-state-checkpoint-event-seq 2026 \
+  --human-prior-accessibility-records experiments/lolo1-wp5/wp8lite-accessibility-records.json \
+  --human-prior-accessibility-preference-weight 0.0 \
+  --relational-decision-budget 12 \
+  --relational-planner-authority <off | selection>
+```
+
+### 11.4 The three preregistered bits (fixed; **ANY mixed outcome = FAIL**)
+
+**Bit 1 — MECHANISM.** At the d18-class stagnation restore — defined as any
+`archive_branch_restored` instant at which a certified-adjacent candidate
+competes with a higher-novelty one, i.e. any restore whose
+`relational_navigation_restore_selected` event reports
+`hold_matching_candidates >= 2` and at least one candidate strictly nearer
+the target than the baseline — the treatment does **not** abandon the
+certified-adjacent position. Evidence required: at least one
+`relational_navigation_restore_selected` with **`differs: true`**, and at
+that instant `selected_distance < baseline_distance`.
+
+This bit replaces §6.3 bit 1 (the "non-increasing distance for ≥4 steerable
+decisions" formulation), which was written before §4.48 identified the
+restore key — not the commit ladder — as the measured failure site. The
+substitution is recorded here, before the run, as a deliberate change of the
+mechanism bit, not a post-hoc relaxation: it is *narrower* than the old bit
+in that it demands a demonstrated divergence from the incumbent choice
+rather than a distance trend that novelty could produce incidentally.
+
+**Bit 2 — OUTCOME.** Within the 24-decision window the treatment's committed
+trajectory collects `(12,11)` / pixel `(192,176)` — evidenced by
+`[192,176]` entering `human_prior_collected_heart_slots` on a
+`decision_committed` event — and the control does **not**. If both collect
+it, bit 2 FAILS (the discriminator would be dead; a speedup is not the
+claim). The metric is the milestone cell only, never affordance counts.
+
+**Bit 3 — SAFETY.** The treatment records no more
+`human_prior_life_loss_confirmed` committed decisions than the control
+within the window.
+
+All three must pass. **ANY mixed outcome = FAIL.** No weight tuning, no
+budget re-sizing, no rerun on an identical negative result. Explicitly:
+`budget_exhausted` or `hold_violated` termination of the exploit is a
+**FAIL, not a VOID**.
+
+Reported invariants (not bits): hold integrity (committed decisions in the
+window carrying `85fd9014d58deb42`); the S1/S2 exercised-difference counts
+of §5.3; per-arm verified-branch counts; per-arm option-search counts
+(§4.46's planner-health metric).
+
+### 11.5 Declared caveats and blind spots (all three, before the run)
+
+**(a) Frozen-signature caveat (learnings §4.49).** The configuration
+signature an archive carries is *frozen at deposit*, not recomputed: the
+root track state is assigned at only five sites and never advanced by an
+ordinary committed decision, so an archive claims the configuration as of
+the last restore. For E3 specifically the risk is low — the held
+configuration is the *removal*, where the manipulated object no longer
+exists to move, so a mid-run configuration change is implausible — but a
+bit-1 PASS that depended on a stale signature would be an artifact. It is
+declared, not assumed away. Changing the freeze is score-bearing at
+accessibility weight > 0 and needs its own gate; E3 runs at 0.0.
+
+**(b) Decision-1 empty-seed blind spot.** At the root the tracked
+configuration is `prepush-root-empty-track-unmatchable`; the removal
+configuration does not exist until after the first restore onto a removal
+branch. No objective can publish target cells before that. Decision 1 is
+therefore outside the mechanism's reach in *both* arms by construction, and
+neither bit may be scored on it.
+
+**(c) §5.3 redundancy instrument — the pre-declared third-null reading.**
+Every S1/S2 instant logs the incumbent argmax alongside the
+objective-preferred candidate and whether they `differ`. **If `differs` is
+`false` (or `null`) at every instant across the exploit's authority window,
+that is a THIRD redundancy finding of the §4.43/§4.45 family and must be
+reported as such** — "the lever agreed with the incumbent everywhere, so
+the mechanism was never exercised" — and explicitly **not** as a near-miss,
+not as under-powering, and not as grounds for a fourth lever. Under that
+reading the plan moves to representation (WP2/WP3 integration depth). This
+is fixed now precisely so it cannot be re-narrated after seeing the result.
+
+**(d) Speedup-vs-capability caveat, carried from §4.47.** Even a clean PASS
+demonstrates *finishing* under a held configuration at this root; it does
+not demonstrate a second manipulation. The stronger discriminator remains
+the `(8,4)`/`(9,12)` hearts outside the certified envelope (roadmap §18
+item 3).
+
+**(e) What a PASS does not show (§6.4(f), unchanged).** It does not show
+the planner can cause a search, and does not close §4.45's mechanism 1.
+That remains E4.
+
+### 11.6 VOID conditions (a VOID is not evidence)
+
+1. **Config inequality** — either arm's manifest `planning_config` differs
+   from the other's in any field except `relational_planner_authority` and
+   `relational_planner_enabled`.
+2. **Records inequality** — both arms must report `record_count: 3`,
+   content signatures `15604cb5…`/`37ea410d…`/`47975c94…`, store digest
+   `cf01a67a…`, at `verified_accessibility_weight: 0.0`.
+3. **Seeding defect** — no archived branch carrying `85fd9014d58deb42`
+   within the window in **either** arm.
+4. **Root defect** — either manifest's `episodic_resume` block does not
+   record source run `entity-v318-room3-known-push-connected-mask-d2`,
+   `source_decision: 1`, `state_source_checkpoint_event_seq: 2026`,
+   `state_source_events_sha256: 0bbe1d15…`.
+5. **Budget defect** — either arm exceeds the 10,800 s wall ceiling and is
+   killed before `run_finished`; **or** the arms' verified-branch counts
+   differ by more than 1%.
+6. **Invariance defect** — the control's committed state ids do not
+   reproduce v333's exactly for all 24 decisions (S0/S1/S2 leaked outside
+   selection authority). v333 is the same flag profile plus
+   `--relational-decision-budget 12`, which is inert at authority `off`.
+
+Budget-exhausted non-reach is **censored**, never reported as
+"unreachable" (learnings §2, §4.14).
+
+### 11.7 Scoring
+
+A single deterministic scorer walks each arm's `events.jsonl` once, applies
+§11.4 verbatim, and writes `experiments/lolo1-wp5/e3-gate4-report.json`
+with a canonical-JSON `digest_sha256` over the body (digest field excluded).
+It is run end-to-end twice; both reports must be byte-identical and the
+digest is recorded in the results section below.
+
+Two distance metrics are reported side by side and their difference is
+declared now to prevent a later mix-up:
+
+- **Chebyshev** (`max(|dx|,|dy|)`) — the metric of the learnings §4.47/§4.48
+  traces; reported so the treatment's trace is directly comparable to
+  v333's `3,3,4,3,4,4,3,2,1,4,5,5,5,4,5,6` (d9–d24).
+- **Manhattan** (`|dx|+|dy|`) — the metric the mechanism itself uses
+  (`relational_planner.target_cell_distance`), and therefore the metric of
+  `baseline_distance` / `selected_distance` inside bit 1.
+
+Bit 1 is scored on the mechanism's own (Manhattan) figures as emitted in
+telemetry. Bit 2 is metric-free. The Chebyshev trace is reportorial only.
+
+The scorer is validated against v333 before scoring E3: it must reproduce
+§4.48's distance trace and its "never collected `(192,176)`" reading exactly.
+
+
+---
+
+## 12. E3 results (2026-08-18) — **FAIL**, with a named mechanism
+
+Scored against §11.4 verbatim by `experiments/lolo1-wp5/e3-gate4-report.json`,
+`digest_sha256` **`26a3cc22fad69bba3e61a8d299f09550f942872170cb61c4169e130d8b310452`**
+(scorer run end-to-end twice; the two reports are byte-identical). The scorer
+was validated against v333 first and reproduces §4.48's trace and its "never
+collected `(192,176)`" reading exactly.
+
+| Arm | Run id | Events | Branches | Searches | Result |
+| --- | --- | --- | --- | --- | --- |
+| Control | `entity-v334-room3-e3-control-off-d24` | 85,594 | 12,232 | 1 (+9 deferred) | reached distance 1 at d17, diverged to 6 by d24; `(12,11)` never collected |
+| Treatment | `entity-v335-room3-e3-treatment-selection-d24` | 85,932 | 12,232 | 1 (+11 deferred) | minimum distance 3; `(12,11)` never collected |
+
+### 12.1 Verdict
+
+| Bit | Verdict | Evidence |
+| --- | --- | --- |
+| **1 — MECHANISM** | **PASS** | 3 contested restores (d8/d9/d10) with `differs: true` and `selected_distance` 6 < `baseline_distance` 9. The objective held ground the incumbent would have traded. |
+| **2 — OUTCOME** | **FAIL** | Neither arm collected `(12,11)`/`(192,176)`. The treatment's minimum distance (Chebyshev 3 / Manhattan 6) is *worse* than the control's (1 / 1). |
+| **3 — SAFETY** | **PASS** | Zero `human_prior_life_loss_confirmed` commits in both arms. |
+
+**Mixed ⇒ FAIL**, per §11.4. **No VOID condition fired** (V1–V6 all clear).
+No tuning, no re-size, no rerun.
+
+### 12.2 The instruments that make this FAIL trustworthy
+
+- **V6 invariance, in vivo**: the control reproduced v333 **state-id for
+  state-id across all 24 decisions** (`matching_prefix_decisions: 24`, and
+  the same 85,594 events). S0/S1/S2 leak nothing outside selection
+  authority, and `--relational-decision-budget 12` is inert at authority
+  `off` as claimed.
+- **V1**: the arms' `planning_config` differ in exactly
+  `relational_planner_authority` and `relational_planner_enabled`.
+- **V5**: both arms verified exactly 12,232 branches — matched by
+  construction, relative gap 0.0.
+- **§5.3 redundancy instrument — NOT a third null.** 20 S1/S2 instants, **7
+  differing**. The lever fired and it changed behavior. §11.5(c)'s
+  pre-declared third-redundancy reading therefore does **not** apply; this
+  is a real behavioral difference that produced a worse outcome, which is a
+  strictly more informative result than another agreement null.
+
+### 12.3 Distance-to-target traces (Chebyshev, d1–d24)
+
+```
+v333  (precedent) 6 4 4 3 4 5 5 5 3 3 4 3 4 4 3 2 1 4 5 5 5 4 5 6
+v334  (control)   6 4 4 3 4 5 5 5 3 3 4 3 4 4 3 2 1 4 5 5 5 4 5 6   ← identical
+v335  (treatment) 6 4 4 3 4 4 3 3 3 3 5 4 4 5 5 5 4 6 5 5 6 6 6 6
+```
+
+Manhattan (the mechanism's own metric):
+
+```
+v334  (control)   9 7 7 6 8 9 10 10 6 5 6 4 5 4 3 2 1 6 7 6 6 4 5 6
+v335  (treatment) 9 7 7 6 8 7  6  6 6 6 9 8 7 10 9 9 8 11 10 9 10 9 8 8
+```
+
+The arms are identical through d5 and never re-converge after d6.
+
+### 12.4 The named FAIL mechanism: **the objective starved its own supply**
+
+The mechanism did exactly what §4.48 asked and lost anyway. The chain is
+measured, not inferred:
+
+1. **The fork is the commit tier, not the restore key.** First divergence is
+   **d6**, a `relational_navigation_choice` with `differs: true`: the
+   incumbent `human_prior_semantic_frontier_choice` would have committed
+   `(8,6)` at distance 9; the objective substituted `(8,8)` at distance 7.
+   Locally correct, and the entire causal fork of the experiment.
+2. **What the incumbent was doing was not noise.** The control's d6–d8
+   excursion *away* from the target — `(8,6) → (7,6) → (7,6)`, distance 9,
+   10, 10 — is what deposited the archives it later restored into. By d12
+   and d15 the control was restoring to `(11,8)` and `(12,8)`; the treatment
+   never restored east of `(9,8)`.
+3. **Archive geography, the decisive measurement.** Control: 44 deposits
+   spanning columns 6–12, including `(12,9)` — one cell from the milestone.
+   Treatment: 33 deposits spanning columns **6–8 only**. The treatment's
+   archive supply never reached the target's half of the room.
+4. **Then the ratchet ran backwards.** `hold_matching_candidates` across the
+   treatment's nine restores: 1, 4, 3, 2, 1, 1, 1, 1, 1. The key exhausted
+   its near candidates by d10, and from d11 every stagnation restore had a
+   single hold-matching option — progressively *westward*: `(8,6)` d11,
+   `(7,6)` d14, `(6,6)` d18, `(6,7)` d21, `(6,9)` d24. The mechanism
+   ratcheted, correctly, against a supply it had itself prevented from
+   growing.
+5. **The commit tier had almost nothing to choose from either.**
+   `distance_reducing_branches` was **1 of 7** hold-eligible branches at
+   nearly every instant (2 once). The "choice" was Hobson's.
+
+This is §6.4(c)'s restore-drag FAIL mode arriving by the opposite route from
+the one predicted. §6.4(c) feared drag from a *missing* S0 capping supply at
+four audit branches; S0 landed and supply was ample (§4.49). The drag came
+instead from the objective suppressing the exploration that *generates*
+supply. Neither the design nor the power analysis anticipated that the
+mechanism could reduce its own restore supply.
+
+It is also learnings §4.7 ("straight-line goal distance") and this design's
+§7.3 reappearing in a form the design believed it had avoided. §7.3's
+mitigation was to add no distance *reward* — and none was added; the key is
+a tie-break inside an already-filtered set, exactly as specified. The
+failure shows that the reward/tie-break distinction is not the operative
+one: **any** consistent preference for target proximity, however narrowly
+scoped, suppresses the excursions that build the archive supply on which
+later progress depends.
+
+### 12.5 What §4.48 got right, and what it missed
+
+§4.48's diagnosis — "the incumbent can wander into the neighborhood but has
+no mechanism to close" — is confirmed in the control (distance 1 at d17,
+traded away, never recovered). What it missed is that the wandering and the
+arriving are the **same mechanism**. Closing by suppressing the wandering
+removes the arriving. E3 therefore refutes the specific repair §4.48
+proposed while leaving its diagnosis of the gap intact.
+
+The mechanism bit passing while the outcome bit fails is the most useful
+shape this result could have taken: the seam works, is exercised, is
+correctly gated, and is bit-identical when off. The lever is sound; the
+*policy* on the lever is wrong.
+
+### 12.6 Caveats, restated after the fact (none rescues the result)
+
+- **Frozen signature (§11.5(a))**: did not bite. The held configuration was
+  stable and `hold_matching_candidates` behaved consistently; no bit turned
+  on a signature identity.
+- **Decision-1 blind spot (§11.5(b))**: as declared, d1–d3 are outside the
+  mechanism's reach in both arms; the objective activated at d3 and the
+  first navigation instant is d4. Nothing is scored there.
+- **`budget_exhausted` at d15**: the exploit hypothesis exhausted its
+  12-decision budget at d15 and re-proposed at d16, holding authority
+  through d24. Per §11.4 this is a FAIL input, not a VOID — and it is not
+  the operative cause here, since the mechanism held authority for 20 of 24
+  decisions and the damage was already done by d10.
+- **Speedup-vs-capability (§11.5(d))**: moot. There was no speedup.
+- **Not a power problem.** The treatment did not run out of decisions; it
+  ran out of *room*, and was moving away from the target when the window
+  closed. A larger `--decisions` would extend a diverging trajectory.
+  §11.4's no-rerun clause binds.
+
+### 12.7 Consequences for the plan
+
+- The navigation-target mechanism as specified is **refuted** for closing on
+  a certified milestone. Do not tune its weight, budget, or ranking — the
+  §11.4 no-tuning clause covers exactly this temptation, and §12.4(5) shows
+  there is nothing to tune: the candidate supply is one branch wide.
+- **E4 (search request) is now better motivated, not worse.** §12.4(5) is a
+  supply problem: at every steerable instant the objective could choose
+  among one distance-reducing branch out of seven. A mechanism that can
+  *cause a search* changes the candidate set rather than re-ranking a set of
+  size one. E3's failure is evidence for that reading, and E3's telemetry
+  gives E4 a measured supply baseline to beat.
+- The §4.47/roadmap §18 point stands: the `(8,4)`/`(9,12)` second-
+  manipulation discriminator remains the capability-level test.
+- Retained for reuse: the discriminator (now unbroken across eleven runs),
+  the v333/v334 invariance pair, and the S4 telemetry, which diagnosed this
+  FAIL in one pass without a rerun.

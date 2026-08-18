@@ -2363,6 +2363,84 @@ Evidence:
 - `lolo_agent/neural_planner.py:13750` `_root_object_track_branch_fields`
 - run `entity-v333-…-off-d24` (offline lineage reconstruction)
 
+### 4.50 E3 FAIL: steering toward the goal destroyed the wandering that reaches it
+
+What was tried:
+
+- E3 (preregistered, design §11; report digest `26a3cc22…`, scorer
+  byte-identical twice and validated against v333 first): control
+  (authority `off`) vs treatment (`selection`) at 24 decisions,
+  budget 12, with the navigation-target mechanism live.
+
+Result — **FAIL** (bit 1 PASS, bit 2 FAIL, bit 3 PASS; mixed ⇒ FAIL):
+
+- **The mechanism worked**: 20 navigation instants, **7 with
+  `differs: true`** — the lever fired and changed behavior. This is
+  explicitly NOT the third redundancy null that was pre-declared as a
+  possible reading.
+- **The outcome went backwards**: the treatment's minimum distance to
+  `(12,11)` was 3 (Chebyshev) versus the control's **1**. Neither
+  collected. The control reproduced v333 state-for-state (V6 invariance
+  passed in vivo).
+
+Mechanism (measured, and it inverts the §4.48 repair):
+
+1. First divergence at **d6**: the objective substituted a commit at
+   distance 7 for the incumbent's at distance 9 — locally correct,
+   causally decisive.
+2. The control's d6–d8 excursion *away from* the target (distances
+   9, 10, 10) is what **deposited the archives it later restored into**,
+   reaching `(11,8)` at d12 and `(12,8)` at d15.
+3. Archive geography: control deposited 44 archives spanning columns
+   **6–12** including `(12,9)`; treatment deposited 33 spanning columns
+   **6–8 only**.
+4. The ratchet then ran backwards: `hold_matching_candidates` across the
+   treatment's nine restores went 1,4,3,2,1,1,1,1,1, each successive
+   option further **west**.
+5. Supply was one branch wide: `distance_reducing_branches` was 1 of 7
+   hold-eligible at nearly every instant.
+
+Classification:
+
+- **Falsified at the measured gate**, and it **refutes §4.48's proposed
+  repair while preserving §4.48's diagnosis.** Novelty does pull the
+  agent off the heart — but the pulling-away and the arriving are the
+  same mechanism.
+
+Learning (the generalizable one):
+
+- **Exploration that looks wasteful is load-bearing.** The excursions
+  that carry the agent away from a target are what deposit the archive
+  ladder later progress climbs. Narrowing them starves the supply that
+  the closing move requires.
+- §4.7 recurs at a higher level of abstraction, and the distinction I was
+  careful to preserve — *tie-break, not reward* — does **not** save it.
+  Any consistent preference for target proximity, however weakly
+  expressed, removes the excursions. The failure is structural, not a
+  matter of weighting.
+- Therefore a continuous steering intervention is the wrong shape. The
+  control's own exploration reached distance 1 unaided; the entire
+  failure was the single step of not closing.
+
+Plan change:
+
+- **E5 (next): the surgical closing intervention — S2 only, S1
+  disabled.** Let exploration run identically to the control so the
+  archive ladder is deposited unchanged, and intervene *only* at the
+  restore that would abandon a certified-adjacent position (v333/v334's
+  d18). This has never been tested in isolation: in E3 the geography was
+  already ruined by S1 before any restore mattered. It is smaller,
+  cheaper, and targets §4.48's actual failure instant.
+- E4 (search request) is deferred behind E5 but strengthened as a
+  fallback: with 1 distance-reducing branch of 7, re-ranking cannot help
+  — only changing the candidate set can.
+
+Evidence:
+
+- `docs/wp8-search-scheduling-design-2026-08-17.md` §11–§12
+- `experiments/lolo1-wp5/e3-gate4-report.json`
+- runs `entity-v334-…-off-d24`, `entity-v335-…-selection-d24`
+
 ## 5. Platform and cost learnings
 
 ### 5.1 RunPod for emulator branching
