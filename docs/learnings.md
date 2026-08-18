@@ -3018,6 +3018,81 @@ Evidence:
 - `experiments/lolo1-wp5/e8b-ra-only-report.json`
 - run `entity-v346-room3-e8b-ra-only-d24`
 
+### 4.59 The cache hazard was REACHABLE and FIRING — a scoring input was corrupted
+
+What was found (`docs/noop-cache-audit-2026-08-18.md`; code audit, no
+native runs):
+
+- **Not latent — it fires.** A stale matched-NOOP control appeared in the
+  *first* option search of a unit-scale fixture, at roughly **one parent
+  per search at depth ≥ 4**, varying between processes on identical
+  code — §4.58's signature reproduced at unit scale.
+- **Why nothing protected it**: the cache stores `(Frame, seq, analysis)`
+  and never the node; option nodes carry no parent back-pointer; beam
+  retention is conditional. A parent is freed when the beam rebinds while
+  its entry lives to the end of the search. **Entry lifetime strictly
+  outlives key lifetime.**
+- **It is a scoring input, not decoration.** The value feeds
+  `local_action_dependent` → `current_branch_measured_effect` →
+  `inert_penalty` → **`score`**. Demonstrated corruption: with the agent
+  pressed against the bottom wall, a served control from a different
+  parent turned `local_action_dependent` from `False` to `True` — **a
+  wall collision scored as a measured local effect.**
+- Depth bound measured across 60 searches: no stale probe below
+  expansion depth 4, matching the structural argument (a parent dies at
+  the end of depth *k+1*, reuse begins at *k+2*, that node is a parent
+  at *k+3*).
+
+**Correction to §4.58, upgrading it**: I wrote "no run is known to be
+wrong." That is now false. Legitimate hit count is a pure function of
+config and parent count, so §10.3.3's 2-probe delta cannot be
+legitimate: **v346 demonstrably served ≥ 2 stale controls.** It did not
+change that run's decisions (bit 2 passed, 24/24 state ids identical).
+Whether any *other* recorded result was affected is **unbounded** — the
+audit says so rather than guessing, and a detector sweep over archived
+logs is queued.
+
+Fix: re-keyed on `(parent.path, parent.durations, edge_duration)` — the
+node's own control sequence, already carried, no new state. Suite 1,159
+OK. The two key-level regression tests fail 10/10 on the old key; the
+two end-to-end tests fail only 7/10 and 1/10, because address reuse
+depends on process heap history — they are correctness assertions, not
+detectors, and the audit says so.
+
+Classification:
+
+- **Correctness defect, confirmed live**, in the machinery under every
+  causal claim from §4.26 onward. Retrospective impact: provably empty
+  below depth 4; unbounded at depth ≥ 4, which is where the entire
+  Gate-4 family (depth 12) ran.
+
+Learning:
+
+- Identity-keyed caches are unsafe whenever entry lifetime can outlive
+  key lifetime — and "the object is probably still alive" is not an
+  argument, it is an assumption about the allocator.
+- A six-event delta was the only visible symptom of a bug that had been
+  corrupting a beam-ranking input for the whole campaign. Diagnosing
+  small unexplained deltas is not pedantry; it is how this class of
+  defect surfaces at all.
+
+Plan change — **this outranks R1**:
+
+1. **Re-confirm E8 post-fix.** The campaign's headline result (R-A causes
+   the d17 collection) was established twice, but both times on the
+   corrupted path. A post-fix confirmation is cheap and the headline
+   should not rest on a code path known to be wrong.
+2. **The invariance chain is now split by a deliberate code change.**
+   v333≡v334≡v336≡v338≡v340≡v343 are all pre-fix. Any future
+   matched-control comparison must have both arms on the same side of
+   `6929af1`; a fresh post-fix control is required.
+3. Then R1.
+
+Evidence:
+
+- `docs/noop-cache-audit-2026-08-18.md`
+- fix commit `6929af1`
+
 ## 5. Platform and cost learnings
 
 ### 5.1 RunPod for emulator branching
