@@ -119,16 +119,17 @@ blockquote{margin:1.6rem 0;padding:.2rem 0 .2rem 1.1rem;border-left:3px solid va
 del{color:var(--ink-3);text-decoration-color:var(--fail)}
 ul{padding-left:1.1rem} li{margin-bottom:.5em}
 footer{border-top:1px solid var(--rule);padding:2.6rem 0 4rem;color:var(--ink-3);font-size:.8rem}
-#lightbox{position:fixed;inset:0;z-index:50;background:rgba(12,9,6,.94);
-  display:flex;flex-direction:column;align-items:center;justify-content:center;
-  padding:24px;cursor:zoom-out;overflow:auto}
+#lightbox{position:fixed;inset:0;z-index:50;background:rgba(12,9,6,.96);
+  display:flex;flex-direction:column;align-items:stretch;
+  padding:clamp(10px,1.6vw,26px);cursor:zoom-out;overflow:hidden}
 #lightbox[hidden]{display:none}
-#lbinner{max-width:100%;overflow:auto}
-#lightbox img{display:block;image-rendering:pixelated;max-width:none;width:1320px;
-  max-height:none;border:1px solid var(--rule)}
-#lbhint{flex:0 0 auto;margin:1rem 0 0;font-family:var(--mono);font-size:.68rem;
-  letter-spacing:.08em;text-transform:uppercase;color:#a99b88}
-@media (max-width:900px){#lightbox img{width:100%}#lightbox{cursor:default}}
+/* min-height:0 lets this flex child shrink below its content, which is what
+   allows the image to be measured against the viewport rather than overflow it */
+#lbinner{flex:1 1 auto;min-height:0;display:flex;align-items:center;justify-content:center}
+#lightbox img{width:100%;height:100%;object-fit:contain;image-rendering:pixelated;display:block}
+#lbhint{flex:0 0 auto;margin:.9rem 0 0;text-align:center;font-family:var(--mono);
+  font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:#a99b88}
+@media (max-width:900px){#lightbox{cursor:default}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 </head>
