@@ -88,16 +88,28 @@ from .spatial_shadow import SpatialShadowEvaluator
 from .unlabeled_entities import UnlabeledEntityMemory
 
 # WP8 navigation-seam selector values
-# (docs/wp8-search-scheduling-design-2026-08-17.md section 13, E5).
-# S1 is the commit-ladder tier; S2 is the target-aware restore key.
+# (docs/wp8-search-scheduling-design-2026-08-17.md section 13, E5;
+# section 15, E6).
+# S1 is the commit-ladder tier; S2 is the target-aware restore key;
+# S3 is the certified-adjacent archive deposit.
 RELATIONAL_NAVIGATION_SEAMS_BOTH = "both"
 RELATIONAL_NAVIGATION_SEAMS_RESTORE_ONLY = "restore_only"
+RELATIONAL_NAVIGATION_SEAMS_RESTORE_PLUS_DEPOSIT = "restore_plus_deposit"
 RELATIONAL_NAVIGATION_SEAMS_OFF = "off"
 RELATIONAL_NAVIGATION_SEAM_MODES = (
     RELATIONAL_NAVIGATION_SEAMS_BOTH,
     RELATIONAL_NAVIGATION_SEAMS_RESTORE_ONLY,
+    RELATIONAL_NAVIGATION_SEAMS_RESTORE_PLUS_DEPOSIT,
     RELATIONAL_NAVIGATION_SEAMS_OFF,
 )
+# Seam S3 gate radius, in the mechanism's own grid metric
+# (relational_planner.target_cell_distance, Manhattan): a committed
+# position ON a certified milestone cell (0) or orthogonally ADJACENT to
+# one (1) is deposited as an archive candidate. This is a gate, not a
+# weight — roadmap section 20 forbids adding a new preference term, and
+# S3 adds none: it only makes a candidate exist for the already-working
+# S2 key to re-rank (learnings section 4.51).
+RELATIONAL_NAVIGATION_DEPOSIT_MAX_DISTANCE = 1
 
 
 @dataclass(frozen=True)
@@ -145,16 +157,21 @@ class NeuralPlanningConfig:
     relational_planner_enabled: bool = False
     relational_planner_authority: str = "off"
     # WP8 navigation-seam selector
-    # (docs/wp8-search-scheduling-design-2026-08-17.md section 13, E5).
-    # Which of the two navigation seams selection authority may use:
+    # (docs/wp8-search-scheduling-design-2026-08-17.md section 13, E5;
+    # section 15, E6).
+    # Which of the navigation seams selection authority may use:
     # "both" (the default, today's behavior exactly) enables the commit
     # ladder tier S1 and the target-aware restore key S2; "restore_only"
     # disables S1 so exploration is left untouched and only the closing
     # restore is contested (learnings section 4.50: steering starved the
-    # archive supply later restores consume); "off" makes both seams
-    # inert while leaving the rest of selection authority alone. It is
-    # inert at any authority other than "selection", where neither seam
-    # can fire in the first place.
+    # archive supply later restores consume); "restore_plus_deposit" is
+    # "restore_only" plus seam S3, which deposits a committed position
+    # standing on or beside a certified milestone cell as an archive so
+    # S2 has a candidate to reach (learnings section 4.51: the restore
+    # key can only re-rank archives that exist); "off" makes every
+    # navigation seam inert while leaving the rest of selection authority
+    # alone. It is inert at any authority other than "selection", where
+    # no seam can fire in the first place.
     relational_navigation_seams: str = "both"
     relational_max_queue: int = 4
     relational_establish_budget: int = 48
@@ -19482,6 +19499,19 @@ class VerifiedNeuralAgent:
         return self.config.relational_navigation_seams in (
             RELATIONAL_NAVIGATION_SEAMS_BOTH,
             RELATIONAL_NAVIGATION_SEAMS_RESTORE_ONLY,
+            RELATIONAL_NAVIGATION_SEAMS_RESTORE_PLUS_DEPOSIT,
+        )
+
+    def _relational_navigation_deposit_seam_enabled(self) -> bool:
+        """Seam S3 (certified-adjacent archive deposit) selector.
+
+        E6 only. ``both``, ``restore_only`` and ``off`` all leave this
+        ``False``, so every pre-E6 mode keeps its exact behavior.
+        """
+
+        return (
+            self.config.relational_navigation_seams
+            == RELATIONAL_NAVIGATION_SEAMS_RESTORE_PLUS_DEPOSIT
         )
 
     def _relational_config(self) -> RelationalPlannerConfig:
@@ -20267,6 +20297,82 @@ class VerifiedNeuralAgent:
                 ]
             ),
         )
+
+    def _relational_navigation_deposit_view(
+        self,
+        committed_goal_analysis: Optional[HeartGoalAnalysis],
+    ) -> Optional[Dict[str, Any]]:
+        """Seam S3 gate: is the committed position worth archiving?
+
+        Returns ``None`` — leaving the archive byte-identical to today —
+        outside selection authority, when the seam selector excludes S3
+        (every pre-E6 mode does), without an active
+        ``reach_cells_under_hold`` objective, or when the objective
+        publishes no certified target cells. Otherwise it returns the
+        decision payload with ``eligible`` and a ``reason``, so a
+        certified-adjacent instant that is *declined* is as visible in
+        the log as one that deposits.
+
+        Learnings section 4.51 measured what this repairs: E5's treatment
+        stood at ``(12,10)``, one cell from the certified milestone
+        ``(12,11)``, and no restore key could hold that ground because
+        ``(12,10)`` was never deposited as an archive in either arm. The
+        restore key re-ranks archives that exist; S3 makes the one that
+        matters exist. It adds **no preference term** — the ordering is
+        still S2's, unchanged — only a candidate.
+
+        The certification predicate is the one the reach-cells family
+        already applies at commit time: a position reached by losing a
+        life or entering a dark transition is never deposited, however
+        close it stands.
+        """
+
+        if not self._relational_navigation_deposit_seam_enabled():
+            return None
+        objective = self._relational_navigation_objective()
+        if objective is None:
+            return None
+        active, targets, hold_signature = objective
+        configuration_signature = (
+            self.current_human_prior_root_object_state
+            .tracked_world_state_signature
+        )
+        cell = (
+            None
+            if committed_goal_analysis is None
+            else self._relational_navigation_cell(
+                committed_goal_analysis.target_player_slot
+            )
+        )
+        distance = relational_target_cell_distance(targets, cell)
+        view: Dict[str, Any] = {
+            "active": active,
+            "targets": targets,
+            "hold_signature": hold_signature,
+            "configuration_signature": configuration_signature,
+            "cell": cell,
+            "distance": distance,
+            "eligible": False,
+            "reason": "",
+        }
+        if not hold_signature or configuration_signature != hold_signature:
+            view["reason"] = "held_configuration_absent"
+            return view
+        if cell is None or distance is None:
+            view["reason"] = "position_unavailable"
+            return view
+        if distance > RELATIONAL_NAVIGATION_DEPOSIT_MAX_DISTANCE:
+            view["reason"] = "not_certified_adjacent"
+            return view
+        if committed_goal_analysis is not None and (
+            committed_goal_analysis.life_counter_changed
+            or committed_goal_analysis.dark_transition_started
+        ):
+            view["reason"] = "position_not_certified"
+            return view
+        view["eligible"] = True
+        view["reason"] = "certified_adjacent_position"
+        return view
 
     def _relational_reproduce_transition_priority(
         self,
@@ -25319,6 +25425,161 @@ class VerifiedNeuralAgent:
                         ),
                         **self._frame_fields(source_frame),
                     )
+            # WP8 navigation-target seam S3 (search-scheduling design
+            # section 15; learnings section 4.51). The measured failure
+            # this repairs: E5's treatment stood one cell from the
+            # certified milestone and the target-aware restore key could
+            # not hold that ground, because the cell it stood on had
+            # never been deposited as an archive. S3 deposits it — a
+            # candidate, not a preference. Runs after every incumbent
+            # archive path so the deposit is strictly additive within the
+            # decision, and before `_prune_archive` so capacity is
+            # enforced on it exactly as on every other branch.
+            deposit_view = self._relational_navigation_deposit_view(
+                committed_goal_analysis
+            )
+            if deposit_view is not None:
+                deposit_already_archived = any(
+                    branch.frame.digest == target.digest
+                    for branch in self.archive
+                )
+                deposit_applied = bool(
+                    deposit_view["eligible"] and not deposit_already_archived
+                )
+                if deposit_applied:
+                    deposit_effect = observed_action_effects.get(
+                        (action, duration)
+                    )
+                    self.archive.append(
+                        _ArchivedBranch(
+                            state,
+                            target,
+                            plan,
+                            score,
+                            target_scene,
+                            self.decision_index,
+                            source_signature,
+                            target_frontier_signature,
+                            option_initiation_eligible,
+                            option_counterfactual_contrast,
+                            option_counterfactuals,
+                            committed_causal_spatial_signature or "",
+                            (
+                                0.0
+                                if deposit_effect is None
+                                else deposit_effect["causal_spatial_novelty"]
+                            ),
+                            (
+                                0
+                                if deposit_effect is None
+                                else deposit_effect["causal_changed_pixels"]
+                            ),
+                            (
+                                None
+                                if deposit_effect is None
+                                else deposit_effect["causal_change_centroid"]
+                            ),
+                            source_causal_context_signature,
+                            committed_target_causal_context_signature,
+                            source_causal_affordance_actions,
+                            self.current_pose_action,
+                            False,
+                            (
+                                ()
+                                if committed_goal_analysis is None
+                                else committed_goal_analysis.target_present
+                            ),
+                            (
+                                0.0
+                                if committed_goal_analysis is None
+                                else committed_goal_analysis.milestone_reward
+                            ),
+                            (
+                                0
+                                if committed_goal_analysis is None
+                                else committed_goal_analysis.remaining_hearts
+                            ),
+                            (
+                                0
+                                if committed_goal_analysis is None
+                                else len(committed_goal_analysis.known_slots)
+                            ),
+                            (
+                                None
+                                if committed_goal_analysis is None
+                                else (
+                                    committed_goal_analysis.target_chest_slot
+                                    or committed_goal_analysis.source_chest_slot
+                                )
+                            ),
+                            (
+                                None
+                                if committed_goal_analysis is None
+                                else committed_goal_analysis.target_player_slot
+                            ),
+                            parent_state_id=self._state_id(root),
+                            parent_frame_digest=source_frame.digest,
+                            parent_decision=self.decision_index - 1,
+                            search_depth=source_search_depth + 1,
+                            goal_source_signature=(
+                                committed_goal_source_signature
+                            ),
+                            goal_target_signature=(
+                                committed_goal_target_signature
+                            ),
+                            goal_source_world_context=(
+                                committed_goal_source_world_context
+                            ),
+                            goal_target_world_context=(
+                                committed_goal_target_world_context
+                            ),
+                            goal_world_effect_signature=(
+                                committed_goal_world_effect_signature
+                            ),
+                            goal_chest_obtained=bool(
+                                committed_goal_analysis is not None
+                                and committed_goal_analysis.chest_obtained
+                            ),
+                            **self._root_object_track_branch_fields(),
+                        )
+                    )
+                    added += 1
+                deposit_cell = deposit_view["cell"]
+                self._relational_emit_hypothesis_event(
+                    (
+                        "relational_navigation_deposit_added"
+                        if deposit_applied
+                        else "relational_navigation_deposit_declined"
+                    ),
+                    deposit_view["active"],
+                    decision=self.decision_index,
+                    hold_configuration_signature=(
+                        deposit_view["hold_signature"] or None
+                    ),
+                    configuration_signature=(
+                        deposit_view["configuration_signature"] or None
+                    ),
+                    target_cells=[
+                        list(cell) for cell in deposit_view["targets"]
+                    ],
+                    deposit_cell=(
+                        None
+                        if deposit_cell is None
+                        else [deposit_cell[0], deposit_cell[1]]
+                    ),
+                    deposit_distance=deposit_view["distance"],
+                    deposit_max_distance=(
+                        RELATIONAL_NAVIGATION_DEPOSIT_MAX_DISTANCE
+                    ),
+                    deposit_state_id=self._state_id(state),
+                    archive_size=len(self.archive),
+                    reason=(
+                        deposit_view["reason"]
+                        if deposit_applied or not deposit_view["eligible"]
+                        else "already_archived"
+                    ),
+                    **self._frame_fields(target),
+                )
             archive_state_ids_before_prune = {
                 id(branch.state) for branch in self.archive
             }

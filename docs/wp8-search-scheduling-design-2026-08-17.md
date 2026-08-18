@@ -1548,3 +1548,620 @@ is an improvement in the *choice of retreat*, not a refusal to retreat.
   v333/v334/v336 invariance chain, the seam selector (default-preserving,
   mutation-tested), and the S4 telemetry, which localized this FAIL to a
   single missing archive cell in one pass.
+
+---
+
+## 15. E6 preregistration — the certified-adjacent archive deposit (2026-08-18, **written before either arm ran**)
+
+E5 (§13–§14) vindicated the closing *shape* and failed for a named
+reason. §14.4 measured it: at d16 the treatment stood at `(12,10)`,
+distance 1 from the certified milestone `(12,11)`, and **`(12,10)` was
+never deposited as an archive in either arm** — the whole column-12
+deposit set is `(12,6)`, `(12,7)`, `(12,8)`, `(12,9)`. The target-aware
+restore key re-ranks archives *that exist*; the cell that needed holding
+was the current position, which is not and cannot be a restore candidate.
+No tuning could have helped, and §13.4's no-tuning clause forbids trying.
+
+**E6's hypothesis.** Deposit that position. When the agent commits to a
+cell that is **on or adjacent to** a certified milestone cell **while the
+held configuration matches**, archive it, so the existing — already
+working, already exercised, already correctly gated — S2 restore key has
+a candidate to reach. This adds **no new preference weight** (roadmap §20
+constraint): the ordering is E5's, unchanged. It adds a candidate.
+
+### 15.1 The seam (the only code change)
+
+A third value on the existing selector,
+`NeuralPlanningConfig.relational_navigation_seams` /
+`--relational-navigation-seams`:
+
+| Mode | S1 commit tier | S2 restore key | S3 deposit | Meaning |
+| --- | --- | --- | --- | --- |
+| `both` (**default**) | on | on | off | today's behavior, exactly — E3's treatment |
+| `restore_only` | off | on | off | **E5's treatment**, byte-identical to §13 |
+| `restore_plus_deposit` | off | on | **on** | **E6's treatment**: E5 plus the deposit |
+| `off` | off | off | off | every navigation seam inert under selection authority |
+
+Seam **S3** is one gate helper
+(`_relational_navigation_deposit_view`) and one block in `decide()`
+placed **after every incumbent archive path and before
+`_prune_archive`**, so within a decision it is strictly additive and is
+subject to archive capacity exactly like every other branch. The gate
+conjoins, in this order, and records a `reason` at every instant either
+way:
+
+1. the seam selector is `restore_plus_deposit` (every pre-E6 mode returns
+   `None` here, before anything else is read);
+2. `_relational_navigation_objective()` is live — which already requires
+   selection authority, an active `reach_cells_under_hold` hypothesis,
+   and published certified target cells;
+3. the root object state's `tracked_world_state_signature` **equals the
+   objective's hold signature** (§4.7's coupling: proximity means nothing
+   outside the held configuration, and a deposit outside it would sort
+   below every held candidate anyway);
+4. the committed cell's distance to the nearest published target is
+   `<= RELATIONAL_NAVIGATION_DEPOSIT_MAX_DISTANCE = 1`, in the
+   mechanism's own metric (`relational_planner.target_cell_distance`,
+   Manhattan) — "**on** the milestone cell, or **orthogonally adjacent**
+   to it". This is a gate, not a weight, and it is a module constant, not
+   a config field, so no manifest field moves;
+5. the committed position is **certified** — the same commit-time
+   predicate the reach-cells family already applies: never deposit ground
+   bought with a life loss or a dark transition;
+6. the position is not already archived by an incumbent path (recorded as
+   `already_archived`; no duplicate candidate is ever created).
+
+Telemetry: `relational_navigation_deposit_added` /
+`relational_navigation_deposit_declined`, each carrying the cell, the
+distance, the gate radius, the hold signature, the current configuration
+signature, the published target cells, the deposited state id, the
+archive size and the reason. A certified-adjacent instant that is
+*declined* is exactly as visible in the log as one that deposits.
+
+Behavior-preservation evidence, landed before the arms ran:
+
+- Full suite **1085 tests OK, 4 skipped** — 1060 + 4 before this change,
+  plus 25 new tests. Exactly one pre-existing test changed: the
+  anchor-drift guard
+  `CommitTimeArchiveConfigurationSignatureTests::test_every_commit_time_construction_carries_the_root_track`
+  counts commit-time `_ArchivedBranch` constructions in `decide()` and
+  moves 3 → 4. **Its invariant is unchanged and still asserted for all
+  four**: every commit-time construction carries
+  `_root_object_track_branch_fields()`, so the deposit is visible to the
+  hold-gated restore supply (learnings §4.46). No assertion was weakened.
+- **Cross-version byte-identity against HEAD `ffb58b2` (the pre-E6
+  planner), run as a paired harness over a real `decide()`:** for all
+  three pre-E6 seam values × all three authorities (9 arms), the pre-E6
+  planner and the E6 build produce **identical event streams, identical
+  committed decisions and identical archives**. Digests, pre-E6 = E6 in
+  every row: authority `off` `a7522ed1659278ca` (all three modes);
+  `telemetry` `33e358a78d965420` (all three); `selection` `both`
+  `9265f925c6f40688`, `restore_only`/`off` `b7a54aa571613b50`.
+- `tests/test_ensemble_planner.py::RelationalNavigationDepositGateTests`
+  (9 tests): the selector accepts the new value and still rejects junk;
+  the four modes map to `(S1, S2, S3)` exactly
+  (`both`→(T,T,F), `restore_only`→(F,T,F), `restore_plus_deposit`→(F,T,T),
+  `off`→(F,F,F)); the gate is `None` for every pre-E6 mode, `None` at
+  authority `off`/`telemetry`, and `None` with no published objective;
+  distances 0 and 1 are eligible while 2 and 4 are refused; a departed
+  configuration, an uncertified position and an unavailable position are
+  each refused with their own reason.
+- `tests/test_ensemble_planner.py::RelationalNavigationDepositSeamTests`
+  (10 tests) drives a **real `decide()`**: the deposit reaches the archive
+  carrying the hold signature and emits its evidence; `both`,
+  `restore_only` and `off` deposit nothing and commit the identical
+  decision with the identical archive (and `restore_only`/`off` agree
+  event-for-event); E6 differs from E5 by **exactly one archive, one
+  event, and the two archive counters those events report** — an
+  exhaustive-key comparison, so any third field that moved would fail;
+  the `already_archived` decline is exercised; a far position is recorded
+  and not deposited; S1 stays structurally absent; S2 is bit-identical to
+  `restore_only`; a deposit-shaped candidate with the **lowest** plain
+  score in the archive is what the S2 key restores over the
+  higher-novelty distant branch; and the selector is inert at
+  `off`/`telemetry` across all four modes, compared on archives as well
+  as events.
+- An anchor-drift-proof AST test pins the *placement*: exactly one deposit
+  gate, after all three incumbent commit-time constructions, before the
+  single `_prune_archive`, with exactly one construction between.
+- `tests/test_relational_planner.py::NavigationDepositContractTests`: the
+  pure module exposes no deposit seam and no new preference — the key
+  already ranks the position E6 makes available, so S3 changes *who
+  deposits a candidate*, never *what the module publishes*.
+- **Mutation-tested, six mutations, all killed**: forcing the seam
+  selector `True` fails 8 tests; widening the adjacency radius fails 5;
+  removing the hold-configuration check fails 1; removing the
+  certification check fails 2; removing the duplicate dedupe fails 1;
+  emitting the event without appending the archive fails 2.
+
+### 15.2 Arms
+
+- **Control** — `--relational-planner-authority off`, run id
+  `entity-v338-room3-e6-control-off-d24`. Runs **first**.
+- **Treatment** — `--relational-planner-authority selection`, run id
+  `entity-v339-room3-e6-treatment-deposit-d24`.
+- **Both arms pass `--relational-navigation-seams restore_plus_deposit`**,
+  so the arms differ in **exactly two** manifest fields —
+  `relational_planner_authority` and `relational_planner_enabled` —
+  exactly as in E3 and E5. This is legitimate only because the selector
+  is provably inert at authority `off`; that inertness is unit-tested
+  (`RelationalNavigationDepositGateTests::test_gate_is_none_outside_selection_authority`
+  and `RelationalNavigationDepositSeamTests::test_selector_is_inert_outside_selection_authority`,
+  the latter comparing archives as well as event streams) and
+  cross-checked against the pre-E6 planner, not assumed.
+- Every other flag is **v336/v337's manifest profile, verbatim** (§11.3's
+  command line): `--decisions 24`, `--relational-decision-budget 12`,
+  `--human-prior-accessibility-records
+  experiments/lolo1-wp5/wp8lite-accessibility-records.json`,
+  `--human-prior-accessibility-preference-weight 0.0`,
+  `--log-root experiments/lolo1-entity-v10/evaluations`.
+- **Root**: identical to v333/v334/v335/v336/v337 — memory
+  `entity-v318-room3-known-push-connected-mask-d2` decision 1 with
+  `--resume-option-search`; physical state the same run's seq-2026
+  checkpoint, `state_source_events_sha256 0bbe1d15…9b6f83`.
+- **Ceilings**: 10,800 s wall per arm under an external watchdog; one
+  native run at a time.
+- **Scoring window**: the first **24 committed decisions**.
+
+Input digests, re-verified on disk today and equal to the v336 manifest:
+host `c03694c5…3e891f3`, core `a3450a09…5a40024886`, ROM
+`914c6769…3efd059e01`, neural checkpoint `bb7a7a37…284f678b9`,
+entity-behavior checkpoint `984b83c3…25c7c6aa`, record store
+`cf01a67aca2b6e8feeab38c0c85520dec2470cba2a5f2257cd817912c204d1fe`.
+HEAD at preregistration `ffb58b2`; working tree clean except the four
+owned files of this change (`lolo_agent/neural_planner.py`,
+`lolo_agent/neural_run.py`, `tests/test_ensemble_planner.py`,
+`tests/test_relational_planner.py`), the unrelated untracked `tmp/`, and
+concurrent documentation edits by a parallel session (`README.md`,
+`docs/architecture.md`, `docs/telemetry.md`, and two new untracked
+`docs/*-2026-08-17.md` files) — **none of which is an input to either
+arm**, and none of which this change touches.
+
+### 15.3 Exact command lines
+
+§11.3's block verbatim, with two flags changed and one added:
+
+```
+  --run-id entity-v338-room3-e6-control-off-d24            (control)
+  --run-id entity-v339-room3-e6-treatment-deposit-d24      (treatment)
+  --relational-navigation-seams restore_plus_deposit       (BOTH arms)
+  --relational-planner-authority <off | selection>
+```
+
+### 15.4 The four preregistered bits (fixed; **ANY mixed outcome = FAIL**)
+
+Let **C** be the decision index of the treatment's **first contested
+instant**: the earlier of (i) the first
+`relational_navigation_restore_selected` carrying `differs: true` and
+(ii) the first `relational_navigation_deposit_added`. Both are instants
+at which the intervention can change something; E6 adds (ii), which E5
+did not have. If neither exists, **C is undefined** and bit 1(a) is
+scored over all 24 decisions.
+
+**Bit 1 — SUPPLY.** Both conjuncts must hold.
+
+- **(a) Trajectory prefix.** For every committed decision `d < C` (all 24
+  if C is undefined), the treatment's `committed_state_id` equals the
+  control's. With S1 off, nothing may fork the trajectory before the
+  intervention fires.
+- **(b) Archive geography not narrowed.** The treatment's archive-deposit
+  column range must not be narrower than the control's:
+  `treatment_min_column <= control_min_column` **and**
+  `treatment_max_column >= control_max_column`, with the E5 reference
+  range **columns 6–12** reported alongside. Both raw ranges and both
+  full deposit-cell histograms are reported either way. The one-sided
+  form is §13.4's, unchanged and for the same reason: E3's failure was
+  narrowing, and a treatment that deposits further east must not be
+  scored FAIL for it. The S3 deposits are counted **separately** as well
+  as inside the total, so the geography claim can be read with and
+  without them.
+
+**Bit 2 — CANDIDATE EXISTS.** All three conjuncts must hold, within the
+24-decision window.
+
+- **(a)** At least one `relational_navigation_deposit_added` event.
+- **(b)** That event's `deposit_distance <= 1` and its
+  `hold_configuration_signature` equals both the objective's hold
+  signature and the arm's `configuration_signature` at that instant — the
+  deposit is certified-adjacent **and inside the held configuration**, so
+  the hold-gated restore supply can see it at all.
+- **(c)** The deposited branch appears as a **hold-matching candidate at
+  a later restore**: some `relational_navigation_restore_selected` after
+  the deposit reports the deposited cell among the arm's archive, and
+  `hold_matching_candidates` at that instant is strictly greater than the
+  count E5 recorded at the corresponding instant, **or** the deposit is
+  itself selected. Evidence reported either way: every deposit event with
+  its cell, distance, decision and hold signature; every decline with its
+  reason; and the full post-deposit restore series.
+
+**Bit 3 — OUTCOME.** Within the 24-decision window the treatment's
+committed trajectory collects `(12,11)` / pixel `(192,176)` — evidenced
+by `[192,176]` entering `human_prior_collected_heart_slots` on a
+`decision_committed` event — and the control does **not**. If both
+collect it, bit 3 FAILS: the discriminator would be dead and a speedup is
+not the claim. The metric is the milestone cell only, never affordance
+counts.
+
+**Bit 4 — SAFETY.** The treatment records no more
+`human_prior_life_loss_confirmed` committed decisions than the control
+within the window.
+
+All four must pass. **ANY mixed outcome = FAIL.** No weight tuning, no
+budget re-sizing, no radius re-sizing, no rerun on an identical negative
+result. `budget_exhausted` or `hold_violated` termination of the exploit
+is a **FAIL, not a VOID**.
+
+Reported invariants (not bits): hold integrity; per-arm verified-branch
+counts; per-arm option-search counts; the S2 exercised-difference counts;
+the full `hold_matching_candidates` series across the treatment's
+restores; the full deposit series with reasons; and minimum distance to
+`(12,11)` on both metrics for **v336, v337, v338 and v339**.
+
+### 15.5 The reading that is fixed now, before the result
+
+**If bits 1–2 pass and bit 3 fails, that is not a null — it is again a
+narrowing, and a sharper one than E5's.** It would establish that the
+candidate existed, was inside the held configuration, and was reachable
+by the key that already works — and that collection still did not
+follow. The question would then move off search scheduling entirely and
+onto what the agent *does* with a reachable held adjacency. In that case
+the report must state **what the agent did instead at the decisive
+instant**: the restore that fired while the deposit was in the archive,
+whether the deposit was in that restore's eligible set, whether the S2
+key ranked it first, and — if it was dropped — **which filter dropped
+it**, named from the arm's own telemetry. That is written here so it
+cannot be narrated as a near-miss afterwards.
+
+Three further readings are fixed in advance:
+
+- **No-candidate null.** If the window contains zero
+  `relational_navigation_deposit_added`, bit 2 FAILS and the reading is
+  "the gate never saw a certified-adjacent committed position under
+  hold". The declined events and their reasons are the evidence, and they
+  distinguish the sub-cases (`not_certified_adjacent`,
+  `held_configuration_absent`, `position_not_certified`,
+  `position_unavailable`, `already_archived`) without any further run.
+- **Deposited-but-ineligible finding.** If a deposit is added but never
+  enters any later restore's candidate set, bit 2(c) FAILS and the result
+  is reported as an **archive-eligibility** finding, naming the filter,
+  not as a restore-key finding. §15.6(d) declares the specific filter
+  already known to be capable of this.
+- **Agreement null.** If every `relational_navigation_restore_selected`
+  carries `differs: false`, that is a redundancy finding of the
+  §4.43/§4.45 family and must be reported as such — and explicitly not as
+  under-powering and not as grounds for a fifth lever.
+
+### 15.6 Declared caveats and blind spots (before the run)
+
+**(a) Frozen-signature caveat (§11.5(a)/§13.6(a), unchanged).** The
+configuration signature an archive carries is frozen at deposit, not
+recomputed. §14.6 recorded that it did not bite in E5. Declared, not
+assumed away. It applies to the S3 deposit identically.
+
+**(b) Decision-1 empty-seed blind spot (§13.6(b), unchanged).** At the
+root the tracked configuration is
+`prepush-root-empty-track-unmatchable`; no objective can publish target
+cells before the first restore onto a removal branch. Nothing is scored
+on d1, and S3 cannot fire there.
+
+**(c) Other selection-authority effects are NOT ablated (§13.6(c),
+unchanged).** The seam selector governs only the WP8 navigation seams.
+The restore-archive preference, the reach-cells reserve family and the
+reproduce-transition reorder remain live in the treatment. A bit-1(a)
+failure is a real FAIL, not a VOID.
+
+**(d) The immediate-restore blind spot — NEW, and declared now.**
+`_restore_if_stagnant`'s `recovery_distinct` filter drops any archive
+whose coarse frame signature equals the *current* frame's, unless the
+branch also carries a frontier flag. A position deposited at decision `d`
+is therefore invisible to a restore that fires at `d+1` while the agent
+is still standing on it — which is a correct guard against a degenerate
+self-restore, and is also exactly the geometry of E5's decisive instant
+(deposit would be at d16; the stagnation restore fired at d17). **E6 may
+therefore need the second restore after the deposit, not the first.**
+This is a real limitation of the smallest possible change. It is written
+here, before the run, so that a bit-2(c) or bit-3 failure attributable to
+it is read as a measured property of the seam and not discovered
+afterwards as an excuse.
+
+**(e) Self-restore degeneracy — NEW.** If the deposit *is* restored, the
+agent returns to a position it already occupied. If it then re-stagnates
+from there, the same instant can repeat and consume decisions. The
+committed trajectory trace will show it plainly. Either way, no tuning:
+§15.4's no-tuning clause covers the radius and the gate as well as the
+weights.
+
+**(f) Archive capacity.** The deposit is subject to `_prune_archive` like
+every other branch. At this profile capacity is 1024 against ~44
+deposits, so pressure is nil — but the deposit is not privileged against
+pruning, and that is deliberate.
+
+**(g) Speedup-vs-capability (§11.5(d)/§13.6(e), unchanged).** Even a
+clean PASS demonstrates *finishing* under a held configuration at this
+root; it does not demonstrate a second manipulation. The `(8,4)`/`(9,12)`
+hearts remain the capability-level discriminator.
+
+**(h) What a PASS does not show (§6.4(f), unchanged).** It does not show
+the planner can cause a search, and does not close §4.45's mechanism 1.
+That remains E4.
+
+### 15.7 VOID conditions (a VOID is not evidence)
+
+1. **Config inequality** — the arms' manifest `planning_config` differ in
+   any field except `relational_planner_authority` and
+   `relational_planner_enabled`. In particular both must report
+   `relational_navigation_seams: "restore_plus_deposit"`.
+2. **Records inequality** — both arms must report `record_count: 3`,
+   content signatures `15604cb5…`/`37ea410d…`/`47975c94…`, store digest
+   `cf01a67a…`, at `verified_accessibility_weight: 0.0`.
+3. **Seeding defect** — no archived branch carrying `85fd9014d58deb42`
+   within the window in **either** arm.
+4. **Root defect** — either manifest's `episodic_resume` block does not
+   record source run `entity-v318-room3-known-push-connected-mask-d2`,
+   `source_decision: 1`, `state_source_checkpoint_event_seq: 2026`,
+   `state_source_events_sha256: 0bbe1d15…`.
+5. **Budget defect** — either arm exceeds the 10,800 s wall ceiling and
+   is killed before `run_finished`; **or** the arms' verified-branch
+   counts differ by more than 1%.
+6. **Control-invariance defect** — the control's 24 committed state ids
+   do not reproduce **v336's** exactly. v336's own equality with
+   v334/v333 is re-checked and reported alongside. A crashed arm is
+   **VOID, not FAIL** (learnings §4.52).
+
+Budget-exhausted non-reach is **censored**, never reported as
+"unreachable" (learnings §2, §4.14).
+
+**Health-checking the arms is by the run's own telemetry — event growth
+and expected seq milestones — never by external process pattern matching
+(learnings §4.52). The first `decision_committed` lands at seq ≈75,742 in
+every arm of this family; zero commits at 6k events is on-profile, not a
+death.**
+
+### 15.8 Scoring
+
+A single deterministic scorer walks each arm's `events.jsonl` once,
+applies §15.4 verbatim, and writes
+`experiments/lolo1-wp5/e6-gate4-report.json` with a canonical-JSON
+`digest_sha256` over the body (digest field excluded). It is run
+end-to-end twice; both reports must be byte-identical and the digest is
+recorded in the results section below. It is validated against **v336 and
+v337** before scoring E6: it must reproduce §14's control trace and
+verdicts — including the "never collected `(192,176)`" reading, the
+columns-6–12 geography with 44/43 deposits, and the 8 restore instants
+with 2 differing — exactly.
+
+Distance metrics, as in §11.7/§13.8: **Chebyshev** `max(|dx|,|dy|)` for
+the §4.47/§4.48-comparable traces, **Manhattan** `|dx|+|dy|` for the
+mechanism's own `baseline_distance`/`selected_distance`/`deposit_distance`.
+Bit 2(b) is scored on the mechanism's own Manhattan figures as emitted;
+bit 3 is metric-free. Distance traces for **v336, v337, v338 and v339**
+are reported side by side.
+
+---
+
+## 16. E6 results (2026-08-18) — **FAIL**, on the §15.5 no-candidate null, with a mechanism §15.6 did not anticipate
+
+Scored against §15.4 verbatim by `experiments/lolo1-wp5/e6-gate4-report.json`,
+`digest_sha256` **`82aa4af8b5c18854f2e245083fb4b759a6d667a8b2afc7a63426a004998d8060`**
+(scorer run end-to-end twice; the two reports are byte-identical, and the
+recorded digest recomputes over the body). The scorer was validated
+against v336/v337 first and reproduces §12.3's control trace, §14's
+44/43 deposits over columns 6–12, its 8 restore instants with 2
+differing, and its `hold_matching_candidates` series 1,3,3,6,6,5,4,3
+exactly.
+
+| Arm | Run id | Wall | Events | Branches | Searches | Result |
+| --- | --- | --- | --- | --- | --- | --- |
+| Control | `entity-v338-room3-e6-control-off-d24` | 2,040 s | 85,594 | 12,232 | 1 (+9 deferred) | reached distance 1 at d17; `(12,11)` never collected |
+| Treatment | `entity-v339-room3-e6-treatment-deposit-d24` | 2,021 s | 85,893 | 12,232 | 1 (+9 deferred) | reached distance 1 at d16; `(12,11)` never collected; **zero deposits** |
+
+### 16.1 Verdict
+
+| Bit | Verdict | Evidence |
+| --- | --- | --- |
+| **1 — SUPPLY** | **PASS** | Arms state-for-state identical d1–d7; first contested instant is d8 and first divergence is *also* d8 — nothing forked the trajectory before the intervention. Archive geography **columns 6–12 in both arms** (44 control, 43 treatment). E3's collapse to 6–8 does not recur. |
+| **2 — CANDIDATE EXISTS** | **FAIL** | The gate ran at **12 instants and declined all 12**, every one with reason `not_certified_adjacent`. **Zero `relational_navigation_deposit_added` events.** Nearest declined position: d15 `(12,9)`, Manhattan 2. Conjunct (a) fails, so (b) and (c) are unreachable. |
+| **3 — OUTCOME** | **FAIL** | Neither arm collected `(12,11)`/`(192,176)`. |
+| **4 — SAFETY** | **PASS** | Zero `human_prior_life_loss_confirmed` commits in both arms. |
+
+**Mixed ⇒ FAIL**, per §15.4. **No VOID condition fired** (V1–V6 all
+clear). No tuning, no re-size, no radius change, no rerun.
+
+This is the **no-candidate null** §15.5 fixed in advance — reported as
+such, and not as under-powering.
+
+### 16.2 The instruments that make this FAIL trustworthy
+
+- **V6 control invariance, in vivo**: v338 reproduced v336 **state-id for
+  state-id across all 24 decisions** and emitted the identical **85,594**
+  events and the identical Chebyshev trace
+  `6 4 4 3 4 5 5 5 3 3 4 3 4 4 3 2 1 4 5 5 5 4 5 6`. The chain is now
+  four runs deep and re-verified in this pass: **v333 ≡ v334 ≡ v336 ≡
+  v338**, 24/24 and 85,594 events at every link. The
+  `restore_plus_deposit` selector leaks nothing at authority `off`,
+  exactly as the unit test and the pre-E6 cross-version harness claimed.
+- **V1**: the arms' `planning_config` differ in exactly
+  `relational_planner_authority` and `relational_planner_enabled`;
+  **both** report `relational_navigation_seams: "restore_plus_deposit"`.
+- **V2**: both arms `record_count: 3`, signatures `15604cb5…`/
+  `37ea410d…`/`47975c94…`, `verified_accessibility_weight: 0.0`.
+- **V3**: 4 hold-signature archives and 23 hold-signature branches in
+  **both** arms; the seeding is real.
+- **V4**: both `episodic_resume` blocks record source run
+  `entity-v318-room3-known-push-connected-mask-d2`, `source_decision: 1`,
+  `state_source_checkpoint_event_seq: 2026`,
+  `state_source_events_sha256: 0bbe1d15…`.
+- **V5**: both arms verified exactly **12,232** branches, relative gap
+  0.0; both reached `run_finished`; both ran ~2,030 s against a 10,800 s
+  ceiling.
+- **The treatment is E5's treatment plus twelve log lines.** v339
+  reproduces v337 **state-for-state across all 24 decisions**: identical
+  Chebyshev and Manhattan traces, identical 9 restores, identical 8
+  navigation-restore instants with the same 2 differing, identical
+  `hold_matching_candidates` series `1,3,3,6,6,5,4,3`, identical 43
+  deposits over columns 6–12. Event count **85,893 = 85,881 + 12**, the
+  12 being exactly the declined-deposit events. Seam S3 changed **no**
+  behavior because it deposited nothing — which is the finding, and is
+  also the cleanest possible demonstration that the seam is inert when
+  its gate refuses.
+- **Search health identical**: 1 completed + 9 deferred option searches in
+  all of v336, v337, v338, v339.
+- **Provenance note, recorded rather than tidied away.** §15.2 declared
+  concurrent documentation edits by a parallel session in the working
+  tree at preregistration time. Those landed as commit `727ef7c` while
+  the E6 arms were running, moving HEAD from `ffb58b2` to `727ef7c`. The
+  commit touches **only** `README.md`, `docs/architecture.md`,
+  `docs/telemetry.md` and two new `docs/*-2026-08-17.md` files — no code
+  and no run input. The code under test in both arms was `ffb58b2` plus
+  the four owned files of this change, exactly as §15.2 states.
+  `experiments/` is git-ignored, so `e6-gate4-report.json` lives on disk
+  beside `e5-gate4-report.json` under the same convention.
+
+### 16.3 Distance traces, four runs side by side
+
+Chebyshev (the §4.47/§4.48 metric), 24 committed decisions:
+
+```
+v336 control   6 4 4 3 4 5 5 5 3 3 4 3 4 4 3 2 1 4 5 5 5 4 5 6
+v338 control   6 4 4 3 4 5 5 5 3 3 4 3 4 4 3 2 1 4 5 5 5 4 5 6
+v337 E5 treat  6 4 4 3 4 5 5 3 3 4 3 4 4 3 2 1 4 5 6 4 5 5 5 5
+v339 E6 treat  6 4 4 3 4 5 5 3 3 4 3 4 4 3 2 1 4 5 6 4 5 5 5 5
+```
+
+Manhattan (the mechanism's own metric):
+
+```
+v336 control   9 7 7 6 8 9 10 10 6 5 6 4 5 4 3 2 1 6 7 6 6 4 5 6
+v338 control   9 7 7 6 8 9 10 10 6 5 6 4 5 4 3 2 1 6 7 6 6 4 5 6
+v337 E5 treat  9 7 7 6 8 9 10 6 5 6 4 5 4 3 2 1 4 5 6 6 7 6 6 6
+v339 E6 treat  9 7 7 6 8 9 10 6 5 6 4 5 4 3 2 1 4 5 6 6 7 6 6 6
+```
+
+Minimum distance 1/1 in every arm. The controls reach it at d17, both
+treatments at d16.
+
+### 16.4 The named FAIL mechanism: **the objective is dead for exactly the decision that arrives**
+
+The chain is measured end to end from the treatment's own telemetry:
+
+1. **The gate ran, and refused honestly, 12 times.** Decisions 4, 6, 7,
+   9, 10, 12, 13, 15, 18, 19, 21, 22 each emitted
+   `relational_navigation_deposit_declined` with reason
+   `not_certified_adjacent`. The nearest was **d15 at `(12,9)`,
+   Manhattan 2** — one cell outside the gate.
+2. **The one decision that stood on a certified-adjacent cell emitted
+   nothing at all.** At **d16 the treatment committed to `(12,10)`,
+   Manhattan distance 1** — and there is **no gate event of either kind**
+   at d16. `_relational_navigation_deposit_view` returned `None`, which
+   it does only when the seam is unselected (it was selected) or when
+   `_relational_navigation_objective()` is `None`.
+3. **Why the objective was `None`.** At d15, seq 82132, the exploit
+   hypothesis — the one whose payload is
+   `{"hold_configuration_signature": "85fd9014d58deb42", "target_cells": [[12,11]]}` —
+   **terminated with `budget_exhausted`**. At d16, seq 82139, the
+   re-proposal activated a **`hold_configuration`** hypothesis whose
+   realization is also `reach_cells_under_hold` but whose payload is
+   `"target_cells": []` — **empty by construction** (§13.6; the pure
+   module's `objective_target_cells` returns `()` for it, and every
+   consumer then fails open). No cells published ⇒ no objective ⇒ S3
+   inert.
+4. **The exploit objective came back three events too late.** It was
+   re-activated at **seq 82664**; the d16 commit is at **seq 82661**. The
+   hypothesis that names `(12,11)` was alive for d4–d15 and again from
+   the tail of d16 onward — and dead for precisely the commit that
+   reached distance 1.
+5. **Every other conjunct of the gate held at d16.** The d16
+   `relational_hypothesis_proposed` and `relational_hypothesis_achieved`
+   events both report `configuration_signature: 85fd9014d58deb42` — the
+   hold signature — so the hold check would have passed; the position was
+   certified (zero life losses all run); and the distance was 1, inside
+   the radius. **Objective liveness was the only failing conjunct.**
+6. By d17 the stagnation restore had moved the agent to `(12,7)`, and it
+   never returned to distance 1 in the remaining seven decisions.
+
+Stated exactly: **E5 showed the lever was attached to the wrong object.
+E6 attached it to the right object and found the object is not there at
+the moment it is needed.**
+
+### 16.5 What this localizes — and what it does not
+
+- **Not exploration.** Bit 1 settles it again: columns 6–12, 43 vs 44
+  deposits, first divergence coinciding exactly with the first contested
+  instant.
+- **Not the restore ranking.** Unchanged from E5 and re-measured
+  identically: 8 instants, 2 differing, both strictly nearer, supply
+  ratcheting 1,3,3,6,6,5,4,3.
+- **Not §15.6(d).** The immediate-restore blind spot was declared in
+  advance as the most likely spoiler and **is not the operative cause** —
+  `recovery_distinct` never had anything to filter, because nothing was
+  ever deposited. The declaration is scored here rather than quietly
+  dropped.
+- **Not the radius, and widening it is forbidden and would not help.**
+  §15.4 bars re-sizing, and the measurement shows the bar costs nothing:
+  a wider gate would have deposited d15's `(12,9)` (distance 2) and d13's
+  `(12,7)` (distance 4) — but `(12,7)`, `(12,8)` and `(12,9)` were
+  **already** archive candidates in both arms, and the d17 restore
+  **already selected `(12,7)`**. A wider radius supplies nothing the
+  restore key did not already have.
+- **The newly localized gap is hypothesis lifetime, not archive supply.**
+  The exploit objective's 12-decision budget expired one decision before
+  the agent arrived, and the re-establish step that follows publishes an
+  empty target set by design. Any mechanism gated on an active
+  cell-publishing objective is blind at exactly that boundary — and the
+  boundary is not incidental: the budget is consumed *by* the approach
+  that produces the arrival.
+
+### 16.6 Caveats, restated after the fact (none rescues the result)
+
+- **Frozen signature (§15.6(a))**: not reached; no bit turned on a
+  signature identity.
+- **Decision-1 blind spot (§15.6(b))**: as declared — d1–d3 produced no
+  gate event.
+- **Other selection-authority effects (§15.6(c))**: bit 1(a) passed and
+  the first divergence coincides with the first contested instant (both
+  d8), so no un-ablated effect forked the trajectory.
+- **Immediate-restore blind spot (§15.6(d))**: declared, **not reached**.
+  See §16.5.
+- **Self-restore degeneracy (§15.6(e))**: not reached; nothing was
+  deposited, so nothing could be self-restored.
+- **Archive capacity (§15.6(f))**: capacity 1024 against ~43 deposits;
+  no pruning pressure; not operative.
+- **`budget_exhausted` at d15**: §15.4 makes this a FAIL input, not a
+  VOID — and unlike E5, where §14.6 correctly judged it was *not* the
+  operative cause, **here it is exactly the operative cause**. That
+  difference is the whole of E6's contribution.
+- **Not a power problem.** The treatment did not run out of decisions; it
+  was moved off the target at d17 with seven decisions remaining. A
+  larger `--decisions` extends a trajectory that has already left.
+- **Speedup-vs-capability (§15.6(g))**, **what a PASS does not show
+  (§15.6(h))**: unchanged, and moot on a FAIL.
+
+### 16.7 Consequences for the plan
+
+- **E6 is a FAIL.** The deposit seam is correct, mutation-tested,
+  default-preserving, provably inert at authority `off` and at every
+  pre-E6 selector value, and it deposited nothing — because its gate is
+  conditioned on an objective that was not alive at the decisive instant.
+- **Five levers are now measured, each falsified for a distinct named
+  reason**: restore preference (redundant), search reserve (no searches),
+  commit steering (starves supply), restore key alone (target not a
+  candidate), certified-adjacent deposit (no objective at the arriving
+  decision).
+- **The next lever is not chosen here**, and choosing it needs a decision
+  this experiment is not entitled to make: whether a mechanism may read
+  certified milestone cells directly from the records rather than from an
+  active hypothesis's payload. That would fire without a live hypothesis
+  and is a **different intervention class** — roadmap §20's "no new
+  preference" constraint would still hold, but the "objective-scoped"
+  property that every WP8 seam has relied on would not. The alternative
+  framing is that **hypothesis lifetime**, not archive supply, is now the
+  object of study.
+- **E4 (search request) is unaffected** and remains the separate question
+  of causing a search.
+- **The discriminator remains unbroken across fifteen runs**, none of
+  which has collected `(12,11)`.
+- Retained for reuse: the seam selector (now four-valued,
+  default-preserving, mutation-tested, cross-version byte-identity proven
+  against the pre-E6 planner), the S3 decline telemetry — which localized
+  this FAIL to a three-event window in a single pass — and the
+  v333/v334/v336/v338 invariance chain.

@@ -1322,5 +1322,86 @@ class NavigationSeamAblationContractTests(unittest.TestCase):
         self.assertEqual(len(keys), 1)
 
 
+class NavigationDepositContractTests(unittest.TestCase):
+    """E6 (learnings section 4.51): the deposit is planner-side only.
+
+    E5 proved the closing key works and still failed, because the cell
+    the agent stood on was never an archive candidate. E6 deposits it.
+    The module publishes exactly the same objective either way: seam S3
+    changes WHO deposits a candidate, never WHAT this module publishes,
+    and it adds no scoring term of its own.
+    """
+
+    def exploit(self):
+        return by_kind(
+            propose_default(), HypothesisKind.EXPLOIT_CONFIGURATION
+        )
+
+    def test_module_exposes_no_deposit_seam(self) -> None:
+        import lolo_agent.relational_planner as module
+
+        source = Path(module.__file__).read_text()
+        for token in (
+            "restore_plus_deposit",
+            "navigation_seams",
+            "deposit",
+            "archive_current_position",
+        ):
+            self.assertNotIn(token, source, token)
+
+    def test_the_key_already_ranks_the_position_E6_makes_available(
+        self,
+    ) -> None:
+        # The E5 gap, as a pure-module contract: the key already scores a
+        # certified-adjacent held cell above every farther held cell. It
+        # was never the ranking that failed — only the candidate set. So
+        # E6 needs no new module-side preference, and gets none.
+        exploit = self.exploit()
+        hold = objective_hold_signature(exploit)
+        target = objective_target_cells(exploit)[0]
+        on_target = navigation_preference(
+            exploit, target, configuration_signature=hold
+        )
+        adjacent = navigation_preference(
+            exploit, (target[0] - 1, target[1]), configuration_signature=hold
+        )
+        two_away = navigation_preference(
+            exploit, (target[0] - 2, target[1]), configuration_signature=hold
+        )
+        self.assertGreater(on_target, adjacent)
+        self.assertGreater(adjacent, two_away)
+        # And the distances S3's gate reads are the module's own.
+        self.assertEqual(
+            target_cell_distance(objective_target_cells(exploit), target), 0
+        )
+        self.assertEqual(
+            target_cell_distance(
+                objective_target_cells(exploit),
+                (target[0] - 1, target[1]),
+            ),
+            1,
+        )
+
+    def test_a_deposited_position_outside_the_hold_still_sorts_last(
+        self,
+    ) -> None:
+        # S3's hold check and the key's hold check must agree: a position
+        # deposited outside the held configuration could not outrank a
+        # held one even if the gate were wrong about it.
+        exploit = self.exploit()
+        hold = objective_hold_signature(exploit)
+        target = objective_target_cells(exploit)[0]
+        departed = navigation_preference(
+            exploit, target, configuration_signature="departed-signature"
+        )
+        held_far = navigation_preference(
+            exploit,
+            (target[0] - 6, target[1] - 4),
+            configuration_signature=hold,
+        )
+        self.assertLess(departed, held_far)
+        self.assertEqual(departed[0], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

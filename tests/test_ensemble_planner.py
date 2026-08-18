@@ -18381,7 +18381,14 @@ class CommitTimeArchiveConfigurationSignatureTests(unittest.TestCase):
             and isinstance(node.func, ast.Name)
             and node.func.id == "_ArchivedBranch"
         ]
-        self.assertEqual(len(constructions), 3)
+        # Three pre-E6 commit-time constructions (committed causal
+        # outcome, alternative branch, affordance checkpoint) plus E6's
+        # navigation seam S3 certified-adjacent deposit. The invariant
+        # the count guards is unchanged and is asserted below for every
+        # one of them: a commit-time archive that leaves
+        # ``tracked_world_state_signature`` empty is invisible to the
+        # hold-gated restore supply (learnings section 4.46).
+        self.assertEqual(len(constructions), 4)
         for construction in constructions:
             splatted = {
                 keyword.value.func.attr
@@ -19054,6 +19061,724 @@ class RelationalNavigationSeamFlagTests(unittest.TestCase):
             *self._REQUIRED_CLI,
             "--relational-navigation-seams",
             "commit_only",
+        ]
+        try:
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                with self.assertRaises(SystemExit) as raised:
+                    neural_run.main()
+        finally:
+            sys.argv = argv
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("--relational-navigation-seams", err.getvalue())
+
+
+# ----------------------------------------------------------------------
+# E6 — the certified-adjacent archive deposit (learnings section 4.51;
+# docs/wp8-search-scheduling-design-2026-08-17.md section 15).
+#
+# E5 proved the S2-only shape: exploration ran identically to the control
+# and the closing restore was contested at exactly the preregistered
+# instant. It still failed, for a named reason — the treatment stood at
+# `(12,10)`, one cell from the certified milestone `(12,11)`, and
+# `(12,10)` had never been deposited as an archive in either arm. The
+# restore key re-ranks archives that exist. Seam S3 deposits the
+# certified-adjacent position so the already-working key can reach it. It
+# adds NO preference weight (roadmap section 20) — it adds a candidate.
+# ----------------------------------------------------------------------
+
+
+from collections import Counter as _DepositCounter
+
+from lolo_agent import neural_planner
+
+
+DEPOSIT_ON_TARGET_CELL = (2, 3)
+DEPOSIT_ADJACENT_CELL = (1, 3)
+DEPOSIT_FAR_CELL = NAVIGATION_DISTANT_CELL
+
+
+class _DepositGoalPrior:
+    """Goal prior pinned to one certified-adjacent cell.
+
+    ``navigation_reward`` stays 0.0 — the section 4.7 guard: S3 must not
+    read, revive, or need a distance reward.
+    """
+
+    known_slots = ()
+    navigation_reward = 0.0
+    chest_obtained = False
+    best_remaining_hearts = 0
+
+    def __init__(self, cell=DEPOSIT_ON_TARGET_CELL) -> None:
+        self.cell = cell
+        self.current_player_slot = (cell[0] * 16, cell[1] * 16)
+
+    def current_slots(self):
+        return ()
+
+    def observe_room(self, frame):
+        del frame
+        return ()
+
+    def restore(self, slots, frame, player_slot) -> None:
+        del slots, frame, player_slot
+
+    def commit(self, analysis, frame) -> None:
+        del analysis, frame
+
+    def analyze(self, source, target, *, target_player_reference=None):
+        del source, target, target_player_reference
+        return _navigation_goal_analysis(self.cell, source_cell=self.cell)
+
+
+class _ExhaustedCausalOutcomes(_DepositCounter):
+    """Every causal outcome already restored once.
+
+    This is the regime the E5 treatment was in at d16: the incumbent
+    committed-state archive path declines, so the position the agent is
+    standing on is deposited by nobody. Without it the fixture's causal
+    outcome path archives the committed frame first and S3 correctly
+    declines as ``already_archived`` — which is itself asserted below.
+    """
+
+    def __missing__(self, key):
+        del key
+        return 1
+
+
+def _deposit_decide_agent(
+    seams: str,
+    *,
+    authority: str = "selection",
+    cell=DEPOSIT_ON_TARGET_CELL,
+    model=None,
+    exhaust_causal_outcomes: bool = True,
+):
+    """An exploit-objective agent driven one real ``decide()`` call.
+
+    Everything except ``seams`` is held fixed across arms, so a paired
+    comparison isolates seam S3 and nothing else.
+    """
+
+    env, logger, agent = _navigation_seam_agent(
+        seams, authority=authority, model=model
+    )
+    agent.goal_prior = _DepositGoalPrior(cell)
+    agent._calibrate_goal_prior = lambda _frame: None
+    agent.visual_stagnation_streak = 0
+    agent.human_prior_graph_recovery_pending = False
+    agent.archive = []
+    if exhaust_causal_outcomes:
+        agent.causal_outcome_restores = _ExhaustedCausalOutcomes()
+    logger.events.clear()
+    return env, logger, agent
+
+
+def _deposit_events(logger):
+    return [
+        event
+        for event in logger.events
+        if event["event"].startswith("relational_navigation_deposit")
+    ]
+
+
+class RelationalNavigationDepositGateTests(unittest.TestCase):
+    """Seam S3's gate: selector, authority, hold, adjacency, certification."""
+
+    def _agent(self, seams="restore_plus_deposit", authority="selection"):
+        _env, _logger, agent = _navigation_seam_agent(
+            seams, authority=authority
+        )
+        return agent
+
+    def test_selector_accepts_the_new_value_and_still_rejects_junk(
+        self,
+    ) -> None:
+        for seams in ("both", "restore_only", "restore_plus_deposit", "off"):
+            with self.subTest(seams=seams):
+                VerifiedNeuralAgent(
+                    _RelationalSeamEnv(),
+                    EnsembleVisualDynamicsModel(
+                        latent_size=32, action_size=8, ensemble_size=2
+                    ),
+                    "cpu",
+                    NeuralPlanningConfig(
+                        relational_navigation_seams=seams
+                    ),
+                )
+        for seams in ("deposit_only", "restore-plus-deposit", "RESTORE_PLUS_DEPOSIT"):
+            with self.subTest(seams=seams):
+                with self.assertRaises(ValueError):
+                    VerifiedNeuralAgent(
+                        _RelationalSeamEnv(),
+                        EnsembleVisualDynamicsModel(
+                            latent_size=32, action_size=8, ensemble_size=2
+                        ),
+                        "cpu",
+                        NeuralPlanningConfig(
+                            relational_navigation_seams=seams
+                        ),
+                    )
+
+    def test_seam_helpers_map_all_four_modes_exactly(self) -> None:
+        # The default and both pre-E6 ablations leave S3 off; only E6's
+        # own value turns it on, and it never turns S1 back on.
+        expected = {
+            "both": (True, True, False),
+            "restore_only": (False, True, False),
+            "restore_plus_deposit": (False, True, True),
+            "off": (False, False, False),
+        }
+        for seams, (commit, restore, deposit) in expected.items():
+            with self.subTest(seams=seams):
+                agent = self._agent(seams)
+                self.assertEqual(
+                    agent._relational_navigation_commit_seam_enabled(),
+                    commit,
+                )
+                self.assertEqual(
+                    agent._relational_navigation_restore_seam_enabled(),
+                    restore,
+                )
+                self.assertEqual(
+                    agent._relational_navigation_deposit_seam_enabled(),
+                    deposit,
+                )
+
+    def test_gate_is_none_for_every_pre_e6_mode(self) -> None:
+        analysis = _navigation_goal_analysis(DEPOSIT_ON_TARGET_CELL)
+        for seams in ("both", "restore_only", "off"):
+            with self.subTest(seams=seams):
+                agent = self._agent(seams)
+                self.assertIsNone(
+                    agent._relational_navigation_deposit_view(analysis)
+                )
+
+    def test_gate_is_none_outside_selection_authority(self) -> None:
+        analysis = _navigation_goal_analysis(DEPOSIT_ON_TARGET_CELL)
+        for authority in ("off", "telemetry"):
+            with self.subTest(authority=authority):
+                agent = self._agent(
+                    "restore_plus_deposit", authority=authority
+                )
+                self.assertIsNone(
+                    agent._relational_navigation_deposit_view(analysis)
+                )
+
+    def test_gate_is_none_without_a_published_objective(self) -> None:
+        # The establish stage publishes no cells, so S3 fails open with
+        # the rest of the navigation family.
+        _env, _logger, agent, *_rest = _relational_seam_agent(
+            "selection", _relational_records()
+        )
+        agent.config = replace(
+            agent.config,
+            relational_navigation_seams="restore_plus_deposit",
+        )
+        agent._relational_propose_and_log()
+        self.assertIsNone(agent._relational_navigation_objective())
+        self.assertIsNone(
+            agent._relational_navigation_deposit_view(
+                _navigation_goal_analysis(DEPOSIT_ON_TARGET_CELL)
+            )
+        )
+
+    def test_gate_accepts_on_and_adjacent_and_refuses_further(self) -> None:
+        agent = self._agent()
+        for cell, distance, eligible in (
+            (DEPOSIT_ON_TARGET_CELL, 0, True),
+            (DEPOSIT_ADJACENT_CELL, 1, True),
+            ((3, 1), 2, False),
+            (DEPOSIT_FAR_CELL, 4, False),
+        ):
+            with self.subTest(cell=cell):
+                view = agent._relational_navigation_deposit_view(
+                    _navigation_goal_analysis(cell)
+                )
+                assert view is not None
+                self.assertEqual(view["distance"], distance)
+                self.assertEqual(view["eligible"], eligible)
+                self.assertEqual(
+                    view["reason"],
+                    "certified_adjacent_position"
+                    if eligible
+                    else "not_certified_adjacent",
+                )
+        # The radius is the gate, stated once and read from one place.
+        self.assertEqual(
+            neural_planner.RELATIONAL_NAVIGATION_DEPOSIT_MAX_DISTANCE, 1
+        )
+
+    def test_gate_refuses_when_the_held_configuration_is_absent(
+        self,
+    ) -> None:
+        # Section 4.7's coupling, enforced: proximity means nothing
+        # outside the configuration the objective holds.
+        agent = self._agent()
+        agent.current_human_prior_root_object_state = (
+            HumanPriorRootObjectState(
+                tracked_world_state_signature=RELATIONAL_NEUTRAL_SIGNATURE
+            )
+        )
+        view = agent._relational_navigation_deposit_view(
+            _navigation_goal_analysis(DEPOSIT_ON_TARGET_CELL)
+        )
+        assert view is not None
+        self.assertFalse(view["eligible"])
+        self.assertEqual(view["reason"], "held_configuration_absent")
+
+    def test_gate_refuses_an_uncertified_position(self) -> None:
+        # The commit-time certification predicate the reach-cells family
+        # already applies: never deposit ground bought with a life.
+        agent = self._agent()
+        for kwargs in (
+            {"life_counter_changed": True},
+            {"dark_transition_started": True},
+        ):
+            with self.subTest(**kwargs):
+                view = agent._relational_navigation_deposit_view(
+                    _navigation_goal_analysis(
+                        DEPOSIT_ON_TARGET_CELL, **kwargs
+                    )
+                )
+                assert view is not None
+                self.assertFalse(view["eligible"])
+                self.assertEqual(
+                    view["reason"], "position_not_certified"
+                )
+
+    def test_gate_refuses_when_the_position_is_unavailable(self) -> None:
+        agent = self._agent()
+        for analysis in (
+            None,
+            _navigation_goal_analysis(None),
+        ):
+            with self.subTest(analysis=analysis is None):
+                view = agent._relational_navigation_deposit_view(analysis)
+                assert view is not None
+                self.assertFalse(view["eligible"])
+                self.assertEqual(view["reason"], "position_unavailable")
+
+
+class RelationalNavigationDepositSeamTests(unittest.TestCase):
+    """Seam S3 in a real ``decide()``: what it adds and what it preserves."""
+
+    def test_deposit_reaches_the_archive_and_emits_its_evidence(
+        self,
+    ) -> None:
+        env, logger, agent = _deposit_decide_agent("restore_plus_deposit")
+        del env
+        agent.decide()
+        events = _deposit_events(logger)
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(
+            event["event"], "relational_navigation_deposit_added"
+        )
+        self.assertEqual(event["reason"], "certified_adjacent_position")
+        self.assertEqual(
+            event["deposit_cell"], list(DEPOSIT_ON_TARGET_CELL)
+        )
+        self.assertEqual(event["deposit_distance"], 0)
+        self.assertEqual(event["deposit_max_distance"], 1)
+        self.assertEqual(
+            event["hold_configuration_signature"],
+            RELATIONAL_REMOVAL_SIGNATURE,
+        )
+        self.assertEqual(
+            event["configuration_signature"], RELATIONAL_REMOVAL_SIGNATURE
+        )
+        self.assertEqual(
+            event["target_cells"],
+            [[2, 3], [3, 3], [4, 3], [5, 3]],
+        )
+        # The deposit is a real extra candidate, not just an event: one
+        # incumbent alternative archive plus S3's own.
+        self.assertEqual(len(agent.archive), 2)
+        self.assertEqual(event["archive_size"], len(agent.archive))
+        deposited = agent.archive[-1]
+        self.assertEqual(
+            deposited.goal_player_slot,
+            (DEPOSIT_ON_TARGET_CELL[0] * 16, DEPOSIT_ON_TARGET_CELL[1] * 16),
+        )
+        # The whole point: the deposit is INSIDE the held configuration,
+        # so the hold-gated restore supply can see it at all.
+        self.assertEqual(
+            deposited.tracked_world_state_signature,
+            RELATIONAL_REMOVAL_SIGNATURE,
+        )
+        self.assertFalse(deposited.causal_event_outcome)
+
+    def test_pre_e6_modes_deposit_nothing_and_leave_decide_identical(
+        self,
+    ) -> None:
+        # Behavior preservation, measured rather than asserted: `both`,
+        # `restore_only` and `off` deposit nothing, commit the same
+        # decision and leave the same archive. `restore_only` and `off`
+        # additionally agree event-for-event — with S1 off and no
+        # stagnation restore in this decision the two ablations are
+        # indistinguishable. `both` differs only by S1's own commit-tier
+        # telemetry, which E5's tests already pin.
+        shared_model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        streams = {}
+        rows = {}
+        for seams in ("both", "restore_only", "off"):
+            _env, logger, agent = _deposit_decide_agent(
+                seams, model=shared_model
+            )
+            decision = agent.decide()
+            self.assertEqual(_deposit_events(logger), [], seams)
+            streams[seams] = logger.events
+            rows[seams] = (
+                _s0_decision_key(decision),
+                [
+                    (branch.score, branch.goal_player_slot)
+                    for branch in agent.archive
+                ],
+            )
+        self.assertEqual(rows["both"], rows["restore_only"])
+        self.assertEqual(rows["both"], rows["off"])
+        self.assertEqual(streams["restore_only"], streams["off"])
+        self.assertEqual(
+            [
+                event
+                for event in streams["both"]
+                if not event["event"].startswith("relational_navigation")
+            ],
+            [
+                event
+                for event in streams["restore_only"]
+                if not event["event"].startswith("relational_navigation")
+            ],
+        )
+
+    def test_deposit_is_strictly_additive_over_restore_only(self) -> None:
+        # E6's treatment differs from E5's by exactly one archive, the
+        # event that announces it, and the two archive counters later
+        # events report — nothing else, and not the committed decision.
+        # The normalization is declared rather than hidden: depositing a
+        # branch necessarily changes `archive_size` and
+        # `archive_branches_added`, and that is the intended effect. The
+        # exhaustive key list below is what makes this a preservation
+        # proof: any THIRD field that moved would fail the assertion.
+        shared_model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        _env_a, logger_a, e5 = _deposit_decide_agent(
+            "restore_only", model=shared_model
+        )
+        _env_b, logger_b, e6 = _deposit_decide_agent(
+            "restore_plus_deposit", model=shared_model
+        )
+        decision_a = e5.decide()
+        decision_b = e6.decide()
+        self.assertEqual(
+            _s0_decision_key(decision_a), _s0_decision_key(decision_b)
+        )
+
+        archive_counters = ("archive_size", "archive_branches_added")
+
+        def comparable(events):
+            return [
+                {
+                    key: value
+                    for key, value in event.items()
+                    if key not in archive_counters
+                }
+                for event in events
+                if not event["event"].startswith(
+                    "relational_navigation_deposit"
+                )
+            ]
+
+        self.assertEqual(comparable(logger_a.events), comparable(logger_b.events))
+        committed_a = _relational_events(logger_a, "decision_committed")[0]
+        committed_b = _relational_events(logger_b, "decision_committed")[0]
+        self.assertEqual(
+            [committed_a[key] + 1 for key in archive_counters],
+            [committed_b[key] for key in archive_counters],
+        )
+        self.assertEqual(
+            [event["event"] for event in logger_a.events],
+            [
+                event["event"]
+                for event in logger_b.events
+                if not event["event"].startswith(
+                    "relational_navigation_deposit"
+                )
+            ],
+        )
+        self.assertEqual(len(e6.archive), len(e5.archive) + 1)
+        self.assertEqual(
+            [
+                (branch.score, branch.goal_player_slot)
+                for branch in e6.archive[: len(e5.archive)]
+            ],
+            [
+                (branch.score, branch.goal_player_slot)
+                for branch in e5.archive
+            ],
+        )
+
+    def test_deposit_declines_when_the_incumbent_already_archived_it(
+        self,
+    ) -> None:
+        # No duplicate candidate: when the committed-causal-outcome path
+        # already archived the position, S3 records the instant and adds
+        # nothing.
+        _env, logger, agent = _deposit_decide_agent(
+            "restore_plus_deposit", exhaust_causal_outcomes=False
+        )
+        agent.decide()
+        events = _deposit_events(logger)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(
+            events[0]["event"], "relational_navigation_deposit_declined"
+        )
+        self.assertEqual(events[0]["reason"], "already_archived")
+        self.assertEqual(
+            events[0]["deposit_cell"], list(DEPOSIT_ON_TARGET_CELL)
+        )
+        frames = _DepositCounter(
+            branch.frame.digest for branch in agent.archive
+        )
+        self.assertEqual(max(frames.values()), 1)
+
+    def test_a_far_position_is_recorded_and_not_deposited(self) -> None:
+        _env, logger, agent = _deposit_decide_agent(
+            "restore_plus_deposit", cell=DEPOSIT_FAR_CELL
+        )
+        before = len(agent.archive)
+        agent.decide()
+        events = _deposit_events(logger)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(
+            events[0]["event"], "relational_navigation_deposit_declined"
+        )
+        self.assertEqual(events[0]["reason"], "not_certified_adjacent")
+        self.assertEqual(events[0]["deposit_distance"], 4)
+        del before
+
+    def test_restore_plus_deposit_keeps_S1_disabled(self) -> None:
+        # E3's failure must not come back with E6: the commit ladder tier
+        # is still structurally absent, so exploration is untouched.
+        _env, logger, agent = _navigation_seam_agent("restore_plus_deposit")
+        verified, analyses = _navigation_ladder_inputs(
+            [
+                _navigation_selection_branch(NAVIGATION_ADJACENT_CELL, 1.0),
+                _navigation_selection_branch(NAVIGATION_DISTANT_CELL, 9.0),
+            ]
+        )
+        self.assertIsNone(
+            agent._relational_navigation_commit_view(verified, analyses)
+        )
+        self.assertIsNotNone(agent._relational_navigation_objective())
+        self.assertEqual(
+            _relational_events(logger, "relational_navigation_choice"), []
+        )
+        self.assertEqual(
+            _relational_events(logger, "relational_navigation_declined"),
+            [],
+        )
+
+    def test_restore_plus_deposit_keeps_S2_exactly_as_restore_only(
+        self,
+    ) -> None:
+        shared_model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env_a, logger_a, e5 = _navigation_seam_agent(
+            "restore_only", model=shared_model
+        )
+        env_b, logger_b, e6 = _navigation_seam_agent(
+            "restore_plus_deposit", model=shared_model
+        )
+        _adjacent_a, novelty_a = _navigation_restore_archive(env_a, e5)
+        _adjacent_b, novelty_b = _navigation_restore_archive(env_b, e6)
+        logger_a.events.clear()
+        logger_b.events.clear()
+        decision_a = e5._restore_if_stagnant()
+        decision_b = e6._restore_if_stagnant()
+        self.assertIsNotNone(decision_a)
+        self.assertIsNotNone(decision_b)
+        assert decision_a is not None and decision_b is not None
+        self.assertEqual(
+            _s0_decision_key(decision_a), _s0_decision_key(decision_b)
+        )
+        self.assertEqual(env_a.position, env_b.position)
+        self.assertEqual(e5.archive, [novelty_a])
+        self.assertEqual(e6.archive, [novelty_b])
+        self.assertEqual(logger_a.events, logger_b.events)
+
+    def test_the_deposited_candidate_is_reachable_by_the_S2_key(
+        self,
+    ) -> None:
+        # E6's entire claim, as a mechanism test: a branch shaped like the
+        # deposit — held configuration, certified-adjacent cell, and the
+        # LOWEST plain score in the archive — is what the S2 key now
+        # restores, over the higher-novelty distant branch the incumbent
+        # key prefers. Nothing here is a new preference: the ordering is
+        # E5's, unchanged; only the candidate is new.
+        env, logger, agent = _navigation_seam_agent("restore_plus_deposit")
+        env.position = 7
+        frame = env._frame()
+        deposited = _ArchivedBranch(
+            state=env.save_state(),
+            frame=frame,
+            plan=NeuralPlan((Action.RIGHT,), (1,), 0.5, 0.0),
+            score=0.5,
+            scene="archived-elsewhere",
+            created=0,
+            origin_signature="origin",
+            tracked_world_state_signature=RELATIONAL_REMOVAL_SIGNATURE,
+            goal_player_slot=(
+                DEPOSIT_ON_TARGET_CELL[0] * 16,
+                DEPOSIT_ON_TARGET_CELL[1] * 16,
+            ),
+        )
+        novelty = _ArchivedBranch(
+            state=env.save_state(),
+            frame=frame,
+            plan=NeuralPlan((Action.RIGHT,), (1,), NAVIGATION_NOVELTY_SCORE, 0.0),
+            score=NAVIGATION_NOVELTY_SCORE,
+            scene="archived-elsewhere",
+            created=0,
+            origin_signature="origin",
+            tracked_world_state_signature=RELATIONAL_REMOVAL_SIGNATURE,
+            goal_player_slot=(
+                DEPOSIT_FAR_CELL[0] * 16,
+                DEPOSIT_FAR_CELL[1] * 16,
+            ),
+        )
+        agent.archive = [novelty, deposited]
+        agent.visual_stagnation_streak = 99
+        agent.human_prior_graph_recovery_pending = True
+        agent.autonomous_grace_remaining = 0
+        logger.events.clear()
+        self.assertIsNotNone(agent._restore_if_stagnant())
+        self.assertEqual(agent.archive, [novelty])
+        event = _relational_events(
+            logger, "relational_navigation_restore_selected"
+        )[0]
+        self.assertTrue(event["differs"])
+        self.assertEqual(event["selected_distance"], 0)
+        self.assertEqual(event["baseline_distance"], 4)
+
+    def test_selector_is_inert_outside_selection_authority(self) -> None:
+        # The E6 control passes `--relational-navigation-seams
+        # restore_plus_deposit` at authority `off`, so the arms' manifests
+        # differ in exactly the two authority fields (VOID V1). That is
+        # only legitimate if S3 cannot bite there — including through the
+        # archive, which is why the archives are compared too.
+        for authority in ("off", "telemetry"):
+            streams = []
+            archives = []
+            shared_model = EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            )
+            for seams in (
+                "both",
+                "restore_only",
+                "restore_plus_deposit",
+                "off",
+            ):
+                _env, logger, agent = _deposit_decide_agent(
+                    seams, authority=authority, model=shared_model
+                )
+                agent.decide()
+                streams.append(logger.events)
+                archives.append(
+                    [
+                        (branch.score, branch.goal_player_slot)
+                        for branch in agent.archive
+                    ]
+                )
+            with self.subTest(authority=authority):
+                for index in range(1, len(streams)):
+                    self.assertEqual(streams[0], streams[index])
+                    self.assertEqual(archives[0], archives[index])
+                # Telemetry authority still proposes and logs — that is
+                # its job. What must be absent at every authority below
+                # `selection` is the navigation-seam family itself.
+                self.assertEqual(
+                    [
+                        event
+                        for event in streams[0]
+                        if event["event"].startswith(
+                            "relational_navigation"
+                        )
+                    ],
+                    [],
+                )
+
+    def test_deposit_seam_sits_after_every_incumbent_archive_path(
+        self,
+    ) -> None:
+        """Anchor-drift-proof placement: additive, and before the prune."""
+
+        tree = ast.parse(
+            textwrap.dedent(inspect.getsource(VerifiedNeuralAgent.decide))
+        )
+        order = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if isinstance(node.func, ast.Name) and (
+                node.func.id == "_ArchivedBranch"
+            ):
+                order.append((node.lineno, "construction"))
+            elif isinstance(node.func, ast.Attribute):
+                if node.func.attr == "_relational_navigation_deposit_view":
+                    order.append((node.lineno, "deposit_gate"))
+                elif node.func.attr == "_prune_archive":
+                    order.append((node.lineno, "prune"))
+        order.sort()
+        kinds = [kind for _line, kind in order]
+        self.assertEqual(kinds.count("deposit_gate"), 1)
+        self.assertEqual(kinds.count("prune"), 1)
+        gate = kinds.index("deposit_gate")
+        prune = kinds.index("prune")
+        # Every incumbent construction precedes the gate except the
+        # deposit's own, which the gate guards; the prune follows, so the
+        # deposit is subject to archive capacity like everything else.
+        self.assertEqual(kinds[:gate].count("construction"), 3)
+        self.assertLess(gate, prune)
+        self.assertEqual(kinds[gate:prune].count("construction"), 1)
+
+
+class RelationalNavigationDepositFlagTests(unittest.TestCase):
+    """``--relational-navigation-seams restore_plus_deposit`` reaches the config."""
+
+    _REQUIRED_CLI = RelationalDecisionBudgetFlagTests._REQUIRED_CLI
+    _captured_planning_config = (
+        RelationalDecisionBudgetFlagTests._captured_planning_config
+    )
+
+    def test_cli_default_is_still_both(self) -> None:
+        captured = self._captured_planning_config()
+        self.assertEqual(captured["relational_navigation_seams"], "both")
+
+    def test_cli_override_reaches_the_planning_config(self) -> None:
+        captured = self._captured_planning_config(
+            "--relational-navigation-seams", "restore_plus_deposit"
+        )
+        self.assertEqual(
+            captured["relational_navigation_seams"],
+            "restore_plus_deposit",
+        )
+        # The selector narrows what selection authority may do; it never
+        # grants authority.
+        self.assertEqual(captured["relational_planner_authority"], "off")
+
+    def test_cli_still_rejects_an_unknown_seam_mode(self) -> None:
+        argv = sys.argv
+        sys.argv = [
+            "neural_run",
+            *self._REQUIRED_CLI,
+            "--relational-navigation-seams",
+            "deposit_only",
         ]
         try:
             with contextlib.redirect_stderr(io.StringIO()) as err:
