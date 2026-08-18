@@ -2240,6 +2240,64 @@ Evidence:
 - run `entity-v332-room3-e3-pre-control-off-d16`
 - `docs/wp8-search-scheduling-design-2026-08-17.md` §Q4
 
+### 4.48 The control reached one cell from the heart and was pulled away by novelty
+
+What was tried:
+
+- The definitive 24-decision control extension
+  (`entity-v333-room3-e3-pre-control-off-d24`, complete), settling
+  whether §4.47's near-miss meant the discriminator was dying.
+
+Result — the opposite of "converging":
+
+- The control reached `(12,10)` at decision 17 — **one cell** from the
+  certified milestone `(12,11)` — then at d18 an
+  `archive_branch_restored` with reason `human_prior_graph_stagnation`
+  moved it to `(10,7)`, distance 4, restoring an archive valued at
+  `persistent_frontier_value` **60.35**. It never returned: distances
+  d18–d24 were 4, 5, 5, 5, 4, 5, **6**.
+- Full distance trace d9–d24: 3,3,4,3,4,4,3,2,**1**,4,5,5,5,4,5,6 —
+  it touched 1 and bounced off. `(12,11)` collected: NEVER.
+
+Mechanism (exact):
+
+- Standing adjacent to a certified milestone is worth **zero** to the
+  incumbent scorer; a stagnation-recovery restore to a higher-novelty
+  archive scored 60.35 and won. Nothing in the score references
+  proximity to a certified milestone, so the planner cannot distinguish
+  "one step from something valuable" from any other novel cell.
+
+Classification:
+
+- **Discriminator VALIDATED, and the capability gap named.** §4.47's
+  speedup worry is refuted: the control is not converging, it is
+  oscillating and then diverging. The gap is not speed — the incumbent
+  machinery can *wander into* the neighborhood but has no mechanism to
+  *close*.
+
+Learning:
+
+- This is the sharpest statement yet of what deliberateness buys: not
+  finding valuable configurations (§4.43: novelty already does), but
+  **finishing** — holding a target through a stagnation restore that
+  would otherwise trade it for novelty.
+- The damage came through the restore key, exactly the seam the search-
+  scheduling design flagged as "what makes progress ratchet rather than
+  reset". E3's target-aware restore key is therefore not an add-on: it is
+  the mechanism.
+
+Plan change:
+
+- E3 proceeds at 24 decisions with a validated discriminator and a
+  preregistered mechanism-level prediction: under selection authority the
+  d18-class stagnation restore must not abandon a certified-adjacent
+  position, and `(12,11)` should be collected.
+
+Evidence:
+
+- run `entity-v333-room3-e3-pre-control-off-d24` (d17 commit seq 82868,
+  d18 restore seq 83289)
+
 ## 5. Platform and cost learnings
 
 ### 5.1 RunPod for emulator branching
