@@ -2874,6 +2874,82 @@ Evidence:
 - `experiments/lolo1-wp5/e8-gate4-report.json` (digest `48fda68c…`)
 - runs `entity-v343-…-control`, `entity-v344-…-treatment`
 
+### 4.57 The "second manipulation required" premise is FALSIFIED — it was a budget artifact
+
+What was found (design recon,
+`docs/gate2-second-manipulation-design-2026-08-18.md`; no native runs):
+
+- **The region reachable from `(12,11)` in the post-first-manipulation
+  configuration is 67 connected cells containing BOTH remaining
+  hearts.** Three independent methods agree: a pixel-modal passability
+  map over 80 v344 frames; a 353-run endpoint census; and BFS, which
+  returns identical routes — `(12,11)→(8,4)` = 15 steps,
+  `(12,11)→(9,12)` = 36 steps.
+- **It has already been done.** v303 seq 26910 holds a single
+  emulator-verified branch `(8,3) → (9,12)` — `up, left×6, down×10,
+  right×7`, 24 actions, exactly the BFS length, **heart collected, zero
+  life loss.**
+- **v344's own d19 search reached `(11,2)` at branch depth exactly 12 —
+  the configured ceiling — five steps from `(8,4)`, zero life losses.
+  At d20 a stagnation restore took it back to `(7,6)`.** That is §4.48
+  repeating one level up.
+- Runs that did reach these hearts ran at depth 24–36. The entire Gate-4
+  family runs at depth 12.
+- `certified_open_frontiers` is `[]` in all three certified records. The
+  schema has a field meaning exactly "wall, or budget?" and it was never
+  populated.
+- Only genuine obstruction found: one **static** green tile at `(12,12)`
+  (green in 60/60 frames of both v325 and v344), which seals the 4-step
+  route and forces the 36-step western detour.
+
+Correction to the record:
+
+- **Roadmap §18 item 3 is WRONG**, and §24 item 2 inherited it. I
+  recorded that `(8,4)`/`(9,12)` "lie OUTSIDE the certified envelope and
+  therefore require a second manipulation." The certified envelope is
+  what a depth-12, beam-128, reward-shaped search *retained from one
+  root* — not a boundary of reachable space. I treated a measurement
+  artifact as a property of the world, and then merged two roadmap gates
+  on the strength of it.
+- **`(8,4)` was collected in 44 of 353 corpus runs.** It was never a
+  candidate discriminator; proposing it as one shows I had not measured
+  the corpus before designing against it.
+
+Classification:
+
+- **Falsified premise**, caught by recon before any experiment was built
+  on it — the second time in this campaign that designing against an
+  interpretation killed it (cf. §4.55).
+
+Learning:
+
+- **"Outside the certified envelope" ≠ "unreachable."** A certified
+  record is a lower bound produced by a specific budget from a specific
+  root. Every future claim of the form "X requires a new capability"
+  must first rule out "X requires a larger budget", and
+  `certified_open_frontiers` exists precisely to record which — populate
+  it.
+- Depth 12 has been silently load-bearing across the entire Gate-4
+  family. The one run that solved the target region used depth 24–36.
+
+Plan change:
+
+- Next experiment is **R1: a reachability re-measurement at declared
+  larger depth, with a depth-12 control** — cheap, and it can void
+  everything downstream. Only if R1 shows `(9,12)` genuinely unreachable
+  do a `(12,12)` manipulability probe and a real Gate 2 become
+  justified.
+- Discriminator, if one is still needed, is `(9,12)` (2 of 353 runs,
+  never on a committed decision) — never `(8,4)`.
+- **Gate 6 un-merges from Gate 2.** Also unmeasured: Room 3 completion
+  needs the chest, and `human_prior_chest_obtained` is `False` in every
+  run examined, including one resumed from an all-hearts state.
+
+Evidence:
+
+- `docs/gate2-second-manipulation-design-2026-08-18.md`
+- v303 seq 26910; v344 d19/d20; 353-run Room 3 census
+
 ## 5. Platform and cost learnings
 
 ### 5.1 RunPod for emulator branching

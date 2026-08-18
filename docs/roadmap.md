@@ -1806,6 +1806,57 @@ Standing:
    instrument recording what the incumbent would have done. R-B would
    have been wrongly credited without one.
 
+## 25. Amendment — 2026-08-18 — §18 item 3 FALSIFIED (evidence: learnings §4.57)
+
+**"The remaining hearts require a second manipulation" was a budget
+artifact, not a fact about the room.** Three independent methods put both
+remaining hearts inside a 67-cell region reachable from `(12,11)` in the
+post-first-manipulation configuration; v303 already holds an
+emulator-verified 24-action branch that collects `(9,12)` with zero life
+loss; and v344's own d19 search reached five steps from `(8,4)` at branch
+depth exactly 12 — the configured ceiling — before a stagnation restore
+pulled it back. The certified 24-cell envelope measures what a
+depth-12/beam-128 search retained from one root. It is a lower bound, not
+a wall.
+
+Binding consequences:
+
+1. **§18 item 3 and §24 item 2 are superseded.** Gate 6 **un-merges**
+   from Gate 2. No second-manipulation experiment is justified until a
+   reachability re-measurement says one is needed.
+2. **Next experiment is R1** — reachability at declared larger depth with
+   a depth-12 control. It is cheap and can void everything downstream.
+   Depth 12 has been silently load-bearing across the whole Gate-4
+   family; the runs that solved this region used depth 24–36.
+3. **Discriminator is `(9,12)`** (2 of 353 runs, never on a committed
+   decision) if one is still needed — never `(8,4)`, which 44 of 353 runs
+   collected.
+4. **New §5 invariant**: "outside the certified envelope" never means
+   "unreachable". A certified record is a lower bound from one budget and
+   one root. Before claiming X needs a new capability, rule out that X
+   needs a larger budget — and populate `certified_open_frontiers`, which
+   exists to record exactly that distinction and has been empty in every
+   record written so far.
+5. **Room 3 completion is not just hearts**: `human_prior_chest_obtained`
+   is `False` in every run examined, including one resumed from an
+   all-hearts state. Unmeasured, and required for Gate 6.
+
+### §5 invariant consolidation (housekeeping)
+
+Amendments §20–§25 each declared a §5 invariant that was never merged
+into §5's numbered list. They are, in force and by amendment:
+
+- §20 — an intervention that narrows exploration must prove it does not
+  starve the supply later progress consumes.
+- §21 — a capability layer bolted onto the incumbent planner must state
+  which of the incumbent's events drive its state transitions.
+- §23 — before building where a failure "must" live, verify the code
+  path was reached.
+- §24 — every lever ships with a counterfactual instrument recording
+  what the incumbent would have done; and measured divergence is a
+  precondition for paying complexity for hypothesis scoping.
+- §25 — "outside the certified envelope" never means "unreachable".
+
 Amended next sequence: (a) Gate 3 repetition run; (b) WP8-lite preference
 ablation; (c) WP2 multi-track correspondence with the endpoint-relative
 contract; (d) WP3 including the removal-chain gate; (e) WP5 spike and
