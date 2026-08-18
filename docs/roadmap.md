@@ -1763,6 +1763,36 @@ Superseding consequence 2:
    reached. One recon pass falsified an interpretation that would have
    cost an experiment.
 
+## 24. Amendment — 2026-08-18 — E8 PASS; Gate 4 outcome criterion met (evidence: learnings §4.56)
+
+E8 passed all five preregistered bits with `void: false`. At d17 the
+treatment stepped `(12,10) → (12,11)` and collected `(192,176)` — a cell
+nineteen prior runs at this root never reached. The fix was R-A alone:
+decline a stagnation restore when the agent already stands adjacent to a
+certified milestone, so expansion generates a candidate set. The missing
+primitive was one 16-frame `down`; it was never absent and never
+mis-ranked, only never generated.
+
+Standing:
+
+1. **Gate 4's outcome criterion is met on the assisted track.** A
+   prepared configuration was established, held, and converted into a
+   subsequent milestone no incidental run reaches. Its *deliberateness*
+   criterion remains PENDING the attribution arm — if the standing-rule
+   arm is trajectory-identical (as in E7), E8 evidences capability, not
+   hypothesis-driven choice.
+2. **`(12,11)` retires as a discriminator**; Gate 4 work moves to
+   `(8,4)`/`(9,12)`, which require a **second manipulation** — merging
+   with Gate 2 per §18 item 3. New preregistration and fresh
+   control-never-does-it evidence required.
+3. **R-B is unshipped-in-effect**: it changed nothing at 15 of 15
+   expansion decisions. Keep it only if a future instance shows it
+   firing; otherwise remove it rather than carry a lever with no measured
+   effect.
+4. **§5 invariant added**: every lever ships with a counterfactual
+   instrument recording what the incumbent would have done. R-B would
+   have been wrongly credited without one.
+
 Amended next sequence: (a) Gate 3 repetition run; (b) WP8-lite preference
 ablation; (c) WP2 multi-track correspondence with the endpoint-relative
 contract; (d) WP3 including the removal-chain gate; (e) WP5 spike and

@@ -140,6 +140,50 @@ RELATIONAL_LIFECYCLE_MODES = (
     RELATIONAL_LIFECYCLE_CHAIN_PUBLISHED,
     RELATIONAL_LIFECYCLE_RECORD_STORE,
 )
+# WP8 terminal-step selector
+# (docs/wp8-commit-ladder-design-2026-08-18.md sections 3.1 and 5.2, E8).
+# The design's recon (learnings section 4.55) measured that the P5 commit
+# ladder is never ENTERED at the decisive instant: across ten 24-decision
+# runs there are 149 expansion decisions and none of them begins at
+# Chebyshev distance <= 1 from the certified milestone, while all 11
+# adjacent decision-starts are stagnation restores with
+# `branches_examined: 0`. A new ladder tier would therefore have a
+# measured opportunity count of ZERO. R-A and R-B are what this selector
+# turns on instead, and neither adds a tier, a term, or a weight.
+# - "off" (the default) is today's behavior, byte-identically: every
+#   method below returns a neutral value and emits nothing.
+# - "decline_restore" is rule R-A alone: a stagnation restore is DECLINED
+#   for one decision when the agent's CURRENT position already satisfies
+#   seam S3's own deposit predicate at Manhattan distance exactly 1, so
+#   `decide()` falls through to `planner.plan(...)` and a candidate set
+#   exists for the unchanged ladder to rank. It is a point predicate, not
+#   a gradient: it is undefined at every other distance, it never orders
+#   two candidates, and it can only decline — never choose (design
+#   section 4.1's mechanical answer to learnings section 4.50).
+# - "decline_restore_and_certified_tier" is R-A plus rule R-B, which the
+#   design gates behind precondition P2. P2 was discharged offline and
+#   answered TRUE: the (192,176)-collecting transition's outcome key is
+#   already in the seeded episodic memory, so such a branch lands in
+#   `known_goal_branches` and is routed to Tier 7, which is interlocked
+#   below position novelty. R-B adds the certified-cell conjunct to that
+#   interlock rather than dropping it: the relaxation applies ONLY to
+#   branches that collect an uncollected certified milestone cell.
+RELATIONAL_TERMINAL_STEP_OFF = "off"
+RELATIONAL_TERMINAL_STEP_DECLINE_RESTORE = "decline_restore"
+RELATIONAL_TERMINAL_STEP_DECLINE_RESTORE_AND_CERTIFIED_TIER = (
+    "decline_restore_and_certified_tier"
+)
+RELATIONAL_TERMINAL_STEP_MODES = (
+    RELATIONAL_TERMINAL_STEP_OFF,
+    RELATIONAL_TERMINAL_STEP_DECLINE_RESTORE,
+    RELATIONAL_TERMINAL_STEP_DECLINE_RESTORE_AND_CERTIFIED_TIER,
+)
+# The restore recovery reason R-A may decline. The design says "decline a
+# stagnation restore", and the only measured opportunity — v341 d17 — is
+# a `human_prior_graph_stagnation` restore. Dark-transition returns and
+# life-loss recovery keep their incumbent behavior, hypothesis-blind
+# (design section 3.2).
+RELATIONAL_TERMINAL_STEP_RECOVERY_REASON = "human_prior_graph_stagnation"
 
 
 @dataclass(frozen=True)
@@ -213,6 +257,16 @@ class NeuralPlanningConfig:
     # S1 and S2 read the active hypothesis's payload in every mode. Inert
     # at any authority other than "selection".
     relational_lifecycle: str = "budget_only"
+    # WP8 terminal-step selector
+    # (docs/wp8-commit-ladder-design-2026-08-18.md sections 3.1 and 5.2,
+    # E8): "off" (the default, today's behavior byte-identically),
+    # "decline_restore" (rule R-A alone), or
+    # "decline_restore_and_certified_tier" (R-A plus rule R-B, which
+    # precondition P2 licensed). Inert at any authority other than
+    # "selection", and inert unless seam S3 is enabled, because R-A reads
+    # S3's own deposit predicate and that predicate is `None` while the
+    # seam is off.
+    relational_terminal_step: str = "off"
     relational_max_queue: int = 4
     relational_establish_budget: int = 48
     relational_hold_budget: int = 8
@@ -914,6 +968,14 @@ class VerifiedNeuralAgent:
             raise ValueError(
                 "relational lifecycle must be one of "
                 f"{RELATIONAL_LIFECYCLE_MODES}"
+            )
+        if (
+            self.config.relational_terminal_step
+            not in RELATIONAL_TERMINAL_STEP_MODES
+        ):
+            raise ValueError(
+                "relational terminal step must be one of "
+                f"{RELATIONAL_TERMINAL_STEP_MODES}"
             )
         if self.config.relational_max_queue <= 0:
             raise ValueError("relational max queue must be positive")
@@ -19559,6 +19621,38 @@ class VerifiedNeuralAgent:
             == RELATIONAL_NAVIGATION_SEAMS_RESTORE_PLUS_DEPOSIT
         )
 
+    def _relational_terminal_step_gate_enabled(self) -> bool:
+        """Rule R-A selector (commit-ladder design section 3.1).
+
+        ``off`` — the default — leaves the restore bifurcation
+        byte-identical to today and emits nothing at all, so a control
+        arm and every pre-E8 run are unchanged.
+        """
+
+        return bool(
+            self._relational_selection_authority()
+            and self.config.relational_terminal_step
+            in (
+                RELATIONAL_TERMINAL_STEP_DECLINE_RESTORE,
+                RELATIONAL_TERMINAL_STEP_DECLINE_RESTORE_AND_CERTIFIED_TIER,
+            )
+        )
+
+    def _relational_certified_tier_enabled(self) -> bool:
+        """Rule R-B selector (commit-ladder design section 3.1).
+
+        Built only because precondition P2 answered TRUE offline: the
+        ``(192,176)``-collecting transition's outcome key is already in
+        the seeded episodic memory, so the collecting branch is
+        ``outcome_known`` and routes to Tier 7 rather than Tier 3.
+        """
+
+        return bool(
+            self._relational_selection_authority()
+            and self.config.relational_terminal_step
+            == RELATIONAL_TERMINAL_STEP_DECLINE_RESTORE_AND_CERTIFIED_TIER
+        )
+
     def _relational_config(self) -> RelationalPlannerConfig:
         return RelationalPlannerConfig(
             max_queue=self.config.relational_max_queue,
@@ -20470,6 +20564,8 @@ class VerifiedNeuralAgent:
     def _relational_navigation_deposit_view(
         self,
         committed_goal_analysis: Optional[HeartGoalAnalysis],
+        *,
+        current_position: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """Seam S3 gate: is the committed position worth archiving?
 
@@ -20494,6 +20590,19 @@ class VerifiedNeuralAgent:
         already applies at commit time: a position reached by losing a
         life or entering a dark transition is never deposited, however
         close it stands.
+
+        ``current_position`` — rule R-A's only use of this method
+        (commit-ladder design section 3.1) — swaps the *committed*
+        position for the position the agent is standing in right now,
+        and nothing else. The hold clause already reads the CURRENT
+        configuration signature, the objective and the target cells are
+        the same objects, the threshold is the same
+        ``RELATIONAL_NAVIGATION_DEPOSIT_MAX_DISTANCE``, and all four
+        named refusal reasons stay intact so a decline is as readable as
+        a fire. The certification clause reads its current-position
+        analogues: an unhandled life-loss recovery stands in for
+        ``life_counter_changed``, and the goal prior's observed dark
+        transition stands in for ``dark_transition_started``.
         """
 
         if not self._relational_navigation_deposit_seam_enabled():
@@ -20506,13 +20615,34 @@ class VerifiedNeuralAgent:
             self.current_human_prior_root_object_state
             .tracked_world_state_signature
         )
-        cell = (
-            None
-            if committed_goal_analysis is None
-            else self._relational_navigation_cell(
-                committed_goal_analysis.target_player_slot
+        if current_position:
+            cell = self._relational_navigation_cell(
+                None
+                if self.goal_prior is None
+                else self.goal_prior.current_player_slot
             )
-        )
+            position_uncertified = bool(
+                self.pending_life_recovery is not None
+                or (
+                    self.goal_prior is not None
+                    and self.goal_prior.dark_transition_observed
+                )
+            )
+        else:
+            cell = (
+                None
+                if committed_goal_analysis is None
+                else self._relational_navigation_cell(
+                    committed_goal_analysis.target_player_slot
+                )
+            )
+            position_uncertified = bool(
+                committed_goal_analysis is not None
+                and (
+                    committed_goal_analysis.life_counter_changed
+                    or committed_goal_analysis.dark_transition_started
+                )
+            )
         distance = relational_target_cell_distance(targets, cell)
         view: Dict[str, Any] = {
             "active": active,
@@ -20533,15 +20663,103 @@ class VerifiedNeuralAgent:
         if distance > RELATIONAL_NAVIGATION_DEPOSIT_MAX_DISTANCE:
             view["reason"] = "not_certified_adjacent"
             return view
-        if committed_goal_analysis is not None and (
-            committed_goal_analysis.life_counter_changed
-            or committed_goal_analysis.dark_transition_started
-        ):
+        if position_uncertified:
             view["reason"] = "position_not_certified"
             return view
         view["eligible"] = True
         view["reason"] = "certified_adjacent_position"
         return view
+
+    def _relational_terminal_step_view(self) -> Optional[Dict[str, Any]]:
+        """Rule R-A's predicate: may this stagnation restore be declined?
+
+        Returns ``None`` — leaving the restore bifurcation byte-identical
+        to today and emitting nothing — outside selection authority, when
+        the terminal-step selector is ``off``, when seam S3 is disabled
+        (its deposit view is the predicate, and it is ``None`` then), or
+        when no ``reach_cells_under_hold`` objective publishes certified
+        target cells.
+
+        Otherwise it returns the S3 deposit view evaluated against the
+        CURRENT position, plus ``gate_eligible``: the deposit view's own
+        eligibility AND Manhattan distance **exactly** 1. The exact-1
+        conjunct is what makes this a point predicate rather than a
+        gradient (design section 4.1 property 1): the method is
+        identically absent at distance 0, 2, 3 and beyond, it never
+        compares two candidates, and it can only decline an action. It
+        adds no term and no weight; ``RELATIONAL_NAVIGATION_DEPOSIT_MAX_
+        DISTANCE`` is unchanged at 1 and no number a previous experiment
+        set is touched (design section 4.4).
+
+        Distance 0 — standing ON an uncollected certified milestone cell
+        — cannot occur at this root, because the published targets are
+        the certified cells intersected with the milestones still
+        REMAINING, and stepping onto a milestone collects it. It is
+        handled anyway, and reported as an ineligible evaluation with the
+        deposit view's own ``certified_adjacent_position`` reason, rather
+        than given an invented fifth reason.
+        """
+
+        if not self._relational_terminal_step_gate_enabled():
+            return None
+        view = self._relational_navigation_deposit_view(
+            None, current_position=True
+        )
+        if view is None:
+            return None
+        view = dict(view)
+        view["gate_eligible"] = bool(
+            view["eligible"]
+            and view["distance"] == RELATIONAL_NAVIGATION_DEPOSIT_MAX_DISTANCE
+        )
+        return view
+
+    def _relational_certified_milestone_branches(
+        self,
+        branches: Sequence[Any],
+        branch_goal_analyses: Dict[int, Optional[HeartGoalAnalysis]],
+    ) -> List[Any]:
+        """Rule R-B's conjunct: branches collecting a certified cell.
+
+        Empty — so Tier 7's interlock is byte-identical to today —
+        outside selection authority, when the terminal-step selector does
+        not name R-B, or when no objective publishes certified target
+        cells. Otherwise it is the subset of ``branches`` whose committed
+        transition collects a milestone slot lying on one of those
+        published cells, which are the certified cells intersected with
+        the milestones still remaining.
+
+        The blast radius was measured offline before the run and is zero
+        off the decisive instant (design section 5.1 P3): across all
+        three E7 arms there are 105 commit-path verified branches, and a
+        ``milestone_reward > 0`` branch exists at exactly two of the 45
+        expansion decisions (d1 and d3 in each arm). At both, Tier 7
+        already committed with the frontier choice ``None``, so the
+        relaxed path cannot reorder them; at the other 13 per arm the
+        subset is empty by construction.
+        """
+
+        if not self._relational_certified_tier_enabled():
+            return []
+        objective = self._relational_navigation_deposit_objective()
+        if objective is None:
+            return []
+        _active, targets, _hold_signature = objective
+        target_cells = set(targets)
+        if not target_cells:
+            return []
+        selected: List[Any] = []
+        for item in branches:
+            analysis = branch_goal_analyses.get(id(item[2]))
+            if analysis is None:
+                continue
+            collected_cells = {
+                self._relational_navigation_cell(slot)
+                for slot in analysis.collected
+            }
+            if collected_cells & target_cells:
+                selected.append(item)
+        return selected
 
     def _relational_reproduce_transition_priority(
         self,
@@ -23566,6 +23784,24 @@ class VerifiedNeuralAgent:
                 )
                 else None
             )
+            # WP8 terminal-step rule R-B (commit-ladder design section
+            # 3.1, licensed by precondition P2). Tier 7 is the tier a
+            # certified-milestone collection lands in whenever its
+            # outcome is already `known` — and P2 measured offline that
+            # the (192,176) transition's outcome key IS in the seeded
+            # episodic memory at this root, so it does. Tier 7 is
+            # interlocked below position novelty twice over: it is not
+            # even COMPUTED unless the frontier choice is `None`, and the
+            # cascade reaches the frontier tier first. R-B relaxes both,
+            # and only for branches that collect an uncollected certified
+            # milestone cell — the conjunct, not a wholesale removal.
+            # Outside the selector this list is empty, both expressions
+            # below reduce to today's, and the ladder is byte-identical.
+            relational_certified_milestone_branches = (
+                self._relational_certified_milestone_branches(
+                    known_goal_branches, branch_goal_analyses
+                )
+            )
             known_goal_fallback_choice = (
                 max(
                     known_goal_branches,
@@ -23576,7 +23812,19 @@ class VerifiedNeuralAgent:
                 )
                 if known_goal_branches
                 and human_prior_semantic_frontier_choice is None
-                else None
+                else (
+                    max(
+                        relational_certified_milestone_branches,
+                        key=lambda item: (
+                            branch_goal_analyses[
+                                id(item[2])
+                            ].milestone_reward,
+                            item[0],
+                        ),
+                    )
+                    if relational_certified_milestone_branches
+                    else None
+                )
             )
             dynamic_control_choice = None
             control_probe_spread = None
@@ -23884,6 +24132,103 @@ class VerifiedNeuralAgent:
             passive_transition = False
             grace_continuation = False
             relational_navigation_applied = False
+            # WP8 terminal-step redundancy instrument (commit-ladder
+            # design section 4.3). Three of five prior levers failed or
+            # nearly failed because the incumbent would have made the
+            # same choice, so E8 must be able to say so from its own
+            # telemetry rather than from an argument made afterwards.
+            # This names the tier that committed at every expansion
+            # decision, and — because rule R-B is a ranking change, and
+            # ranking changes are what learnings section 4.50 taught
+            # suspicion of — the tier that WOULD have committed had R-B
+            # not been built. If they are equal at the decisive instant,
+            # R-B was redundant and the report must say so whatever the
+            # outcome bit reads.
+            if self._relational_terminal_step_gate_enabled():
+                ladder_tiers = (
+                    ("anticipated_transition_observation", 1,
+                     anticipated_observation_choice),
+                    ("delayed_transition_branch_selected", 2,
+                     delayed_transition_choice),
+                    ("human_prior_goal_choice", 3, human_prior_goal_choice),
+                    ("relational_navigation_choice", 4,
+                     relational_navigation_choice),
+                    ("human_prior_navigation_detour_progress_selected", 5,
+                     human_prior_navigation_detour_choice),
+                    ("human_prior_semantic_frontier_choice", 6,
+                     human_prior_semantic_frontier_choice),
+                    ("human_prior_known_milestone_fallback", 7,
+                     known_goal_fallback_choice),
+                    ("dynamic_control_selected", 8, dynamic_control_choice),
+                    ("control_intervention_selected", 9,
+                     control_intervention_choice),
+                    ("causal_observation_wait", 10, causal_observation_wait),
+                    (
+                        "autonomous_dynamics_detected",
+                        11,
+                        autonomous
+                        if self.autonomous_grace_remaining <= 0
+                        else None,
+                    ),
+                    (
+                        "autonomous_grace",
+                        12,
+                        True if self.autonomous_grace_remaining > 0 else None,
+                    ),
+                )
+
+                def _first_tier(skip_certified: bool) -> Tuple[str, int]:
+                    for name, index, choice in ladder_tiers:
+                        if choice is None:
+                            continue
+                        if (
+                            index == 6
+                            and not skip_certified
+                            and relational_certified_milestone_branches
+                        ):
+                            # R-B's yield: the novelty tier stands aside.
+                            continue
+                        if (
+                            index == 7
+                            and skip_certified
+                            and human_prior_semantic_frontier_choice
+                            is not None
+                        ):
+                            # Without R-B, Tier 7 is not computed here.
+                            continue
+                        return name, index
+                    return "ladder_tail", 13
+
+                committed_tier, committed_tier_index = _first_tier(False)
+                counterfactual_tier, counterfactual_tier_index = _first_tier(
+                    True
+                )
+                self._emit(
+                    "relational_ladder_tier_committed",
+                    decision=self.decision_index + 1,
+                    authority=self.config.relational_planner_authority,
+                    terminal_step_mode=self.config.relational_terminal_step,
+                    ladder_tier_committed=committed_tier,
+                    ladder_tier_committed_index=committed_tier_index,
+                    ladder_tier_would_have_committed_without_R_B=(
+                        counterfactual_tier
+                    ),
+                    ladder_tier_would_have_committed_without_R_B_index=(
+                        counterfactual_tier_index
+                    ),
+                    relational_certified_milestone_branches=len(
+                        relational_certified_milestone_branches
+                    ),
+                    known_goal_branches=len(known_goal_branches),
+                    positive_goal_branches=len(positive_goal_branches),
+                    milestone_goal_branches=len(milestone_goal_branches),
+                    verified_branches=len(selection_verified),
+                    certified_milestone_collecting_branches_present=bool(
+                        relational_certified_milestone_branches
+                    ),
+                    agent_visible=True,
+                    **self._frame_fields(self.frame),
+                )
             if anticipated_observation_choice is not None:
                 chosen = anticipated_observation_choice
                 passive_transition = True
@@ -23980,7 +24325,17 @@ class VerifiedNeuralAgent:
                     reason="continue_bounded_detour_before_optional_probe",
                     **self._human_prior_fields(selected_analysis),
                 )
-            elif human_prior_semantic_frontier_choice is not None:
+            elif (
+                human_prior_semantic_frontier_choice is not None
+                # WP8 rule R-B's second half. Relaxing the computation
+                # interlock alone would be a provable no-op, because this
+                # `elif` cascade reaches the novelty tier before Tier 7:
+                # at every one of the 13 non-milestone expansion
+                # decisions per E7 arm this list is empty and the guard
+                # is today's exactly; it is non-empty only where a branch
+                # collects an uncollected certified milestone cell.
+                and not relational_certified_milestone_branches
+            ):
                 chosen = human_prior_semantic_frontier_choice
                 selected_analysis = branch_goal_analyses[id(chosen[2])]
                 self._emit(
@@ -27998,6 +28353,84 @@ class VerifiedNeuralAgent:
                 eligible=restore_eligible,
                 recovery_reason=recovery_reason,
             )
+        # WP8 terminal-step gate, rule R-A (commit-ladder design section
+        # 3.1; roadmap section 23). The measured failure this repairs is
+        # not a ranking one: at v341 d17 and d18 — the only two decisions
+        # in the whole E-series that BEGIN one cell from the certified
+        # milestone — `decide()` returned here, before
+        # `self.planner.plan(self.frame)` ever ran, with
+        # `branches_examined: 0` and zero verified branches. There was no
+        # candidate set for any tier to rank. Worse, d17's restore
+        # selected `state-00012381`, the state the agent was already
+        # standing in: a positional no-op that consumed the decision and
+        # then consumed the (12,10) archive at `self.archive.remove`
+        # below, so d18 could only reach (12,7).
+        #
+        # R-A declines exactly that one restore, and only when the
+        # agent's CURRENT position already satisfies seam S3's own
+        # deposit predicate at Manhattan distance exactly 1 under the
+        # hold. It runs AFTER the incumbent's selection is computed and
+        # BEFORE any of the restore's effects — the archive removal, the
+        # state load — so the deposit E7 proved it can make survives for
+        # a later decision, and so the incumbent's choice can be logged
+        # as the redundancy control (design section 4.3) rather than
+        # argued for after the fact.
+        terminal_step_view = self._relational_terminal_step_view()
+        if terminal_step_view is not None:
+            terminal_step_declined = bool(
+                terminal_step_view["gate_eligible"]
+                and recovery_reason
+                == RELATIONAL_TERMINAL_STEP_RECOVERY_REASON
+            )
+            incumbent_cell = self._relational_navigation_cell(
+                branch.goal_player_slot
+            )
+            self._relational_emit_hypothesis_event(
+                "relational_terminal_step_gate",
+                terminal_step_view["active"],
+                decision=self.decision_index + 1,
+                recovery_reason=recovery_reason,
+                eligible=terminal_step_view["gate_eligible"],
+                reason=terminal_step_view["reason"],
+                cell=terminal_step_view["cell"],
+                distance=terminal_step_view["distance"],
+                hold_configuration_signature=(
+                    terminal_step_view["hold_signature"] or None
+                ),
+                configuration_signature=(
+                    terminal_step_view["configuration_signature"]
+                ),
+                target_cells=[
+                    list(cell) for cell in terminal_step_view["targets"]
+                ],
+                restore_suppressed=terminal_step_declined,
+                incumbent_restore_state_id=self._state_id(branch.state),
+                incumbent_restore_cell=incumbent_cell,
+                incumbent_restore_distance=relational_target_cell_distance(
+                    terminal_step_view["targets"], incumbent_cell
+                ),
+                incumbent_restore_is_self_restore=bool(
+                    incumbent_cell is not None
+                    and incumbent_cell == terminal_step_view["cell"]
+                ),
+                eligible_candidates=len(restore_eligible),
+                archive_size=len(self.archive),
+                agent_visible=True,
+                **self._frame_fields(self.frame),
+            )
+            if terminal_step_declined:
+                # One decision, no re-arm, no accumulation: the incumbent
+                # fall-through pattern for "no restore happened", so the
+                # stagnation flags are recomputed from scratch on the next
+                # decision exactly as they are on every other decline.
+                if delayed_return:
+                    self.delayed_return_recovery = False
+                    self.delayed_return_loop_start = None
+                if known_scene_return:
+                    self.known_scene_return_recovery_pending = False
+                if human_prior_graph_stagnation:
+                    self.human_prior_graph_recovery_pending = False
+                return None
         restored_goal_reward, restored_goal_analysis = (
             live_archive_goal_metrics(branch)
         )

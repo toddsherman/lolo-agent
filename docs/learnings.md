@@ -2784,6 +2784,89 @@ Evidence:
 - `docs/wp8-commit-ladder-design-2026-08-18.md`
 - runs v340/v341/v342; census v333–v342
 
+### 4.56 E8 PASS — the agent completed the prepared milestone
+
+What was tried:
+
+- E8 (preregistered §8; report digest `48fda68c…`, byte-identical across
+  two end-to-end scorer runs, scorer validated against E7 first;
+  `void: false` on all seven VOID rules): **R-A** — decline a
+  `human_prior_graph_stagnation` restore when the current position
+  already satisfies the S3 deposit predicate at Manhattan distance 1,
+  falling through to expansion. Placed before `archive.remove(branch)`
+  so the deposited candidate survives. Contingent **R-B** also built
+  (both interlock positions).
+
+Result — **PASS, all five bits**:
+
+- **Bit 4 OUTCOME PASS**: at d17 the treatment moved
+  `(12,10) → (12,11)` and collected `(192,176)`. Manhattan trace to
+  target `… 4, 3, 2, 1, 0`. **Nineteen runs at this root had never
+  reached 0.** The control never collected.
+- **Bit 1 PASS**: treatment d1–d16 ≡ v341 state-for-state; control ≡
+  v340 exactly (chain now v333≡v334≡v336≡v338≡v340≡v343). Archive
+  geography **widened** (6–12 → 6–7–12) rather than narrowing — §4.50's
+  supply-starvation failure did not recur.
+- **Bit 2 PASS**: d17 gate `eligible: true`, cell `(12,10)`, distance 1,
+  `restore_suppressed: true`.
+- **Bit 3 PASS**: d17 `branches_examined: 7` with one collecting branch —
+  `down` @ **16 frames**, `milestone_reward: 25.0`.
+- **Bit 5 PASS**: zero life losses both arms.
+
+Mechanism, confirming §4.55 exactly:
+
+- The predicted actuator was right: one 16-frame `down`. It was never
+  missing and never mis-ranked — **it was never generated**, because the
+  ladder was never entered. §4.54's "missing tier" story is now
+  conclusively refuted by a passing experiment built on its correction.
+- `incumbent_restore_is_self_restore: true` at d17 with
+  `incumbent_restore_state_id: state-00012381` at cell `(12,10)`: the
+  incumbent would again have restored to the state the agent was already
+  standing in. §4.55's "won its contest and spent the win standing still"
+  is now **measured in-run**, not inferred.
+
+**R-B was redundant, and the counterfactual instrument caught it.**
+`ladder_tier_committed == ladder_tier_would_have_committed_without_R_B`
+at d17, and R-B changed the tier at **zero of 15** expansion decisions.
+The design's §2.6 inference (Tier 7 preempted by position novelty) held
+at d16 but not at d17: once R-A returned d17 to expansion, the frontier
+choice was `None` and Tier 7 fired unaided. **R-A alone is sufficient.**
+Without the instrument this would have been wrongly credited to R-B.
+
+Also reported: the treatment completed 2 option searches to the
+control's 1, but the extra is at d19 — two decisions *after* the
+collection — and d17's search was still `deferred`. R-A granted no
+search.
+
+Classification:
+
+- **Milestone.** Gate 4's outcome criterion is met on the assisted track:
+  a prepared configuration was established, held, and converted into a
+  subsequent milestone that no incidental run reaches.
+
+Scope limits — stated before any claim is built on this:
+
+1. **Deliberateness attribution is PENDING** the unscored attribution arm
+   (v345). E7's precedent was `trajectory_identical_to_treatment: true`;
+   if v345 repeats that, E8 evidences the *capability* but not that
+   hypothesis-driven planning produced it.
+2. Assisted-lineage throughout; not strict-track evidence.
+3. `(12,11)`/`(192,176)` **retires as a discriminator** (§5.7 retirement
+   condition 1) — it is now a solved instance.
+
+Plan change:
+
+- Gate 4 work moves to `(8,4)`/`(9,12)`, outside the certified envelope
+  and requiring a **second manipulation** — a capability incidental
+  behaviour has never shown. Retirement is a scope change needing its own
+  preregistration and its own control-never-does-it evidence.
+
+Evidence:
+
+- `docs/wp8-commit-ladder-design-2026-08-18.md` §8
+- `experiments/lolo1-wp5/e8-gate4-report.json` (digest `48fda68c…`)
+- runs `entity-v343-…-control`, `entity-v344-…-treatment`
+
 ## 5. Platform and cost learnings
 
 ### 5.1 RunPod for emulator branching

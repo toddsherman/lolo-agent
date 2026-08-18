@@ -17961,8 +17961,13 @@ class RelationalNavigationLadderPlacementTests(unittest.TestCase):
         detour = source.index(
             "elif human_prior_navigation_detour_choice is not None:"
         )
+        # E8 rule R-B added a conjunct to this guard (the certified
+        # milestone branches stand the novelty tier aside), so the anchor
+        # is the guard's stable head rather than the whole line. The
+        # ORDERING invariant this test exists for is unchanged.
         frontier = source.index(
-            "elif human_prior_semantic_frontier_choice is not None:"
+            "                human_prior_semantic_frontier_choice "
+            "is not None\n"
         )
         self.assertLess(goal, navigation)
         self.assertLess(navigation, detour)
@@ -20679,3 +20684,767 @@ class RelationalLifecycleFlagTests(unittest.TestCase):
             sys.argv = argv
         self.assertEqual(raised.exception.code, 2)
         self.assertIn("--relational-lifecycle", err.getvalue())
+
+
+# ---------------------------------------------------------------------------
+# E8 — the WP8 terminal-step rules R-A and R-B
+# (docs/wp8-commit-ladder-design-2026-08-18.md sections 3.1, 4.1 and 5.1).
+#
+# The measured failure these repair is NOT a ranking one. Learnings section
+# 4.55's recon found the P5 commit ladder was never ENTERED at the decisive
+# instant: at v341 d17 and d18 — the only two decisions in the whole E-series
+# that BEGIN one cell from the certified milestone — `decide()` returned early
+# through `_restore_if_stagnant()`, which runs before `planner.plan(...)`.
+# Both report `branches_examined: 0` and zero `branch_verified` events. There
+# was no candidate set for any tier to rank, so a new ladder tier would have
+# had a measured opportunity count of zero (149 expansion decisions across ten
+# runs, none beginning at distance <= 1).
+#
+# R-A therefore sits at the restore/expansion bifurcation one level ABOVE the
+# ladder, and R-B — licensed by precondition P2, which answered TRUE offline —
+# adds a conjunct to Tier 7's interlock. Neither adds a tier, a term, or a
+# weight, and both are off by default.
+# ---------------------------------------------------------------------------
+
+
+class _TerminalStepGoalPrior(PixelHeartGoalPrior):
+    """The real goal prior, standing where v341's d17 stood.
+
+    Every reward stays at the fixture's 0.0 — in particular
+    ``navigation_reward``, the section 4.7 guard. R-A must never read it
+    and never re-enable it.
+    """
+
+    def __init__(self, player_cell, dark_transition_observed=False) -> None:
+        super().__init__()
+        self.current_player_slot = (
+            None
+            if player_cell is None
+            else (player_cell[0] * 16, player_cell[1] * 16)
+        )
+        self.dark_transition_observed = dark_transition_observed
+
+
+def _terminal_step_agent(
+    terminal_step: str = "decline_restore",
+    seams: str = "restore_plus_deposit",
+    authority: str = "selection",
+    player_cell=DEPOSIT_ADJACENT_CELL,
+    dark_transition_observed: bool = False,
+    model=None,
+):
+    """An agent standing where v341's d17 stood, with the gate configured.
+
+    The published objective, hold signature and archive are the E7 fixture's;
+    only the agent's CURRENT position and the new selector vary.
+    """
+
+    env, logger, agent = _navigation_seam_agent(
+        seams, authority=authority, model=model
+    )
+    agent.config = replace(
+        agent.config, relational_terminal_step=terminal_step
+    )
+    agent.goal_prior = _TerminalStepGoalPrior(
+        player_cell, dark_transition_observed=dark_transition_observed
+    )
+    return env, logger, agent
+
+
+class RelationalTerminalStepSelectorTests(unittest.TestCase):
+    """The E8 selector: off | decline_restore | +certified_tier."""
+
+    def test_default_is_off_so_todays_behavior_is_the_default(self) -> None:
+        self.assertEqual(
+            NeuralPlanningConfig().relational_terminal_step, "off"
+        )
+
+    def test_selector_is_validated_like_the_authority(self) -> None:
+        for mode in (
+            "off",
+            "decline_restore",
+            "decline_restore_and_certified_tier",
+        ):
+            with self.subTest(mode=mode):
+                VerifiedNeuralAgent(
+                    _RelationalSeamEnv(),
+                    EnsembleVisualDynamicsModel(
+                        latent_size=32, action_size=8, ensemble_size=2
+                    ),
+                    "cpu",
+                    NeuralPlanningConfig(relational_terminal_step=mode),
+                )
+        for mode in ("decline", "OFF", "", "suppress_restore"):
+            with self.subTest(mode=mode):
+                with self.assertRaises(ValueError):
+                    VerifiedNeuralAgent(
+                        _RelationalSeamEnv(),
+                        EnsembleVisualDynamicsModel(
+                            latent_size=32, action_size=8, ensemble_size=2
+                        ),
+                        "cpu",
+                        NeuralPlanningConfig(relational_terminal_step=mode),
+                    )
+
+    def test_helpers_map_every_mode_and_authority_exactly(self) -> None:
+        # R-A rides on both non-off values; R-B rides on the second alone.
+        expected = {
+            ("off", "selection"): (False, False),
+            ("decline_restore", "selection"): (True, False),
+            ("decline_restore_and_certified_tier", "selection"): (True, True),
+            ("decline_restore", "telemetry"): (False, False),
+            ("decline_restore_and_certified_tier", "off"): (False, False),
+        }
+        for (mode, authority), (gate, tier) in expected.items():
+            with self.subTest(mode=mode, authority=authority):
+                _env, _logger, agent = _terminal_step_agent(
+                    mode, authority=authority
+                )
+                self.assertEqual(
+                    agent._relational_terminal_step_gate_enabled(), gate
+                )
+                self.assertEqual(
+                    agent._relational_certified_tier_enabled(), tier
+                )
+
+
+class RelationalTerminalStepGateTests(unittest.TestCase):
+    """Rule R-A's predicate: the S3 deposit view at the CURRENT position."""
+
+    def test_view_is_none_for_every_pre_e8_configuration(self) -> None:
+        # Off, outside selection authority, and with seam S3 disabled: the
+        # gate does not merely decline, it does not exist.
+        cases = (
+            {"terminal_step": "off"},
+            {"terminal_step": "decline_restore", "authority": "off"},
+            {"terminal_step": "decline_restore", "authority": "telemetry"},
+            {"terminal_step": "decline_restore", "seams": "restore_only"},
+            {"terminal_step": "decline_restore", "seams": "both"},
+            {"terminal_step": "decline_restore", "seams": "off"},
+        )
+        for case in cases:
+            with self.subTest(**case):
+                _env, _logger, agent = _terminal_step_agent(**case)
+                self.assertIsNone(agent._relational_terminal_step_view())
+
+    def test_gate_fires_at_manhattan_distance_exactly_one(self) -> None:
+        _env, _logger, agent = _terminal_step_agent(
+            player_cell=DEPOSIT_ADJACENT_CELL
+        )
+        view = agent._relational_terminal_step_view()
+        assert view is not None
+        self.assertTrue(view["gate_eligible"])
+        self.assertTrue(view["eligible"])
+        self.assertEqual(view["distance"], 1)
+        self.assertEqual(view["cell"], DEPOSIT_ADJACENT_CELL)
+        self.assertEqual(view["reason"], "certified_adjacent_position")
+
+    def test_gate_is_a_point_predicate_not_a_gradient(self) -> None:
+        # Design section 4.1 property 1, the mechanical answer to learnings
+        # section 4.50: there is no distance-2 behavior to follow toward
+        # distance 1, and no behavior at distance 0 either. The predicate is
+        # identically absent everywhere except the single terminal step.
+        for cell in (DEPOSIT_ON_TARGET_CELL, DEPOSIT_FAR_CELL):
+            with self.subTest(cell=cell):
+                _env, _logger, agent = _terminal_step_agent(player_cell=cell)
+                view = agent._relational_terminal_step_view()
+                assert view is not None
+                self.assertFalse(view["gate_eligible"])
+        # Distances two and three, the regime in which the section 4.50
+        # excursions run, are equally and identically absent.
+        for cell, distance in (((1, 2), 2), ((1, 1), 3)):
+            with self.subTest(cell=cell):
+                _env, _logger, agent = _terminal_step_agent(player_cell=cell)
+                view = agent._relational_terminal_step_view()
+                assert view is not None
+                self.assertEqual(view["distance"], distance)
+                self.assertFalse(view["gate_eligible"])
+                self.assertEqual(view["reason"], "not_certified_adjacent")
+
+    def test_all_four_named_refusal_reasons_survive(self) -> None:
+        # Section 4.3: a decline must be as readable in the log as a fire,
+        # which is what made E6's twelve declines diagnosable.
+        _env, _logger, agent = _terminal_step_agent(
+            player_cell=DEPOSIT_FAR_CELL
+        )
+        self.assertEqual(
+            agent._relational_terminal_step_view()["reason"],
+            "not_certified_adjacent",
+        )
+
+        _env, _logger, agent = _terminal_step_agent(player_cell=None)
+        self.assertEqual(
+            agent._relational_terminal_step_view()["reason"],
+            "position_unavailable",
+        )
+
+        _env, _logger, agent = _terminal_step_agent(
+            dark_transition_observed=True
+        )
+        self.assertEqual(
+            agent._relational_terminal_step_view()["reason"],
+            "position_not_certified",
+        )
+
+        _env, _logger, agent = _terminal_step_agent()
+        agent.current_human_prior_root_object_state = replace(
+            agent.current_human_prior_root_object_state,
+            tracked_world_state_signature="some-other-configuration",
+        )
+        self.assertEqual(
+            agent._relational_terminal_step_view()["reason"],
+            "held_configuration_absent",
+        )
+
+    def test_life_loss_recovery_pending_refuses_the_position(self) -> None:
+        # The current-position analogue of `life_counter_changed`. P1 stays
+        # hypothesis-blind (section 3.2): R-A never runs ahead of it, and a
+        # position reached by losing a life is never certified.
+        _env, _logger, agent = _terminal_step_agent()
+        agent.pending_life_recovery = SimpleNamespace(decision=0)
+        view = agent._relational_terminal_step_view()
+        assert view is not None
+        self.assertFalse(view["gate_eligible"])
+        self.assertEqual(view["reason"], "position_not_certified")
+
+    def test_deposit_view_at_commit_time_is_unchanged(self) -> None:
+        # The new keyword must not perturb seam S3's own gate: every
+        # existing caller passes a committed analysis and nothing else.
+        _env, _logger, agent = _terminal_step_agent(
+            terminal_step="off", player_cell=DEPOSIT_FAR_CELL
+        )
+        view = agent._relational_navigation_deposit_view(
+            _navigation_goal_analysis(DEPOSIT_ADJACENT_CELL)
+        )
+        assert view is not None
+        self.assertTrue(view["eligible"])
+        self.assertEqual(view["cell"], DEPOSIT_ADJACENT_CELL)
+        self.assertEqual(view["distance"], 1)
+
+
+class RelationalTerminalStepRestoreTests(unittest.TestCase):
+    """R-A at the bifurcation: decline one restore, and only decline."""
+
+    def _stagnation_agent(self, terminal_step: str, player_cell):
+        env, logger, agent = _terminal_step_agent(
+            terminal_step, player_cell=player_cell
+        )
+        _adjacent, _novelty = _navigation_restore_archive(env, agent)
+        return env, logger, agent
+
+    def test_incumbent_restores_and_the_gate_declines_the_same_instant(
+        self,
+    ) -> None:
+        _env, control_logger, control = self._stagnation_agent(
+            "off", DEPOSIT_ADJACENT_CELL
+        )
+        _env, treatment_logger, treatment = self._stagnation_agent(
+            "decline_restore", DEPOSIT_ADJACENT_CELL
+        )
+        control_archive = len(control.archive)
+        treatment_archive = len(treatment.archive)
+
+        self.assertIsNotNone(control._restore_if_stagnant())
+        self.assertIsNone(treatment._restore_if_stagnant())
+
+        # The incumbent consumed an archive; R-A preserved every one of
+        # them, so the deposit E7 proved it can make survives (section 3.1).
+        self.assertEqual(len(control.archive), control_archive - 1)
+        self.assertEqual(len(treatment.archive), treatment_archive)
+        self.assertFalse(
+            _relational_events(control_logger, "relational_terminal_step_gate")
+        )
+        gates = _relational_events(
+            treatment_logger, "relational_terminal_step_gate"
+        )
+        self.assertEqual(len(gates), 1)
+        self.assertTrue(gates[0]["eligible"])
+        self.assertTrue(gates[0]["restore_suppressed"])
+        self.assertEqual(gates[0]["distance"], 1)
+        self.assertEqual(
+            gates[0]["recovery_reason"], "human_prior_graph_stagnation"
+        )
+
+    def test_the_redundancy_field_names_the_incumbent_choice(self) -> None:
+        # Section 4.3: three of five prior levers failed or nearly failed
+        # because the incumbent would have chosen the same thing. E8 must be
+        # able to say so from its own telemetry, not from an argument made
+        # afterwards, so what `_restore_if_stagnant` WOULD have returned is
+        # computed before suppression, logged, and discarded.
+        _env, control_logger, control = self._stagnation_agent(
+            "off", DEPOSIT_ADJACENT_CELL
+        )
+        control_decision = control._restore_if_stagnant()
+        assert control_decision is not None
+        incumbent = _relational_events(
+            control_logger, "relational_navigation_restore_selected"
+        )[-1]["selected_state_id"]
+
+        _env, treatment_logger, treatment = self._stagnation_agent(
+            "decline_restore", DEPOSIT_ADJACENT_CELL
+        )
+        self.assertIsNone(treatment._restore_if_stagnant())
+        gate = _relational_events(
+            treatment_logger, "relational_terminal_step_gate"
+        )[0]
+        self.assertEqual(gate["incumbent_restore_state_id"], incumbent)
+        self.assertIn("incumbent_restore_distance", gate)
+        self.assertIn("incumbent_restore_is_self_restore", gate)
+
+    def test_a_decline_is_logged_at_every_evaluation_not_only_when_it_fires(
+        self,
+    ) -> None:
+        _env, logger, agent = self._stagnation_agent(
+            "decline_restore", DEPOSIT_FAR_CELL
+        )
+        self.assertIsNotNone(agent._restore_if_stagnant())
+        gates = _relational_events(logger, "relational_terminal_step_gate")
+        self.assertEqual(len(gates), 1)
+        self.assertFalse(gates[0]["eligible"])
+        self.assertFalse(gates[0]["restore_suppressed"])
+        self.assertEqual(gates[0]["reason"], "not_certified_adjacent")
+
+    def test_the_gate_can_only_decline_never_choose(self) -> None:
+        # Section 3.1: one-sided and terminal. R-A never selects a branch,
+        # never orders two of them, and never proposes a destination — so at
+        # every instant it does not fire, the restored branch is the
+        # incumbent's, identically.
+        for cell in (DEPOSIT_FAR_CELL, DEPOSIT_ON_TARGET_CELL):
+            with self.subTest(cell=cell):
+                _env, control_logger, control = self._stagnation_agent(
+                    "off", cell
+                )
+                _env, treatment_logger, treatment = self._stagnation_agent(
+                    "decline_restore", cell
+                )
+                self.assertIsNotNone(control._restore_if_stagnant())
+                self.assertIsNotNone(treatment._restore_if_stagnant())
+                self.assertEqual(
+                    _relational_events(
+                        control_logger,
+                        "relational_navigation_restore_selected",
+                    )[-1]["selected_state_id"],
+                    _relational_events(
+                        treatment_logger,
+                        "relational_navigation_restore_selected",
+                    )[-1]["selected_state_id"],
+                )
+
+    def test_the_decline_does_not_re_arm_or_accumulate(self) -> None:
+        # Section 4.1 property 3: the effect is bounded to one decision. The
+        # stagnation flag is left in the state the incumbent's own
+        # no-restore fall-through leaves it, and `decide()` recomputes it
+        # from graph visits on the next decision regardless.
+        _env, _logger, agent = self._stagnation_agent(
+            "decline_restore", DEPOSIT_ADJACENT_CELL
+        )
+        self.assertIsNone(agent._restore_if_stagnant())
+        self.assertFalse(agent.human_prior_graph_recovery_pending)
+        self.assertFalse(agent.delayed_return_recovery)
+
+    def test_safety_restore_paths_carry_no_terminal_step_gate(self) -> None:
+        # Section 3.2: P1 (life-loss recovery) and P4 (goal-exhaustion
+        # rollback) stay hypothesis-blind and unmodified.
+        import lolo_agent.neural_planner as neural_planner_module
+
+        source = Path(neural_planner_module.__file__).read_text()
+        for method in (
+            "_restore_after_life_loss",
+            "_restore_goal_milestone_after_exhaustion",
+        ):
+            start = source.index(f"    def {method}(")
+            end = source.index("\n    def ", start + 1)
+            self.assertNotIn("terminal_step", source[start:end], method)
+
+
+class RelationalCertifiedTierTests(unittest.TestCase):
+    """Rule R-B: the certified-cell conjunct on Tier 7's interlock."""
+
+    def _branches(self, collected_cells):
+        rows = []
+        for index, cells in enumerate(collected_cells):
+            item, analysis = _navigation_selection_branch(
+                DEPOSIT_ADJACENT_CELL, float(index)
+            )
+            rows.append(
+                (
+                    item,
+                    replace(
+                        analysis,
+                        collected=tuple(
+                            (cell[0] * 16, cell[1] * 16) for cell in cells
+                        ),
+                        heart_reward=25.0,
+                        total_reward=25.0,
+                    ),
+                )
+            )
+        return _navigation_ladder_inputs(rows)
+
+    def test_conjunct_is_empty_for_every_pre_e8_configuration(self) -> None:
+        rows, analyses = self._branches([[DEPOSIT_ON_TARGET_CELL]])
+        cases = (
+            {"terminal_step": "off"},
+            {"terminal_step": "decline_restore"},
+            {
+                "terminal_step": "decline_restore_and_certified_tier",
+                "authority": "off",
+            },
+            {
+                "terminal_step": "decline_restore_and_certified_tier",
+                "authority": "telemetry",
+            },
+        )
+        for case in cases:
+            with self.subTest(**case):
+                _env, _logger, agent = _terminal_step_agent(**case)
+                self.assertEqual(
+                    agent._relational_certified_milestone_branches(
+                        rows, analyses
+                    ),
+                    [],
+                )
+
+    def test_conjunct_selects_only_certified_milestone_collections(
+        self,
+    ) -> None:
+        rows, analyses = self._branches(
+            [[DEPOSIT_ON_TARGET_CELL], [], [DEPOSIT_FAR_CELL]]
+        )
+        _env, _logger, agent = _terminal_step_agent(
+            "decline_restore_and_certified_tier"
+        )
+        selected = agent._relational_certified_milestone_branches(
+            rows, analyses
+        )
+        self.assertEqual(selected, [rows[0]])
+        self.assertEqual(len(rows), 3)
+
+    def test_blast_radius_is_zero_where_no_milestone_branch_exists(
+        self,
+    ) -> None:
+        # Design section 3.1 requires this be asserted as a test rather than
+        # assumed. Measured offline across all three E7 arms: 105
+        # commit-path verified branches, a `milestone_reward > 0` branch at
+        # exactly two of the fifteen expansion decisions per arm (d1 and
+        # d3), and both already committed via Tier 7 with the frontier
+        # choice `None`. At the other thirteen the conjunct is empty by
+        # construction, so R-B cannot reorder them.
+        rows, analyses = self._branches([[], []])
+        _env, _logger, agent = _terminal_step_agent(
+            "decline_restore_and_certified_tier"
+        )
+        self.assertEqual(
+            agent._relational_certified_milestone_branches(rows, analyses),
+            [],
+        )
+
+    def test_the_tier_six_guard_yields_only_to_the_conjunct(self) -> None:
+        # Relaxing the `:23577` computation interlock alone would be a
+        # provable no-op, because the `elif` cascade reaches the novelty
+        # tier first. Both halves are pinned here so a future edit that
+        # removes one is caught.
+        import lolo_agent.neural_planner as neural_planner_module
+
+        source = Path(neural_planner_module.__file__).read_text()
+        guard = source.index(
+            "                human_prior_semantic_frontier_choice "
+            "is not None\n"
+        )
+        yield_conjunct = source.index(
+            "and not relational_certified_milestone_branches", guard
+        )
+        interlock = source.index(
+            "if relational_certified_milestone_branches", 0
+        )
+        self.assertLess(guard, yield_conjunct)
+        self.assertLess(interlock, guard)
+
+
+class RelationalTerminalStepInvarianceTests(unittest.TestCase):
+    """Precondition P4: byte-identity across authorities and modes."""
+
+    def _decide(self, terminal_step, authority, model):
+        logger = _RelationalRecordingLogger()
+        agent = VerifiedNeuralAgent(
+            _RelationalSeamEnv(),
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.LEFT, Action.RIGHT),
+                planning_depth=1,
+                relational_planner_enabled=(authority != "off"),
+                relational_planner_authority=authority,
+                relational_navigation_seams="restore_plus_deposit",
+                relational_terminal_step=terminal_step,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        decision = agent.decide()
+        return decision, logger.events
+
+    def test_the_new_value_changes_nothing_outside_selection_authority(
+        self,
+    ) -> None:
+        # One shared model across every arm, so model-derived telemetry
+        # compares equal and any difference is the selector's alone.
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        for authority in ("off", "telemetry"):
+            baseline_decision, baseline_events = self._decide(
+                "off", authority, model
+            )
+            for mode in (
+                "decline_restore",
+                "decline_restore_and_certified_tier",
+            ):
+                with self.subTest(authority=authority, mode=mode):
+                    decision, events = self._decide(mode, authority, model)
+                    self.assertEqual(decision.action, baseline_decision.action)
+                    self.assertEqual(decision.score, baseline_decision.score)
+                    self.assertEqual(
+                        decision.branches_examined,
+                        baseline_decision.branches_examined,
+                    )
+                    self.assertEqual(events, baseline_events)
+
+    def test_no_terminal_step_token_reaches_the_pure_module(self) -> None:
+        # Precondition P5's second conjunct: the selector is a planner-side
+        # concern and the strict-lineage module must not learn about it.
+        import lolo_agent.relational_planner as relational_planner_module
+
+        source = Path(relational_planner_module.__file__).read_text()
+        self.assertNotIn("terminal_step", source)
+
+
+class RelationalTerminalStepCliTests(unittest.TestCase):
+    """The E8 flag reaches the planning config, and only it does."""
+
+    _REQUIRED_CLI = (
+        "--host",
+        "h",
+        "--core",
+        "c",
+        "--rom",
+        "r",
+        "--checkpoint",
+        "k",
+    )
+
+    def _captured_config(self, argv_extra=()):
+        captured = {}
+        real_config = neural_run.NeuralPlanningConfig
+        real_loader = neural_run.load_ensemble_checkpoint
+
+        def capture(**kwargs):
+            if not kwargs:
+                # argparse defaults construct the bare config.
+                return real_config()
+            captured.update(kwargs)
+            raise _S0CapturedConfig()
+
+        neural_run.NeuralPlanningConfig = capture
+        neural_run.load_ensemble_checkpoint = (
+            lambda *args, **kwargs: (
+                _CliNamespace(checkpoint_digest="digest"),
+                1,
+            )
+        )
+        argv = sys.argv
+        sys.argv = ["neural_run", *self._REQUIRED_CLI, *argv_extra]
+        try:
+            neural_run.main()
+        except _S0CapturedConfig:
+            pass
+        finally:
+            neural_run.NeuralPlanningConfig = real_config
+            neural_run.load_ensemble_checkpoint = real_loader
+            sys.argv = argv
+        return captured
+
+    def test_default_is_off_and_the_flag_carries_each_mode(self) -> None:
+        self.assertEqual(
+            self._captured_config(())["relational_terminal_step"], "off"
+        )
+        for mode in (
+            "decline_restore",
+            "decline_restore_and_certified_tier",
+        ):
+            with self.subTest(mode=mode):
+                captured = self._captured_config(
+                    ("--relational-terminal-step", mode)
+                )
+                self.assertEqual(
+                    captured["relational_terminal_step"], mode
+                )
+                # The selector narrows what selection authority may do; it
+                # never grants authority and never moves a seam.
+                self.assertEqual(
+                    captured["relational_planner_authority"], "off"
+                )
+                self.assertEqual(
+                    captured["relational_navigation_seams"], "both"
+                )
+                self.assertEqual(captured["relational_lifecycle"], "budget_only")
+
+    def test_cli_rejects_an_unknown_terminal_step_mode(self) -> None:
+        argv = sys.argv
+        sys.argv = [
+            "neural_run",
+            *self._REQUIRED_CLI,
+            "--relational-terminal-step",
+            "decline_everything",
+        ]
+        try:
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                with self.assertRaises(SystemExit) as raised:
+                    neural_run.main()
+        finally:
+            sys.argv = argv
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("--relational-terminal-step", err.getvalue())
+
+
+class RelationalTerminalStepDecideTests(unittest.TestCase):
+    """Where R-A sits in `decide()`, and where it deliberately does not.
+
+    Learnings section 4.55: at v341 d17 `decide()` returned through
+    `_restore_if_stagnant()` — which runs before `planner.plan(...)` — with
+    `branches_examined: 0` and zero `branch_verified` events. R-A declines
+    exactly that restore. Two properties are pinned here.
+
+    Honest scope note: the miniature fixture cannot reach the
+    `human_prior_graph_stagnation` entry point, because that predicate needs
+    a populated goal-graph signature and this fixture's goal prior produces
+    an empty one. Fabricating a signature would test the fixture rather than
+    the code, so the fall-through itself is pinned structurally and bit 3 is
+    measured in vivo, where the geometry is real.
+    """
+
+    def test_gate_is_scoped_to_the_stagnation_restore(self) -> None:
+        # Section 3.2: safety recovery stays hypothesis-blind. A
+        # `visual_stagnation` restore at the very same geometry is left
+        # exactly as the incumbent leaves it — the gate evaluates, logs its
+        # evaluation, and declines to intervene.
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env, control_logger, control = _terminal_step_agent(
+            "off", player_cell=DEPOSIT_ADJACENT_CELL, model=model
+        )
+        _navigation_restore_archive(env, control)
+        env, treatment_logger, treatment = _terminal_step_agent(
+            "decline_restore_and_certified_tier",
+            player_cell=DEPOSIT_ADJACENT_CELL,
+            model=model,
+        )
+        _navigation_restore_archive(env, treatment)
+
+        control_decision = control.decide()
+        treatment_decision = treatment.decide()
+
+        self.assertTrue(control_decision.restored_archive)
+        self.assertTrue(treatment_decision.restored_archive)
+        self.assertEqual(control_decision.action, treatment_decision.action)
+        gate = _relational_events(
+            treatment_logger, "relational_terminal_step_gate"
+        )
+        self.assertEqual(len(gate), 1)
+        self.assertEqual(gate[0]["recovery_reason"], "visual_stagnation")
+        self.assertTrue(gate[0]["eligible"])
+        self.assertFalse(gate[0]["restore_suppressed"])
+        self.assertFalse(
+            _relational_events(
+                control_logger, "relational_terminal_step_gate"
+            )
+        )
+
+    def test_a_declined_restore_falls_through_to_the_planner(self) -> None:
+        # The structural claim R-A depends on: between the
+        # `_restore_if_stagnant()` return site and `planner.plan(...)` the
+        # only other way out of `decide()` is P4, the goal-exhaustion
+        # rollback, which section 3.2 forbids this design to touch. So a
+        # `None` return reaches expansion unless P4 independently fires.
+        import lolo_agent.neural_planner as neural_planner_module
+
+        source = Path(neural_planner_module.__file__).read_text()
+        start = source.index("        restored = self._restore_if_stagnant()")
+        end = source.index("        plans = self.planner.plan(self.frame)", start)
+        between = source[start:end]
+        returns = [
+            line.strip()
+            for line in between.splitlines()
+            if line.strip().startswith("return")
+        ]
+        self.assertEqual(returns, ["return restored", "return goal_exhaustion_recovery"])
+        self.assertIn("_restore_goal_milestone_after_exhaustion", between)
+        self.assertNotIn("terminal_step", between)
+
+    def test_the_ladder_tier_instrument_runs_on_the_expansion_path(
+        self,
+    ) -> None:
+        # Section 4.3's redundancy instrument sits inside `decide()`'s
+        # 4,500-line commit block and reads ten tier variables. This
+        # exercises it on a real expansion decision so a name that drifts
+        # out of scope is caught here rather than at the decisive instant of
+        # a three-hour run.
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        _env, logger, agent = _terminal_step_agent(
+            "decline_restore_and_certified_tier",
+            player_cell=DEPOSIT_ADJACENT_CELL,
+            model=model,
+        )
+        agent.visual_stagnation_streak = 0
+        agent.human_prior_graph_recovery_pending = False
+        agent.archive = []
+
+        decision = agent.decide()
+
+        self.assertFalse(decision.restored_archive)
+        self.assertGreater(decision.branches_examined, 0)
+        tiers = [
+            event
+            for event in logger.events
+            if event["event"] == "relational_ladder_tier_committed"
+        ]
+        self.assertEqual(len(tiers), 1)
+        self.assertEqual(
+            tiers[0]["terminal_step_mode"],
+            "decline_restore_and_certified_tier",
+        )
+        self.assertEqual(tiers[0]["relational_certified_milestone_branches"], 0)
+        # With no certified-milestone branch the counterfactual is the
+        # committed tier: R-B is inert, exactly as section 8.4 measured.
+        self.assertEqual(
+            tiers[0]["ladder_tier_committed"],
+            tiers[0]["ladder_tier_would_have_committed_without_R_B"],
+        )
+
+    def test_the_instrument_is_silent_at_every_pre_e8_setting(self) -> None:
+        model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        for mode, authority in (("off", "selection"), ("decline_restore", "off")):
+            with self.subTest(mode=mode, authority=authority):
+                _env, logger, agent = _terminal_step_agent(
+                    mode,
+                    authority=authority,
+                    player_cell=DEPOSIT_ADJACENT_CELL,
+                    model=model,
+                )
+                agent.visual_stagnation_streak = 0
+                agent.human_prior_graph_recovery_pending = False
+                agent.archive = []
+                agent.decide()
+                self.assertFalse(
+                    [
+                        event
+                        for event in logger.events
+                        if event["event"]
+                        == "relational_ladder_tier_committed"
+                    ]
+                )

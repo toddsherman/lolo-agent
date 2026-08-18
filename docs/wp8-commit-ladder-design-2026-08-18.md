@@ -700,3 +700,319 @@ WP5 shadow campaign (§4.42) remains the strict path.
 - **No claim that R-A closes Gate 4.** The most this design can establish is
   that the agent can take a final step it has demonstrably prepared for. Gate 4's
   broader criteria — and any claim about a second manipulation — remain untouched.
+
+---
+
+# 8. E8 PREREGISTRATION — written and committed to before any arm ran
+
+**Date**: 2026-08-18
+**Planner HEAD at implementation**: `86c085b` ("Correct the trigger-A cause: the
+ladder was never entered"). `git diff --stat fefbca7 86c085b` touches
+**documentation only**, so every line anchor in §1–§7 above was still valid when
+the code was written; the §6.1 warning about anchor decay is nonetheless why the
+tests below pin positions relative to named neighbours rather than to numbers.
+**Status of this section when written**: preconditions discharged, code landed,
+suite green, **no arm run, no bit scored.**
+
+Nothing in §8.1–§8.6 may be revised after the first arm starts.
+
+## 8.1 Preconditions — all five discharged offline, before any emulator time
+
+| # | Precondition | Verdict | Evidence |
+| --- | --- | --- | --- |
+| P1 | R-A's predicate would have fired at v341 d17 | **PASS** | §8.2 |
+| P2 | Is a `(12,11)`-collecting branch `outcome_known`? | **TRUE ⇒ R-B is required and in scope** | §8.3 |
+| P3 | R-B's blast radius is zero off the decisive instant | **PASS** | §8.4 |
+| P4 | Cross-version byte-identity at authority `off`/`telemetry` | **PASS** | §8.5 |
+| P5 | Strict-lineage linter clean; no selector token in the pure module | **PASS** | §8.5 |
+
+## 8.2 P1 — the predicate fires at the decisive instant
+
+Replayed against v341's own telemetry rather than asserted:
+
+| Input to `_relational_navigation_deposit_view(..., current_position=True)` | Value at d17 |
+| --- | --- |
+| Current position (d16's commit, seq 82663) | player `(192,160)` ⇒ cell `(12,10)` |
+| Published targets | `[[12,11]]` |
+| Manhattan distance | **exactly 1** |
+| Hold signature | `85fd9014d58deb42`, live at d15, d16, **d17**, d18 and d19 |
+| Hold clause | passes — d19's decline reads `not_certified_adjacent`, **not** `held_configuration_absent`, so the configuration signature still equalled the hold signature after d17/d18 |
+| `pending_life_recovery` | `None` (the run records **zero** life losses) |
+| Dark transition | none |
+| Recovery reason at d17 | `human_prior_graph_stagnation` — R-A's scoped reason |
+| ⇒ gate | **`eligible: true`, `restore_suppressed: true`** |
+
+And the redundancy field P1 makes checkable in advance: the incumbent's
+selection at d17 was `state-00012381`, cell `(12,10)`, distance 1 — **the state
+the agent was already standing in.** `incumbent_restore_is_self_restore` will
+read `true`. R-A's contribution at this instant is therefore *not* holding the
+position; the incumbent was already holding it. It is freeing the decision to
+act. §4.3 required that distinction be readable in the log rather than inferred,
+and it will be.
+
+## 8.3 P2 — ANSWER: **TRUE.** R-B is required and is built
+
+The design named P2 "this design's E3-pre: a cheap check that can change the
+experiment, run first". It ran first, and it changed the experiment.
+
+**Method.** The real seeding path, not a re-implementation:
+`VerifiedNeuralAgent.seed_human_prior_episodic_memory()` was run over
+`iter_episodic_decision_events(entity-v318-…-d2, 1)` — the identical stream E7
+resumed from — with v341's own `planning_config` reconstructed from its
+manifest. **The reconstruction validates against the run's own seeding
+telemetry on six independent counters**, all exact:
+
+| Counter | Reconstructed | v341 seq 14 |
+| --- | --- | --- |
+| `milestone_outcomes` | 12 | 12 |
+| `exhausted_milestone_transitions` | 5 | 5 |
+| `exhausted_milestone_goal_slots` | 1 | 1 |
+| `disproved_ordering_hypotheses` | 1 | 1 |
+| `graph_states` | 374 | 374 |
+| `episodic_milestone_transitions` | 65 | 65 |
+
+**Result.** The synthetic `(192,176)`-collecting analysis at d17's actual heart
+state — source `((128,64),(144,192),(192,176))`, target `((128,64),(144,192))`,
+player `(192,176)`, chest flags `False`/`False` — has outcome key
+
+```
+(((128,64),(144,192),(192,176)), ((128,64),(144,192)), (192,176), False, False)
+```
+
+and **that key is already in the seeded set.** Three further seeded keys also end
+with the player on `(192,176)`. Therefore:
+
+- `_human_prior_milestone_outcome_known` ⇒ **True**
+- `_human_prior_milestone_transition_exhausted` ⇒ False (with and without the
+  world-context override)
+- The collecting branch lands in `known_goal_branches`, **not**
+  `positive_goal_branches` ⇒ **Tier 7, not Tier 3.**
+
+§2.6's contingent second defect is therefore **real, not hypothetical**, and
+§5.1 P2's rule — "**True** ⇒ R-B is required and is in scope" — binds. R-B is
+built.
+
+**One correction to §3.1's specification of R-B, recorded before the run.**
+Relaxing the `:23577–23578` computation interlock *alone* would have been a
+**provable no-op**, because the ladder is an `elif` cascade and Tier 6 (`:23983`)
+is evaluated before Tier 7 (`:24025`): the frontier choice would still have won
+regardless of whether `known_goal_fallback_choice` was computed. R-B as built
+therefore adds the certified-cell conjunct in **both** places — the interlock,
+and Tier 6's own guard, which stands aside only when a branch collecting an
+uncollected certified milestone cell exists. This is the same conjunct in two
+positions, not a wider change; shipping the one-sided version would have been
+shipping a change known in advance to do nothing.
+
+## 8.4 P3 — R-B's blast radius, measured
+
+Across **all three** E7 arms, from telemetry:
+
+| Quantity | v340 control | v341 treatment | v342 attribution |
+| --- | --- | --- | --- |
+| Commit-path `branch_verified` | 105 | 105 | 105 |
+| Expansion decisions in window | 15 | 15 | 15 |
+| Decisions with a `milestone_reward > 0` branch | **2** (d1, d3) | **2** (d1, d3) | **2** (d1, d3) |
+| Tier committed at those two | 7, 7 | 7, 7 | 7, 7 |
+| Tier committed at the other 13 | 6 (all) | 6 (all) | 6 (all) |
+
+At the two milestone decisions Tier 7 **already** committed, with the frontier
+choice `None` — R-B cannot reorder what the incumbent already chose. At the other
+13 per arm the conjunct is empty by construction. **Blast radius off the decisive
+instant: exactly zero.** §3.1 required this be asserted as a test rather than
+assumed; it is (`RelationalCertifiedTierTests.test_blast_radius_is_zero_where_
+no_milestone_branch_exists`).
+
+This also confirms §2.6's warning empirically: **every** expansion decision in
+the window except d1 and d3 commits at Tier 6, position novelty. That is the
+regime R-B has to survive.
+
+## 8.5 What was built, and what was deliberately not
+
+**R-A** — `_relational_terminal_step_view()`, plus a guard inside
+`_restore_if_stagnant` placed **after** `branch = max(restore_eligible, …)` and
+**before** `self.archive.remove(branch)` / the state load. §3.1 specified guards
+at the `:21702` and `:21329` call sites "which share `_restore_if_stagnant`";
+implementing it inside the shared method covers both call sites by construction
+and is the **only** position at which the incumbent's selection is known, which
+§4.3 requires be logged. Three consequences, all intended:
+
+- The `(12,10)` archive is **not** consumed. §2.5's loss (`hold_matching_
+  candidates` 7→6, so d18 could only reach `(12,7)`) does not occur. The deposit
+  E7 proved it can make survives for a later decision.
+- `incumbent_restore_state_id` / `_cell` / `_distance` / `_is_self_restore` are
+  measured, not argued.
+- R-A is scoped to `recovery_reason == "human_prior_graph_stagnation"`. This is
+  narrower than §3.1's literal text and deliberately so: it is the reason at the
+  only measured opportunity, and it leaves dark-transition returns alongside P1
+  and P4 untouched (§3.2).
+
+**R-B** — `_relational_certified_milestone_branches()`, applied to Tier 7's
+interlock and Tier 6's guard as §8.3 explains.
+
+**Selector** — one new config field, `relational_terminal_step`, default `"off"`,
+validated exactly like the authority: `off` | `decline_restore` |
+`decline_restore_and_certified_tier`. CLI `--relational-terminal-step`. It is the
+single field VOID rule 1 permits the scored pair to differ in. It is inert
+outside selection authority and inert with seam S3 off.
+
+**Not built, per §3.2**: no new ladder tier; no re-enabling of S1; no radius
+widening (`RELATIONAL_NAVIGATION_DEPOSIT_MAX_DISTANCE` stays 1); no budget
+re-arm, weight, reward term, or `--decisions` increase; no change to P1 or P4.
+**Nothing in this change adjusts a number a previous experiment set** (§4.4).
+`relational_planner.py` is **untouched**.
+
+**Evidence that the defaults preserve today's behaviour byte-identically (P4)
+and that the pure module stays clean (P5)**: 23 appended tests in
+`tests/test_ensemble_planner.py`; full suite **1,150 OK, 4 skipped** (baseline
+1,127 + 23). One pre-existing test changed: the §6.1 anchor-drift pin on Tier 6's
+guard line, which R-B legitimately rewrote — the *ordering* invariant it exists
+to protect is asserted unchanged. `python -m lolo_agent.strict_lineage
+lolo_agent/relational_planner.py` reports **zero findings**.
+
+## 8.6 Arms, matched budgets, run ids
+
+Three arms, **sequential, one native run at a time**, watchdog **10,800 s** each,
+detached so a stopped wrapper cannot orphan the emulator (§4.52 and the E7
+restart incident). Same v318 pre-push root (`source_decision: 1`,
+`state_source_checkpoint_event_seq: 2026`, `state_source_events_sha256:
+0bbe1d15…`). Command line: `docs/wp8-search-scheduling-design-2026-08-17.md`
+§11.3 **verbatim**, with `--relational-navigation-seams restore_plus_deposit` and
+`--relational-lifecycle chain_published` as in E7, and one new flag.
+
+| Arm | Run id | Authority | `--relational-terminal-step` | Scored? |
+| --- | --- | --- | --- | --- |
+| Control | `entity-v343-room3-e8-control-off-d24` | `off` | `off` | Yes — runs **first** |
+| Treatment | `entity-v344-room3-e8-treatment-terminalstep-d24` | `selection` | `decline_restore_and_certified_tier` | Yes |
+| Attribution (unscored) | `entity-v345-room3-e8-standingrule-store-d24` | `selection` + `--relational-lifecycle record_store` | `decline_restore_and_certified_tier` | **No bits.** Reported, never cited |
+
+Everything else byte-identical: 24 decisions, `relational_decision_budget: 12`,
+`verified_accessibility_weight: 0.0`, records `15604cb5…`/`37ea410d…`/`47975c94…`.
+
+## 8.7 The preregistered bits (fixed; **ANY mixed outcome = FAIL**)
+
+**Bit 1 — SUPPLY AND PREFIX (the §4.50 guard).** All three conjuncts.
+(a) The treatment reproduces v341 state-for-state for **d1–d16**; the
+intervention instant is d17, so the entire approach must be untouched.
+(b) The control reproduces v340 exactly, extending the
+**v333≡v334≡v336≡v338≡v340** invariance chain in vivo. *A control that does not
+reproduce that chain is a **VOID**, not a FAIL* (VOID 6).
+(c) **Archive geography not narrowed**: treatment column range ⊇ control's
+(expected 6–12 both), deposit count within one of the control's 44.
+A failure of 1(c) is §4.50 recurring; **abandon, do not tune** (§3.3(3)).
+
+**Bit 2 — THE GATE FIRES AT THE DECISIVE INSTANT.** At d17 a
+`relational_terminal_step_gate` event with `eligible: true`, `cell: [12,10]`,
+`distance: 1`, `hold_configuration_signature: 85fd9014d58deb42`,
+`restore_suppressed: true`, **and** the redundancy field
+`incumbent_restore_state_id` recorded. Per §8.2 it is expected to read
+`state-00012381` — a self-restore.
+
+**Bit 3 — THE CANDIDATE IS GENERATED.** At the decisive decision the treatment
+reports `branches_examined: 7` **and ≥ 1 `branch_verified` event whose
+`human_prior_target_hearts` drops `[192,176]`** — the collecting branch provably
+exists in the verified set. **Scored independently of the outcome.** This bit has
+never been reached by any prior experiment: every prior central bit was about
+ranking or candidacy among branches that existed, and bit 3 asks whether the
+branch is generated at all. A bit-3 FAIL localizes the gap to **reachability**;
+a bit-3 PASS with a bit-4 FAIL localizes it to **ranking**. Both are strictly
+more informative than a null.
+
+**Bit 4 — OUTCOME.** `(12,11)` / `(192,176)` collected by the treatment and not
+by the control, within 24 decisions.
+
+**Bit 5 — SAFETY.** Zero life losses in both scored arms; no
+`position_not_certified` deposit; P1 (life-loss recovery, `:21295`) and P4
+(goal-exhaustion rollback, `:21732`) unmodified and un-suppressed.
+
+**Readings fixed in advance:**
+
+- **Bits 1–3 PASS, bit 4 FAIL** ⇒ the collecting branch existed and the ladder
+  still discarded it. *That* is the ranking failure roadmap §22 hypothesised, and
+  it is then — and only then — grounds for the ladder-as-policy-object rewrite
+  (§3.3(1)). It also fires **§5.7 retirement condition 3** if it recurs across a
+  second independent intervention.
+- **Bits 1–2 PASS, bit 3 FAIL** ⇒ reachability, not ranking. The ladder is
+  exonerated and the object moves to branch generation. A valuable narrowing, not
+  a null, and it must be reported as such.
+- **Bit 1(a) FAIL** (treatment's d1–d16 diverges from v341) ⇒ pre-declared
+  reading: "the gate widened the intervention window and moved the approach". A
+  **FAIL with a named mechanism** — not a VOID, and **not** grounds for
+  re-scoping and re-running.
+- **`ladder_tier_committed == ladder_tier_would_have_committed_without_R_B` at
+  the decisive instant** ⇒ R-B was redundant, and the report must say so
+  regardless of what bit 4 reads (§4.3).
+
+## 8.8 Honest power analysis
+
+- **There is no sampling variance.** Runs are deterministic. "Power" means
+  opportunity count.
+- **The guaranteed opportunity count is exactly ONE**: v341 d17, the single
+  decision that begins at `(12,10)` under the hold with the deposit already made.
+  v341 d18 also begins at distance 1, but **R-A firing at d17 changes the
+  trajectory from d17 onward, so d18 is not a guaranteed second opportunity.**
+  Report it if it occurs; do not count on it. n = 1, stated plainly.
+- **The corpus supplies 11 distance-≤1 decision-starts across ten runs and zero
+  expansion decisions at distance ≤ 1.** E8 does not increase that supply and
+  must not try to: raising `--decisions`, widening the radius, and re-enabling S1
+  are all excluded by §3.2.
+- **What a PASS cannot show**: that the planner can cause a search (E4 remains
+  untested); that *hypothesis-driven* planning rather than a standing rule
+  produced the behaviour (§6.3 — the attribution arm decides that, and E7's
+  precedent is that it may not); or that a second manipulation is possible.
+
+## 8.9 VOID conditions (a VOID is not evidence)
+
+1. **Config inequality** — the scored pair's `planning_config` differ in any
+   field except `relational_planner_authority`, `relational_planner_enabled`, and
+   `relational_terminal_step`. Both must report `relational_lifecycle:
+   chain_published`, `relational_navigation_seams: restore_plus_deposit`,
+   `relational_decision_budget: 12`.
+2. **Records inequality** — both arms `record_count: 3`, signatures
+   `15604cb5…`/`37ea410d…`/`47975c94…`, `verified_accessibility_weight: 0.0`.
+3. **Seeding defect** — no archived branch carrying `85fd9014d58deb42` in the
+   window in either arm (E7 measured 23).
+4. **Root defect** — either manifest's `episodic_resume` block does not record
+   `entity-v318-room3-known-push-connected-mask-d2`, `source_decision: 1`,
+   `state_source_checkpoint_event_seq: 2026`, `state_source_events_sha256:
+   0bbe1d15…`.
+5. **Budget defect** — either arm exceeds the 10,800 s wall ceiling and is killed
+   before `run_finished`; or verified-branch counts differ by more than 1%
+   **on d1–d16 only** (R-A is expected to add one decision's worth of branches
+   from d17, and that delta is the mechanism, not a defect).
+6. **Control-invariance defect** — the control's 24 committed state ids do not
+   reproduce v340's exactly. **A crashed arm is VOID, not FAIL.**
+7. **Standing-rule contamination** — no arm-3 artefact is an input to either
+   scored arm.
+
+Budget-exhausted non-reach is **censored**, never "unreachable".
+
+## 8.10 Health-check rule (§4.52), fixed before the run
+
+- The process is `python -m lolo_agent.neural_run` — **underscores, module
+  form**. A hyphenated `pgrep` pattern can never match and its silence is not
+  evidence of death.
+- **Health is judged from the run's own telemetry**: monotone growth of
+  `events.jsonl`, corroborated by `pgrep -f "lolo_agent.neural_run"`. The first
+  `decision_committed` lands at seq ≈ **75,742** in every arm of this family;
+  **zero committed decisions at 6k events is on-profile, not a death.**
+- Two signals that share an author are not corroboration.
+- **A crashed arm is VOID, not FAIL**, so no diagnosis under time pressure can
+  convert an operational failure into evidence.
+- Runs are launched **detached** (`setsid`-equivalent, output redirected to a
+  log) so that stopping the wrapper cannot orphan or kill them.
+- Per §4.46, report option-search counts. Expected at this root: `completed: 1,
+  deferred: 9` in the control. **R-A does not grant searches; a change here is a
+  finding, not a nuisance.**
+
+## 8.11 Scoring
+
+One deterministic scorer walks each arm's `events.jsonl` once, applies §8.7
+verbatim, and writes `experiments/lolo1-wp5/e8-gate4-report.json` with a
+canonical-JSON `digest_sha256` over the body. Run end-to-end **twice**; both
+reports byte-identical. **Validated against v340/v341 first**: it must reproduce
+E7's verdicts exactly — the single d16 deposit at `(12,10)`, the 8 restore
+instants with 3 differing, `hold_matching_series [1,3,3,6,7,6,5,4]`, columns 6–12
+with 44/43 deposits, `option_searches {completed: 1, deferred: 9}`, and "never
+collected `(192,176)`" — before it is trusted on E8. Distances: **Chebyshev** for
+§4.47/§4.48-comparable traces, **Manhattan** for the mechanism's own gate
+distances.

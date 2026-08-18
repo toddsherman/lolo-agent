@@ -1021,6 +1021,36 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--relational-terminal-step",
+        choices=(
+            "off",
+            "decline_restore",
+            "decline_restore_and_certified_tier",
+        ),
+        default=NeuralPlanningConfig().relational_terminal_step,
+        help=(
+            "which WP8 terminal-step rules selection authority may use "
+            "(docs/wp8-commit-ladder-design-2026-08-18.md sections 3.1 "
+            "and 5.2, E8): 'off' (the default) keeps today's behavior "
+            "byte-identically and emits nothing; 'decline_restore' is "
+            "rule R-A, which DECLINES a human-prior graph stagnation "
+            "restore for one decision when the agent's current position "
+            "already satisfies seam S3's deposit predicate at Manhattan "
+            "distance exactly 1 under the hold, so decide() falls "
+            "through to planner.plan(...) and a candidate set exists at "
+            "all (learnings section 4.55: at v341 d17/d18 the commit "
+            "ladder was never entered — branches_examined 0, zero "
+            "verified branches — and d17's restore selected the state "
+            "the agent already occupied); "
+            "'decline_restore_and_certified_tier' adds rule R-B, which "
+            "the design gated behind precondition P2 and P2 licensed, "
+            "relaxing Tier 7's position-novelty interlock ONLY for "
+            "branches collecting an uncollected certified milestone "
+            "cell. Adds no tier, no term and no weight, and is inert at "
+            "any authority other than 'selection' and with seam S3 off"
+        ),
+    )
+    parser.add_argument(
         "--relational-decision-budget",
         type=int,
         default=NeuralPlanningConfig().relational_decision_budget,
@@ -2217,6 +2247,7 @@ def main() -> None:
         relational_planner_authority=args.relational_planner_authority,
         relational_navigation_seams=args.relational_navigation_seams,
         relational_lifecycle=args.relational_lifecycle,
+        relational_terminal_step=args.relational_terminal_step,
         relational_decision_budget=args.relational_decision_budget,
     )
     rom_sha256 = sha256_file(args.rom)
