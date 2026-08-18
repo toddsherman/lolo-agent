@@ -87,6 +87,18 @@ from .pixels import Frame, signature_key
 from .spatial_shadow import SpatialShadowEvaluator
 from .unlabeled_entities import UnlabeledEntityMemory
 
+# WP8 navigation-seam selector values
+# (docs/wp8-search-scheduling-design-2026-08-17.md section 13, E5).
+# S1 is the commit-ladder tier; S2 is the target-aware restore key.
+RELATIONAL_NAVIGATION_SEAMS_BOTH = "both"
+RELATIONAL_NAVIGATION_SEAMS_RESTORE_ONLY = "restore_only"
+RELATIONAL_NAVIGATION_SEAMS_OFF = "off"
+RELATIONAL_NAVIGATION_SEAM_MODES = (
+    RELATIONAL_NAVIGATION_SEAMS_BOTH,
+    RELATIONAL_NAVIGATION_SEAMS_RESTORE_ONLY,
+    RELATIONAL_NAVIGATION_SEAMS_OFF,
+)
+
 
 @dataclass(frozen=True)
 class NeuralPlanningConfig:
@@ -132,6 +144,18 @@ class NeuralPlanningConfig:
     # reserve slots.
     relational_planner_enabled: bool = False
     relational_planner_authority: str = "off"
+    # WP8 navigation-seam selector
+    # (docs/wp8-search-scheduling-design-2026-08-17.md section 13, E5).
+    # Which of the two navigation seams selection authority may use:
+    # "both" (the default, today's behavior exactly) enables the commit
+    # ladder tier S1 and the target-aware restore key S2; "restore_only"
+    # disables S1 so exploration is left untouched and only the closing
+    # restore is contested (learnings section 4.50: steering starved the
+    # archive supply later restores consume); "off" makes both seams
+    # inert while leaving the rest of selection authority alone. It is
+    # inert at any authority other than "selection", where neither seam
+    # can fire in the first place.
+    relational_navigation_seams: str = "both"
     relational_max_queue: int = 4
     relational_establish_budget: int = 48
     relational_hold_budget: int = 8
@@ -820,6 +844,14 @@ class VerifiedNeuralAgent:
             raise ValueError(
                 "relational planner enabled flag must match its "
                 "authority mode"
+            )
+        if (
+            self.config.relational_navigation_seams
+            not in RELATIONAL_NAVIGATION_SEAM_MODES
+        ):
+            raise ValueError(
+                "relational navigation seams must be one of "
+                f"{RELATIONAL_NAVIGATION_SEAM_MODES}"
             )
         if self.config.relational_max_queue <= 0:
             raise ValueError("relational max queue must be positive")
@@ -19436,6 +19468,22 @@ class VerifiedNeuralAgent:
             == RELATIONAL_AUTHORITY_SELECTION
         )
 
+    def _relational_navigation_commit_seam_enabled(self) -> bool:
+        """Seam S1 (commit ladder) selector; E5 disables it alone."""
+
+        return (
+            self.config.relational_navigation_seams
+            == RELATIONAL_NAVIGATION_SEAMS_BOTH
+        )
+
+    def _relational_navigation_restore_seam_enabled(self) -> bool:
+        """Seam S2 (target-aware restore key) selector."""
+
+        return self.config.relational_navigation_seams in (
+            RELATIONAL_NAVIGATION_SEAMS_BOTH,
+            RELATIONAL_NAVIGATION_SEAMS_RESTORE_ONLY,
+        )
+
     def _relational_config(self) -> RelationalPlannerConfig:
         return RelationalPlannerConfig(
             max_queue=self.config.relational_max_queue,
@@ -19945,7 +19993,9 @@ class VerifiedNeuralAgent:
         """Commit-ladder navigation tier (design section 4.2 C1, seam S1).
 
         Returns ``None`` — leaving the ladder byte-identical to today —
-        outside selection authority, without an active
+        outside selection authority, when the seam selector excludes S1
+        (``relational_navigation_seams`` other than ``both``; E5's
+        ``restore_only`` is exactly this case), without an active
         ``reach_cells_under_hold`` objective, or when the objective
         publishes no certified target cells. Otherwise it returns the
         non-fatal branch that **strictly reduces** grid distance to the
@@ -19954,6 +20004,8 @@ class VerifiedNeuralAgent:
         section 5.3 redundancy-detector payload.
         """
 
+        if not self._relational_navigation_commit_seam_enabled():
+            return None
         objective = self._relational_navigation_objective()
         if objective is None:
             return None
@@ -27483,7 +27535,10 @@ class VerifiedNeuralAgent:
                 self._relational_restore_preference(item),
                 plain_restore_key(item),
             )
-        elif self._relational_navigation_objective() is not None:
+        elif (
+            self._relational_navigation_restore_seam_enabled()
+            and self._relational_navigation_objective() is not None
+        ):
             # WP8 navigation-target seam S2 (search-scheduling design
             # section 4.2 C2; learnings section 4.48). The measured
             # failure this repairs: a control standing ONE cell from the

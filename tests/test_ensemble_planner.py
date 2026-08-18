@@ -18697,3 +18697,369 @@ class RelationalDecisionBudgetFlagTests(unittest.TestCase):
                     "--relational-decision-budget must be positive",
                     err.getvalue(),
                 )
+
+
+# ----------------------------------------------------------------------
+# E5 — the surgical closing intervention (learnings section 4.50;
+# docs/wp8-search-scheduling-design-2026-08-17.md section 13).
+#
+# E3 measured seam S1 (the commit-ladder tier) steering the trajectory and
+# starving the archive supply that later restores consume. S2 (the
+# target-aware restore key) has never been tested in isolation. The seam
+# selector below is the smallest change that makes that ablation possible;
+# its default reproduces today's behavior exactly.
+# ----------------------------------------------------------------------
+
+
+def _navigation_seam_agent(seams: str, authority: str = "selection", model=None):
+    """``_relational_exploit_agent`` with the seam selector applied.
+
+    The selector is set BEFORE the establish/exploit chain runs, so the
+    arm is honestly configured end to end rather than switched mid-run.
+    """
+
+    env, logger, agent, _neutral, _removal = _relational_seam_agent(
+        authority, _relational_records(), model=model
+    )
+    agent.config = replace(
+        agent.config, relational_navigation_seams=seams
+    )
+    if authority == "selection":
+        agent._relational_propose_and_log()
+        assert agent._restore_if_stagnant() is not None
+        agent._relational_feedback("committed_decision")
+    return env, logger, agent
+
+
+class RelationalNavigationSeamSelectorTests(unittest.TestCase):
+    """The E5 seam selector: ``both`` | ``restore_only`` | ``off``."""
+
+    def _ladder_rows(self):
+        return [
+            _navigation_selection_branch(NAVIGATION_ADJACENT_CELL, 1.0),
+            _navigation_selection_branch(NAVIGATION_DISTANT_CELL, 9.0),
+        ]
+
+    def test_default_is_both_so_todays_behavior_is_the_default(
+        self,
+    ) -> None:
+        self.assertEqual(
+            NeuralPlanningConfig().relational_navigation_seams, "both"
+        )
+
+    def test_selector_is_validated_like_the_authority(self) -> None:
+        for seams in ("sideways", "commit_only", "", "BOTH"):
+            with self.subTest(seams=seams):
+                with self.assertRaises(ValueError):
+                    VerifiedNeuralAgent(
+                        _RelationalSeamEnv(),
+                        EnsembleVisualDynamicsModel(
+                            latent_size=32, action_size=8, ensemble_size=2
+                        ),
+                        "cpu",
+                        NeuralPlanningConfig(
+                            relational_navigation_seams=seams
+                        ),
+                    )
+        for seams in ("both", "restore_only", "off"):
+            with self.subTest(seams=seams):
+                VerifiedNeuralAgent(
+                    _RelationalSeamEnv(),
+                    EnsembleVisualDynamicsModel(
+                        latent_size=32, action_size=8, ensemble_size=2
+                    ),
+                    "cpu",
+                    NeuralPlanningConfig(
+                        relational_navigation_seams=seams
+                    ),
+                )
+
+    def test_both_reproduces_todays_selection_mode_byte_for_byte(
+        self,
+    ) -> None:
+        # The default-preservation proof: an arm that names ``both``
+        # explicitly and an arm built by the untouched pre-E5 helper must
+        # agree on the commit view, the restore decision, the archive
+        # left behind, and the ENTIRE event stream.
+        shared_model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env_a, logger_a, named = _navigation_seam_agent(
+            "both", model=shared_model
+        )
+        env_b, logger_b, default = _relational_exploit_agent(
+            "selection", model=shared_model
+        )
+        self.assertEqual(logger_a.events, logger_b.events)
+
+        verified, analyses = _navigation_ladder_inputs(self._ladder_rows())
+        view_a = named._relational_navigation_commit_view(
+            verified, analyses
+        )
+        view_b = default._relational_navigation_commit_view(
+            verified, analyses
+        )
+        self.assertIsNotNone(view_a)
+        self.assertIsNotNone(view_b)
+        assert view_a is not None and view_b is not None
+        for key in (
+            "target_cells",
+            "hold_configuration_signature",
+            "source_cell",
+            "source_distance",
+            "choice_cell",
+            "choice_distance",
+            "hold_eligible",
+            "distance_reducing",
+            "decline_reason",
+        ):
+            self.assertEqual(view_a[key], view_b[key], key)
+
+        adjacent_a, _novelty_a = _navigation_restore_archive(env_a, named)
+        adjacent_b, _novelty_b = _navigation_restore_archive(
+            env_b, default
+        )
+        logger_a.events.clear()
+        logger_b.events.clear()
+        decision_a = named._restore_if_stagnant()
+        decision_b = default._restore_if_stagnant()
+        self.assertIsNotNone(decision_a)
+        self.assertIsNotNone(decision_b)
+        assert decision_a is not None and decision_b is not None
+        self.assertEqual(decision_a.action, decision_b.action)
+        self.assertEqual(decision_a.score, decision_b.score)
+        self.assertEqual(env_a.position, env_b.position)
+        # Both keep the certified-adjacent branch: seam S2 fired in both.
+        self.assertEqual(named.archive[0].score, default.archive[0].score)
+        self.assertNotIn(adjacent_a, named.archive)
+        self.assertNotIn(adjacent_b, default.archive)
+        self.assertEqual(logger_a.events, logger_b.events)
+
+    def test_restore_only_kills_S1_and_keeps_S2(self) -> None:
+        # E5's whole intervention: no commit-ladder tier at all, and the
+        # closing restore still refuses to abandon the adjacent position.
+        env, logger, agent = _navigation_seam_agent("restore_only")
+        verified, analyses = _navigation_ladder_inputs(self._ladder_rows())
+        self.assertIsNone(
+            agent._relational_navigation_commit_view(verified, analyses)
+        )
+        # The objective itself is untouched — only its commit consumer is.
+        self.assertIsNotNone(agent._relational_navigation_objective())
+
+        adjacent, novelty = _navigation_restore_archive(env, agent)
+        logger.events.clear()
+        self.assertIsNotNone(agent._restore_if_stagnant())
+
+        self.assertEqual(agent.archive, [novelty])
+        events = _relational_events(
+            logger, "relational_navigation_restore_selected"
+        )
+        self.assertEqual(len(events), 1)
+        self.assertTrue(events[0]["differs"])
+        self.assertEqual(
+            events[0]["selected_distance"], NAVIGATION_ADJACENT_DISTANCE
+        )
+        self.assertEqual(
+            events[0]["baseline_distance"], NAVIGATION_DISTANT_DISTANCE
+        )
+        # No commit-tier telemetry can exist when the tier is not built.
+        self.assertEqual(
+            _relational_events(logger, "relational_navigation_choice"), []
+        )
+        self.assertEqual(
+            _relational_events(logger, "relational_navigation_declined"),
+            [],
+        )
+
+    def test_off_reproduces_off_mode_for_both_seams(self) -> None:
+        # ``off`` under selection authority must reach the same restore
+        # the incumbent key reaches — the section 4.48 trade-away — and
+        # emit no navigation telemetry at all.
+        env, logger, agent = _navigation_seam_agent("off")
+        verified, analyses = _navigation_ladder_inputs(self._ladder_rows())
+        self.assertIsNone(
+            agent._relational_navigation_commit_view(verified, analyses)
+        )
+        adjacent, _novelty = _navigation_restore_archive(env, agent)
+        logger.events.clear()
+        self.assertIsNotNone(agent._restore_if_stagnant())
+        # Identical to RelationalNavigationRestoreTests'
+        # test_off_mode_trades_the_certified_adjacent_position_away: the
+        # novelty branch is restored and the adjacent one left behind.
+        self.assertEqual(agent.archive, [adjacent])
+        self.assertEqual(
+            [
+                event
+                for event in logger.events
+                if event["event"].startswith("relational_navigation")
+            ],
+            [],
+        )
+        restored = [
+            event
+            for event in logger.events
+            if event["event"] == "archive_branch_restored"
+        ]
+        self.assertTrue(restored)
+        self.assertEqual(
+            restored[-1]["reason"], "human_prior_graph_stagnation"
+        )
+
+    def test_off_matches_the_incumbent_baseline_the_S2_telemetry_names(
+        self,
+    ) -> None:
+        # The precise equivalence: what ``off`` restores is exactly the
+        # branch ``both`` reports as `baseline_state_id` — the choice the
+        # incumbent key would have made.
+        shared_model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env_on, logger_on, on = _navigation_seam_agent(
+            "both", model=shared_model
+        )
+        env_off, _logger_off, off = _navigation_seam_agent(
+            "off", model=shared_model
+        )
+        _adjacent_on, novelty_on = _navigation_restore_archive(env_on, on)
+        _adjacent_off, _novelty_off = _navigation_restore_archive(
+            env_off, off
+        )
+        logger_on.events.clear()
+        self.assertIsNotNone(on._restore_if_stagnant())
+        self.assertIsNotNone(off._restore_if_stagnant())
+        event = _relational_events(
+            logger_on, "relational_navigation_restore_selected"
+        )[0]
+        self.assertEqual(
+            event["baseline_cell"], list(NAVIGATION_DISTANT_CELL)
+        )
+        # `off` restored that baseline: the novelty branch is gone from
+        # its archive, and the adjacent branch survives.
+        self.assertEqual(len(off.archive), 1)
+        self.assertEqual(
+            off.archive[0].goal_player_slot,
+            (NAVIGATION_ADJACENT_CELL[0] * 16,
+             NAVIGATION_ADJACENT_CELL[1] * 16),
+        )
+        self.assertEqual(on.archive, [novelty_on])
+
+    def test_selector_is_inert_outside_selection_authority(self) -> None:
+        # The E5 control passes `--relational-navigation-seams
+        # restore_only` at authority `off` so the arms' planning_config
+        # differ in exactly the two authority fields (VOID V1). That is
+        # only legitimate if the selector cannot bite there.
+        for authority in ("off", "telemetry"):
+            streams = []
+            archives = []
+            shared_model = EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            )
+            for seams in ("both", "restore_only", "off"):
+                env, logger, agent = _navigation_seam_agent(
+                    seams, authority=authority, model=shared_model
+                )
+                adjacent, _novelty = _navigation_restore_archive(
+                    env, agent
+                )
+                logger.events.clear()
+                self.assertIsNotNone(agent._restore_if_stagnant())
+                verified, analyses = _navigation_ladder_inputs(
+                    self._ladder_rows()
+                )
+                self.assertIsNone(
+                    agent._relational_navigation_commit_view(
+                        verified, analyses
+                    )
+                )
+                streams.append(logger.events)
+                archives.append([branch.score for branch in agent.archive])
+            with self.subTest(authority=authority):
+                self.assertEqual(streams[0], streams[1])
+                self.assertEqual(streams[0], streams[2])
+                self.assertEqual(archives[0], archives[1])
+                self.assertEqual(archives[0], archives[2])
+                self.assertEqual(
+                    [
+                        event
+                        for event in streams[0]
+                        if event["event"].startswith("relational_")
+                    ],
+                    [],
+                )
+
+    def test_seam_helpers_map_modes_to_seams_exactly(self) -> None:
+        expected = {
+            "both": (True, True),
+            "restore_only": (False, True),
+            "off": (False, False),
+        }
+        for seams, (commit, restore) in expected.items():
+            with self.subTest(seams=seams):
+                _env, _logger, agent = _navigation_seam_agent(seams)
+                self.assertEqual(
+                    agent._relational_navigation_commit_seam_enabled(),
+                    commit,
+                )
+                self.assertEqual(
+                    agent._relational_navigation_restore_seam_enabled(),
+                    restore,
+                )
+
+
+class RelationalNavigationSeamFlagTests(unittest.TestCase):
+    """``--relational-navigation-seams`` reaches the planning config.
+
+    The CLI capture harness is reused by reference rather than by
+    inheritance, so this class adds tests instead of re-running (and
+    shadowing) ``RelationalDecisionBudgetFlagTests``.
+    """
+
+    _REQUIRED_CLI = RelationalDecisionBudgetFlagTests._REQUIRED_CLI
+    _captured_planning_config = (
+        RelationalDecisionBudgetFlagTests._captured_planning_config
+    )
+
+    def test_module_default_is_both(self) -> None:
+        self.assertEqual(
+            NeuralPlanningConfig().relational_navigation_seams, "both"
+        )
+
+    def test_cli_default_matches_the_module_default(self) -> None:
+        captured = self._captured_planning_config()
+        self.assertEqual(
+            captured["relational_navigation_seams"],
+            NeuralPlanningConfig().relational_navigation_seams,
+        )
+
+    def test_cli_override_reaches_the_planning_config(self) -> None:
+        for seams in ("both", "restore_only", "off"):
+            with self.subTest(seams=seams):
+                captured = self._captured_planning_config(
+                    "--relational-navigation-seams", seams
+                )
+                self.assertEqual(
+                    captured["relational_navigation_seams"], seams
+                )
+                # The authority is deliberately untouched: the selector
+                # narrows what selection authority may do, it does not
+                # grant or revoke authority.
+                self.assertEqual(
+                    captured["relational_planner_authority"], "off"
+                )
+
+    def test_cli_rejects_an_unknown_seam_mode(self) -> None:
+        argv = sys.argv
+        sys.argv = [
+            "neural_run",
+            *self._REQUIRED_CLI,
+            "--relational-navigation-seams",
+            "commit_only",
+        ]
+        try:
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                with self.assertRaises(SystemExit) as raised:
+                    neural_run.main()
+        finally:
+            sys.argv = argv
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("--relational-navigation-seams", err.getvalue())

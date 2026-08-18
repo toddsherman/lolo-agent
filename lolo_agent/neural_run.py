@@ -978,6 +978,22 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--relational-navigation-seams",
+        choices=("both", "restore_only", "off"),
+        default=NeuralPlanningConfig().relational_navigation_seams,
+        help=(
+            "which WP8 navigation seams selection authority may use "
+            "(docs/wp8-search-scheduling-design-2026-08-17.md section 13): "
+            "'both' (the default) keeps today's behavior exactly — the "
+            "commit-ladder tier S1 and the target-aware restore key S2; "
+            "'restore_only' disables S1 so exploration runs identically "
+            "to the control and only the closing restore is contested "
+            "(learnings section 4.50: steering starved the archive supply "
+            "later restores consume); 'off' makes both navigation seams "
+            "inert. Inert at any authority other than 'selection'"
+        ),
+    )
+    parser.add_argument(
         "--relational-decision-budget",
         type=int,
         default=NeuralPlanningConfig().relational_decision_budget,
@@ -2172,6 +2188,7 @@ def main() -> None:
             args.relational_planner_authority != "off"
         ),
         relational_planner_authority=args.relational_planner_authority,
+        relational_navigation_seams=args.relational_navigation_seams,
         relational_decision_budget=args.relational_decision_budget,
     )
     rom_sha256 = sha256_file(args.rom)

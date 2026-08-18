@@ -1254,5 +1254,73 @@ class ModuleBoundaryTests(unittest.TestCase):
                 self.assertNotIn("coordinate", field.name)
 
 
+class NavigationSeamAblationContractTests(unittest.TestCase):
+    """E5 (learnings section 4.50): the S2-only ablation is planner-side.
+
+    E3 failed because seam S1 steered the commit ladder and narrowed the
+    archive geography that later restores consume. E5 disables S1 and
+    keeps S2. The seam selector lives entirely in the consuming planner:
+    this module publishes the same key either way, so ``restore_only``
+    cannot change WHAT is published, only WHO reads it.
+    """
+
+    def exploit(self):
+        return by_kind(
+            propose_default(), HypothesisKind.EXPLOIT_CONFIGURATION
+        )
+
+    def test_module_exposes_no_seam_selector(self) -> None:
+        import lolo_agent.relational_planner as module
+
+        source = Path(module.__file__).read_text()
+        for token in (
+            "navigation_seams",
+            "restore_only",
+            "commit_only",
+        ):
+            self.assertNotIn(token, source, token)
+
+    def test_the_closing_key_is_what_S2_alone_needs(self) -> None:
+        # The section 4.48 instant, as a pure-module contract: among
+        # candidates INSIDE the held configuration the certified-adjacent
+        # one must outrank the distant one, and any candidate outside the
+        # held configuration must sort strictly below both — regardless
+        # of how near it stands. This is the entire content of the E5
+        # treatment; nothing about the commit ladder is involved.
+        exploit = self.exploit()
+        hold = objective_hold_signature(exploit)
+        self.assertTrue(hold)
+        target = objective_target_cells(exploit)[0]
+        adjacent = (target[0] - 1, target[1])
+        distant = (target[0] - 5, target[1] - 2)
+        held_adjacent = navigation_preference(
+            exploit, adjacent, configuration_signature=hold
+        )
+        held_distant = navigation_preference(
+            exploit, distant, configuration_signature=hold
+        )
+        departed_on_target = navigation_preference(
+            exploit, target, configuration_signature="some-other-sig"
+        )
+        self.assertGreater(held_adjacent, held_distant)
+        self.assertLess(departed_on_target, held_distant)
+        self.assertEqual(departed_on_target[0], 0)
+
+    def test_the_key_is_stable_across_repeated_reads(self) -> None:
+        # A restore-only intervention fires at most once per stagnation
+        # instant, so a key that drifted between reads would be
+        # unfalsifiable. Pin determinism at the module boundary.
+        exploit = self.exploit()
+        hold = objective_hold_signature(exploit)
+        target = objective_target_cells(exploit)[0]
+        keys = {
+            navigation_preference(
+                exploit, target, configuration_signature=hold
+            )
+            for _ in range(8)
+        }
+        self.assertEqual(len(keys), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

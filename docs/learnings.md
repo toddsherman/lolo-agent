@@ -2441,6 +2441,111 @@ Evidence:
 - `experiments/lolo1-wp5/e3-gate4-report.json`
 - runs `entity-v334-…-off-d24`, `entity-v335-…-selection-d24`
 
+### 4.51 E5: the closing shape is vindicated; the lever is attached to the wrong object
+
+What was tried:
+
+- E5 (preregistered §13; report digest `3c6b1e18…`, scorer byte-identical
+  twice, validated against v334 first): the surgical closing
+  intervention — seam S1 (commit steering) disabled, only S2 (the
+  target-aware restore key) active, 24 decisions, budget 12.
+
+Result — **FAIL** (bits 1, 2, 4 PASS; bit 3 OUTCOME FAIL), and a far
+better failure than E3:
+
+- **Bit 1 SUPPLY PRESERVED — PASS.** Arms state-for-state identical
+  d1–d7; first divergence *is* the first contested restore. Archive
+  geography **columns 6–12 in both arms** (44 vs 43 deposits) — E3's
+  collapse to columns 6–8 is entirely gone, and
+  `hold_matching_candidates` ratcheted *eastward* (1,3,3,6,6,5,4,3)
+  instead of E3's westward decay. Roadmap §20's shape claim is proven
+  implementable.
+- **Bit 2 CLOSING — PASS.** Of 8 restore instants, 2 showed
+  `differs: true`, both strictly nearer. At d17 the baseline was
+  `(10,7)` — *cell-for-cell the control's d18 move*, §4.48's failure
+  instant reproduced exactly — and the objective **refused it**, taking
+  `(12,7)` at distance 4 from six candidates. It lost 3 cells instead of
+  5.
+- Treatment reached distance **1 at d16**, matching the control's best
+  approach one decision earlier. `(12,11)` still not collected.
+
+Mechanism (precise, and it narrows the problem by a level):
+
+- At d16 the agent stood at `(12,10)`, distance 1. **`(12,10)` was never
+  deposited as an archive in either arm.** The entire column-12 deposit
+  set is `(12,6)`, `(12,7)`, `(12,8)`, `(12,9)` — nearest distance 2.
+- The restore key re-ranks archives *that exist*. The cell that needed
+  holding was the **current position**, which is not and cannot be a
+  restore candidate. No tuning could help: the required candidate does
+  not exist.
+- Stated exactly: **the intervention can choose where the agent retreats
+  to; it has no expression for whether it retreats at all.**
+
+Classification:
+
+- **Falsified at the measured gate**, with the diagnosis narrowed from
+  "the planner cannot prepare deliberately" to "the planner cannot retain
+  the valuable position it is currently standing on."
+
+Learning:
+
+- The S2-only *shape* is vindicated as an intervention class — it steers
+  nothing, starves nothing, and fires exactly at contested instants. What
+  is refuted is S2 *alone* as a closing mechanism.
+- Four levers are now measured and each failed for a distinct, named
+  reason: restore preference (redundant), search reserve (no searches),
+  commit steering (starves supply), restore key alone (target not a
+  candidate). The residue is small and specific.
+
+Plan change:
+
+- **E6: archive the certified-adjacent position.** When the agent
+  occupies a cell adjacent to (or on) a certified milestone under hold,
+  deposit that position as an archive so the existing, working restore
+  key can reach it. Strictly smaller than a veto, reuses the seam that
+  already works, and adds no new preference weight (§20 constraint
+  honored). The alternative — a veto on stagnation-restoring away from
+  such a position — is the fallback if archiving proves insufficient.
+
+Evidence:
+
+- `docs/wp8-search-scheduling-design-2026-08-17.md` §13–§14
+- `experiments/lolo1-wp5/e5-gate4-report.json`
+- runs `entity-v336-…-off-d24`, `entity-v337-…-restore-only-d24`
+
+### 4.52 Process: I called a healthy run dead, from two instrument artifacts
+
+What happened:
+
+- Mid-E5 I reported the treatment arm had died: `pgrep -f
+  "lolo-neural-run"` returned nothing, and the run showed 6,409 events
+  with zero committed decisions.
+- Both signals were artifacts of my own instruments. The process is
+  `python -m lolo_agent.neural_run` — underscores, module form — so the
+  hyphenated pattern could never match. And zero commits at 6.4k events
+  is exactly on-profile: the first `decision_committed` lands at seq
+  75,742 in every arm of this family.
+
+Classification:
+
+- **Measurement error by the orchestrator**, caught by the agent it was
+  addressed to. No harm: nothing was relaunched and the control was not
+  re-run.
+
+Learning:
+
+- The instrument-quality discipline this project applies to experiments
+  applies to operational monitoring too. Two independent-looking signals
+  agreed because both were mine and both were wrong; agreement between
+  instruments that share an author is not corroboration.
+- The guard that did work was procedural: the relaunch instruction
+  explicitly said a crashed arm is VOID, not FAIL. Stating the
+  interpretation rule before the diagnosis is confirmed prevents a bad
+  premise from becoming a bad result.
+- Health checks must match the process as it actually runs; prefer the
+  run's own telemetry (event growth, expected seq milestones) over
+  external pattern matching.
+
 ## 5. Platform and cost learnings
 
 ### 5.1 RunPod for emulator branching
