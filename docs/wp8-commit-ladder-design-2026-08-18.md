@@ -1510,3 +1510,316 @@ imprecise, so the real cause was traced rather than assumed:
   confirm reproduction and it may not be cited as fresh discriminating evidence.
 - **The control was not re-run**, by design (§10.2.1). v343 is reused and its
   reuse is stated on the face of the report.
+
+---
+
+# 11. E8c — POST-FIX CONFIRMATION of E8's headline
+
+**Date**: 2026-08-18.
+**Why this section exists.** E8's headline — R-A causes the d17 collection of
+`(12,11)` / `(192,176)`, which nineteen prior runs at this root never reached —
+was established twice, at v344 (§9) and again at v346 (§10). **Both arms ran on
+the code path that `docs/noop-cache-audit-2026-08-18.md` proves was wrong**: the
+matched-NOOP control cache was keyed on `(id(parent), edge_duration)`, entry
+lifetime strictly outlived key lifetime, and the served value reaches the beam
+`score` through `local_action_dependent` → `current_branch_measured_effect` →
+`inert_penalty`. The audit further shows (§4.3) that v346 demonstrably served at
+least two stale controls. A headline may not rest on a path known to be wrong,
+so it is re-established on the fixed path.
+
+**Second reason.** The invariance chain **v333 ≡ v334 ≡ v336 ≡ v338 ≡ v340 ≡
+v343** is entirely **pre-fix**. Audit §3.2 states plainly that a post-fix rerun
+of a pre-fix run may not be byte-identical and that any matched-control
+comparison must have both arms on the same side of `6929af1`. §10.2.1's
+control-reuse licence therefore **expires here**: v343 may not serve as the
+control for a post-fix treatment. A fresh post-fix control is required.
+
+## 11.1 PREREGISTRATION — written and committed to before either arm ran
+
+*Nothing in §11.1–§11.6 may be revised after the first arm starts.*
+
+**Tree.** `git rev-parse HEAD` = `4273121e465599ea35d160edd034a3b328f2352e`
+("Upgrade the cache finding: it fired, and it corrupted a scoring input"), which
+is **two commits after `6929af1`** ("Fix a stale matched-control cache keyed on a
+memory address"); both intervening commits (`4273121`) and the one before the fix
+(`4f208fb`) are documentation-only. Working tree carries no source modification
+(`git status --porcelain` reports only the untracked `tmp/`). The recorded HEAD
+goes on the face of the report. **`git diff --stat 138d56c HEAD -- lolo_agent/`
+is 48 insertions / 3 deletions in `neural_planner.py` and nothing else** — so
+between v346's tree and this one, the *only* behavioural change in the agent is
+the cache re-key.
+
+### 11.1.1 Two arms, both post-fix, run sequentially
+
+| Arm | Run id | Authority | `--relational-terminal-step` | Order |
+| --- | --- | --- | --- | --- |
+| Control | `entity-v347-room3-e8c-postfix-control-off-d24` | `off` | `off` | Runs **first** |
+| Treatment | `entity-v348-room3-e8c-postfix-treatment-ra-d24` | `selection` | `decline_restore` | Runs **second** |
+
+**One native run alive at a time**, each launched detached with output to a log,
+watchdog **10,800 s** each.
+
+Every other flag is copied from **v346's manifest** (§10.2.2's profile):
+`--relational-navigation-seams restore_plus_deposit`, `--relational-lifecycle
+chain_published`, `--relational-decision-budget 12`, `--decisions 24`,
+`--human-prior-accessibility-preference-weight 0.0`, the same root
+(`entity-v318-room3-known-push-connected-mask-d2`, `--resume-decision 1`,
+`--resume-state-checkpoint-event-seq 2026`), and the rest of
+`docs/wp8-search-scheduling-design-2026-08-17.md` §11.3 verbatim. The **only**
+CLI difference between the two arms is `--relational-planner-authority off` vs
+`selection` together with `--relational-terminal-step off` vs `decline_restore`
+— the authority and the seam selector, which are the one difference VOID rule 1
+permits. `relational_planner_enabled` is derived from the authority and is
+therefore not an independent difference.
+
+### 11.1.2 The preregistered bits
+
+**Bit 1 — THE TREATMENT COLLECTS `(192,176)` AT d17, AS v344/v346 DID.** d17's
+`decision_committed` reports `human_prior_target_player_slot == [192,176]`
+(cell `(12,11)`) with `[192,176]` in `human_prior_collected_heart_slots`, and a
+`branch_verified` event at d17 carries `milestone_reward: 25.0` having dropped
+`[192,176]` from `human_prior_target_hearts`. A collection at a **different**
+decision is a bit-1 FAIL, not a partial pass. **This is the bit the section
+exists for.**
+
+**Bit 2 — THE CONTROL DOES NOT COLLECT IT.** No `decision_committed` in the
+control's 24 lists `[192,176]` in `human_prior_collected_heart_slots`, and the
+control's Chebyshev trace to `(12,11)` never reaches 0.
+
+**Bit 3 — NO LIFE-LOSS REGRESSION.** `human_prior_life_loss_confirmed` is false
+at every committed decision of both arms (v343/v344/v346 all recorded zero), and
+neither arm emits a `position_not_certified` deposit.
+
+**Bit 4 — PRE/POST DIVERGENCE: REPORTED, NOT GATED.** How far each post-fix arm
+diverges from its pre-fix counterpart — **v343 for the control, v346 for the
+treatment**. Divergence here is **EXPECTED and is not a failure**: the fix
+deliberately changes behaviour wherever the bug bit (audit §3.2), so a
+difference is evidence about the bug, not about R-A. It is quantified on three
+axes so the pre/post relationship is on the record:
+
+1. **First divergent decision** — the lowest index at which the committed
+   `state_id` sequences differ, or `null` if all 24 agree.
+2. **State-id agreement count** — how many of the 24 positions agree, and the
+   length of the agreeing prefix; plus the sha256 over the canonical JSON array
+   of each sequence.
+3. **Event delta** — total event count and the full per-event-type difference.
+
+**No reading of bit 4 can turn bits 1–3 into a FAIL, and no reading of bit 4
+can rescue a bit-1 FAIL.**
+
+**A prediction, declared in advance and explicitly NOT a bit.** The audit's own
+detector (§2.2: every `(parent_path, parent_durations, edge_duration)` triple a
+search probes must be computed exactly once, so distinct probes recovered from
+`human_prior_option_branch_verified` minus computed
+`human_prior_option_local_neutral_verified` counts the stale services) was run
+offline over the whole recorded E7/E8 family before either arm started:
+
+| Run | distinct probes | controls computed | stale services |
+| --- | --- | --- | --- |
+| v340, v341, v342 | 2,224 | 2,224 | **0** |
+| v343 (E8 control) | 2,224 | 2,224 | **0** |
+| v344 (E8 treatment) | 4,084 | 4,084 | **0** |
+| v345 (E8 attribution) | 4,084 | 4,084 | **0** |
+| **v346 (E8b, R-A only)** | 4,084 | 4,082 | **2, both at d19** |
+
+This **sharpens** audit §4.3, which argued from a count difference that v346
+served "at least 2"; the detector localizes it to exactly 2 and shows that
+**v344 and v343 served none at all**. If that holds under the fix, the expected
+outcome is: post-fix control byte-identical to v343, post-fix treatment
+byte-identical to v344, and the treatment differing from v346 by exactly the 6
+events (2 controls + 2 `env_step` + 2 `state_loaded`) at d19 that §10.3.3
+localized. **This prediction is recorded so that it can be wrong.** It is not a
+bit; bits 1–3 are scored regardless of it, and a divergence larger than
+predicted is reported as a finding under bit 4 rather than treated as a defect.
+
+### 11.1.3 The plain declaration, made before the run
+
+**If bit 1 FAILS — if the post-fix treatment does not collect `(12,11)` /
+`(192,176)` at d17 — then E8's headline was an artifact of the stale matched-
+control bug and must be RETRACTED in `docs/learnings.md`.** §4.56's "the agent
+completed the prepared milestone", §4.58's confirmation, §9.1's "nineteen runs
+at this root had never reached distance 0", and §10.3.1's bit 1 would all become
+claims produced by an instrument now known to corrupt a beam-scoring input, and
+they would have to be withdrawn rather than qualified. That is the point of
+running this, and it is a **legitimate outcome, not a failure of the
+experiment**. This paragraph is written before either arm started so that the
+retraction cannot later be argued down.
+
+### 11.1.4 VOID conditions (a VOID is not evidence)
+
+1. **Crash** — any arm that crashes, or is killed before `run_finished`, is
+   **VOID, not FAIL**.
+2. **Flag inequality** — the two arms' `planning_config` differ in any field
+   other than `relational_planner_authority`, `relational_planner_enabled` and
+   `relational_terminal_step`; or either arm's remaining fields differ from
+   v346's manifest.
+3. **Tree defect** — either arm launched from a tree that is not at `6929af1`
+   or later. `git rev-parse HEAD` is recorded in the report and checked at both
+   launch and scoring time.
+4. **Budget defect** — either arm exceeds the 10,800 s wall ceiling.
+5. **Root defect** — either manifest's `episodic_resume` block does not record
+   `entity-v318-room3-known-push-connected-mask-d2`, `source_decision: 1`,
+   `state_source_checkpoint_event_seq: 2026`, `state_source_events_sha256:
+   0bbe1d15…`.
+6. **Records defect** — either arm is not `record_count: 3` with
+   `15604cb5…`/`37ea410d…`/`47975c94…`, or `verified_accessibility_weight != 0.0`.
+
+Budget-exhausted non-reach is **censored**, never "unreachable".
+
+### 11.1.5 Health-check rule (learnings §4.52 **and its 2026-08-18 addendum**)
+
+- Each arm is launched **detached** (`setsid`-equivalent, stdout/stderr to a
+  log), so stopping the wrapper cannot orphan or kill it.
+- **The launcher records the PID to a file.** Liveness is `kill -0 $PID`
+  against that recorded PID. **No `pgrep` pattern is used at any point** — the
+  addendum records this campaign's own monitor matching itself and therefore
+  being unable ever to report a run gone.
+- Progress is the run's own telemetry: monotone growth of `events.jsonl`. That
+  and `kill -0` share no author, so they are two signals rather than one.
+- The first `decision_committed` lands at seq ≈ **75,742** in every arm of this
+  family; **zero committed decisions at 6k events is on-profile, not a death.**
+- Watchdog **10,800 s** per arm. Observed envelopes at this configuration:
+  v343 **1,984 s**, v346 **3,464 s**.
+- Exactly **one** native run alive at a time; the treatment is not launched
+  until the control has written `run_finished`.
+
+### 11.1.6 Scoring
+
+One deterministic scorer walks each arm's `events.jsonl` once, plus v343's,
+v344's and v346's for the bit-4 comparison, applies §11.1.2 verbatim, and writes
+`experiments/lolo1-wp5/e8c-postfix-report.json` with a canonical-JSON
+`digest_sha256` over the body. Run end-to-end **twice**; both reports
+byte-identical. **Validated against v344/v346 first**: before it is trusted on
+the new arms it must reproduce, from those runs' own events, §9.1's and
+§10.3.2's numbers — the Chebyshev and Manhattan traces, the 24 committed state
+ids and their sha256 `f56bf2f7…`, the single collection at d17, zero life
+losses, `{completed: 2, deferred: 9}` option searches, archive columns
+`6,7,8,9,10,11,12` with 43 branches added, the 5 terminal-step gate evaluations
+firing only at d17, and the 6-event delta localized to d19. Distances:
+**Chebyshev** for §4.47/§4.48-comparable traces, **Manhattan** for the
+mechanism's own gate distances.
+
+## 11.2 E8c RESULTS — **PASS**. The headline survives the fix, unchanged.
+
+**Date**: 2026-08-18. **Report**: `experiments/lolo1-wp5/e8c-postfix-report.json`,
+`digest_sha256:
+1539bf2147b05717702649bfe6ee2e3b1b719ff60f76461f2db2f2f07e979eac`,
+byte-identical across two end-to-end scorer runs. Scorer **validated against
+v344/v346 first — 43/43 checks**, reproducing §9.1/§9.2 and §10.3.1/§10.3.2
+exactly, including §10.3.3's 6-event delta localized to d19 depth 5. **HEAD at
+both launches and at scoring: `4273121e465599ea35d160edd034a3b328f2352e`** —
+`6929af1` is an ancestor, so both arms are post-fix. **`void: false`** on all
+six VOID rules. Both arms `status: complete` with `run_finished`; no watchdog
+fired; exactly one native run alive at a time.
+
+| Arm | Run id | Wall (ceiling 10,800 s) | Events | Committed |
+| --- | --- | --- | --- | --- |
+| Control | `entity-v347-…-postfix-control-off-d24` | **2,027 s** | 85,594 | 24 |
+| Treatment | `entity-v348-…-postfix-treatment-ra-d24` | **3,543 s** | 149,982 | 24 |
+
+### 11.2.1 Bits
+
+| Bit | Verdict | Evidence |
+| --- | --- | --- |
+| **1 treatment collects at d17** | **PASS** | d17 commits `[192,176]` = cell `(12,11)` with `[192,176]` in `human_prior_collected_heart_slots`; the single collecting branch is **`['down','a','a']` @ `[16,1,2]`**, `milestone_reward: 25.0` (seq 83189). Collections at exactly `[17]` |
+| **2 control does NOT collect** | **PASS** | zero collections; the control's Chebyshev trace bottoms out at **1** and never reaches 0 |
+| **3 no life-loss regression** | **PASS** | 0 life losses in both arms; no `position_not_certified` deposit in either |
+| **4 pre/post divergence** | **REPORTED, not gated** | §11.2.3 |
+
+**Distance traces (Chebyshev to `(12,11)`):**
+
+```
+control   v347: 6,4,4,3,4,5,5,5,3,3,4,3,4,4,3,2,1,4,5,5,5,4,5,6
+treatment v348: 6,4,4,3,4,5,5,3,3,4,3,4,4,3,2,1,0,0,0,5,6,6,5,6
+```
+
+Treatment Manhattan: `9,7,7,6,8,9,10,6,5,6,4,5,4,3,2,1,`**`0,0,0`**`,10,11,10,10,11`.
+
+**Everything else reproduced as well.** The treatment: 5 terminal-step gate
+evaluations, declining at d5/d8/d11/d14 with `not_certified_adjacent` and firing
+at **d17** with `eligible: true`, cell `(12,10)`, distance 1, hold
+`85fd9014d58deb42`, `restore_suppressed: true`,
+`incumbent_restore_state_id: state-00012381`,
+**`incumbent_restore_is_self_restore: true`** — the incumbent would once more
+have restored to the state the agent was already standing in. Seam-S3 deposit at
+d16, `(12,10)`, `state-00012381`. Tier committed at d17
+`human_prior_known_milestone_fallback` (**Tier 7**), fired unaided. Archive
+columns `6,7,8,9,10,11,12` with 43 branches added, a **superset** of the
+control's `6,8,9,10,11,12` with 44 — **§4.50 did not recur**, again in the
+generous direction. Option searches `{completed: 2, deferred: 9}` treatment,
+`{completed: 1, deferred: 9}` control; 105 commit-path `branch_verified` in
+both.
+
+### 11.2.2 The direct measurement the fix makes possible
+
+The audit's own detector (§11.1.2), applied to the two new arms:
+
+| Run | distinct probes | controls computed | **stale services** |
+| --- | --- | --- | --- |
+| **v347 (post-fix control)** | 2,224 | 2,224 | **0** |
+| **v348 (post-fix treatment)** | 4,084 | 4,084 | **0** |
+
+Zero, as the re-key guarantees by construction. This is a check on the fix, not
+evidence about R-A.
+
+### 11.2.3 Bit 4 — pre/post divergence, quantified
+
+| Comparison | First divergent decision | State ids agreeing | Event delta |
+| --- | --- | --- | --- |
+| **v347 vs v343** (control, pre-fix) | **none** | **24 / 24**, both sha `730eda65…` | **0**, and **no event type differs at all** |
+| **v348 vs v344** (E8 treatment, pre-fix) | **none** | **24 / 24**, both sha `f56bf2f7…` | **0**, and no event type differs |
+| **v348 vs v346** (E8b treatment, pre-fix) | **none** | **24 / 24**, both sha `f56bf2f7…` | **+6**: `human_prior_option_local_neutral_verified` +2, `env_step` +2, `state_loaded` +2, **all at decision 19, depth 5** |
+
+**The divergence is exactly the bug, and nothing else.** §11.1.2's prediction —
+recorded before either arm ran — was that v343 and v344 served **zero** stale
+controls and v346 served **two**, so the post-fix arms would reproduce v343 and
+v344 exactly while differing from v346 by precisely the six events those two
+stale services suppressed. That is what happened, to the event type and the
+decision-and-depth. The +2 `human_prior_option_local_neutral_verified` at d19
+depth 5 are the two matched controls v346 was served from another parent's cache
+entry and therefore never computed; post-fix they are computed, with their
+matching `env_step` and `state_loaded`. §10.3.3's "honest residual" — that the
+mechanism was identified but the `id()` sequence was never reconstructed — is
+now closed from the other end: the count is exact, localized, and reproduced.
+
+**Divergence was expected and is not a failure** (audit §3.2). What is worth
+saying plainly is the *shape* of it: the fix changed **nothing** on this root's
+committed trajectories. The two stale controls v346 consumed were absorbed
+without altering a single committed decision, which is what §4.59 already
+recorded and this run confirms from the fixed side.
+
+**The invariance chain now crosses the fix**: **v333 ≡ v334 ≡ v336 ≡ v338 ≡
+v340 ≡ v343 ≡ v347**, the last link being the first post-fix one. That link is
+licensed by a *measurement* — v343 served zero stale controls — not by a general
+argument that the fix is behaviour-preserving. It is not.
+
+### 11.2.4 What this does and does not establish
+
+- **Does**: E8's headline is re-established on the fixed code path, with both
+  arms on the same side of `6929af1`. The treatment steps `(12,10) → (12,11)`
+  at d17 and collects `(192,176)`; the fresh post-fix control does not, and gets
+  no closer than Chebyshev 1. §11.1.3's retraction condition is **not** met and
+  learnings §4.56/§4.58 stand as written. The `(12,11)` result is no longer
+  resting on runs made with a known-defective matched-control instrument.
+- **Does**: it closes §10.3.3's residual and sharpens audit §4.3 — v346's stale
+  services are now counted exactly (2, at d19 depth 5), and v340–v345 are
+  measured at **zero**, so the E7/E8 family's other results were not produced by
+  a corrupted control at all.
+- **Does NOT**: this is a **confirmation, not a new capability claim.** Every
+  §9.7, §9.9 and §10.3.4 limitation carries over **verbatim**. In particular
+  **no Gate 4 claim may cite E8, E8b or E8c as evidence that hypothesis-driven
+  planning, rather than a standing rule, produced this behaviour** — attribution
+  failed in both experiments that tested it, and E8c did not test it. Assisted
+  track throughout. **n = 1**, deterministic, one root, one family.
+  `(12,11)`/`(192,176)` remains **retired** as a discriminator under §5.7
+  condition 1; E8c re-uses it only to re-establish reproduction on the fixed
+  path and it may not be cited as fresh discriminating evidence.
+- **Does NOT**: bound the fix's retrospective risk in general. The audit's
+  "unbounded at depth ≥ 4" verdict is unchanged for the *rest* of the recorded
+  corpus. What E8c adds is a measurement over one family — nine runs at one root
+  — not a proof about any other run. The queued detector sweep over archived
+  logs is still owed.
+- **Does NOT**: show that the fix is behaviour-preserving. It is not, and §11.2.3
+  measures where it is not. It happened to preserve the committed trajectory
+  here because the two stale services landed at d19, two decisions after the
+  decisive instant, on a branch that did not change a commit.
