@@ -919,6 +919,106 @@ def hypothesis_log_fields(
 
 
 # ---------------------------------------------------------------------------
+# navigation target (search-scheduling design section 4.2 mechanism (b),
+# seam S3). Pure ordering helpers over an already-built hypothesis: no new
+# state, no planner imports, no configuration weight. Consumers are the
+# monolith's commit ladder (C1) and its stagnation restore key (C2).
+# ---------------------------------------------------------------------------
+
+
+def objective_target_cells(
+    hypothesis: RelationalHypothesis,
+) -> Tuple[Cell, ...]:
+    """Certified target cells an active objective publishes, if any.
+
+    Only a ``reach_cells_under_hold`` realization publishes cells, and
+    only the ones its payload already carries — which
+    :func:`_exploit_target_cells` sourced exclusively from certified
+    records, never from visible sprites. Establish objectives
+    (``restore_archive`` / ``reproduce_transition``) publish nothing, and
+    so does the hold objective, whose payload target set is empty by
+    construction. Every consumer therefore fails open to its incumbent
+    ordering.
+    """
+
+    if hypothesis.realization.kind != REALIZATION_REACH_CELLS_UNDER_HOLD:
+        return ()
+    return _canonical_cells(
+        hypothesis.realization.payload.get("target_cells", ())
+    )
+
+
+def objective_hold_signature(hypothesis: RelationalHypothesis) -> str:
+    """Configuration signature the objective's hold predicate names."""
+
+    if hypothesis.realization.kind != REALIZATION_REACH_CELLS_UNDER_HOLD:
+        return ""
+    return str(
+        hypothesis.realization.payload.get(
+            "hold_configuration_signature", ""
+        )
+    )
+
+
+def target_cell_distance(
+    target_cells: Sequence[Cell], cell: Optional[Cell]
+) -> Optional[int]:
+    """Grid distance from ``cell`` to the nearest published target cell.
+
+    ``None`` whenever either side is unavailable: the caller must then
+    fall open to its incumbent ordering rather than invent a preference.
+    """
+
+    if cell is None or not target_cells:
+        return None
+    return min(
+        abs(int(cell[0]) - int(target[0]))
+        + abs(int(cell[1]) - int(target[1]))
+        for target in target_cells
+    )
+
+
+def navigation_preference(
+    hypothesis: RelationalHypothesis,
+    cell: Optional[Cell],
+    configuration_signature: Optional[str] = None,
+) -> Tuple[int, int, int]:
+    """Deterministic ordering key for one candidate; higher is better.
+
+    Shape: ``(hold_match, targeted, -distance)``.
+
+    This is a **tie-break inside an already-filtered candidate set**, not
+    a distance reward on every candidate (learnings section 4.7 forbids
+    the latter, and ``human_prior_navigation_reward`` stays 0.0): it
+    exists only while a hypothesis publishes certified target cells, it
+    dies with that hypothesis's decision budget, and a candidate outside
+    the held configuration sorts strictly below every candidate inside
+    it — section 4.7's "goal proximity must be coupled to world
+    configuration and verified accessibility", implemented rather than
+    restated. ``configuration_signature`` of ``None`` means the caller
+    enforces the hold predicate itself; anything else must equal the
+    objective's hold signature to score as held.
+    """
+
+    hold_signature = objective_hold_signature(hypothesis)
+    hold_match = (
+        1
+        if configuration_signature is None
+        or (
+            bool(hold_signature)
+            and configuration_signature == hold_signature
+        )
+        else 0
+    )
+    distance = target_cell_distance(
+        objective_target_cells(hypothesis), cell
+    )
+    if distance is None:
+        return (hold_match, 0, 0)
+    return (hold_match, 1, -distance)
+
+
+# ---------------------------------------------------------------------------
 # propose
 # ---------------------------------------------------------------------------
 

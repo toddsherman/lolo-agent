@@ -50,9 +50,13 @@ from lolo_agent.relational_planner import (
     configuration_maps,
     hypothesis_log_fields,
     initiation_satisfied,
+    navigation_preference,
+    objective_hold_signature,
+    objective_target_cells,
     option_initiation_satisfied,
     option_key,
     propose,
+    target_cell_distance,
     record_attempt,
     record_success,
     resolve_current_record,
@@ -1067,6 +1071,143 @@ class HypothesisIdentityTests(unittest.TestCase):
             first.hypotheses[0].hypothesis_id,
             other.hypotheses[0].hypothesis_id,
         )
+
+
+# ---------------------------------------------------------------------------
+# WP8 navigation target — pure seam S3
+# (docs/wp8-search-scheduling-design-2026-08-17.md section 4.2 mechanism
+# (b), section 5.2 items 1-4). Everything here is pure over an already
+# proposed hypothesis: no planner state, no configuration weight.
+# ---------------------------------------------------------------------------
+
+
+class NavigationObjectivePublicationTests(unittest.TestCase):
+    """Section 5.2 item 1: only exploit objectives publish cells."""
+
+    def test_only_the_exploit_objective_publishes_certified_cells(
+        self,
+    ) -> None:
+        plan = propose_default()
+        establish = by_kind(plan, HypothesisKind.ESTABLISH_CONFIGURATION)
+        hold = by_kind(plan, HypothesisKind.HOLD_CONFIGURATION)
+        exploit = by_kind(plan, HypothesisKind.EXPLOIT_CONFIGURATION)
+
+        # Regression twin of _exploit_target_cells: the exploit's cells
+        # are exactly the uncollected certified milestone cells.
+        self.assertEqual(
+            objective_target_cells(exploit), (MILESTONE_CELL,)
+        )
+        self.assertEqual(objective_target_cells(establish), ())
+        self.assertEqual(objective_target_cells(hold), ())
+        self.assertEqual(
+            objective_hold_signature(exploit), CANDIDATE_SIGNATURE
+        )
+        self.assertEqual(
+            objective_hold_signature(hold), CANDIDATE_SIGNATURE
+        )
+        # An establish objective names no hold configuration at all.
+        self.assertEqual(objective_hold_signature(establish), "")
+
+    def test_newly_reachable_cells_publish_when_no_milestone_remains(
+        self,
+    ) -> None:
+        plan = propose_default(
+            state=state_view(remaining=()),
+        )
+        exploit = by_kind(plan, HypothesisKind.EXPLOIT_CONFIGURATION)
+        self.assertEqual(
+            objective_target_cells(exploit), tuple(sorted(EXTRA_CELLS))
+        )
+
+    def test_publication_is_canonical_and_deterministic(self) -> None:
+        plan = propose_default()
+        exploit = by_kind(plan, HypothesisKind.EXPLOIT_CONFIGURATION)
+        first = objective_target_cells(exploit)
+        second = objective_target_cells(exploit)
+        self.assertEqual(first, second)
+        self.assertEqual(list(first), sorted(set(first)))
+
+
+class NavigationPreferenceTests(unittest.TestCase):
+    """Section 5.2 items 2-4: deterministic, fail-open, hold-gated."""
+
+    def exploit(self):
+        return by_kind(
+            propose_default(), HypothesisKind.EXPLOIT_CONFIGURATION
+        )
+
+    def test_distance_is_grid_based_and_deterministic(self) -> None:
+        exploit = self.exploit()
+        target = MILESTONE_CELL
+        near = (target[0] - 1, target[1])
+        far = (target[0] - 4, target[1] - 2)
+        self.assertEqual(target_cell_distance((target,), target), 0)
+        self.assertEqual(target_cell_distance((target,), near), 1)
+        self.assertEqual(target_cell_distance((target,), far), 6)
+        # Identical inputs produce byte-identical ordering keys.
+        keys = [navigation_preference(exploit, near) for _ in range(5)]
+        self.assertEqual(len(set(keys)), 1)
+        self.assertGreater(
+            navigation_preference(exploit, near),
+            navigation_preference(exploit, far),
+        )
+
+    def test_nearest_of_several_targets_decides(self) -> None:
+        exploit = by_kind(
+            propose_default(state=state_view(remaining=())),
+            HypothesisKind.EXPLOIT_CONFIGURATION,
+        )
+        cells = objective_target_cells(exploit)
+        self.assertGreater(len(cells), 1)
+        probe = (cells[0][0], cells[0][1] + 1)
+        self.assertEqual(target_cell_distance(cells, probe), 1)
+
+    def test_fail_open_without_targets_or_without_a_cell(self) -> None:
+        plan = propose_default()
+        establish = by_kind(plan, HypothesisKind.ESTABLISH_CONFIGURATION)
+        hold = by_kind(plan, HypothesisKind.HOLD_CONFIGURATION)
+        exploit = by_kind(plan, HypothesisKind.EXPLOIT_CONFIGURATION)
+        neutral = navigation_preference(exploit, None)
+        # A non-reach realization and an empty target set are BOTH
+        # indistinguishable from "no opinion": the consumer's incumbent
+        # ordering decides.
+        self.assertEqual(navigation_preference(establish, MILESTONE_CELL), neutral)
+        self.assertEqual(navigation_preference(hold, MILESTONE_CELL), neutral)
+        self.assertIsNone(target_cell_distance((), MILESTONE_CELL))
+        self.assertIsNone(target_cell_distance((MILESTONE_CELL,), None))
+
+    def test_hold_gating_outranks_distance(self) -> None:
+        exploit = self.exploit()
+        target = MILESTONE_CELL
+        adjacent_but_departed = navigation_preference(
+            exploit, (target[0] - 1, target[1]), "some-other-configuration"
+        )
+        far_but_held = navigation_preference(
+            exploit,
+            (target[0] - 4, target[1] - 2),
+            CANDIDATE_SIGNATURE,
+        )
+        # A candidate outside the held configuration sorts strictly below
+        # every candidate inside it, however much distance it closes
+        # (learnings section 4.7's coupling requirement).
+        self.assertLess(adjacent_but_departed, far_but_held)
+        # None means "the caller enforces the hold predicate itself".
+        self.assertEqual(
+            navigation_preference(exploit, target, None)[0], 1
+        )
+
+    def test_preference_is_a_bounded_tie_break_not_a_reward(self) -> None:
+        exploit = self.exploit()
+        target = MILESTONE_CELL
+        key = navigation_preference(exploit, target, CANDIDATE_SIGNATURE)
+        # Section 4.7 guard: the key is an integer tuple ordered inside an
+        # already-filtered candidate set. It carries no float weight, no
+        # configuration knob, and cannot be summed into any score.
+        self.assertEqual(len(key), 3)
+        for component in key:
+            self.assertIsInstance(component, int)
+            self.assertNotIsInstance(component, bool)
+        self.assertEqual(key, (1, 1, 0))
 
 
 class ModuleBoundaryTests(unittest.TestCase):

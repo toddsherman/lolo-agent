@@ -51,10 +51,14 @@ from .relational_planner import (
     VerifiedTransitionSummary as RelationalVerifiedTransitionSummary,
     advance as relational_advance,
     hypothesis_log_fields as relational_hypothesis_log_fields,
+    navigation_preference as relational_navigation_preference,
+    objective_hold_signature as relational_objective_hold_signature,
+    objective_target_cells as relational_objective_target_cells,
     option_key as relational_option_key,
     propose as relational_propose,
     record_attempt as relational_record_attempt,
     record_success as relational_record_success,
+    target_cell_distance as relational_target_cell_distance,
 )
 from .bidirectional_probe import BidirectionalProbeCollector
 from .entity_behavior import (
@@ -19884,6 +19888,334 @@ class VerifiedNeuralAgent:
             sorted(representatives.values(), key=rank, reverse=True)
         )
 
+    # ------------------------------------------------------------------
+    # WP8 navigation-target seams
+    # (docs/wp8-search-scheduling-design-2026-08-17.md section 4.2
+    # mechanism (b), seams S1/S2/S4; learnings section 4.48).
+    # An active exploit objective publishes its certified target cells to
+    # exactly two consumers: the non-search commit ladder (C1, seam S1)
+    # and the stagnation restore key (C2, seam S2). Both are gated on
+    # selection authority, both fail open to the incumbent ordering, and
+    # neither adds a score term or a configuration weight — the objective
+    # only breaks ties inside a candidate set the incumbent has already
+    # verified. Section 5.3's redundancy detector (seam S4) records the
+    # incumbent argmax beside the objective's preference at every
+    # instant, so a third redundancy finding of the section 4.43/4.45
+    # family would be DETECTED rather than assumed away.
+    # ------------------------------------------------------------------
+
+    def _relational_navigation_objective(
+        self,
+    ) -> Optional[
+        Tuple[RelationalHypothesis, Tuple[Tuple[int, int], ...], str]
+    ]:
+        """The active objective's published certified targets, if any."""
+
+        if not self._relational_selection_authority():
+            return None
+        active = self._relational_active_hypothesis()
+        if (
+            active is None
+            or active.realization.kind != RELATIONAL_REACH_CELLS
+        ):
+            return None
+        targets = relational_objective_target_cells(active)
+        if not targets:
+            return None
+        return (
+            active,
+            targets,
+            relational_objective_hold_signature(active),
+        )
+
+    def _relational_navigation_cell(
+        self, slot: Optional[Tuple[int, int]]
+    ) -> Optional[Tuple[int, int]]:
+        """Pixel goal slot reduced to the coarse cell records use."""
+
+        if slot is None:
+            return None
+        return (slot[0] // 16, slot[1] // 16)
+
+    def _relational_navigation_commit_view(
+        self,
+        selection_verified: Sequence[Any],
+        branch_goal_analyses: Dict[int, Optional[HeartGoalAnalysis]],
+    ) -> Optional[Dict[str, Any]]:
+        """Commit-ladder navigation tier (design section 4.2 C1, seam S1).
+
+        Returns ``None`` — leaving the ladder byte-identical to today —
+        outside selection authority, without an active
+        ``reach_cells_under_hold`` objective, or when the objective
+        publishes no certified target cells. Otherwise it returns the
+        non-fatal branch that **strictly reduces** grid distance to the
+        published cells (``choice`` may still be ``None``), ordered by
+        distance and then the existing generic keys, together with the
+        section 5.3 redundancy-detector payload.
+        """
+
+        objective = self._relational_navigation_objective()
+        if objective is None:
+            return None
+        active, targets, hold_signature = objective
+        source_cell = (
+            None
+            if self.goal_prior is None
+            else self._relational_navigation_cell(
+                self.goal_prior.current_player_slot
+            )
+        )
+        source_distance = relational_target_cell_distance(
+            targets, source_cell
+        )
+        cell_by_state: Dict[int, Tuple[Tuple[int, int], int]] = {}
+        eligible: List[Tuple[Any, Tuple[int, int], int]] = []
+        for item in selection_verified:
+            analysis = branch_goal_analyses.get(id(item[2]))
+            if analysis is None:
+                continue
+            cell = self._relational_navigation_cell(
+                analysis.target_player_slot
+            )
+            distance = relational_target_cell_distance(targets, cell)
+            if cell is None or distance is None:
+                continue
+            cell_by_state[id(item[2])] = (cell, distance)
+            # The commit-time hold predicate is the certification check
+            # the reach-cells reserve family already applies: a branch
+            # that loses a life or starts a dark transition is never
+            # preferred, however much distance it would close.
+            if (
+                analysis.life_counter_changed
+                or analysis.dark_transition_started
+            ):
+                continue
+            eligible.append((item, cell, distance))
+        reducing = [
+            row
+            for row in eligible
+            if source_distance is not None and row[2] < source_distance
+        ]
+        choice = (
+            max(
+                reducing,
+                key=lambda row: (
+                    -row[2],
+                    row[0][0],
+                    tuple(
+                        (action.value, duration)
+                        for action, duration in zip(
+                            row[0][1].path, row[0][1].durations
+                        )
+                    ),
+                ),
+            )
+            if reducing
+            else None
+        )
+        return {
+            "hypothesis": active,
+            "target_cells": targets,
+            "hold_configuration_signature": hold_signature,
+            "source_cell": source_cell,
+            "source_distance": source_distance,
+            "cell_by_state": cell_by_state,
+            "choice": None if choice is None else choice[0],
+            "choice_cell": None if choice is None else choice[1],
+            "choice_distance": None if choice is None else choice[2],
+            "hold_eligible": len(eligible),
+            "distance_reducing": len(reducing),
+            "decline_reason": (
+                ""
+                if choice is not None
+                else (
+                    "source_cell_unknown"
+                    if source_distance is None
+                    else "no_distance_reducing_branch"
+                )
+            ),
+        }
+
+    def _relational_emit_navigation_commit(
+        self,
+        view: Dict[str, Any],
+        *,
+        applied: bool,
+        chosen: Any,
+        baseline_tier: str,
+        baseline: Any,
+    ) -> None:
+        """Section 5.3 redundancy detector for the commit tier (seam S4).
+
+        Every S1 instant records the objective-preferred candidate, the
+        candidate the incumbent ladder would have committed, and whether
+        they differ. ``baseline_tier`` is exact for the tiers the
+        objective outranks and for any decision where the objective did
+        not fire; the side-effecting ladder tail is reported as
+        ``ladder_tail`` with ``differs: null`` rather than guessed.
+        """
+
+        def row(
+            item: Any,
+        ) -> Tuple[Optional[str], Optional[List[int]], Optional[int]]:
+            if item is None:
+                return None, None, None
+            cell, distance = view["cell_by_state"].get(
+                id(item[2]), (None, None)
+            )
+            return (
+                self._state_id(item[2]),
+                None if cell is None else [cell[0], cell[1]],
+                distance,
+            )
+
+        objective_state_id, objective_cell, objective_distance = row(
+            view["choice"]
+        )
+        baseline_state_id, baseline_cell, baseline_distance = row(baseline)
+        committed_state_id, _committed_cell, committed_distance = row(
+            chosen
+        )
+        self._relational_emit_hypothesis_event(
+            (
+                "relational_navigation_choice"
+                if applied
+                else "relational_navigation_declined"
+            ),
+            view["hypothesis"],
+            decision=self.decision_index + 1,
+            hold_configuration_signature=(
+                view["hold_configuration_signature"] or None
+            ),
+            target_cells=[list(cell) for cell in view["target_cells"]],
+            source_cell=(
+                None
+                if view["source_cell"] is None
+                else list(view["source_cell"])
+            ),
+            source_distance=view["source_distance"],
+            objective_state_id=objective_state_id,
+            objective_cell=objective_cell,
+            objective_distance=objective_distance,
+            baseline_tier=baseline_tier,
+            baseline_state_id=baseline_state_id,
+            baseline_cell=baseline_cell,
+            baseline_distance=baseline_distance,
+            committed_state_id=committed_state_id,
+            committed_distance=committed_distance,
+            differs=(
+                None
+                if view["choice"] is None or baseline is None
+                else bool(view["choice"] is not baseline)
+            ),
+            hold_eligible_branches=view["hold_eligible"],
+            distance_reducing_branches=view["distance_reducing"],
+            reason=(
+                view["decline_reason"]
+                or (
+                    "distance_reducing_branch_preferred"
+                    if applied
+                    else "outranked_by_incumbent_tier"
+                )
+            ),
+        )
+
+    def _relational_navigation_restore_preference(
+        self, branch: _ArchivedBranch
+    ) -> Tuple[int, int, int]:
+        """Target-aware restore key lead (design 4.2 C2; learnings 4.48).
+
+        Learnings section 4.48 measured the failure this repairs: a
+        control standing ONE cell from a certified milestone was traded
+        away by a ``human_prior_graph_stagnation`` restore to a
+        higher-novelty archive (frontier value 60.35) and never returned,
+        because standing adjacent to a certified milestone is worth zero
+        to the incumbent scorer. Leading the key on
+        ``(hold match, -distance)`` is what makes progress ratchet rather
+        than reset; the untouched plain key still breaks every remaining
+        tie. Neutral outside selection authority.
+        """
+
+        objective = self._relational_navigation_objective()
+        if objective is None:
+            return (0, 0, 0)
+        active, _targets, _hold_signature = objective
+        return relational_navigation_preference(
+            active,
+            self._relational_navigation_cell(branch.goal_player_slot),
+            configuration_signature=branch.tracked_world_state_signature,
+        )
+
+    def _relational_emit_navigation_restore(
+        self,
+        *,
+        baseline: _ArchivedBranch,
+        selected: _ArchivedBranch,
+        eligible: Sequence[_ArchivedBranch],
+        recovery_reason: str,
+    ) -> None:
+        """Section 5.3 redundancy detector for the restore key (seam S4).
+
+        ``differs`` answers, per restore, whether the incumbent scorer
+        would have made the same choice. ``hold_matching_candidates`` /
+        ``distance_resolved_candidates`` report the section 3.4 restore
+        supply, whose ceiling is the design's named FAIL mode.
+        """
+
+        objective = self._relational_navigation_objective()
+        if objective is None:
+            return
+        active, targets, hold_signature = objective
+
+        def row(
+            branch: _ArchivedBranch,
+        ) -> Tuple[Optional[str], Optional[List[int]], Optional[int]]:
+            cell = self._relational_navigation_cell(branch.goal_player_slot)
+            return (
+                self._state_id(branch.state),
+                None if cell is None else [cell[0], cell[1]],
+                relational_target_cell_distance(targets, cell),
+            )
+
+        baseline_state_id, baseline_cell, baseline_distance = row(baseline)
+        selected_state_id, selected_cell, selected_distance = row(selected)
+        hold_matching = [
+            candidate
+            for candidate in eligible
+            if hold_signature
+            and candidate.tracked_world_state_signature == hold_signature
+        ]
+        self._relational_emit_hypothesis_event(
+            "relational_navigation_restore_selected",
+            active,
+            decision=self.decision_index + 1,
+            recovery_reason=recovery_reason,
+            hold_configuration_signature=hold_signature or None,
+            target_cells=[list(cell) for cell in targets],
+            baseline_state_id=baseline_state_id,
+            baseline_cell=baseline_cell,
+            baseline_distance=baseline_distance,
+            selected_state_id=selected_state_id,
+            selected_cell=selected_cell,
+            selected_distance=selected_distance,
+            differs=bool(selected is not baseline),
+            eligible_candidates=len(eligible),
+            hold_matching_candidates=len(hold_matching),
+            distance_resolved_candidates=len(
+                [
+                    candidate
+                    for candidate in hold_matching
+                    if relational_target_cell_distance(
+                        targets,
+                        self._relational_navigation_cell(
+                            candidate.goal_player_slot
+                        ),
+                    )
+                    is not None
+                ]
+            ),
+        )
+
     def _relational_reproduce_transition_priority(
         self,
         candidates: List[_HumanPriorOptionNode],
@@ -22838,6 +23170,26 @@ class VerifiedNeuralAgent:
                 if positive_goal_branches
                 else None
             )
+            # WP8 navigation-target seam S1
+            # (docs/wp8-search-scheduling-design-2026-08-17.md section
+            # 4.2 C1 / section 5.1): an active exploit objective
+            # publishes its certified target cells into the NON-SEARCH
+            # commit path, so ordinary navigation carries the agent there
+            # while the hold predicate holds. Ranked BELOW
+            # human_prior_goal_choice so an actual milestone collection is
+            # never overridden, and above pure position novelty. Outside
+            # selection authority the view is None and this ladder is
+            # byte-identical to today (fail-open).
+            relational_navigation_view = (
+                self._relational_navigation_commit_view(
+                    selection_verified, branch_goal_analyses
+                )
+            )
+            relational_navigation_choice = (
+                None
+                if relational_navigation_view is None
+                else relational_navigation_view["choice"]
+            )
             (
                 human_prior_navigation_detour_choice,
                 detour_progress_alternatives,
@@ -23204,6 +23556,7 @@ class VerifiedNeuralAgent:
                     )
             passive_transition = False
             grace_continuation = False
+            relational_navigation_applied = False
             if anticipated_observation_choice is not None:
                 chosen = anticipated_observation_choice
                 passive_transition = True
@@ -23249,6 +23602,13 @@ class VerifiedNeuralAgent:
                     action_frames=chosen[1].durations[0],
                     **self._human_prior_fields(selected_analysis),
                 )
+            elif relational_navigation_choice is not None:
+                # WP8 navigation-target seam S1 (design section 4.2 C1):
+                # below the milestone-collection tier, above position
+                # novelty. Telemetry for this instant is emitted once,
+                # after the ladder resolves, by seam S4.
+                chosen = relational_navigation_choice
+                relational_navigation_applied = True
             elif human_prior_navigation_detour_choice is not None:
                 chosen = human_prior_navigation_detour_choice
                 selected_analysis = branch_goal_analyses[id(chosen[2])]
@@ -23505,6 +23865,46 @@ class VerifiedNeuralAgent:
                             )
                         ),
                     ),
+                )
+            # WP8 navigation-target seam S4 (design section 5.3): record
+            # the incumbent ladder's argmax beside the objective's
+            # preference at EVERY S1 instant, so redundancy is measured
+            # in-run rather than assumed. When the objective did not
+            # fire, `chosen` IS the incumbent choice and the comparison
+            # is exact; when it did, the incumbent is the first non-None
+            # tier the objective outranks.
+            if relational_navigation_view is not None:
+                if relational_navigation_applied:
+                    relational_baseline_tier, relational_baseline = next(
+                        (
+                            (name, item)
+                            for name, item in (
+                                (
+                                    "human_prior_navigation_detour_choice",
+                                    human_prior_navigation_detour_choice,
+                                ),
+                                (
+                                    "human_prior_semantic_frontier_choice",
+                                    human_prior_semantic_frontier_choice,
+                                ),
+                                (
+                                    "known_goal_fallback_choice",
+                                    known_goal_fallback_choice,
+                                ),
+                            )
+                            if item is not None
+                        ),
+                        ("ladder_tail", None),
+                    )
+                else:
+                    relational_baseline_tier = "committed_tier"
+                    relational_baseline = chosen
+                self._relational_emit_navigation_commit(
+                    relational_navigation_view,
+                    applied=relational_navigation_applied,
+                    chosen=chosen,
+                    baseline_tier=relational_baseline_tier,
+                    baseline=relational_baseline,
                 )
             (
                 score,
@@ -27076,16 +27476,43 @@ class VerifiedNeuralAgent:
         # active restore-archive hypothesis, the hypothesis preference
         # leads the key beside the untouched frontier scoring; otherwise
         # the selection is bit-identical to today.
+        navigation_restore_baseline: Optional[_ArchivedBranch] = None
         if self._relational_restore_preference_active():
             plain_restore_key = restore_key
             restore_key = lambda item: (
                 self._relational_restore_preference(item),
                 plain_restore_key(item),
             )
+        elif self._relational_navigation_objective() is not None:
+            # WP8 navigation-target seam S2 (search-scheduling design
+            # section 4.2 C2; learnings section 4.48). The measured
+            # failure this repairs: a control standing ONE cell from the
+            # certified milestone was traded away at the next
+            # `human_prior_graph_stagnation` restore for a higher-novelty
+            # archive, and never returned. The target-aware key is what
+            # makes progress ratchet rather than reset — it is the
+            # mechanism, not an add-on. The plain key is untouched and
+            # still breaks every remaining tie.
+            plain_restore_key = restore_key
+            navigation_restore_baseline = max(
+                restore_eligible,
+                key=plain_restore_key,
+            )
+            restore_key = lambda item: (
+                self._relational_navigation_restore_preference(item),
+                plain_restore_key(item),
+            )
         branch = max(
             restore_eligible,
             key=restore_key,
         )
+        if navigation_restore_baseline is not None:
+            self._relational_emit_navigation_restore(
+                baseline=navigation_restore_baseline,
+                selected=branch,
+                eligible=restore_eligible,
+                recovery_reason=recovery_reason,
+            )
         restored_goal_reward, restored_goal_analysis = (
             live_archive_goal_metrics(branch)
         )

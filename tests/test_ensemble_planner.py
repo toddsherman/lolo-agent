@@ -17178,3 +17178,1062 @@ class RelationalPlannerSelectionModeTests(unittest.TestCase):
             [event["reason"] for event in terminated],
         )
         self.assertIsNone(agent.relational_plan)
+
+
+# ---------------------------------------------------------------------------
+# WP8 navigation-target seams S1/S2/S4
+# (docs/wp8-search-scheduling-design-2026-08-17.md section 4.2 mechanism
+# (b), section 5.1 seams, section 5.2 items 4-8, section 5.3 redundancy
+# detector; docs/learnings.md section 4.48).
+#
+# The measured failure these seams repair (learnings section 4.48): the
+# 24-decision authority-`off` control reached (12,10) at d17 — ONE cell
+# from the certified milestone (12,11) — and at d18 a
+# `human_prior_graph_stagnation` restore to an archive worth 60.35
+# traded that position away and never returned. Standing adjacent to a
+# certified milestone is worth ZERO to the incumbent scorer. The
+# regression tests below reproduce that choice in miniature.
+# ---------------------------------------------------------------------------
+
+
+# The exploit objective this fixture publishes carries the certified
+# newly-reachable band (RELATIONAL_REMOVAL_CELLS minus the baseline
+# envelope). The adjacent cell sits one step west of its nearest target;
+# the distant cell sits four steps away — the distance the section 4.48
+# restore actually landed at.
+NAVIGATION_ADJACENT_CELL = (1, 3)
+NAVIGATION_DISTANT_CELL = (1, 6)
+NAVIGATION_ADJACENT_DISTANCE = 1
+NAVIGATION_DISTANT_DISTANCE = 4
+# The archived novelty branch carries the section 4.48 frontier value.
+NAVIGATION_NOVELTY_SCORE = 60.35
+NAVIGATION_ADJACENT_SCORE = 4.0
+
+
+class _NavigationGoalPrior:
+    """Minimal goal-prior stand-in: a player slot and nothing else.
+
+    ``navigation_reward`` is pinned at 0.0 — the section 4.7 guard. The
+    navigation seams must never read it and never re-enable it.
+    """
+
+    navigation_reward = 0.0
+
+    def __init__(self, player_cell) -> None:
+        self.current_player_slot = (
+            None
+            if player_cell is None
+            else (player_cell[0] * 16, player_cell[1] * 16)
+        )
+
+    def current_slots(self):
+        return ()
+
+
+def _navigation_goal_analysis(
+    target_cell,
+    source_cell=NAVIGATION_DISTANT_CELL,
+    life_counter_changed: bool = False,
+    dark_transition_started: bool = False,
+    milestone_reward: float = 0.0,
+) -> HeartGoalAnalysis:
+    def slot(cell):
+        return None if cell is None else (cell[0] * 16, cell[1] * 16)
+
+    return HeartGoalAnalysis(
+        reliable=True,
+        known_slots=(),
+        source_present=(),
+        target_present=(),
+        collected=(),
+        target_similarities=(),
+        heart_reward=0.0,
+        all_hearts_reward=0.0,
+        chest_reward=0.0,
+        navigation_reward=0.0,
+        life_loss_penalty=0.0,
+        total_reward=0.0,
+        global_visual_change=0.0,
+        target_intensity=1.0,
+        source_player_slot=slot(source_cell),
+        target_player_slot=slot(target_cell),
+        source_heart_distance=None,
+        target_heart_distance=None,
+        source_chest_slot=None,
+        target_chest_slot=None,
+        source_chest_distance=None,
+        target_chest_distance=None,
+        chest_completed=False,
+        source_life_signature="life",
+        target_life_signature="life",
+        life_counter_changed=life_counter_changed,
+        dark_transition_started=dark_transition_started,
+        life_loss_confirmed=False,
+    )
+
+
+def _navigation_selection_branch(
+    target_cell,
+    score: float,
+    *,
+    action: Action = Action.RIGHT,
+    duration: int = 1,
+    life_counter_changed: bool = False,
+    dark_transition_started: bool = False,
+    analysis_present: bool = True,
+):
+    """One ``selection_verified`` row plus its goal analysis."""
+
+    state = object()
+    plan = NeuralPlan((action,), (duration,), score, 0.0)
+    item = (
+        score,
+        plan,
+        state,
+        Frame(8, 8, 1, bytes(64)),
+        0.0,
+        0.0,
+        0.0,
+        "frontier-signature",
+    )
+    analysis = (
+        _navigation_goal_analysis(
+            target_cell,
+            life_counter_changed=life_counter_changed,
+            dark_transition_started=dark_transition_started,
+        )
+        if analysis_present
+        else None
+    )
+    return item, analysis
+
+
+def _navigation_ladder_inputs(rows):
+    """Build (selection_verified, branch_goal_analyses) from rows."""
+
+    selection_verified = []
+    branch_goal_analyses = {}
+    for item, analysis in rows:
+        selection_verified.append(item)
+        branch_goal_analyses[id(item[2])] = analysis
+    return selection_verified, branch_goal_analyses
+
+
+def _relational_exploit_agent(authority: str, model=None):
+    """Agent whose active hypothesis is the exploit objective.
+
+    Only selection authority can realize the establish restore that
+    chains through to the exploit, so the "off" arm deliberately reaches
+    the same archive with no plan at all — which is precisely the
+    incumbent behavior the section 4.48 control exhibited.
+    """
+
+    env, logger, agent, _neutral, _removal = _relational_seam_agent(
+        authority, _relational_records(), model=model
+    )
+    if authority == "selection":
+        agent._relational_propose_and_log()
+        assert agent._restore_if_stagnant() is not None
+        agent._relational_feedback("committed_decision")
+    return env, logger, agent
+
+
+def _navigation_restore_archive(env, agent, position: int = 7):
+    """The section 4.48 choice: adjacency versus raw novelty.
+
+    Both branches sit INSIDE the held configuration and differ only in
+    stored score and archived player cell, so the incumbent key can only
+    see the novelty and the target-aware key can only see the distance.
+    ``position`` keeps the archived frame distinct from the agent's
+    current frame, which archive eligibility requires.
+    """
+
+    env.position = position
+    frame = env._frame()
+    assert frame.digest != agent.frame.digest
+
+    def branch(score: float, cell) -> _ArchivedBranch:
+        return _ArchivedBranch(
+            state=env.save_state(),
+            frame=frame,
+            plan=NeuralPlan((Action.RIGHT,), (1,), score, 0.0),
+            score=score,
+            scene="archived-elsewhere",
+            created=0,
+            origin_signature="origin",
+            tracked_world_state_signature=RELATIONAL_REMOVAL_SIGNATURE,
+            goal_player_slot=(cell[0] * 16, cell[1] * 16),
+        )
+
+    adjacent = branch(NAVIGATION_ADJACENT_SCORE, NAVIGATION_ADJACENT_CELL)
+    novelty = branch(NAVIGATION_NOVELTY_SCORE, NAVIGATION_DISTANT_CELL)
+    agent.archive = [novelty, adjacent]
+    agent.visual_stagnation_streak = 99
+    agent.human_prior_graph_recovery_pending = True
+    agent.autonomous_grace_remaining = 0
+    return adjacent, novelty
+
+
+class RelationalNavigationObjectiveGateTests(unittest.TestCase):
+    """Seam gating: authority, realization kind, and published cells."""
+
+    def test_objective_is_none_outside_selection_authority(self) -> None:
+        for authority in ("off", "telemetry"):
+            with self.subTest(authority=authority):
+                _env, _logger, agent = _relational_exploit_agent(authority)
+                self.assertIsNone(agent._relational_navigation_objective())
+
+    def test_objective_publishes_only_for_the_exploit_realization(
+        self,
+    ) -> None:
+        _env, _logger, agent, *_rest = _relational_seam_agent(
+            "selection", _relational_records()
+        )
+        agent._relational_propose_and_log()
+        active = agent._relational_active_hypothesis()
+        assert active is not None
+        # The active hypothesis is still the establish/restore_archive
+        # objective: it publishes no cells, so both consumers fail open.
+        self.assertIs(
+            active.kind, RelationalHypothesisKind.ESTABLISH_CONFIGURATION
+        )
+        self.assertIsNone(agent._relational_navigation_objective())
+
+        self.assertIsNotNone(agent._restore_if_stagnant())
+        agent._relational_feedback("committed_decision")
+        objective = agent._relational_navigation_objective()
+        self.assertIsNotNone(objective)
+        assert objective is not None
+        hypothesis, targets, hold_signature = objective
+        self.assertIs(
+            hypothesis.kind,
+            RelationalHypothesisKind.EXPLOIT_CONFIGURATION,
+        )
+        self.assertEqual(
+            hypothesis.realization.kind,
+            REALIZATION_REACH_CELLS_UNDER_HOLD,
+        )
+        self.assertEqual(hold_signature, RELATIONAL_REMOVAL_SIGNATURE)
+        self.assertTrue(targets)
+        # Targets come only from certified records, never from sprites.
+        self.assertTrue(
+            set(targets)
+            <= set(RELATIONAL_REMOVAL_CELLS) - set(RELATIONAL_BASE_CELLS)
+        )
+
+    def test_section_4_7_guard_navigation_reward_stays_zero(self) -> None:
+        # The mechanism is a hold-gated, certified-cell, budget-terminated
+        # TIE-BREAK. `human_prior_navigation_reward` must remain 0.0 and
+        # no seam may set it (learnings section 4.7, design section 7.3).
+        self.assertEqual(
+            NeuralPlanningConfig().human_prior_navigation_reward, 0.0
+        )
+        _env, _logger, agent = _relational_exploit_agent("selection")
+        self.assertEqual(
+            agent.config.human_prior_navigation_reward, 0.0
+        )
+        objective = agent._relational_navigation_objective()
+        assert objective is not None
+        hypothesis, _targets, _hold = objective
+        # Time-boxed: the objective dies with the hypothesis budget.
+        self.assertGreater(
+            hypothesis.termination.decision_budget, 0
+        )
+        self.assertEqual(
+            hypothesis.termination.violated_when,
+            "configuration_departs_record",
+        )
+
+
+class RelationalNavigationCommitTierTests(unittest.TestCase):
+    """Seam S1: the commit-ladder tier (design section 4.2 C1)."""
+
+    def _agent(self, authority: str, player_cell=NAVIGATION_DISTANT_CELL):
+        _env, logger, agent = _relational_exploit_agent(authority)
+        agent.goal_prior = _NavigationGoalPrior(player_cell)
+        logger.events.clear()
+        return logger, agent
+
+    def test_tier_is_none_outside_selection_authority(self) -> None:
+        rows = [
+            _navigation_selection_branch((2, 3), 1.0),
+            _navigation_selection_branch(NAVIGATION_DISTANT_CELL, 9.0),
+        ]
+        verified, analyses = _navigation_ladder_inputs(rows)
+        for authority in ("off", "telemetry"):
+            with self.subTest(authority=authority):
+                logger, agent = self._agent(authority)
+                self.assertIsNone(
+                    agent._relational_navigation_commit_view(
+                        verified, analyses
+                    )
+                )
+                self.assertEqual(logger.events, [])
+
+    def test_tier_prefers_the_strictly_distance_reducing_branch(
+        self,
+    ) -> None:
+        logger, agent = self._agent("selection")
+        closer, _closer_analysis = _navigation_selection_branch(
+            NAVIGATION_ADJACENT_CELL, 1.0
+        )
+        stationary, _s = _navigation_selection_branch(
+            NAVIGATION_DISTANT_CELL, 9.0
+        )
+        rows = [
+            (closer, _navigation_goal_analysis(NAVIGATION_ADJACENT_CELL)),
+            (
+                stationary,
+                _navigation_goal_analysis(NAVIGATION_DISTANT_CELL),
+            ),
+        ]
+        verified, analyses = _navigation_ladder_inputs(rows)
+        view = agent._relational_navigation_commit_view(verified, analyses)
+        assert view is not None
+        # The higher-scored branch does not move; the objective takes the
+        # lower-scored branch that actually closes distance.
+        self.assertIs(view["choice"], closer)
+        self.assertEqual(
+            view["source_distance"], NAVIGATION_DISTANT_DISTANCE
+        )
+        self.assertEqual(
+            view["choice_distance"], NAVIGATION_ADJACENT_DISTANCE
+        )
+        self.assertEqual(view["distance_reducing"], 1)
+
+    def test_nearest_distance_wins_and_ordering_is_deterministic(
+        self,
+    ) -> None:
+        logger, agent = self._agent("selection")
+        near, _n = _navigation_selection_branch((2, 3), 0.0)
+        middle, _m = _navigation_selection_branch((1, 4), 99.0)
+        rows = [
+            (middle, _navigation_goal_analysis((1, 4))),
+            (near, _navigation_goal_analysis((2, 3))),
+        ]
+        verified, analyses = _navigation_ladder_inputs(rows)
+        first = agent._relational_navigation_commit_view(verified, analyses)
+        second = agent._relational_navigation_commit_view(
+            list(reversed(verified)), analyses
+        )
+        assert first is not None and second is not None
+        self.assertIs(first["choice"], near)
+        self.assertIs(second["choice"], near)
+        self.assertEqual(first["choice_distance"], 0)
+
+    def test_hold_gating_refuses_fatal_branches(self) -> None:
+        logger, agent = self._agent("selection")
+        fatal_life, _a = _navigation_selection_branch(
+            NAVIGATION_ADJACENT_CELL, 5.0, life_counter_changed=True
+        )
+        fatal_dark, _b = _navigation_selection_branch(
+            (2, 3), 5.0, dark_transition_started=True
+        )
+        rows = [
+            (
+                fatal_life,
+                _navigation_goal_analysis(
+                    NAVIGATION_ADJACENT_CELL, life_counter_changed=True
+                ),
+            ),
+            (
+                fatal_dark,
+                _navigation_goal_analysis(
+                    (2, 3), dark_transition_started=True
+                ),
+            ),
+        ]
+        verified, analyses = _navigation_ladder_inputs(rows)
+        view = agent._relational_navigation_commit_view(verified, analyses)
+        assert view is not None
+        # Both branches close distance; neither may be selected.
+        self.assertIsNone(view["choice"])
+        self.assertEqual(view["hold_eligible"], 0)
+        self.assertEqual(view["decline_reason"], "no_distance_reducing_branch")
+
+    def test_tier_declines_without_a_strict_reduction(self) -> None:
+        logger, agent = self._agent("selection")
+        sideways, _a = _navigation_selection_branch((1, 7), 5.0)
+        rows = [(sideways, _navigation_goal_analysis((1, 7)))]
+        verified, analyses = _navigation_ladder_inputs(rows)
+        view = agent._relational_navigation_commit_view(verified, analyses)
+        assert view is not None
+        self.assertIsNone(view["choice"])
+        self.assertEqual(
+            view["decline_reason"], "no_distance_reducing_branch"
+        )
+
+    def test_tier_declines_when_the_player_cell_is_unknown(self) -> None:
+        logger, agent = self._agent("selection", player_cell=None)
+        closer, _a = _navigation_selection_branch(
+            NAVIGATION_ADJACENT_CELL, 5.0
+        )
+        rows = [
+            (closer, _navigation_goal_analysis(NAVIGATION_ADJACENT_CELL))
+        ]
+        verified, analyses = _navigation_ladder_inputs(rows)
+        view = agent._relational_navigation_commit_view(verified, analyses)
+        assert view is not None
+        self.assertIsNone(view["choice"])
+        self.assertEqual(view["decline_reason"], "source_cell_unknown")
+
+    def test_branches_without_a_goal_analysis_are_ignored(self) -> None:
+        logger, agent = self._agent("selection")
+        blind, _a = _navigation_selection_branch(
+            NAVIGATION_ADJACENT_CELL, 5.0, analysis_present=False
+        )
+        rows = [(blind, None)]
+        verified, analyses = _navigation_ladder_inputs(rows)
+        view = agent._relational_navigation_commit_view(verified, analyses)
+        assert view is not None
+        self.assertIsNone(view["choice"])
+        self.assertEqual(view["hold_eligible"], 0)
+
+
+class RelationalNavigationRedundancyDetectorTests(unittest.TestCase):
+    """Seam S4: section 5.3's mandatory exercised-difference telemetry."""
+
+    def _view(self, agent, rows):
+        verified, analyses = _navigation_ladder_inputs(rows)
+        view = agent._relational_navigation_commit_view(verified, analyses)
+        assert view is not None
+        return view
+
+    def test_records_that_the_incumbent_would_have_chosen_otherwise(
+        self,
+    ) -> None:
+        _env, logger, agent = _relational_exploit_agent("selection")
+        agent.goal_prior = _NavigationGoalPrior(NAVIGATION_DISTANT_CELL)
+        logger.events.clear()
+        closer, _a = _navigation_selection_branch(
+            NAVIGATION_ADJACENT_CELL, 1.0
+        )
+        incumbent, _b = _navigation_selection_branch(
+            NAVIGATION_DISTANT_CELL, 9.0
+        )
+        rows = [
+            (closer, _navigation_goal_analysis(NAVIGATION_ADJACENT_CELL)),
+            (
+                incumbent,
+                _navigation_goal_analysis(NAVIGATION_DISTANT_CELL),
+            ),
+        ]
+        view = self._view(agent, rows)
+        agent._relational_emit_navigation_commit(
+            view,
+            applied=True,
+            chosen=closer,
+            baseline_tier="human_prior_semantic_frontier_choice",
+            baseline=incumbent,
+        )
+        events = _relational_events(logger, "relational_navigation_choice")
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertTrue(event["differs"])
+        self.assertEqual(
+            event["baseline_tier"], "human_prior_semantic_frontier_choice"
+        )
+        self.assertEqual(
+            event["objective_distance"], NAVIGATION_ADJACENT_DISTANCE
+        )
+        self.assertEqual(
+            event["baseline_distance"], NAVIGATION_DISTANT_DISTANCE
+        )
+        self.assertEqual(
+            event["source_distance"], NAVIGATION_DISTANT_DISTANCE
+        )
+        self.assertEqual(
+            event["hold_configuration_signature"],
+            RELATIONAL_REMOVAL_SIGNATURE,
+        )
+        self.assertEqual(
+            event["reason"], "distance_reducing_branch_preferred"
+        )
+        # The full hypothesis decomposition rides along (seam S4).
+        self.assertEqual(
+            event["hypothesis_kind"], "exploit_configuration"
+        )
+        self.assertIn("relational_hypothesis_total_score", event)
+        self.assertEqual(event["authority"], "selection")
+
+    def test_records_agreement_so_a_third_redundancy_finding_is_detected(
+        self,
+    ) -> None:
+        # Design section 5.3: sections 4.43 and 4.45 both failed because a
+        # lever agreed with the baseline. When the objective-preferred
+        # candidate IS the incumbent argmax the event records
+        # `differs: false` — the detector, not an assumption.
+        _env, logger, agent = _relational_exploit_agent("selection")
+        agent.goal_prior = _NavigationGoalPrior(NAVIGATION_DISTANT_CELL)
+        logger.events.clear()
+        agreed, _a = _navigation_selection_branch(
+            NAVIGATION_ADJACENT_CELL, 9.0
+        )
+        rows = [
+            (agreed, _navigation_goal_analysis(NAVIGATION_ADJACENT_CELL))
+        ]
+        view = self._view(agent, rows)
+        agent._relational_emit_navigation_commit(
+            view,
+            applied=True,
+            chosen=agreed,
+            baseline_tier="known_goal_fallback_choice",
+            baseline=agreed,
+        )
+        event = _relational_events(
+            logger, "relational_navigation_choice"
+        )[0]
+        self.assertFalse(event["differs"])
+
+    def test_declined_instants_are_logged_with_a_reason(self) -> None:
+        _env, logger, agent = _relational_exploit_agent("selection")
+        agent.goal_prior = _NavigationGoalPrior(NAVIGATION_DISTANT_CELL)
+        logger.events.clear()
+        sideways, _a = _navigation_selection_branch((1, 7), 5.0)
+        rows = [(sideways, _navigation_goal_analysis((1, 7)))]
+        view = self._view(agent, rows)
+        agent._relational_emit_navigation_commit(
+            view,
+            applied=False,
+            chosen=sideways,
+            baseline_tier="committed_tier",
+            baseline=sideways,
+        )
+        events = _relational_events(
+            logger, "relational_navigation_declined"
+        )
+        self.assertEqual(len(events), 1)
+        self.assertEqual(
+            events[0]["reason"], "no_distance_reducing_branch"
+        )
+        # No objective-preferred candidate exists, so no difference can
+        # be claimed either way.
+        self.assertIsNone(events[0]["differs"])
+        self.assertIsNone(events[0]["objective_distance"])
+
+
+class RelationalNavigationRestoreTests(unittest.TestCase):
+    """Seam S2 and the learnings section 4.48 regression."""
+
+    def test_off_mode_trades_the_certified_adjacent_position_away(
+        self,
+    ) -> None:
+        # The section 4.48 control, in miniature: the incumbent scorer
+        # cannot see that a branch stands one cell from a certified
+        # target, so the 60.35-valued novelty archive wins.
+        env, logger, agent = _relational_exploit_agent("off")
+        adjacent, novelty = _navigation_restore_archive(env, agent)
+
+        decision = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(agent.archive, [adjacent])
+        self.assertEqual(
+            _relational_events(
+                logger, "relational_navigation_restore_selected"
+            ),
+            [],
+        )
+        restored = [
+            event
+            for event in logger.events
+            if event["event"] == "archive_branch_restored"
+        ]
+        self.assertTrue(restored)
+        self.assertEqual(
+            restored[-1]["reason"], "human_prior_graph_stagnation"
+        )
+
+    def test_selection_mode_holds_the_certified_adjacent_position(
+        self,
+    ) -> None:
+        # The preregistered mechanism-level prediction of section 4.48:
+        # under selection authority the d18-class stagnation restore must
+        # NOT abandon a certified-adjacent position.
+        env, logger, agent = _relational_exploit_agent("selection")
+        adjacent, novelty = _navigation_restore_archive(env, agent)
+        logger.events.clear()
+
+        decision = agent._restore_if_stagnant()
+
+        self.assertIsNotNone(decision)
+        # The novelty archive is the one left behind.
+        self.assertEqual(agent.archive, [novelty])
+        restored = [
+            event
+            for event in logger.events
+            if event["event"] == "archive_branch_restored"
+        ]
+        self.assertTrue(restored)
+        self.assertEqual(
+            restored[-1]["reason"], "human_prior_graph_stagnation"
+        )
+
+    def test_restore_instant_records_the_incumbent_choice(self) -> None:
+        env, logger, agent = _relational_exploit_agent("selection")
+        adjacent, novelty = _navigation_restore_archive(env, agent)
+        logger.events.clear()
+
+        self.assertIsNotNone(agent._restore_if_stagnant())
+
+        events = _relational_events(
+            logger, "relational_navigation_restore_selected"
+        )
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertTrue(event["differs"])
+        self.assertEqual(
+            event["recovery_reason"], "human_prior_graph_stagnation"
+        )
+        self.assertEqual(
+            event["selected_distance"], NAVIGATION_ADJACENT_DISTANCE
+        )
+        self.assertEqual(
+            event["baseline_distance"], NAVIGATION_DISTANT_DISTANCE
+        )
+        self.assertEqual(
+            event["selected_cell"], list(NAVIGATION_ADJACENT_CELL)
+        )
+        self.assertEqual(
+            event["baseline_cell"], list(NAVIGATION_DISTANT_CELL)
+        )
+        # Section 3.4 restore-supply instrument.
+        self.assertEqual(event["eligible_candidates"], 2)
+        self.assertEqual(event["hold_matching_candidates"], 2)
+        self.assertEqual(event["distance_resolved_candidates"], 2)
+        self.assertEqual(
+            event["hypothesis_kind"], "exploit_configuration"
+        )
+
+    def test_restore_key_refuses_branches_outside_the_held_configuration(
+        self,
+    ) -> None:
+        env, logger, agent = _relational_exploit_agent("selection")
+        adjacent, novelty = _navigation_restore_archive(env, agent)
+        departed = _ArchivedBranch(
+            state=env.save_state(),
+            frame=env._frame(),
+            plan=NeuralPlan((Action.RIGHT,), (1,), 1.0, 0.0),
+            score=1.0,
+            scene="archived-elsewhere",
+            created=0,
+            origin_signature="origin",
+            tracked_world_state_signature=RELATIONAL_NEUTRAL_SIGNATURE,
+            goal_player_slot=(2 * 16, 3 * 16),
+        )
+        # `departed` stands ON a target cell but has left the held
+        # configuration: it must sort strictly below both held branches.
+        held_adjacent = agent._relational_navigation_restore_preference(
+            adjacent
+        )
+        held_far = agent._relational_navigation_restore_preference(novelty)
+        outside = agent._relational_navigation_restore_preference(departed)
+        self.assertLess(outside, held_far)
+        self.assertLess(held_far, held_adjacent)
+        self.assertEqual(outside[0], 0)
+
+    def test_restore_preference_is_neutral_outside_selection_authority(
+        self,
+    ) -> None:
+        env, _logger, agent = _relational_exploit_agent("selection")
+        adjacent, novelty = _navigation_restore_archive(env, agent)
+        # Same plan, same archive, authority forced off: the seam must go
+        # completely silent and neutral.
+        agent.config = replace(
+            agent.config,
+            relational_planner_enabled=False,
+            relational_planner_authority="off",
+        )
+        self.assertIsNone(agent._relational_navigation_objective())
+        for branch in (adjacent, novelty):
+            self.assertEqual(
+                agent._relational_navigation_restore_preference(branch),
+                (0, 0, 0),
+            )
+
+
+class RelationalNavigationOffModeInvarianceTests(unittest.TestCase):
+    """Design section 5.2 item 8 / section 6.5 VOID 6, seam-local.
+
+    Authority != "selection" must leave restore selection AND commit
+    selection bit-identical to today, with zero navigation telemetry.
+    """
+
+    def test_off_mode_restore_is_byte_identical_with_and_without_records(
+        self,
+    ) -> None:
+        shared_model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        env_a, logger_a, loaded, *_rest = _relational_seam_agent(
+            "off", _relational_records(), model=shared_model
+        )
+        env_b, logger_b, bare, *_rest2 = _relational_seam_agent(
+            "off", None, model=shared_model
+        )
+        adjacent_a, novelty_a = _navigation_restore_archive(env_a, loaded)
+        adjacent_b, novelty_b = _navigation_restore_archive(env_b, bare)
+        logger_a.events.clear()
+        logger_b.events.clear()
+
+        loaded._relational_propose_and_log()
+        bare._relational_propose_and_log()
+        decision_a = loaded._restore_if_stagnant()
+        decision_b = bare._restore_if_stagnant()
+
+        self.assertIsNotNone(decision_a)
+        self.assertIsNotNone(decision_b)
+        assert decision_a is not None and decision_b is not None
+        self.assertEqual(decision_a.action, decision_b.action)
+        self.assertEqual(decision_a.score, decision_b.score)
+        self.assertEqual(env_a.position, env_b.position)
+        # Both arms keep the certified-adjacent branch and restore the
+        # novelty branch: the loaded records changed nothing.
+        self.assertEqual(loaded.archive, [adjacent_a])
+        self.assertEqual(bare.archive, [adjacent_b])
+        self.assertEqual(logger_a.events, logger_b.events)
+        self.assertEqual(
+            [
+                event
+                for event in logger_a.events
+                if event["event"].startswith("relational_")
+            ],
+            [],
+        )
+
+    def test_navigation_seams_emit_nothing_outside_selection_authority(
+        self,
+    ) -> None:
+        rows = [
+            _navigation_selection_branch(NAVIGATION_ADJACENT_CELL, 1.0),
+            _navigation_selection_branch(NAVIGATION_DISTANT_CELL, 9.0),
+        ]
+        verified, analyses = _navigation_ladder_inputs(rows)
+        for authority in ("off", "telemetry"):
+            with self.subTest(authority=authority):
+                env, logger, agent = _relational_exploit_agent(authority)
+                _adjacent, novelty = _navigation_restore_archive(
+                    env, agent
+                )
+                logger.events.clear()
+                self.assertIsNone(
+                    agent._relational_navigation_commit_view(
+                        verified, analyses
+                    )
+                )
+                self.assertIsNotNone(agent._restore_if_stagnant())
+                self.assertEqual(
+                    [
+                        event
+                        for event in logger.events
+                        if event["event"].startswith(
+                            "relational_navigation"
+                        )
+                    ],
+                    [],
+                )
+
+
+class RelationalNavigationLadderPlacementTests(unittest.TestCase):
+    """Seam S1's placement rationale, pinned structurally.
+
+    Design section 4.2 C1 and section 7.3 reason 5: the navigation tier
+    must never override an actual milestone collection, must outrank pure
+    position novelty, and must never touch the safety paths P1
+    (life-loss recovery) or P4 (goal-exhaustion rollback).
+    """
+
+    def _source(self) -> str:
+        import lolo_agent.neural_planner as neural_planner_module
+
+        return Path(neural_planner_module.__file__).read_text()
+
+    def test_tier_sits_below_milestone_collection_and_above_novelty(
+        self,
+    ) -> None:
+        source = self._source()
+        goal = source.index(
+            "elif human_prior_goal_choice is not None:"
+        )
+        navigation = source.index(
+            "elif relational_navigation_choice is not None:"
+        )
+        detour = source.index(
+            "elif human_prior_navigation_detour_choice is not None:"
+        )
+        frontier = source.index(
+            "elif human_prior_semantic_frontier_choice is not None:"
+        )
+        self.assertLess(goal, navigation)
+        self.assertLess(navigation, detour)
+        self.assertLess(detour, frontier)
+
+    def test_safety_restore_paths_carry_no_navigation_seam(self) -> None:
+        source = self._source()
+        for method in (
+            "_restore_after_life_loss",
+            "_restore_goal_milestone_after_exhaustion",
+        ):
+            start = source.index(f"    def {method}(")
+            end = source.index("\n    def ", start + 1)
+            body = source[start:end]
+            self.assertNotIn("relational_navigation", body, method)
+            self.assertNotIn("_relational_", body, method)
+
+    def test_navigation_reward_machinery_is_untouched(self) -> None:
+        # Section 7.3: the section 4.7 machinery stays in the tree and
+        # stays disabled. No seam may reference or re-enable it.
+        source = self._source()
+        self.assertIn(
+            "human_prior_navigation_reward: float = 0.0", source
+        )
+        for marker in (
+            "def _relational_navigation_objective(",
+            "def _relational_navigation_commit_view(",
+            "def _relational_navigation_restore_preference(",
+        ):
+            start = source.index(marker)
+            end = source.index("\n    def ", start + 1)
+            self.assertNotIn(
+                "navigation_reward", source[start:end], marker
+            )
+
+
+class RelationalNavigationOutrankedInstantTests(unittest.TestCase):
+    """Section 5.3: an outranked objective preference is still logged."""
+
+    def test_milestone_collection_outranks_the_objective_and_is_logged(
+        self,
+    ) -> None:
+        _env, logger, agent = _relational_exploit_agent("selection")
+        agent.goal_prior = _NavigationGoalPrior(NAVIGATION_DISTANT_CELL)
+        logger.events.clear()
+        closer, _a = _navigation_selection_branch(
+            NAVIGATION_ADJACENT_CELL, 1.0
+        )
+        milestone, _b = _navigation_selection_branch((1, 5), 9.0)
+        rows = [
+            (closer, _navigation_goal_analysis(NAVIGATION_ADJACENT_CELL)),
+            (milestone, _navigation_goal_analysis((1, 5))),
+        ]
+        verified, analyses = _navigation_ladder_inputs(rows)
+        view = agent._relational_navigation_commit_view(verified, analyses)
+        assert view is not None
+        self.assertIs(view["choice"], closer)
+        # The ladder committed the milestone branch instead: the
+        # objective was outranked, exactly as designed, and the instant
+        # is still recorded for the redundancy detector.
+        agent._relational_emit_navigation_commit(
+            view,
+            applied=False,
+            chosen=milestone,
+            baseline_tier="committed_tier",
+            baseline=milestone,
+        )
+        event = _relational_events(
+            logger, "relational_navigation_declined"
+        )[0]
+        self.assertEqual(
+            event["reason"], "outranked_by_incumbent_tier"
+        )
+        self.assertTrue(event["differs"])
+        self.assertEqual(
+            event["objective_distance"], NAVIGATION_ADJACENT_DISTANCE
+        )
+
+
+class RelationalNavigationLadderWiringTests(unittest.TestCase):
+    """The S1 elif and the S4 emit execute inside a real ``decide()``.
+
+    The tier's ranking logic is unit-tested above; this pins the monolith
+    wiring — that the ladder branch and the redundancy-detector emit are
+    reachable and consistent on a live commit.
+    """
+
+    def _forced_view(self, hypothesis, targets, hold_signature, captured):
+        def view(selection_verified, branch_goal_analyses):
+            choice = selection_verified[-1]
+            captured["choice"] = choice
+            return {
+                "hypothesis": hypothesis,
+                "target_cells": targets,
+                "hold_configuration_signature": hold_signature,
+                "source_cell": NAVIGATION_DISTANT_CELL,
+                "source_distance": NAVIGATION_DISTANT_DISTANCE,
+                "cell_by_state": {
+                    id(choice[2]): (
+                        NAVIGATION_ADJACENT_CELL,
+                        NAVIGATION_ADJACENT_DISTANCE,
+                    )
+                },
+                "choice": choice,
+                "choice_cell": NAVIGATION_ADJACENT_CELL,
+                "choice_distance": NAVIGATION_ADJACENT_DISTANCE,
+                "hold_eligible": len(selection_verified),
+                "distance_reducing": 1,
+                "decline_reason": "",
+            }
+
+        return view
+
+    def test_navigation_tier_commits_and_logs_inside_decide(self) -> None:
+        _donor_env, _donor_logger, donor = _relational_exploit_agent(
+            "selection"
+        )
+        objective = donor._relational_navigation_objective()
+        assert objective is not None
+        hypothesis, targets, hold_signature = objective
+
+        env = MockPuzzleEnv()
+        logger = _RelationalRecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.LEFT, Action.RIGHT),
+                planning_depth=2,
+                beam_width=4,
+                verify_actions=2,
+                action_frames=1,
+                relational_planner_enabled=True,
+                relational_planner_authority="selection",
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.relational_plan = donor.relational_plan
+        captured = {}
+        agent._relational_navigation_commit_view = self._forced_view(
+            hypothesis, targets, hold_signature, captured
+        )
+
+        decision = agent.decide()
+
+        self.assertIsNotNone(decision)
+        self.assertIn("choice", captured)
+        events = _relational_events(logger, "relational_navigation_choice")
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(
+            event["reason"], "distance_reducing_branch_preferred"
+        )
+        self.assertEqual(
+            event["objective_distance"], NAVIGATION_ADJACENT_DISTANCE
+        )
+        self.assertEqual(
+            event["committed_distance"], NAVIGATION_ADJACENT_DISTANCE
+        )
+        self.assertEqual(
+            event["source_distance"], NAVIGATION_DISTANT_DISTANCE
+        )
+        self.assertIn(
+            event["baseline_tier"],
+            (
+                "human_prior_navigation_detour_choice",
+                "human_prior_semantic_frontier_choice",
+                "known_goal_fallback_choice",
+                "ladder_tail",
+            ),
+        )
+        # The commit really is the tier's candidate.
+        self.assertEqual(
+            decision.action, captured["choice"][1].path[0]
+        )
+
+    def test_decide_is_unchanged_when_the_tier_declines(self) -> None:
+        env = MockPuzzleEnv()
+        logger = _RelationalRecordingLogger()
+        agent = VerifiedNeuralAgent(
+            env,
+            EnsembleVisualDynamicsModel(
+                latent_size=32, action_size=8, ensemble_size=2
+            ),
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.LEFT, Action.RIGHT),
+                planning_depth=2,
+                beam_width=4,
+                verify_actions=2,
+                action_frames=1,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        decision = agent.decide()
+        self.assertIsNotNone(decision)
+        self.assertEqual(
+            [
+                event
+                for event in logger.events
+                if event["event"].startswith("relational_")
+            ],
+            [],
+        )
+
+
+class RelationalNavigationDecideInvarianceTests(unittest.TestCase):
+    """Byte-identical ``decide()`` at authority off (design 5.2 item 8).
+
+    The sharper statement of the invariance: an agent carrying an ACTIVE
+    navigation objective, with authority off, must produce a
+    byte-identical decision and a byte-identical event stream to an agent
+    carrying no objective at all. This is the seam-local twin of VOID V6
+    (the control arm must reproduce v330's state ids exactly).
+    """
+
+    def _agent(self, model, logger, plan=None):
+        env = MockPuzzleEnv()
+        agent = VerifiedNeuralAgent(
+            env,
+            model,
+            "cpu",
+            NeuralPlanningConfig(
+                actions=(Action.LEFT, Action.RIGHT),
+                planning_depth=2,
+                beam_width=4,
+                verify_actions=2,
+                action_frames=1,
+            ),
+            event_logger=logger,
+        )
+        agent.reset()
+        agent.relational_plan = plan
+        return agent
+
+    def test_active_objective_at_authority_off_changes_nothing(
+        self,
+    ) -> None:
+        _donor_env, _donor_logger, donor = _relational_exploit_agent(
+            "selection"
+        )
+        self.assertIsNotNone(donor._relational_navigation_objective())
+
+        shared_model = EnsembleVisualDynamicsModel(
+            latent_size=32, action_size=8, ensemble_size=2
+        )
+        logger_with = _RelationalRecordingLogger()
+        logger_without = _RelationalRecordingLogger()
+        with_objective = self._agent(
+            shared_model, logger_with, plan=donor.relational_plan
+        )
+        without_objective = self._agent(shared_model, logger_without)
+
+        # The objective is genuinely present and genuinely inert.
+        self.assertIsNotNone(with_objective._relational_active_hypothesis())
+        self.assertIsNone(
+            with_objective._relational_navigation_objective()
+        )
+
+        decision_with = with_objective.decide()
+        decision_without = without_objective.decide()
+
+        self.assertEqual(decision_with.action, decision_without.action)
+        self.assertEqual(decision_with.score, decision_without.score)
+        self.assertEqual(
+            decision_with.branches_examined,
+            decision_without.branches_examined,
+        )
+        self.assertEqual(logger_with.events, logger_without.events)
