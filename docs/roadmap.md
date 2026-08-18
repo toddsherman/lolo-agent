@@ -1736,6 +1736,33 @@ Consequences, binding:
    actuator exists. Four levers were built above an actuator that was
    never checked for.
 
+## 23. Amendment — 2026-08-18 — §22 consequence 2 SUPERSEDED (evidence: learnings §4.55)
+
+§22 fired trigger A correctly but attached the wrong cause. Recon found
+the commit ladder was **never entered** at the decisive instant
+(`branches_examined: 0`, zero verified branches at v341 d17/d18 —
+`decide()` returns early via `_restore_if_stagnant()` before
+`planner.plan(...)`), that the ladder already *has* a target-cell tier
+(refuted separately by §4.50), and that a new adjacency-gated tier would
+have **zero opportunities** across ten runs — i.e. trigger C, not a fix.
+
+Superseding consequence 2:
+
+1. **No ladder rewrite.** The next change is **R-A**, outside the ladder:
+   decline a stagnation restore when the current position already
+   satisfies the S3 deposit predicate at distance exactly 1, falling
+   through to expansion. No new tier, term, or weight; it reuses the
+   deposit view E7 verified.
+2. The decisive defect is now named precisely: at d17 the restore
+   selected the state the agent already occupied — a positional no-op
+   that consumed the decision and then removed the `(12,10)` candidate
+   from the archive. The closing mechanism won its contest and spent the
+   win standing still.
+3. **§5 invariant added** (replacing §22 item 4's weaker form): before
+   building where a failure "must" live, verify the code path was
+   reached. One recon pass falsified an interpretation that would have
+   cost an experiment.
+
 Amended next sequence: (a) Gate 3 repetition run; (b) WP8-lite preference
 ablation; (c) WP2 multi-track correspondence with the endpoint-relative
 contract; (d) WP3 including the removal-chain gate; (e) WP5 spike and

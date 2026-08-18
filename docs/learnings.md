@@ -2702,6 +2702,78 @@ Evidence:
   `entity-v341-…-treatment-published-d24`,
   `entity-v342-…-standingrule-store-d24`
 
+### 4.55 CORRECTION to §4.54: the ladder was never entered, and the closing move stood still
+
+What was found (design recon for the §22 rewrite,
+`docs/wp8-commit-ladder-design-2026-08-18.md`):
+
+- **The P5 commit ladder was never reached at the decisive instant.** At
+  v341's d17 and d18 — the only decisions *beginning* at `(12,10)` —
+  `decide()` returned early via `_restore_if_stagnant()`, which runs
+  **before** `planner.plan(...)`. Both show `branches_examined: 0` and
+  zero `branch_verified` events. There was no candidate set for any tier
+  to rank.
+- **Zero branches collect `(192,176)` anywhere in v340/v341/v342** — a
+  scan of all 12,337 verification events finds none. The primitive is
+  nonetheless demonstrated, not missing: d16 verified a
+  `(12,9)→(12,10)` step, and d1 verified the identical single-16-frame
+  geometry *collecting* a heart. One 16-frame `down` from `(12,10)` is
+  the actuator.
+- **The sharpest sub-finding**: d17's restore selected
+  `state-00012381` — the state the agent was **already in**. A
+  positional no-op that burned the decision; then `archive.remove(...)`
+  consumed the `(12,10)` candidate (`hold_matching_candidates` 7→6), so
+  d18 could only reach `(12,7)`. *The closing mechanism won its contest
+  and spent the win standing still.*
+- **A ladder tier would have opportunity count ZERO**: across ten
+  24-decision runs (v333–v342), 149 expansion decisions, **none**
+  beginning at distance ≤ 1; all 11 adjacent decision-starts are
+  restores.
+- The ladder *does* already have a target-cell tier (Tier 4 / seam S1),
+  which E3 refuted (§4.50).
+
+Corrections to the record:
+
+1. **§4.54's mechanism claim is WRONG.** "The failure has moved inside
+   the P5 commit ladder, which has no tier referencing a target cell" is
+   false twice over: the ladder was never entered, and it does have such
+   a tier. Trigger A fired on correct *bit arithmetic*, but my reading of
+   *why* was mistaken.
+2. **§4.54's celebration is overstated.** I wrote that the agent
+   "deliberately returned itself to one cell from the milestone." It
+   restored to the position it already occupied. The deposit and the
+   selection were real; the movement was not.
+3. **Roadmap §22 consequence 2 would have been a wasted experiment** — a
+   commit-ladder tier gated on adjacency has a measured opportunity count
+   of zero, i.e. §4.45/§4.46's mechanism repeating, which is trigger C.
+
+Classification:
+
+- **Correction of a recorded interpretation**, caught by designing
+  against it rather than by building it.
+
+Learning:
+
+- A preregistered trigger tells you *that* to stop, not *what to do
+  next*. The bit arithmetic was sound; the causal story attached to it
+  was assumed rather than measured, and one recon pass falsified it.
+- Before building where a failure "must" live, verify the code path was
+  even reached. `branches_examined: 0` would have said so immediately.
+
+Plan change:
+
+- The fix is **R-A**, outside the ladder: decline a stagnation restore
+  when the current position already satisfies the S3 deposit predicate
+  at distance exactly 1, falling through to expansion. No new tier, no
+  term, no weight — it reuses the deposit view E7 proved fires
+  correctly. Contingent **R-B** (a Tier 7 interlock) is gated behind an
+  offline precondition.
+
+Evidence:
+
+- `docs/wp8-commit-ladder-design-2026-08-18.md`
+- runs v340/v341/v342; census v333–v342
+
 ## 5. Platform and cost learnings
 
 ### 5.1 RunPod for emulator branching
