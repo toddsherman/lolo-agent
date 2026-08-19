@@ -396,8 +396,9 @@ footer{border-top:1px solid var(--rule);padding:2.6rem 0 4rem;color:var(--ink-2)
 <section id="replay"><div class="bleed">
   <h2>Watch a run</h2>
   <div class="wrap" style="padding:0">
-  <p>Each experiment replayed as its committed trajectory through the room. The markers are the moments
-  the telemetry flagged: an archive restore, a deposit, the one collection.</p>
+  <p>Each experiment replayed as its committed trajectory through the room. Playback advances through
+  every run automatically; pause it to choose a particular run or inspect a decision. The markers are
+  the moments the telemetry flagged: an archive restore, a deposit, the one collection.</p>
   <p class="small">What the telemetry stores is the cell the agent occupied at each committed decision,
   not every step in between. The connecting line is therefore reconstructed: a shortest walkable route
   between consecutive recorded positions, so it stays on floor the agent could actually stand on. Trust
@@ -849,7 +850,7 @@ function walkRoute(a,b){
      <input type="range" id="scrub" min="0" value="0" aria-label="Decision">`;
   const box=document.getElementById('play'), out=document.getElementById('playout');
   const spark=document.getElementById('playspark');
-  let idx=runs.findIndex(r=>r.got); if(idx<0)idx=0;
+  let idx=0;
   let step=0, timer=null;
   function render(){
     const r=runs[idx]; box.innerHTML='';
@@ -896,19 +897,35 @@ function walkRoute(a,b){
     spark.appendChild(s2);
     const sc=document.getElementById('scrub'); sc.max=r.traj.length-1; sc.value=step;
   }
-  function stop(){if(timer){clearInterval(timer);timer=null;document.getElementById('playbtn').textContent='Play'}}
+  function stop(){
+    if(!timer)return;
+    clearInterval(timer); timer=null;
+    document.getElementById('playbtn').textContent='Play';
+  }
+  function advance(){
+    if(step<runs[idx].traj.length-1)step++;
+    else{
+      idx=(idx+1)%runs.length;
+      step=0;
+      document.getElementById('runsel').value=idx;
+    }
+    render();
+  }
+  function play(){
+    const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
+    if(reduce){step=runs[idx].traj.length-1;render();return}
+    document.getElementById('playbtn').textContent='Pause';
+    timer=setInterval(advance,420);
+  }
   document.getElementById('runsel').addEventListener('change',e=>{idx=+e.target.value;step=0;stop();render()});
   document.getElementById('scrub').addEventListener('input',e=>{step=+e.target.value;stop();render()});
   document.getElementById('playbtn').addEventListener('click',()=>{
     if(timer){stop();return}
-    const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
-    if(reduce){step=runs[idx].traj.length-1;render();return}
-    document.getElementById('playbtn').textContent='Pause';
     if(step>=runs[idx].traj.length-1)step=0;
-    timer=setInterval(()=>{step++;if(step>=runs[idx].traj.length){stop();step=runs[idx].traj.length-1}
-      render()},420);
+    play();
   });
   render();
+  play();
 })();
 </script>
 </body>
