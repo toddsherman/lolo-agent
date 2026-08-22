@@ -1,5 +1,8 @@
 {
   "cleanUrls": true,
+  "rewrites": [
+    { "source": "/lolo/cms-copy.js", "destination": "/cms-copy.js" }
+  ],
   "headers": [
     {
       "source": "/lolo-og.png",
@@ -8,6 +11,10 @@
     {
       "source": "/lolo-hero.webp",
       "headers": [{ "key": "Cache-Control", "value": "public, max-age=604800, immutable" }]
+    },
+    {
+      "source": "/cms-copy.js",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=60, must-revalidate" }]
     }
   ]
 }

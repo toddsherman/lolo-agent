@@ -58,6 +58,12 @@ img,svg,canvas{{max-width:100%}}
 out = head + body.rstrip() + '\n</body>\n</html>\n'
 out = out.replace('</style>\n\n<div class="bleed"',
                   '</style>\n</head>\n<body>\n\n<div class="bleed"', 1)
+out = out.replace(
+    '<script id="payload" type="application/json">',
+    '<script src="/lolo/cms-copy.js?v=2"></script>\n'
+    '<script id="payload" type="application/json">',
+    1,
+)
 open(f'{S}/lolo-standalone.html', 'w').write(out)
 
 d = json.loads(re.search(r'<script id="payload" type="application/json">(.*?)</script>', out, re.S).group(1))
@@ -65,6 +71,7 @@ open(f'{S}/app.js', 'w').write(re.search(r'<script>\n(const D=JSON.parse.*?)</sc
 toks = set(re.findall(r'var\(--([a-z0-9-]+)\)', out))
 undef = sorted(toks - set(re.findall(r'--([a-z0-9-]+):', out.split('@media', 1)[0])))
 assert out.startswith('<!doctype html>') and out.count('<body>') == 1 and out.count('</head>') == 1
+assert out.count('/lolo/cms-copy.js') == 1
 assert out.count('—') == 0 and not undef, (out.count('—'), undef)
 assert not re.search(r'src="https?://', out), 'external resource load'
 print(f'built {os.path.getsize(S+"/lolo-standalone.html")/1024:.1f}KB  runs={len(d["runs"])} '

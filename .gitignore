@@ -24,3 +24,4 @@ __pycache__/
 .env.*
 .coverage
 .pytest_cache/
+.vercel/
