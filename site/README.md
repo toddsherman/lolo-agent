@@ -12,6 +12,11 @@ fixed text positions. If Sanity is unavailable, the checked-in wording in `index
 remains visible. The script changes text and accessibility descriptions only; it does
 not accept HTML or alter the page structure, links, figures, interactions, or styles.
 
+When the page is opened inside Sanity's Presentation tool, it fetches draft wording
+through todd.sh's protected preview endpoint and adds click-to-edit targets. The visual
+editing bundle is built from `../site-tools/` and is loaded only inside an iframe, so
+regular visitors do not download the editor runtime.
+
 The page's `canonical`, `og:url` and `twitter:*` tags point at https://www.todd.sh/lolo, which is
 the intended home. If it is served anywhere else as its permanent address, update those tags
 or link previews will point at the wrong URL.

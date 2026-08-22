@@ -5,6 +5,8 @@
   const dataset = "production";
   const apiVersion = "2026-08-21";
   const documentId = "page-lolo";
+  const documentType = "loloPage";
+  const isVisualPreview = window.parent !== window;
 
   function groupFor(element) {
     if (element.closest("header.project-hero")) return "intro";
@@ -75,50 +77,109 @@
     document.querySelector(selector)?.setAttribute("content", value.trim());
   }
 
+  function dataSanity(path) {
+    const studioUrl = `${window.location.origin}/admin`;
+    return [
+      `id=${documentId}`,
+      `type=${documentType}`,
+      `path=${path}`,
+      `base=${encodeURIComponent(studioUrl)}`,
+      "tool=presentation",
+    ].join(";");
+  }
+
+  function addVisualEditingTargets(textNodes) {
+    if (!isVisualPreview) return;
+
+    for (const { key, node } of textNodes) {
+      if (!node.parentNode || node.parentElement?.closest("#allrooms-cap")) {
+        continue;
+      }
+
+      const target = document.createElement("span");
+      target.setAttribute("data-sanity", dataSanity(key));
+      node.parentNode.insertBefore(target, node);
+      target.appendChild(node);
+    }
+
+    document
+      .querySelector(".hero-art img")
+      ?.setAttribute("data-sanity", dataSanity("heroImageAlt"));
+    document
+      .getElementById("allrooms-cap")
+      ?.setAttribute("data-sanity", dataSanity("roomGalleryCaption"));
+  }
+
+  async function fetchPublicContent() {
+    const query = encodeURIComponent(`*[_id == "${documentId}"][0]`);
+    const url =
+      `https://${projectId}.api.sanity.io/v${apiVersion}/data/query/` +
+      `${dataset}?perspective=published&query=${query}`;
+    const response = await fetch(url, { cache: "no-store" });
+
+    if (!response.ok) throw new Error(`Sanity returned ${response.status}`);
+    return response.json();
+  }
+
+  async function fetchContent() {
+    if (
+      window.location.pathname === "/lolo" ||
+      window.location.pathname.startsWith("/lolo/")
+    ) {
+      try {
+        const response = await fetch("/api/lolo-content", {
+          cache: "no-store",
+          credentials: "same-origin",
+        });
+
+        if (response.ok) return response.json();
+      } catch {
+        // Fall through to the public published-content endpoint.
+      }
+    }
+
+    return fetchPublicContent();
+  }
+
+  function applyContent(result, textNodes) {
+    if (!result) return false;
+
+    for (const { key, node } of textNodes) {
+      setTextNode(node, result[key]);
+    }
+
+    if (typeof result.browserTitle === "string" && result.browserTitle.trim()) {
+      document.title = result.browserTitle.trim();
+      setMeta('meta[property="og:title"]', result.browserTitle);
+      setMeta('meta[name="twitter:title"]', result.browserTitle);
+    }
+
+    setMeta('meta[name="description"]', result.metaDescription);
+    setMeta('meta[property="og:description"]', result.metaDescription);
+    setMeta('meta[name="twitter:description"]', result.metaDescription);
+
+    if (typeof result.heroImageAlt === "string" && result.heroImageAlt.trim()) {
+      document
+        .querySelector(".hero-art img")
+        ?.setAttribute("alt", result.heroImageAlt.trim());
+    }
+
+    if (
+      typeof result.roomGalleryCaption === "string" &&
+      result.roomGalleryCaption.trim()
+    ) {
+      const caption = document.getElementById("allrooms-cap");
+      if (caption) caption.textContent = result.roomGalleryCaption.trim();
+    }
+
+    document.documentElement.dataset.cmsContent = "loaded";
+    return true;
+  }
+
   const textNodes = editableTextNodes();
-  const query = encodeURIComponent(`*[_id == "${documentId}"][0]`);
-  const url =
-    `https://${projectId}.api.sanity.io/v${apiVersion}/data/query/` +
-    `${dataset}?perspective=published&query=${query}`;
+  addVisualEditingTargets(textNodes);
 
-  window.toddCmsReady = fetch(url, { cache: "no-store" })
-    .then((response) => {
-      if (!response.ok) throw new Error(`Sanity returned ${response.status}`);
-      return response.json();
-    })
-    .then(({ result }) => {
-      if (!result) return false;
-
-      for (const { key, node } of textNodes) {
-        setTextNode(node, result[key]);
-      }
-
-      if (typeof result.browserTitle === "string" && result.browserTitle.trim()) {
-        document.title = result.browserTitle.trim();
-        setMeta('meta[property="og:title"]', result.browserTitle);
-        setMeta('meta[name="twitter:title"]', result.browserTitle);
-      }
-
-      setMeta('meta[name="description"]', result.metaDescription);
-      setMeta('meta[property="og:description"]', result.metaDescription);
-      setMeta('meta[name="twitter:description"]', result.metaDescription);
-
-      if (typeof result.heroImageAlt === "string" && result.heroImageAlt.trim()) {
-        document
-          .querySelector(".hero-art img")
-          ?.setAttribute("alt", result.heroImageAlt.trim());
-      }
-
-      if (
-        typeof result.roomGalleryCaption === "string" &&
-        result.roomGalleryCaption.trim()
-      ) {
-        const caption = document.getElementById("allrooms-cap");
-        if (caption) caption.textContent = result.roomGalleryCaption.trim();
-      }
-
-      document.documentElement.dataset.cmsContent = "loaded";
-      return true;
-    })
-    .catch(() => false);
+  window.toddCmsRefresh = () =>
+    fetchContent().then(({ result }) => applyContent(result, textNodes));
+  window.toddCmsReady = window.toddCmsRefresh().catch(() => false);
 })();

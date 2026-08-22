@@ -1,0 +1,12 @@
+{
+  "name": "lolo-site-tools",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "devDependencies": {
+    "@sanity/visual-editing-standalone": "2.0.1",
+    "esbuild": "0.28.2"
+  }
+}

@@ -1,7 +1,9 @@
 {
   "cleanUrls": true,
   "rewrites": [
-    { "source": "/lolo/cms-copy.js", "destination": "/cms-copy.js" }
+    { "source": "/lolo/cms-copy.js", "destination": "/cms-copy.js" },
+    { "source": "/lolo/visual-editing.js", "destination": "/visual-editing.js" },
+    { "source": "/lolo/visual-editing.css", "destination": "/visual-editing.css" }
   ],
   "headers": [
     {
@@ -15,6 +17,14 @@
     {
       "source": "/cms-copy.js",
       "headers": [{ "key": "Cache-Control", "value": "public, max-age=60, must-revalidate" }]
+    },
+    {
+      "source": "/visual-editing.js",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }]
+    },
+    {
+      "source": "/visual-editing.css",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }]
     }
   ]
 }
