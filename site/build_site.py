@@ -55,7 +55,10 @@ html{{-webkit-text-size-adjust:100%}}
 img,svg,canvas{{max-width:100%}}
 </style>
 '''
-out = head + body.rstrip() + '\n</body>\n</html>\n'
+# Vercel Web Analytics: root-absolute, so views through the todd.sh proxy post to todd.sh
+ANALYTICS = ('<script>window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };</script>\n'
+             '<script defer src="/_vercel/insights/script.js"></script>')
+out = head + body.rstrip() + '\n' + ANALYTICS + '\n</body>\n</html>\n'
 out = out.replace('</style>\n\n<div class="bleed"',
                   '</style>\n</head>\n<body>\n\n<div class="bleed"', 1)
 open(f'{S}/lolo-standalone.html', 'w').write(out)
